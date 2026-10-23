@@ -21,6 +21,8 @@ use crate::widget::Widget;
 
 #[path = "layout.rs"]
 mod layout;
+#[path = "paint_pass.rs"]
+mod paint_pass;
 
 new_key_type! {
     /// Identifies one node in the widget tree.
@@ -72,7 +74,6 @@ struct Node {
     /// The rectangle the node's subtree is clipped to, set by the layout pass.
     clip: Rect,
     /// The node's cached paint output, filled by the paint pass.
-    #[expect(dead_code, reason = "the display list reads it")]
     ops: Vec<PaintOp>,
     /// The bounds the node painted last frame, already clipped.
     painted: Option<Rect>,
@@ -335,7 +336,10 @@ impl WidgetTree {
     }
 
     /// Returns the node's style, or `None` when the id is stale.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the paint pass reads it"))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "nothing outside the tree reads a style yet")
+    )]
     pub(crate) fn style(&self, id: WidgetId) -> Option<&Style> {
         self.nodes.get(id).map(|node| &node.style)
     }

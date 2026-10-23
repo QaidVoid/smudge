@@ -262,38 +262,6 @@ fn a_hidden_node_and_its_subtree_get_empty_rects() {
 }
 
 #[test]
-fn a_hidden_node_with_stale_paint_is_marked_when_the_tree_relays() {
-    let mut tree = WidgetTree::new();
-    let root = tree.insert(None, Box::new(Empty), fixed(200.0, 100.0));
-    let mut hidden_style = fixed(50.0, 20.0);
-    hidden_style.layout.hidden = true;
-    let hidden = tree.insert(Some(root), Box::new(Empty), hidden_style);
-    let sibling = tree.insert(Some(root), Box::new(Empty), fixed(50.0, 20.0));
-
-    tree.layout(Size {
-        width: 200.0,
-        height: 100.0,
-    });
-    tree.clear_dirty();
-    // The paint pass clears this when it repaints a node, so a value here
-    // stands for pixels that are still on screen.
-    tree.nodes[hidden].painted = Some(Rect::new(0.0, 0.0, 50.0, 20.0));
-
-    tree.apply_layout(sibling, |layout| layout.width = Length::px(60.0));
-    assert!(tree.layout(Size {
-        width: 200.0,
-        height: 100.0,
-    }));
-
-    assert!(tree.rect(hidden).expect("the node is live").is_empty());
-    assert_eq!(
-        tree.dirty(hidden),
-        Some(Dirty::Paint),
-        "the stale pixels are marked for clearing"
-    );
-}
-
-#[test]
 fn a_viewport_change_runs_layout_and_sizes_the_root() {
     let mut tree = WidgetTree::new();
     let root = tree.insert(None, Box::new(Empty), Style::default());

@@ -25,8 +25,9 @@ impl WidgetTree {
     /// Each node ends the pass with an absolute rectangle and clip. A node
     /// whose rectangle or clip changed is marked [`Dirty::Paint`], because it
     /// has to paint at its new position. A hidden node and its subtree get an
-    /// empty rectangle, and a hidden node that painted last frame is marked so
-    /// the paint pass clears those pixels. Every [`Dirty::Layout`] flag drops to
+    /// empty rectangle and an empty clip, so they paint nothing. Hiding a node
+    /// therefore changes its clip, which marks it so the paint pass clears the
+    /// pixels it painted last frame. Every [`Dirty::Layout`] flag drops to
     /// [`Dirty::Paint`], because a laid out node still has to be painted.
     ///
     /// The root's clip is the viewport. Every other node is clipped to its
@@ -117,12 +118,12 @@ impl WidgetTree {
         let taffy_node = node.taffy;
         let hidden = hidden || node.style.layout.hidden;
         let overflow = node.style.layout.overflow;
-        let painted = node.painted.is_some();
 
         let layout = *self
             .taffy
             .layout(taffy_node)
             .expect("every node has a live layout node");
+        let clip = if hidden { Rect::default() } else { clip };
         let rect = if hidden {
             Rect::default()
         } else {
@@ -139,9 +140,7 @@ impl WidgetTree {
         node.rect = rect;
         node.clip = clip;
 
-        // A hidden node keeps no rectangle, so a node that painted before it
-        // was hidden has to be painted again to clear those pixels.
-        if changed || (hidden && painted) {
+        if changed {
             self.mark(id, Dirty::Paint);
         }
 

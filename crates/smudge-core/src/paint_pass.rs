@@ -1,0 +1,92 @@
+//! The paint pass.
+//!
+//! The pass regenerates the cached operations of every node whose layout or
+//! paint properties changed, and reports the pixels each one may have changed
+//! as damage. Regenerating one node's operations touches no other node, so a
+//! frame that changes a single box repaints that box and nothing else.
+//!
+//! Damage has to cover the area a node painted last frame as well as the area
+//! it paints now. The first is where stale pixels have to be cleared, and the
+//! second is where new pixels appear. A node that moved therefore damages both
+//! of its rectangles, and a node that only changed color damages one.
+
+use crate::damage::DamageAccumulator;
+use crate::geometry::Rect;
+use crate::widget::PaintCx;
+
+use super::{Dirty, WidgetTree};
+
+impl WidgetTree {
+    /// Paints every queued node and adds the pixels each one may have changed
+    /// to `damage`.
+    ///
+    /// A node is painted when it is still live and its flag is not
+    /// [`Dirty::Clean`], which means its layout or its paint properties
+    /// changed. The pass adds the bounds the node painted last frame to
+    /// `damage`, regenerates the node's operations, and adds the bounds it
+    /// paints now. A node's painted bounds are the union of its operations'
+    /// bounds, intersected with the clip the layout pass gave it, so a child
+    /// that overflows a clipping parent damages only the part inside the clip.
+    /// A node with nothing inside its clip keeps no bounds. A node whose clip
+    /// is empty, such as a hidden node, keeps no operations either, and its
+    /// widget is not asked to paint.
+    ///
+    /// Every painted node ends [`Dirty::Clean`]. The bounds of nodes removed
+    /// since the last frame are added to `damage` as well.
+    ///
+    /// The pass reuses the queue and every node's operation buffer, so it
+    /// allocates nothing once those buffers have grown to the size they need.
+    ///
+    /// Returns the number of nodes painted.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the frame calls it"))]
+    pub(crate) fn paint(&mut self, damage: &mut DamageAccumulator) -> u32 {
+        let mut painted = 0u32;
+        for id in self.paint_queue.drain(..) {
+            let Some(node) = self.nodes.get_mut(id) else {
+                continue;
+            };
+            if node.dirty == Dirty::Clean {
+                continue;
+            }
+
+            if let Some(bounds) = node.painted.take() {
+                damage.add(bounds);
+            }
+
+            node.ops.clear();
+            if !node.clip.is_empty() {
+                let cx = PaintCx {
+                    rect: node.rect,
+                    style: &node.style,
+                };
+                node.widget.paint(&cx, &mut node.ops);
+            }
+
+            let bounds = node
+                .ops
+                .iter()
+                .fold(Rect::default(), |bounds, op| bounds.union(op.bounds()))
+                .intersect(node.clip);
+            node.painted = if bounds.is_empty() {
+                None
+            } else {
+                Some(bounds)
+            };
+            if let Some(bounds) = node.painted {
+                damage.add(bounds);
+            }
+            node.dirty = Dirty::Clean;
+            painted += 1;
+        }
+
+        for bounds in self.removed_damage.drain(..) {
+            damage.add(bounds);
+        }
+
+        painted
+    }
+}
+
+#[cfg(test)]
+#[path = "paint_pass_tests.rs"]
+mod tests;
