@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod damage;
 pub mod element;
 pub mod geometry;
 pub mod paint;
