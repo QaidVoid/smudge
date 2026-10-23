@@ -9,3 +9,4 @@
 pub mod geometry;
 pub mod paint;
 pub mod reactive;
+pub mod style;

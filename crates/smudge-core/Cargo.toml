@@ -12,6 +12,7 @@ any_spawner = "0.3.0"
 futures-executor = { version = "0.3.34", default-features = false, features = ["std"] }
 futures-task = "0.3.34"
 reactive_graph = { version = "0.2.16", features = ["effects"] }
+taffy = { version = "0.15.0", default-features = false, features = ["std", "flexbox", "block_layout"] }
 
 [lints]
 workspace = true
@@ -19,6 +20,7 @@ workspace = true
 [dev-dependencies]
 criterion = "0.8.2"
 proptest = "1.12.0"
+taffy = { version = "0.15.0", default-features = false, features = ["std", "flexbox", "block_layout", "taffy_tree"] }
 
 [[bench]]
 name = "reactive"
