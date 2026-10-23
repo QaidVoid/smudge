@@ -915,6 +915,7 @@ dependencies = [
  "futures-task",
  "proptest",
  "reactive_graph",
+ "slotmap",
  "taffy",
 ]
 

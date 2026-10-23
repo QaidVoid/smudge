@@ -241,20 +241,7 @@ impl LayoutProps {
     /// Percentages are divided by 100, so [`Length::pct`] with `50.0` becomes
     /// the engine's fraction `0.5`. [`Length::Auto`] in a property that has no
     /// automatic value, which is padding and gap, becomes zero.
-    ///
-    /// ```
-    /// use smudge_core::style::{LayoutProps, Length};
-    ///
-    /// let props = LayoutProps {
-    ///     width: Length::pct(50.0),
-    ///     ..LayoutProps::default()
-    /// };
-    /// assert_eq!(
-    ///     props.to_taffy().size.width.expand(),
-    ///     taffy::ExpandedDimension::Percent(0.5)
-    /// );
-    /// ```
-    pub fn to_taffy(&self) -> taffy::Style {
+    pub(crate) fn to_taffy(&self) -> taffy::Style {
         let overflow = match self.overflow {
             Overflow::Visible => taffy::Overflow::Visible,
             Overflow::Clip => taffy::Overflow::Clip,
