@@ -13,11 +13,14 @@ use std::any::Any;
 
 use slotmap::{SlotMap, new_key_type};
 
-use crate::geometry::Rect;
+use crate::geometry::{Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RenderEffect};
 use crate::style::{LayoutProps, PaintProps, Style};
 use crate::widget::Widget;
+
+#[path = "layout.rs"]
+mod layout;
 
 new_key_type! {
     /// Identifies one node in the widget tree.
@@ -65,10 +68,8 @@ struct Node {
     /// How much of the node is out of date.
     dirty: Dirty,
     /// The node's absolute rectangle, set by the layout pass.
-    #[expect(dead_code, reason = "the layout and paint passes read it")]
     rect: Rect,
     /// The rectangle the node's subtree is clipped to, set by the layout pass.
-    #[expect(dead_code, reason = "the layout and paint passes read it")]
     clip: Rect,
     /// The node's cached paint output, filled by the paint pass.
     #[expect(dead_code, reason = "the display list reads it")]
@@ -93,6 +94,10 @@ pub(crate) struct WidgetTree {
     layout_dirty: bool,
     /// The painted bounds of nodes removed since the last frame.
     removed_damage: Vec<Rect>,
+    /// The viewport the last layout pass ran for, or `None` before the first.
+    viewport: Option<Size>,
+    /// How many times the layout engine has run for this tree.
+    layout_runs: u64,
 }
 
 impl WidgetTree {
@@ -106,6 +111,8 @@ impl WidgetTree {
             paint_queue: Vec::new(),
             layout_dirty: false,
             removed_damage: Vec::new(),
+            viewport: None,
+            layout_runs: 0,
         }
     }
 
@@ -445,6 +452,22 @@ impl WidgetTree {
     /// Returns whether any node needs a new layout pass.
     pub(crate) fn layout_is_dirty(&self) -> bool {
         self.layout_dirty
+    }
+
+    /// Returns the node's absolute rectangle, or `None` when the id is stale.
+    pub(crate) fn rect(&self, id: WidgetId) -> Option<Rect> {
+        self.nodes.get(id).map(|node| node.rect)
+    }
+
+    /// Returns the rectangle the node is clipped to, or `None` when the id is
+    /// stale.
+    pub(crate) fn clip(&self, id: WidgetId) -> Option<Rect> {
+        self.nodes.get(id).map(|node| node.clip)
+    }
+
+    /// Returns how many times the layout engine has run for this tree.
+    pub(crate) fn layout_runs(&self) -> u64 {
+        self.layout_runs
     }
 
     /// Returns the node's children in paint order, or `None` when the id is

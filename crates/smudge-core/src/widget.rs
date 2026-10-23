@@ -21,14 +21,25 @@ pub use taffy::{AvailableSpace, Size as MeasureSize};
 /// Implementing this trait requires the type to be `'static`, because the tree
 /// downcasts to the concrete type when a binding updates a widget property.
 pub trait Widget: Any {
-    /// Returns the size this widget needs, or `None` to let the layout engine
-    /// size the node from its style.
+    /// Returns the size of this widget's content, or `None` to let the layout
+    /// engine size the node from its style.
     ///
-    /// The parameters are the sizes the parent has already fixed and the space
-    /// left on each axis. The default returns `None`, which suits a widget that
-    /// only paints. A widget that returns a size must return the same size for
-    /// the same inputs, because the layout engine caches it until the node is
-    /// marked for layout again.
+    /// `known` holds the sizes the engine treats as fixed for this call, and
+    /// may be empty even when the node's style fixes a size. `available` is the
+    /// space left on each axis inside the node's padding and border. An axis
+    /// can also ask for an intrinsic size instead of offering space:
+    /// [`AvailableSpace::MinContent`] asks for the smallest size the content
+    /// fits in, such as the widest word of a text, and
+    /// [`AvailableSpace::MaxContent`] asks for the size the content takes
+    /// without wrapping. The returned size is the content size, so the engine
+    /// adds padding and border around it.
+    ///
+    /// The engine may call this several times in one layout pass.
+    ///
+    /// The default returns `None`, which suits a widget that only paints. A
+    /// widget that returns a size must return the same size for the same
+    /// inputs, because the layout engine caches it until the node is marked for
+    /// layout again.
     fn measure(
         &mut self,
         _known: MeasureSize<Option<f32>>,

@@ -1,0 +1,8 @@
+---
+source: crates/smudge-core/src/layout_tests.rs
+expression: out
+---
+0: (0, 0) 200x100
+1: (10, 10) 180x20
+2: (15, 15) 30x10
+2: (45, 15) 20x10
