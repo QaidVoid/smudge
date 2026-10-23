@@ -1,0 +1,13 @@
+[package]
+name = "smudge-core"
+description = "Widget tree, reactive bindings, layout, paint and damage tracking for the Smudge GUI library"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

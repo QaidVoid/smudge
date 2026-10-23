@@ -1,0 +1,13 @@
+[package]
+name = "smudge-platform"
+description = "Windowing, input and presentation for the Smudge GUI library"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

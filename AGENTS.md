@@ -6,6 +6,7 @@ Smudge is a native Rust GUI library. It has a retained widget tree, fine-grained
 
 - Crates live in `crates/<name>/`. Each crate has one clear responsibility. A new crate is justified only by a heavy dependency or a real boundary, not by tidiness.
 - `smudge-core` must build without any windowing, GPU or rasterizer dependency.
+- Every crate manifest inherits the workspace package fields and lints, and has a one-line `description`, which crates.io requires.
 - Everything targets Rust edition 2024 on the stable toolchain pinned in `rust-toolchain.toml`.
 
 ## Version control

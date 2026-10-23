@@ -1,0 +1,14 @@
+[package]
+name = "smudge-test"
+description = "Headless test harness for the Smudge GUI library"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

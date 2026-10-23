@@ -1,0 +1,13 @@
+[package]
+name = "smudge-cpu"
+description = "CPU renderer for the Smudge GUI library that repaints only damaged regions"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
