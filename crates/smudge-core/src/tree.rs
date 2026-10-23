@@ -44,10 +44,6 @@ pub enum Dirty {
 }
 
 /// One widget and everything the frame needs to know about it.
-#[expect(
-    dead_code,
-    reason = "the layout and paint passes read the cached geometry and ops"
-)]
 struct Node {
     /// The widget this node owns.
     widget: Box<dyn Widget>,
@@ -69,10 +65,13 @@ struct Node {
     /// How much of the node is out of date.
     dirty: Dirty,
     /// The node's absolute rectangle, set by the layout pass.
+    #[expect(dead_code, reason = "the layout and paint passes read it")]
     rect: Rect,
     /// The rectangle the node's subtree is clipped to, set by the layout pass.
+    #[expect(dead_code, reason = "the layout and paint passes read it")]
     clip: Rect,
     /// The node's cached paint output, filled by the paint pass.
+    #[expect(dead_code, reason = "the display list reads it")]
     ops: Vec<PaintOp>,
     /// The bounds the node painted last frame, already clipped.
     painted: Option<Rect>,
@@ -96,15 +95,9 @@ pub(crate) struct WidgetTree {
     removed_damage: Vec<Rect>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "nothing outside the tree drives it until bindings are mounted"
-    )
-)]
 impl WidgetTree {
     /// Creates an empty tree.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the app creates it"))]
     pub(crate) fn new() -> WidgetTree {
         WidgetTree {
             nodes: SlotMap::with_key(),
@@ -256,6 +249,10 @@ impl WidgetTree {
     ///
     /// Panics unless `children` is a permutation of the node's current children.
     /// Callers reorder children the node already has.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "keyed child lists reorder children")
+    )]
     pub(crate) fn set_children(&mut self, id: WidgetId, children: Vec<WidgetId>) {
         let Some(node) = self.nodes.get(id) else {
             return;
@@ -292,6 +289,10 @@ impl WidgetTree {
     /// Raises the node's dirty flag to `dirty` and queues it for painting the
     /// first time it leaves [`Dirty::Clean`].
     ///
+    /// Marking the node for layout also invalidates the size the layout engine
+    /// cached for it and its ancestors, because a widget can change what it
+    /// measures without any change to its style.
+    ///
     /// A stale id does nothing.
     pub(crate) fn mark(&mut self, id: WidgetId, dirty: Dirty) {
         let Some(node) = self.nodes.get_mut(id) else {
@@ -301,16 +302,33 @@ impl WidgetTree {
             return;
         }
         let was_clean = node.dirty == Dirty::Clean;
+        let taffy = node.taffy;
         node.dirty = dirty;
         if was_clean {
             self.paint_queue.push(id);
         }
         if dirty == Dirty::Layout {
             self.layout_dirty = true;
+            self.taffy
+                .mark_dirty(taffy)
+                .expect("every widget node has a live layout node");
+        }
+    }
+
+    /// Stores the handle of one of the node's bindings.
+    ///
+    /// The handle is the only strong reference to the binding's effect, so
+    /// dropping it stops the effect. Removal drops every handle before it
+    /// cleans the owner up. A stale id drops the handle, which stops a binding
+    /// whose node is already gone.
+    pub(crate) fn add_effect(&mut self, id: WidgetId, effect: RenderEffect<()>) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.effects.push(effect);
         }
     }
 
     /// Returns the node's style, or `None` when the id is stale.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the paint pass reads it"))]
     pub(crate) fn style(&self, id: WidgetId) -> Option<&Style> {
         self.nodes.get(id).map(|node| &node.style)
     }
@@ -370,7 +388,7 @@ impl WidgetTree {
     /// Panics unless the layout engine's tree and the node store describe the
     /// same parents, children, contexts and layout styles.
     #[cfg(test)]
-    fn debug_assert_consistent(&self) {
+    pub(crate) fn debug_assert_consistent(&self) {
         assert_eq!(
             self.taffy.total_node_count(),
             self.nodes.len(),
@@ -413,6 +431,42 @@ impl WidgetTree {
                 "the layout style agrees"
             );
         }
+    }
+}
+
+/// The state that tests outside this module observe without reading the store.
+#[cfg(test)]
+impl WidgetTree {
+    /// Returns the node's dirty flag, or `None` when the id is stale.
+    pub(crate) fn dirty(&self, id: WidgetId) -> Option<Dirty> {
+        self.nodes.get(id).map(|node| node.dirty)
+    }
+
+    /// Returns whether any node needs a new layout pass.
+    pub(crate) fn layout_is_dirty(&self) -> bool {
+        self.layout_dirty
+    }
+
+    /// Returns the node's children in paint order, or `None` when the id is
+    /// stale.
+    pub(crate) fn children(&self, id: WidgetId) -> Option<&[WidgetId]> {
+        self.nodes.get(id).map(|node| node.children.as_slice())
+    }
+
+    /// Returns the number of nodes in the tree.
+    pub(crate) fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Clears the dirty state of the whole tree, as a frame does once it has
+    /// laid the tree out and painted every queued node.
+    pub(crate) fn clear_dirty(&mut self) {
+        for node in self.nodes.values_mut() {
+            node.dirty = Dirty::Clean;
+        }
+        self.paint_queue.clear();
+        self.layout_dirty = false;
+        self.removed_damage.clear();
     }
 }
 

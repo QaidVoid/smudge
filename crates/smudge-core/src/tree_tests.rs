@@ -4,21 +4,26 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::geometry::{Color, Rect};
+use crate::paint::PaintOp;
 use crate::reactive::{self, Owner, RenderEffect, prelude::*};
 use crate::style::{Length, Style};
 use crate::tree::{Dirty, WidgetId, WidgetTree};
-use crate::widget::Widget;
+use crate::widget::{PaintCx, Widget};
 
 /// A widget with no behavior, for filling tree nodes.
 struct Empty;
 
-impl Widget for Empty {}
+impl Widget for Empty {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+}
 
 /// A widget with state, for checking that the tree hands back the widget it
 /// stores.
 struct Counter(u32);
 
-impl Widget for Counter {}
+impl Widget for Counter {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+}
 
 /// Clears a node's dirty state, as a frame does once it has laid out and
 /// painted the node.

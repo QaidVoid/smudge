@@ -39,6 +39,17 @@ impl Length {
     }
 }
 
+/// A fixed length in logical pixels, for builders that take a [`Length`].
+///
+/// ```
+/// use smudge_core::style::px;
+///
+/// assert_eq!(px(8.0), smudge_core::style::Length::px(8.0));
+/// ```
+pub const fn px(value: f32) -> Length {
+    Length::px(value)
+}
+
 /// Four edge values, one per side of a box.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Edges<T> {
@@ -131,8 +142,6 @@ pub enum Display {
     Flex,
     /// Children are laid out one after another down the block axis.
     Block,
-    /// The node and its subtree are not laid out and paint nothing.
-    None,
 }
 
 /// What happens to children that do not fit inside their parent.
@@ -152,6 +161,10 @@ pub enum Overflow {
 pub struct LayoutProps {
     /// Which layout algorithm arranges this node's children.
     pub display: Display,
+    /// Whether the node and its subtree are left out of layout and paint
+    /// nothing. Hiding is kept apart from [`LayoutProps::display`], so showing
+    /// the node again restores the layout algorithm it had.
+    pub hidden: bool,
     /// The main axis of the flex layout.
     pub direction: Direction,
     /// Whether children that do not fit move to a new line instead of
@@ -211,6 +224,7 @@ impl Default for LayoutProps {
     fn default() -> LayoutProps {
         LayoutProps {
             display: Display::Flex,
+            hidden: false,
             direction: Direction::Row,
             wrap: false,
             grow: 0.0,
@@ -247,10 +261,10 @@ impl LayoutProps {
             Overflow::Clip => taffy::Overflow::Clip,
         };
         let mut style: taffy::Style = taffy::Style::DEFAULT;
-        style.display = match self.display {
-            Display::Flex => taffy::Display::Flex,
-            Display::Block => taffy::Display::Block,
-            Display::None => taffy::Display::None,
+        style.display = match (self.hidden, self.display) {
+            (true, _) => taffy::Display::None,
+            (false, Display::Flex) => taffy::Display::Flex,
+            (false, Display::Block) => taffy::Display::Block,
         };
         style.flex_direction = match self.direction {
             Direction::Row => taffy::FlexDirection::Row,

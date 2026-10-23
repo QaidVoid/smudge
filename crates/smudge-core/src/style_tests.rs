@@ -1,5 +1,5 @@
 use crate::geometry::Size;
-use crate::style::{Align, Direction, Edges, LayoutProps, Length};
+use crate::style::{Align, Direction, Display, Edges, LayoutProps, Length};
 
 #[test]
 fn to_taffy_converts_px_percent_and_auto() {
@@ -164,4 +164,20 @@ fn a_row_with_padding_and_gap_lays_out_its_children() {
             height: 40.0,
         }
     );
+}
+
+#[test]
+fn hiding_keeps_the_display_so_showing_restores_it() {
+    let hidden_block = LayoutProps {
+        display: Display::Block,
+        hidden: true,
+        ..LayoutProps::default()
+    };
+    assert_eq!(hidden_block.to_taffy().display, taffy::Display::None);
+
+    let shown = LayoutProps {
+        hidden: false,
+        ..hidden_block
+    };
+    assert_eq!(shown.to_taffy().display, taffy::Display::Block);
 }
