@@ -19,6 +19,8 @@ use crate::reactive::{Owner, RenderEffect};
 use crate::style::{LayoutProps, PaintProps, Style};
 use crate::widget::Widget;
 
+#[path = "display_list_pass.rs"]
+mod display_list_pass;
 #[path = "layout.rs"]
 mod layout;
 #[path = "paint_pass.rs"]
@@ -103,7 +105,6 @@ pub(crate) struct WidgetTree {
 
 impl WidgetTree {
     /// Creates an empty tree.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the app creates it"))]
     pub(crate) fn new() -> WidgetTree {
         WidgetTree {
             nodes: SlotMap::with_key(),
@@ -336,10 +337,6 @@ impl WidgetTree {
     }
 
     /// Returns the node's style, or `None` when the id is stale.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "nothing outside the tree reads a style yet")
-    )]
     pub(crate) fn style(&self, id: WidgetId) -> Option<&Style> {
         self.nodes.get(id).map(|node| &node.style)
     }

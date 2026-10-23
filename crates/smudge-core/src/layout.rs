@@ -38,7 +38,6 @@ impl WidgetTree {
     ///
     /// Panics when a node has no live layout node, which is an internal
     /// invariant: every node in the tree owns exactly one layout node.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the frame calls it"))]
     pub(crate) fn layout(&mut self, viewport: Size) -> bool {
         let viewport_changed = self.viewport != Some(viewport);
         if !self.layout_dirty && !viewport_changed {

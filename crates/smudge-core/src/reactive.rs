@@ -79,6 +79,8 @@ thread_local! {
     static WOKEN: Cell<bool> = const { Cell::new(false) };
     /// Whether a task was polled during the current flush.
     static RAN: Cell<bool> = const { Cell::new(false) };
+    /// How many flushes this thread has started.
+    static GENERATION: Cell<u64> = const { Cell::new(0) };
     /// Whether this thread is inside a flush.
     static FLUSHING: Cell<bool> = const { Cell::new(false) };
     /// The redraw request of this thread, when the platform set one.
@@ -160,10 +162,17 @@ pub fn flush() -> bool {
 
         let _flushing = FlushingGuard::enter();
         RAN.set(false);
+        GENERATION.set(GENERATION.get() + 1);
         pool.run_until_stalled();
 
         RAN.get()
     })
+}
+
+/// Returns how many flushes the calling thread has started, which identifies
+/// the flush that is running or, between flushes, the one that ran last.
+pub(crate) fn flush_generation() -> u64 {
+    GENERATION.get()
 }
 
 /// Marks the calling thread as flushing until dropped.

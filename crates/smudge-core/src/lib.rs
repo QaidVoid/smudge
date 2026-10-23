@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod app;
 pub mod damage;
 pub mod element;
 pub mod geometry;
@@ -14,3 +15,5 @@ pub mod reactive;
 pub mod style;
 pub mod tree;
 pub mod widget;
+
+pub use app::{App, AppConfig, FrameOutput, FrameStats, RepaintMode};

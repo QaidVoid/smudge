@@ -38,7 +38,6 @@ impl WidgetTree {
     /// allocates nothing once those buffers have grown to the size they need.
     ///
     /// Returns the number of nodes painted.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the frame calls it"))]
     pub(crate) fn paint(&mut self, damage: &mut DamageAccumulator) -> u32 {
         let mut painted = 0u32;
         for id in self.paint_queue.drain(..) {

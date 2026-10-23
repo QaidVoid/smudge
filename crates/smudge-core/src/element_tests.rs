@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use reactive_graph::owner::LocalStorage;
 
-use crate::element::{Element, IntoElement, Update, UpdateQueue, mount, show};
+use crate::element::{Element, IntoElement, UpdateQueue, mount, show};
 use crate::geometry::Color;
 use crate::paint::PaintOp;
 use crate::reactive::{self, Owner, WriteSignal, prelude::*};
@@ -22,22 +22,13 @@ fn mount_root(element: impl IntoElement) -> (WidgetTree, UpdateQueue, WidgetId) 
     (tree, queue, root)
 }
 
-/// Applies every queued update, in the order they were queued.
-fn drain(tree: &mut WidgetTree, queue: &UpdateQueue) {
-    let updates: Vec<Update> = queue.0.borrow_mut().drain(..).collect();
-    for update in updates {
-        update(tree);
-    }
-}
-
 /// Runs the reactive tasks and applies the updates they queue, as a frame does.
 fn settle(tree: &mut WidgetTree, queue: &UpdateQueue) {
     for _ in 0..16 {
         reactive::flush();
-        if queue.0.borrow().is_empty() {
+        if !queue.apply(tree) {
             return;
         }
-        drain(tree, queue);
     }
     panic!("the queue did not settle within sixteen rounds");
 }
@@ -63,7 +54,7 @@ fn a_binding_reads_its_value_when_the_node_mounts() {
     let (color, _set_color) = signal_local(Color::BLACK);
     let (mut tree, queue, root) = mount_root(panel().background(move || color.get()));
 
-    drain(&mut tree, &queue);
+    queue.apply(&mut tree);
 
     assert_eq!(
         tree.style(root).expect("the root is live").paint.background,
@@ -125,7 +116,7 @@ fn a_binding_change_waits_for_the_queue_to_drain() {
         "the effect queued the change and left the tree alone"
     );
 
-    drain(&mut tree, &queue);
+    queue.apply(&mut tree);
 
     assert_eq!(
         tree.style(root).expect("the root is live").paint.background,

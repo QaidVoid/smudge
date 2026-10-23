@@ -37,12 +37,13 @@
 //!     .child(panel().width(px(20.0)).height(px(20.0)).background(Color::WHITE));
 //! ```
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::geometry::{Color, Corners, Size};
 use crate::paint::PaintOp;
-use crate::reactive::{Owner, RenderEffect};
+use crate::reactive::{self, Owner, RenderEffect};
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
 };
@@ -57,12 +58,30 @@ pub(crate) type Update = Box<dyn FnOnce(&mut WidgetTree)>;
 /// Every binding shares one queue, so a frame applies the effects of all of
 /// them in the order the effects were queued.
 #[derive(Clone, Default)]
-pub(crate) struct UpdateQueue(Rc<RefCell<Vec<Update>>>);
+pub(crate) struct UpdateQueue(Rc<RefCell<VecDeque<Update>>>);
 
 impl UpdateQueue {
     /// Queues `update` to run in the next apply step.
     pub(crate) fn push(&self, update: Update) {
-        self.0.borrow_mut().push(update);
+        self.0.borrow_mut().push_back(update);
+    }
+
+    /// Applies every queued update to `tree`, in the order they were queued,
+    /// and returns whether any ran.
+    ///
+    /// An update may queue another update, as mounting a child does when its
+    /// bindings run. Those run after the updates that were already waiting, in
+    /// the same call, so one call settles everything the queue holds.
+    pub(crate) fn apply(&self, tree: &mut WidgetTree) -> bool {
+        let mut applied = false;
+        loop {
+            let next = self.0.borrow_mut().pop_front();
+            let Some(update) = next else {
+                return applied;
+            };
+            applied = true;
+            update(tree);
+        }
     }
 }
 
@@ -111,6 +130,36 @@ impl<F: Fn() -> T + 'static, T: 'static> From<F> for Value<T> {
     }
 }
 
+/// How many times one binding may run in one flush before debug builds report
+/// a cycle.
+const MAX_RUNS_PER_FLUSH: u32 = 16;
+
+/// Creates the render effect of a binding, which runs `run` once now and again
+/// whenever a signal it reads changes.
+///
+/// # Panics
+///
+/// Panics in debug builds when the effect runs more than
+/// [`MAX_RUNS_PER_FLUSH`] times in one flush. That happens when the binding is
+/// part of a cycle: it writes a signal that wakes it again, either directly or
+/// through another binding that writes a signal it reads. A release build
+/// keeps running it and the flush never returns.
+fn binding_effect(run: impl Fn() + 'static) -> RenderEffect<()> {
+    let runs = Cell::new((reactive::flush_generation(), 0u32));
+    RenderEffect::new(move |_| {
+        let generation = reactive::flush_generation();
+        let (last, count) = runs.get();
+        let count = if last == generation { count + 1 } else { 1 };
+        runs.set((generation, count));
+        debug_assert!(
+            count <= MAX_RUNS_PER_FLUSH,
+            "a binding ran {count} times in one flush, so it is part of a cycle: \
+             it writes a signal that wakes it again, directly or through another binding"
+        );
+        run();
+    })
+}
+
 /// Installs a binding's effect inside a node's owner and returns its handle.
 type Install = Box<dyn FnOnce(WidgetId, &UpdateQueue) -> RenderEffect<()>>;
 
@@ -129,7 +178,7 @@ impl Binding {
         Binding {
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move |_| {
+                binding_effect(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -145,7 +194,7 @@ impl Binding {
         Binding {
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move |_| {
+                binding_effect(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -169,7 +218,7 @@ impl Binding {
         Binding {
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move |_| {
+                binding_effect(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -595,7 +644,7 @@ pub fn show<E: IntoElement>(
         install: Box::new(move |id, queue| {
             let queue = queue.clone();
             let mounted: Rc<RefCell<Option<(WidgetId, Owner)>>> = Rc::new(RefCell::new(None));
-            RenderEffect::new(move |_| {
+            binding_effect(move || {
                 let visible = when();
                 let child_queue = queue.clone();
                 let mounted = Rc::clone(&mounted);
