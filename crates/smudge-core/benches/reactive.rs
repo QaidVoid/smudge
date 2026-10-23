@@ -37,7 +37,7 @@ fn reactive_updates(c: &mut Criterion) {
             RenderEffect::new(move |_| log.borrow_mut().push((index, read.get())))
         })
         .collect();
-    reactive::poll_local();
+    reactive::flush();
 
     let mut group = c.benchmark_group("reactive");
     group.bench_function("write 10000 then flush", |b| {
@@ -46,7 +46,7 @@ fn reactive_updates(c: &mut Criterion) {
             for write in &writes {
                 write.update(|value| *value += 1);
             }
-            reactive::poll_local();
+            reactive::flush();
             black_box(&log);
         });
     });
@@ -54,7 +54,7 @@ fn reactive_updates(c: &mut Criterion) {
         b.iter(|| {
             log.borrow_mut().clear();
             writes[0].update(|value| *value += 1);
-            reactive::poll_local();
+            reactive::flush();
             black_box(&log);
         });
     });

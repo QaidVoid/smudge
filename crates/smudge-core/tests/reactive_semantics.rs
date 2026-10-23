@@ -4,15 +4,9 @@
 //! depends on. Tests that found a behavior different from the plan state what
 //! the runtime actually does, so the difference cannot be lost.
 
-use reactive_graph::{
-    computed::Memo,
-    effect::{Effect, RenderEffect},
-    owner::Owner,
-    signal::{signal, signal_local},
-    traits::{Get, Set, Update},
-};
-use smudge_core::reactive;
-use std::cell::RefCell;
+use reactive_graph::effect::Effect;
+use smudge_core::reactive::{self, Memo, Owner, RenderEffect, RwSignal, prelude::*, signal_local};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Installs the executor on this test thread and makes a new owner current.
@@ -36,7 +30,7 @@ fn render_effect_runs_once_when_created() {
 
     assert_eq!(*runs.borrow(), vec![1], "the first run is synchronous");
 
-    reactive::poll_local();
+    reactive::flush();
     assert_eq!(*runs.borrow(), vec![1], "a flush does not repeat the run");
 
     drop(effect);
@@ -55,7 +49,7 @@ fn signal_write_waits_for_the_next_flush() {
     set_count.set(1);
     assert_eq!(*seen.borrow(), vec![0], "the write does not run the effect");
 
-    reactive::poll_local();
+    reactive::flush();
     assert_eq!(*seen.borrow(), vec![0, 1]);
 }
 
@@ -71,7 +65,7 @@ fn two_writes_in_one_frame_run_the_effect_once() {
 
     set_first.set(1);
     set_second.set(2);
-    reactive::poll_local();
+    reactive::flush();
 
     assert_eq!(*sums.borrow(), vec![0, 3]);
 }
@@ -79,7 +73,7 @@ fn two_writes_in_one_frame_run_the_effect_once() {
 #[test]
 fn unchanged_memo_stops_propagation() {
     let _owner = setup();
-    let (count, set_count) = signal(0i32);
+    let count = RwSignal::new(0i32);
     let parity = Memo::new(move |_| count.get() % 2);
     let seen = Rc::new(RefCell::new(Vec::new()));
     let recorder = Rc::clone(&seen);
@@ -87,16 +81,16 @@ fn unchanged_memo_stops_propagation() {
 
     assert_eq!(*seen.borrow(), vec![0]);
 
-    set_count.set(2);
-    reactive::poll_local();
+    count.set(2);
+    reactive::flush();
     assert_eq!(
         *seen.borrow(),
         vec![0],
         "a memo with an unchanged value does not rerun the effect"
     );
 
-    set_count.set(3);
-    reactive::poll_local();
+    count.set(3);
+    reactive::flush();
     assert_eq!(*seen.borrow(), vec![0, 1]);
 }
 
@@ -113,7 +107,7 @@ fn owner_cleanup_does_not_cancel_render_effect() {
     owner.cleanup();
 
     set_count.set(1);
-    reactive::poll_local();
+    reactive::flush();
 
     assert_eq!(*seen.borrow(), vec![0, 1]);
 }
@@ -131,7 +125,7 @@ fn dropping_the_owner_does_not_cancel_render_effect() {
     drop(owner);
 
     set_count.set(1);
-    reactive::poll_local();
+    reactive::flush();
 
     assert_eq!(*seen.borrow(), vec![0, 1]);
 }
@@ -145,12 +139,12 @@ fn owner_cleanup_cancels_arena_effect() {
 
     let owner = Owner::new();
     let _effect = owner.with(|| Effect::new(move |_| recorder.borrow_mut().push(count.get())));
-    reactive::poll_local();
+    reactive::flush();
     assert_eq!(*seen.borrow(), vec![0]);
 
     owner.cleanup();
     set_count.set(1);
-    reactive::poll_local();
+    reactive::flush();
 
     assert_eq!(
         *seen.borrow(),
@@ -169,7 +163,7 @@ fn dropping_render_effect_cancels_it() {
 
     drop(effect);
     set_count.set(1);
-    reactive::poll_local();
+    reactive::flush();
 
     assert_eq!(*seen.borrow(), vec![0]);
 }
@@ -183,7 +177,7 @@ fn signal_local_holds_a_non_send_value() {
     let _effect = RenderEffect::new(move |_| recorder.borrow_mut().push(*shared.get().borrow()));
 
     set_shared.update(|value| *value.borrow_mut() += 1);
-    reactive::poll_local();
+    reactive::flush();
 
     assert_eq!(*seen.borrow(), vec![0, 1]);
 }
@@ -204,7 +198,7 @@ fn write_from_effect_is_flushed_in_the_same_call() {
     });
 
     set_trigger.set(1);
-    reactive::poll_local();
+    reactive::flush();
 
     assert_eq!(
         *seen.borrow(),
@@ -230,7 +224,7 @@ fn threads_run_independent_runtimes() {
                         RenderEffect::new(move |_| recorder.borrow_mut().push(value.get()));
 
                     set_value.set(index + 1);
-                    reactive::poll_local();
+                    reactive::flush();
 
                     seen.borrow().clone()
                 })
@@ -244,4 +238,135 @@ fn threads_run_independent_runtimes() {
     });
 
     assert_eq!(results, vec![vec![0, 1], vec![0, 2]]);
+}
+
+#[test]
+fn write_outside_flush_requests_one_redraw() {
+    let _owner = setup();
+    let redraws = Rc::new(Cell::new(0u32));
+    let counter = Rc::clone(&redraws);
+    reactive::set_wake_callback(move || counter.set(counter.get() + 1));
+
+    let (first, set_first) = signal_local(0u32);
+    let (second, set_second) = signal_local(0u32);
+    let _first_effect = RenderEffect::new(move |_| first.get());
+    let _second_effect = RenderEffect::new(move |_| second.get());
+    reactive::flush();
+    assert_eq!(redraws.get(), 0, "a flush is not a wake");
+
+    set_first.set(1);
+    assert_eq!(
+        redraws.get(),
+        1,
+        "the first write after a flush asks for one"
+    );
+
+    set_second.set(1);
+    assert_eq!(
+        redraws.get(),
+        1,
+        "a second task woken in the same frame asks for nothing"
+    );
+
+    reactive::flush();
+    set_first.set(2);
+    assert_eq!(
+        redraws.get(),
+        2,
+        "the next write after a flush asks for a redraw again"
+    );
+}
+
+#[test]
+fn flush_reports_no_work_when_nothing_was_woken() {
+    let _owner = setup();
+    let (count, _set_count) = signal_local(0u32);
+    let _effect = RenderEffect::new(move |_| count.get());
+
+    assert!(reactive::flush(), "the first flush runs the effect's task");
+    assert!(
+        !reactive::flush(),
+        "a flush with nothing woken runs no task"
+    );
+}
+
+#[test]
+fn flush_inside_a_running_flush_does_nothing() {
+    let _owner = setup();
+    let nested = Rc::new(Cell::new(None));
+    let recorder = Rc::clone(&nested);
+
+    // An arena effect first runs on a flush, so its body is a task that the
+    // running flush is polling.
+    let _effect = Effect::new(move |_| recorder.set(Some(reactive::flush())));
+    reactive::flush();
+
+    assert_eq!(
+        nested.get(),
+        Some(false),
+        "a flush called from inside a running flush does nothing"
+    );
+}
+
+#[test]
+fn panicking_effect_does_not_stop_later_redraw_requests() {
+    let _owner = setup();
+    let redraws = Rc::new(Cell::new(0u32));
+    let counter = Rc::clone(&redraws);
+    reactive::set_wake_callback(move || counter.set(counter.get() + 1));
+
+    let (failing, set_failing) = signal_local(0u32);
+    let _failing_effect = RenderEffect::new(move |_| {
+        assert_eq!(failing.get(), 0, "the effect fails once its value changes");
+    });
+    let (healthy, set_healthy) = signal_local(0u32);
+    let _healthy_effect = RenderEffect::new(move |_| healthy.get());
+    reactive::flush();
+
+    set_failing.set(1);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(reactive::flush));
+    assert!(
+        unwound.is_err(),
+        "the failing effect panics inside the flush"
+    );
+    let before = redraws.get();
+
+    set_healthy.set(1);
+    assert_eq!(
+        redraws.get(),
+        before + 1,
+        "a write after the unwound flush asks for a redraw"
+    );
+}
+
+#[test]
+fn wake_during_flush_does_not_request_a_redraw() {
+    let _owner = setup();
+    let redraws = Rc::new(Cell::new(0u32));
+    let counter = Rc::clone(&redraws);
+    reactive::set_wake_callback(move || counter.set(counter.get() + 1));
+
+    let (target, set_target) = signal_local(0u32);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let recorder = Rc::clone(&seen);
+    let _downstream = RenderEffect::new(move |_| recorder.borrow_mut().push(target.get()));
+
+    // The first run of an arena effect happens on the next flush, so the write
+    // it makes is applied by a flush that nobody has to be woken for.
+    let _upstream = Effect::new(move |_| set_target.set(1));
+    reactive::flush();
+
+    assert_eq!(*seen.borrow(), vec![0, 1], "the write was applied");
+    assert_eq!(
+        redraws.get(),
+        0,
+        "a wake that a running flush applies asks for no redraw"
+    );
+
+    set_target.set(2);
+    assert_eq!(
+        redraws.get(),
+        1,
+        "a write after the flush asks for a redraw again"
+    );
 }
