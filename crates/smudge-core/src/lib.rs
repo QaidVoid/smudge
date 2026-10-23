@@ -5,3 +5,5 @@
 //! so it builds for any target the standard library supports.
 
 #![forbid(unsafe_code)]
+
+pub mod geometry;
