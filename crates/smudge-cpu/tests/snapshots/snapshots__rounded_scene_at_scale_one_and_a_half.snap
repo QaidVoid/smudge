@@ -1,0 +1,6 @@
+---
+source: crates/smudge-cpu/tests/snapshots.rs
+expression: "render(72, 48, 1.5)"
+extension: png
+snapshot_kind: binary
+---

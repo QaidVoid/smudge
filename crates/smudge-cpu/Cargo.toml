@@ -8,6 +8,11 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+smudge-core = { version = "0.1.0", path = "../smudge-core" }
+tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "png-format"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+insta = "1.49.0"
