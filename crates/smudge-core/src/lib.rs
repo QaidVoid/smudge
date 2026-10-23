@@ -7,3 +7,4 @@
 #![forbid(unsafe_code)]
 
 pub mod geometry;
+pub mod paint;
