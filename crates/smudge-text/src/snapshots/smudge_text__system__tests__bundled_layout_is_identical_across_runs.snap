@@ -1,0 +1,5 @@
+---
+source: crates/smudge-text/src/system_tests.rs
+expression: "format!(\"{} lines, {:.2} x {:.2} px\", first.line_count(), first.size().width,\nfirst.size().height)"
+---
+4 lines, 183.36 x 72.80 px

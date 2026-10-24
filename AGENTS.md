@@ -92,7 +92,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 When a change touches `smudge-core`, `smudge-cpu`, `smudge-platform` or `smudge-text`, also run:
 
 ```sh
-cargo check --target wasm32-unknown-unknown -p smudge-core -p smudge-cpu
+cargo check --target wasm32-unknown-unknown -p smudge-core -p smudge-cpu -p smudge-text
 ```
 
 Add each crate to that list once it is expected to build for wasm.

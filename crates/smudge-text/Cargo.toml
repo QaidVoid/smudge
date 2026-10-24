@@ -1,0 +1,28 @@
+[package]
+name = "smudge-text"
+description = "Font loading and parley-backed text layout for the Smudge GUI library"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[features]
+default = ["bundled-fonts"]
+# Embeds the fonts in `assets/fonts` so that layout never depends on the host.
+bundled-fonts = []
+# Discovers system fonts in addition to the bundled ones. Not available on
+# wasm, which has no system fonts. Fontconfig is loaded at runtime through
+# dlopen, so building needs no fontconfig development files.
+system-fonts = ["parley/system", "fontique/fontconfig-dlopen"]
+
+[dependencies]
+fontique = { version = "0.12.0", default-features = false }
+parley = { version = "0.12.0", default-features = false, features = ["std"] }
+smudge-core = { version = "0.1.0", path = "../smudge-core" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+insta = "1.49.0"

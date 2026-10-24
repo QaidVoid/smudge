@@ -6,6 +6,7 @@ members = [
   "crates/smudge-cpu",
   "crates/smudge-platform",
   "crates/smudge-test",
+  "crates/smudge-text",
 ]
 
 [workspace.package]
