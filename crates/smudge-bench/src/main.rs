@@ -112,7 +112,8 @@ impl FrameRecord {
     /// microseconds.
     ///
     /// The total is the sum of the recorded phases, so it counts the time the
-    /// frame spent working and not the time it spent waiting.
+    /// frame spent working and not the time it spent waiting. The wait for a
+    /// free window buffer is recorded on its own and left out.
     fn total_us(&self) -> f64 {
         let s = &self.stats;
         let present_us = self.present.map_or(0.0, |p| us(p.present));
@@ -558,13 +559,14 @@ fn env_line(args: &Args, surface: Option<(u32, u32)>) -> String {
 fn frame_line(record: &FrameRecord) -> String {
     let s = &record.stats;
     let present_us = record.present.map(|p| us(p.present));
+    let acquire_us = record.present.map(|p| us(p.acquire));
     let bytes_copied = record.present.map(|p| p.bytes_copied);
     let buffer_age = record.present.map(|p| u64::from(p.buffer_age));
     format!(
         concat!(
             r#"{{"type":"frame","repeat":{},"frame":{},"#,
             r#""flush_us":{:.3},"layout_us":{:.3},"paint_us":{:.3},"list_us":{:.3},"#,
-            r#""damage_us":{:.3},"raster_us":{:.3},"present_us":{},"frame_total_us":{:.3},"#,
+            r#""damage_us":{:.3},"raster_us":{:.3},"acquire_us":{},"present_us":{},"frame_total_us":{:.3},"#,
             r#""layout_ran":{},"nodes_painted":{},"flush_rounds":{},"#,
             r#""damage_rects":{},"damage_pixels":{},"damage_pixels_before_merge":{},"#,
             r#""raster_pixels":{},"bytes_copied":{},"allocations":{},"buffer_age":{}}}"#
@@ -577,6 +579,7 @@ fn frame_line(record: &FrameRecord) -> String {
         us(s.list),
         us(s.damage),
         record.raster_us,
+        json_opt_f64(acquire_us),
         json_opt_f64(present_us),
         record.total_us(),
         s.layout_ran,
@@ -636,10 +639,15 @@ fn percentile_columns(records: &[FrameRecord]) -> String {
         .is_some_and(|record| record.present.is_some());
     if with_present {
         columns.push((
+            "acquire_us",
+            record_values(records, |r| r.present.map_or(0.0, |p| us(p.acquire))),
+        ));
+        columns.push((
             "present_us",
             record_values(records, |r| r.present.map_or(0.0, |p| us(p.present))),
         ));
     } else {
+        columns.push(("acquire_us", Vec::new()));
         columns.push(("present_us", Vec::new()));
     }
 

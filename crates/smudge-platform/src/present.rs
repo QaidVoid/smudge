@@ -41,8 +41,16 @@ pub struct PresentStats {
     /// How long the renderer took to paint this frame's damage into its
     /// surface.
     pub raster: Duration,
-    /// How long the present took, from taking the window buffer to handing it
-    /// back to the platform.
+    /// How long the platform waited for a free window buffer before the
+    /// present could start.
+    ///
+    /// A compositor that still holds the previous buffers makes this wait,
+    /// often for up to one display refresh. It is time spent blocked, not
+    /// work.
+    pub acquire: Duration,
+    /// How long the present took, from holding a free window buffer to handing
+    /// it back to the platform: the copy and the submission, without the wait
+    /// that [`PresentStats::acquire`] holds.
     pub present: Duration,
 }
 

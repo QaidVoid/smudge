@@ -47,8 +47,10 @@ Each line is one JSON object, and `type` says which:
   display-server presence, timestamp. It is written after the run, because the
   window backend only learns its surface size once it presents.
 - `frame`: repeat, frame, `flush_us`, `layout_us`, `paint_us`, `list_us`,
-  `damage_us`, `raster_us`, `present_us`, `frame_total_us` (the sum of the
-  phases, so CPU work rather than waiting), damage rectangle and pixel counts
+  `damage_us`, `raster_us`, `acquire_us` (the wait for a free window
+  buffer), `present_us` (the copy and submission after it),
+  `frame_total_us` (the sum of the phases without `acquire_us`, so CPU work
+  rather than waiting), damage rectangle and pixel counts
   before and after merging, `raster_pixels`, `bytes_copied`, `allocations`,
   `buffer_age`. Quantities a backend does not produce are `null`.
 - `repeat_summary`: percentile objects (`median`, `p95`, `p99`, nearest-rank)

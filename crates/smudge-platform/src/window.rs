@@ -508,8 +508,10 @@ impl WindowState {
         if width == 0 || height == 0 {
             return Ok(false);
         }
-        let start = Instant::now();
+        let acquire_start = Instant::now();
         let mut buffer = self.surface.buffer_mut().map_err(PlatformError::Surface)?;
+        let acquire = acquire_start.elapsed();
+        let start = Instant::now();
         debug_assert_eq!(
             buffer.len(),
             self.renderer.pixels().len() / 4,
@@ -569,6 +571,7 @@ impl WindowState {
             surface_width: width,
             surface_height: height,
             raster,
+            acquire,
             present: start.elapsed(),
         };
         if let Some(handle) = &self.stats_handle {
