@@ -21,7 +21,9 @@ use winit::raw_window_handle::{
 use winit::window::{Window, WindowId};
 
 use crate::error::PlatformError;
-use crate::present::{DamageHistory, PresentStats, PresentStatsHandle, copy_rect, damage_region};
+use crate::present::{
+    DamageHistory, PresentStats, PresentStatsHandle, copy_rect, damage_region, present_skipped,
+};
 
 /// The measurement hook that receives one pair of statistics per presented
 /// frame.
@@ -42,7 +44,8 @@ pub struct WindowOptions {
     /// display list.
     ///
     /// Must be opaque, because presentation copies only the color channels of
-    /// the surface into the window.
+    /// the surface into the window. A run with a color that is not opaque
+    /// returns [`PlatformError::ClearColor`] before a window opens.
     pub clear_color: Color,
     /// How much of the surface each frame repaints.
     pub repaint: RepaintMode,
@@ -94,14 +97,14 @@ impl std::fmt::Debug for WindowOptions {
 ///
 /// # Errors
 ///
-/// Returns [`PlatformError::EventLoop`] when the event loop cannot be created
-/// or run, [`PlatformError::Window`] when the window cannot be created, and
-/// [`PlatformError::Surface`] when the presentation surface cannot be created,
-/// resized or presented.
+/// Returns [`PlatformError::ClearColor`] when [`WindowOptions::clear_color`]
+/// is not opaque, [`PlatformError::EventLoop`] when the event loop cannot be
+/// created or run, [`PlatformError::Window`] when the window cannot be
+/// created, and [`PlatformError::Surface`] when the presentation surface
+/// cannot be created, resized or presented.
 ///
 /// # Panics
 ///
-/// Panics in debug builds when [`WindowOptions::clear_color`] is not opaque.
 /// Panics when another async executor was installed in this process before,
 /// because the reactive runtime installs a process-wide one.
 ///
@@ -148,11 +151,12 @@ pub fn run<E: IntoElement + 'static>(
 ///
 /// # Errors
 ///
-/// Returns the same errors as [`run`].
+/// Returns [`PlatformError::ClearColor`] when [`WindowOptions::clear_color`]
+/// is not opaque, checked before the event loop is created, and otherwise the
+/// same errors as [`run`].
 ///
 /// # Panics
 ///
-/// Panics in debug builds when [`WindowOptions::clear_color`] is not opaque.
 /// Panics when another async executor was installed in this process before,
 /// because the reactive runtime installs a process-wide one.
 ///
@@ -196,11 +200,9 @@ pub fn run_with<E: IntoElement + 'static>(
     build: impl FnOnce() -> E + 'static,
     configure: impl FnOnce(&mut App) + 'static,
 ) -> Result<(), PlatformError> {
-    debug_assert!(
-        options.clear_color.is_opaque(),
-        "presentation copies only the color channels of the surface, so the \
-         clear color must be opaque"
-    );
+    if !options.clear_color.is_opaque() {
+        return Err(PlatformError::ClearColor);
+    }
 
     let event_loop = EventLoop::new().map_err(PlatformError::EventLoop)?;
     let mut platform = Platform {
@@ -378,9 +380,14 @@ where
             return Ok(());
         }
 
-        state.app.set_viewport(logical_size(physical, scale), scale);
-        let (width, height) = state.app.surface_size();
-        let (Some(width), Some(height)) = (NonZeroU32::new(width), NonZeroU32::new(height)) else {
+        // The app learns the new viewport only after the surface and the
+        // renderer took it, so a failed resize leaves app, renderer and
+        // surface consistent at the old size instead of an app whose next
+        // frame reaches past the pixmap it renders onto.
+        let (Some(width), Some(height)) = (
+            NonZeroU32::new(physical.width),
+            NonZeroU32::new(physical.height),
+        ) else {
             return Ok(());
         };
         state
@@ -388,6 +395,12 @@ where
             .resize(width, height)
             .map_err(PlatformError::Surface)?;
         state.renderer.resize(width.get(), height.get());
+        state.app.set_viewport(logical_size(physical, scale), scale);
+        debug_assert_eq!(
+            state.app.surface_size(),
+            (width.get(), height.get()),
+            "the app's surface size must match the resized surface and renderer"
+        );
         state.scale = scale;
         state.physical = (physical.width, physical.height);
         state.window.request_redraw();
@@ -411,7 +424,7 @@ where
             pending.damage.extend_from_slice(output.damage);
             pending.full = output.full;
         }
-        if state.present(raster)? {
+        if state.present(raster, tick)? {
             state.frames_presented += 1;
             if let Some(on_frame) = &state.on_frame {
                 on_frame(state.app.stats().clone(), state.stats);
@@ -501,11 +514,21 @@ impl WindowState {
     /// which frame it holds and no full repaint happened since, only their
     /// union is copied and the present reports it as damage. Every other case
     /// copies the whole pixmap. `raster` is the time the renderer took for the
-    /// frame and is recorded with the present's statistics. Returns `false`
-    /// when the surface has no pixel, so nothing was presented.
-    fn present(&mut self, raster: Duration) -> Result<bool, PlatformError> {
+    /// frame and is recorded with the present's statistics. `has_tick` says
+    /// whether the app runs a per-frame tick. Returns `false` when nothing was
+    /// presented, which is the case for a surface without pixels and for a
+    /// frame with no damage while a tick runs: such a frame changed nothing,
+    /// so the window still shows the last present and no buffer is taken, no
+    /// statistics are published, and the frame limit does not count it. An
+    /// empty frame without a tick is a redraw the window system asked for,
+    /// such as an X11 window being shown again, and presents the whole pixmap
+    /// to restore the window's contents.
+    fn present(&mut self, raster: Duration, has_tick: bool) -> Result<bool, PlatformError> {
         let (width, height) = (self.renderer.width(), self.renderer.height());
         if width == 0 || height == 0 {
+            return Ok(false);
+        }
+        if present_skipped(&self.pending.damage, has_tick) {
             return Ok(false);
         }
         let acquire_start = Instant::now();
@@ -607,3 +630,7 @@ impl HasDisplayHandle for SharedWindow {
         self.0.display_handle()
     }
 }
+
+#[cfg(test)]
+#[path = "window_tests.rs"]
+mod tests;

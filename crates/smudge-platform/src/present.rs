@@ -175,6 +175,18 @@ impl DamageHistory {
     }
 }
 
+/// Whether the frame the last redraw rendered must skip its present.
+///
+/// A frame with no damage while the app runs a tick changed nothing, and the
+/// window still shows what the last present left, so a present would copy the
+/// whole surface only to write the same pixels again. A frame with no damage
+/// without a tick is how the window system asks for a redraw, for example
+/// after an X11 window was uncovered, and the full present it gets restores
+/// the window's contents.
+pub(crate) fn present_skipped(damage: &[PixelRect], has_tick: bool) -> bool {
+    damage.is_empty() && has_tick
+}
+
 /// Chooses the region a present of `age` has to copy, writing it to `out`.
 ///
 /// `current` is the damage of the frame being presented and `current_full`

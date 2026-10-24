@@ -3,7 +3,7 @@
 
 use smudge_core::geometry::PixelRect;
 
-use super::{DamageHistory, copy_rect, damage_region};
+use super::{DamageHistory, copy_rect, damage_region, present_skipped};
 
 /// Returns a one-pixel rectangle at the given position, so tests can tell
 /// rectangles apart by their position.
@@ -211,6 +211,21 @@ fn a_frame_without_damage_copies_everything() {
         assert!(!damage_region(age, &[], false, &history, &mut out));
         assert!(out.is_empty());
     }
+}
+
+#[test]
+fn an_unchanged_frame_with_a_tick_skips_its_present() {
+    assert!(present_skipped(&[], true));
+}
+
+#[test]
+fn an_unchanged_frame_without_a_tick_presents_to_restore_the_window() {
+    assert!(!present_skipped(&[], false));
+}
+
+#[test]
+fn a_changed_frame_with_a_tick_presents() {
+    assert!(!present_skipped(&[rect(0, 0)], true));
 }
 
 #[test]
