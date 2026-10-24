@@ -218,28 +218,53 @@ impl Harness {
             clear_color: self.clear_color,
             scale: self.scale,
         });
+        assert_surfaces_equal(
+            &self.renderer,
+            &full,
+            &self.damage,
+            "the damaged surface differs from a full repaint",
+            "full.png",
+        );
+    }
 
-        let damaged = self.renderer.pixels();
-        let expected = full.pixels();
-        let (damaged_pixels, _) = damaged.as_chunks::<4>();
-        let (expected_pixels, _) = expected.as_chunks::<4>();
-        let Some(pixel) = damaged_pixels
-            .iter()
-            .zip(expected_pixels)
-            .position(|(damaged, expected)| damaged != expected)
-        else {
-            return;
-        };
-        let x = pixel % width as usize;
-        let y = pixel / width as usize;
-        let damaged_pixel = damaged_pixels[pixel];
-        let expected_pixel = expected_pixels[pixel];
-        let written = write_failure_images(&self.renderer, &full);
-        panic!(
-            "the damaged surface differs from a full repaint at pixel ({x}, {y}): \
-             damaged {damaged_pixel:?}, full {expected_pixel:?}. The last frame \
-             damaged {:?}. {written}",
-            self.damage
+    /// Asserts that the surface equals the surface of `expected`, byte for
+    /// byte.
+    ///
+    /// Both harnesses must have run at least one frame on surfaces of one size,
+    /// which a fresh mount of the same scene at the same viewport and scale
+    /// gives. Where [`Harness::assert_matches_full_repaint`] repaints the
+    /// display list the frame left and so cannot see a stale list, this
+    /// comparison fails whenever the two trees disagree about what the screen
+    /// shows.
+    ///
+    /// # Panics
+    ///
+    /// Panics at the first pixel whose bytes differ, naming the pixel, both
+    /// values and the damage of the last frame of `self`. It also writes both
+    /// images under `target/smudge-test-failures/<test name>/`, where the test
+    /// name is the name of the thread that runs the test.
+    ///
+    /// Also panics when either harness has not run a frame yet, because there
+    /// is nothing to compare, or when the two surfaces differ in size, because
+    /// the frames were made for different viewports.
+    pub fn assert_matches(&self, expected: &Harness) {
+        assert!(
+            self.framed && expected.framed,
+            "assert_matches compares two surfaces, so call Harness::frame on \
+             both harnesses first"
+        );
+        assert_eq!(
+            (self.renderer.width(), self.renderer.height()),
+            (expected.renderer.width(), expected.renderer.height()),
+            "assert_matches compares surfaces of one size, so both harnesses \
+             must run at the same viewport and scale"
+        );
+        assert_surfaces_equal(
+            &self.renderer,
+            &expected.renderer,
+            &self.damage,
+            "the surface differs from the expected surface",
+            "expected.png",
         );
     }
 
@@ -271,15 +296,56 @@ impl Harness {
     }
 }
 
+/// Panics when the two surfaces differ, at the first pixel that does.
+///
+/// The panic names the pixel, both values and `damage`, which is the damage of
+/// the frame that produced `damaged`, and writes both images under
+/// `target/smudge-test-failures/<test name>/` with the damaged image called
+/// `damaged.png` and the expected one `expected_name`.
+fn assert_surfaces_equal(
+    damaged: &CpuRenderer,
+    expected: &CpuRenderer,
+    damage: &[PixelRect],
+    note: &str,
+    expected_name: &str,
+) {
+    let width = damaged.width();
+    let damaged_bytes = damaged.pixels();
+    let expected_bytes = expected.pixels();
+    let (damaged_pixels, _) = damaged_bytes.as_chunks::<4>();
+    let (expected_pixels, _) = expected_bytes.as_chunks::<4>();
+    let Some(pixel) = damaged_pixels
+        .iter()
+        .zip(expected_pixels)
+        .position(|(damaged, expected)| damaged != expected)
+    else {
+        return;
+    };
+    let x = pixel % width as usize;
+    let y = pixel / width as usize;
+    let damaged_pixel = damaged_pixels[pixel];
+    let expected_pixel = expected_pixels[pixel];
+    let written = write_failure_images(damaged, expected, expected_name);
+    panic!(
+        "{note} at pixel ({x}, {y}): damaged {damaged_pixel:?}, expected \
+         {expected_pixel:?}. The damage of the last frame was {damage:?}. \
+         {written}"
+    );
+}
+
 /// Writes both surfaces under `target/smudge-test-failures/<test name>/` and
 /// returns a sentence describing the result, for the panic message.
-fn write_failure_images(damaged: &CpuRenderer, full: &CpuRenderer) -> String {
+fn write_failure_images(
+    damaged: &CpuRenderer,
+    expected: &CpuRenderer,
+    expected_name: &str,
+) -> String {
     let directory = failure_directory();
     if let Err(error) = std::fs::create_dir_all(&directory) {
         return format!("Could not create {}: {error}.", directory.display());
     }
     let directory = std::fs::canonicalize(&directory).unwrap_or(directory);
-    for (name, renderer) in [("damaged.png", damaged), ("full.png", full)] {
+    for (name, renderer) in [("damaged.png", damaged), (expected_name, expected)] {
         let path = directory.join(name);
         if let Err(error) = std::fs::write(&path, renderer.encode_png()) {
             return format!("Could not write {}: {error}.", path.display());

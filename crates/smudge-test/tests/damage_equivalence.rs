@@ -1,8 +1,13 @@
-//! Property test that a surface repainted from damage equals a full repaint.
+//! Property test that a surface repainted from damage equals a full repaint
+//! and a fresh mount of the same scene.
 //!
 //! Every case builds a random tree of panels, applies a random sequence of
-//! edits, and compares the surface after each frame with a full repaint of the
-//! same display list. A difference is a stale pixel on screen.
+//! edits, and checks the surface after every frame twice. The comparison with
+//! a full repaint of the same display list fails when the damage misses
+//! pixels. The comparison with a fresh app built from the final value of
+//! every signal fails when the display list itself is stale, which a missed
+//! invalidation causes and the first comparison cannot see. A difference in
+//! either is a stale pixel on screen.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -12,11 +17,11 @@ use proptest::test_runner::FileFailurePersistence;
 use smudge_core::element::{Element, show};
 use smudge_core::geometry::{Color, Size};
 use smudge_core::reactive::{prelude::*, signal_local};
-use smudge_core::style::{Direction, Length, px};
+use smudge_core::style::{Direction, Edges, Length, px};
 use smudge_core::widget::{Panel, panel};
 use smudge_test::Harness;
 
-/// The viewport every generated scene is laid out in, in logical pixels.
+/// The viewport a scene starts in, in logical pixels.
 const VIEWPORT: Size = Size {
     width: 320.0,
     height: 240.0,
@@ -31,8 +36,12 @@ const MAX_DEPTH: u32 = 4;
 /// The most children one generated node asks for.
 const MAX_CHILDREN: u8 = 3;
 
-/// The longest edit sequence one case applies.
-const MAX_EDITS: usize = 20;
+/// The most frames one case runs, one comparison after each.
+const MAX_FRAMES: usize = 8;
+
+/// The most edits one frame applies, so a frame can carry several changes at
+/// once.
+const MAX_EDITS_PER_FRAME: usize = 4;
 
 /// The proptest configuration the gate runs.
 ///
@@ -66,6 +75,16 @@ fn any_direction() -> impl Strategy<Value = Direction> {
     prop_oneof![Just(Direction::Row), Just(Direction::Column)]
 }
 
+/// Any viewport a viewport edit can move the scene to, in logical pixels.
+fn any_viewport() -> impl Strategy<Value = Size> {
+    (160.0f32..=480.0, 120.0f32..=360.0).prop_map(|(width, height)| Size { width, height })
+}
+
+/// Any scale factor the test renders at.
+fn any_scale() -> impl Strategy<Value = f32> {
+    prop_oneof![Just(1.0), Just(1.25), Just(1.5), Just(2.0)]
+}
+
 /// The properties of one generated node, before any signal exists for them.
 #[derive(Clone, Debug)]
 struct NodeSpec {
@@ -93,12 +112,20 @@ struct NodeSpec {
     radius: f32,
     /// Whether the node clips its children.
     clip: bool,
+    /// Whether the node leaves the normal flow and places itself with its
+    /// insets.
+    absolute: bool,
+    /// The offsets from the edges of the containing block, which only take
+    /// effect on an absolutely positioned node.
+    inset: Edges<Length>,
     /// Whether the width is read from a signal instead of being fixed.
     bind_width: bool,
     /// Whether the background is read from a signal instead of being fixed.
     bind_background: bool,
     /// Whether the corner radius is read from a signal instead of being fixed.
     bind_radius: bool,
+    /// Whether the node is hidden through a signal instead of being laid out.
+    bind_hidden: bool,
     /// Whether the node is mounted through a visibility signal.
     show: bool,
 }
@@ -126,35 +153,63 @@ fn any_paint() -> impl Strategy<Value = (Option<Color>, f32, Color, f32, bool)> 
     )
 }
 
-/// Which of a node's properties read a signal.
-fn any_bindings() -> impl Strategy<Value = (bool, bool, bool, bool)> {
-    (any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>())
+/// Whether a node leaves the flow, and the offsets it places itself with when
+/// it does.
+fn any_position() -> impl Strategy<Value = (bool, Edges<Length>)> {
+    (
+        any::<bool>(),
+        (any_length(), any_length(), any_length(), any_length()).prop_map(
+            |(top, right, bottom, left)| Edges {
+                top,
+                right,
+                bottom,
+                left,
+            },
+        ),
+    )
+}
+
+/// Which of a node's properties read a property instead of being fixed.
+fn any_bindings() -> impl Strategy<Value = (bool, bool, bool, bool, bool)> {
+    (
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+    )
 }
 
 /// Any node of a generated scene.
 fn any_spec() -> impl Strategy<Value = NodeSpec> {
-    (any_layout(), any_paint(), any_bindings()).prop_map(|(layout, paint, bindings)| {
-        let (children, width, height, padding, gap, direction) = layout;
-        let (background, border, border_color, radius, clip) = paint;
-        let (bind_width, bind_background, bind_radius, show) = bindings;
-        NodeSpec {
-            children,
-            width,
-            height,
-            padding,
-            gap,
-            direction,
-            background,
-            border,
-            border_color,
-            radius,
-            clip,
-            bind_width,
-            bind_background,
-            bind_radius,
-            show,
-        }
-    })
+    (any_layout(), any_paint(), any_position(), any_bindings()).prop_map(
+        |(layout, paint, position, bindings)| {
+            let (children, width, height, padding, gap, direction) = layout;
+            let (background, border, border_color, radius, clip) = paint;
+            let (absolute, inset) = position;
+            let (bind_width, bind_background, bind_radius, bind_hidden, show) = bindings;
+            NodeSpec {
+                children,
+                width,
+                height,
+                padding,
+                gap,
+                direction,
+                background,
+                border,
+                border_color,
+                radius,
+                clip,
+                absolute,
+                inset,
+                bind_width,
+                bind_background,
+                bind_radius,
+                bind_hidden,
+                show,
+            }
+        },
+    )
 }
 
 /// A generated scene before any signal exists for it.
@@ -171,11 +226,13 @@ impl SceneData {
     /// Arranges `nodes` into a tree of at most their number of nodes and at
     /// most [`MAX_DEPTH`] levels.
     ///
-    /// The result always holds a signal of every kind an edit can target, so
+    /// The result always holds a property of every kind an edit can target, so
     /// that every generated edit sequence changes something: the root reads
-    /// its width, background and corner radius from signals, and the first
-    /// child is mounted through a visibility signal. The root itself is never
-    /// mounted through one, because the harness builds it directly.
+    /// its width, background and corner radius through a property, and the
+    /// first child is mounted through a visibility property and, when no other
+    /// node has one, hidden through a hidden property. The root itself is
+    /// never mounted through one or hidden, because the harness builds it
+    /// directly.
     fn new(mut nodes: Vec<NodeSpec>) -> SceneData {
         nodes[0].children = nodes[0].children.max(1);
 
@@ -201,17 +258,21 @@ impl SceneData {
         children.truncate(next);
 
         nodes[0].show = false;
+        nodes[0].bind_hidden = false;
         nodes[0].bind_width = true;
         nodes[0].bind_background = true;
         nodes[0].bind_radius = true;
         if !nodes[1..].iter().any(|node| node.show) {
             nodes[1].show = true;
         }
+        if !nodes[1..].iter().any(|node| node.bind_hidden) {
+            nodes[1].bind_hidden = true;
+        }
 
         SceneData { nodes, children }
     }
 
-    /// How many signals of each kind the scene creates.
+    /// How many properties of each kind the scene reads through one.
     fn signal_counts(&self) -> SignalCounts {
         SignalCounts {
             colors: self
@@ -222,36 +283,90 @@ impl SceneData {
             widths: self.nodes.iter().filter(|node| node.bind_width).count(),
             radii: self.nodes.iter().filter(|node| node.bind_radius).count(),
             shows: self.nodes.iter().filter(|node| node.show).count(),
+            hiddens: self.nodes.iter().filter(|node| node.bind_hidden).count(),
         }
     }
 }
 
-/// How many signals of each kind a scene creates.
+/// How many properties of each kind a scene reads through one.
 #[derive(Copy, Clone, Debug)]
 struct SignalCounts {
     colors: usize,
     widths: usize,
     radii: usize,
     shows: usize,
+    hiddens: usize,
 }
 
 /// Reads one property of a scene.
 type Getter<T> = Rc<dyn Fn() -> T>;
 
-/// Writes one property of a scene.
+/// Writes one property of a reactive scene.
 type Setter<T> = Box<dyn Fn(T)>;
 
-/// Creates the signal of one property and returns the handles that read and
-/// write it.
+/// One property of a scene: the value it shows, and how a scene reads it.
 ///
-/// Signals are created before the app, so they live outside every node's owner
-/// and survive a node being removed and mounted again.
-fn property<T: Clone + 'static>(value: T) -> (Getter<T>, Setter<T>) {
-    let (read, write) = signal_local(value);
-    (
-        Rc::new(move || read.get()),
-        Box::new(move |value| write.set(value)),
-    )
+/// A reactive scene reads a signal, so an edit reaches the mounted elements
+/// through their bindings. A static scene reads the cell alone, so a fresh
+/// mount of the scene shows the values the reactive scene held when the mount
+/// was built, without any signal. [`Tracked::write`] keeps the cell current in
+/// both, which is what makes the fresh mount a picture of the final state.
+struct Tracked<T: Copy> {
+    /// Reads the value the scene shows now.
+    get: Getter<T>,
+    /// Writes the reactive scene's signal. A static scene has no signal, so
+    /// its writer does nothing.
+    set: Setter<T>,
+    /// The value the scene shows now.
+    value: Rc<Cell<T>>,
+}
+
+impl<T: Copy + 'static> Tracked<T> {
+    /// Creates a property that edits change through a signal.
+    ///
+    /// The signal is created before the app, so it lives outside every node's
+    /// owner and survives a node being removed and mounted again. The current
+    /// value is kept in a cell rather than read back from the signal, because
+    /// a read outside a binding makes the reactive runtime print a warning.
+    fn reactive(value: T) -> Tracked<T> {
+        let (read, write) = signal_local(value);
+        Tracked {
+            get: Rc::new(move || read.get()),
+            set: Box::new(move |value| write.set(value)),
+            value: Rc::new(Cell::new(value)),
+        }
+    }
+
+    /// Creates a property that holds one value for the scene's whole life.
+    fn static_value(value: T) -> Tracked<T> {
+        let value = Rc::new(Cell::new(value));
+        Tracked {
+            get: Rc::new({
+                let value = Rc::clone(&value);
+                move || value.get()
+            }),
+            set: Box::new(|_| ()),
+            value,
+        }
+    }
+
+    /// Writes a new value through the cell and the signal, so the reactive
+    /// scene and a fresh mount of it show the same thing.
+    fn write(&self, value: T) {
+        self.value.set(value);
+        (self.set)(value);
+    }
+}
+
+/// Where a scene's bound property values come from.
+#[derive(Clone, Copy)]
+enum Values<'a> {
+    /// Signals at the values their specs start with, which is what a reactive
+    /// scene reads.
+    Signals,
+    /// The values another scene holds now, which is what a fresh mount of it
+    /// reads.
+    Current(&'a Scene),
 }
 
 /// One node of a built scene.
@@ -260,77 +375,135 @@ struct SceneNode {
     spec: NodeSpec,
     /// The indices of the node's children.
     children: Vec<usize>,
-    /// The background the node paints, when a signal supplies it.
+    /// The background the node paints, when a property supplies it.
     color: Option<Getter<Color>>,
-    /// The width the node lays out with, when a signal supplies it.
+    /// The width the node lays out with, when a property supplies it.
     width: Option<Getter<Length>>,
-    /// The corner radius the node paints with, when a signal supplies it.
+    /// The corner radius the node paints with, when a property supplies it.
     radius: Option<Getter<f32>>,
-    /// The visibility the node is mounted with, when a signal supplies it.
+    /// The hidden state of the node, when a property supplies it.
+    hidden: Option<Getter<bool>>,
+    /// The visibility the node is mounted with, when a property supplies it.
     show: Option<Getter<bool>>,
 }
 
-/// The signal that mounts one node, with the value it holds.
+/// A built scene: its nodes and the properties its bindings read.
 ///
-/// Edits are the only writer, so `visible` always matches the signal, and an
-/// edit flips it without reading the signal outside a binding.
-struct ShowSignal {
-    /// The visibility the signal holds now.
-    visible: Cell<bool>,
-    /// Writes a new visibility.
-    set: Setter<bool>,
-}
-
-/// A built scene: its nodes and the signals its bindings read.
-///
-/// The signal handles stay here so an edit can change one property without
-/// rebuilding the scene.
+/// The handles stay here so an edit can change one property without rebuilding
+/// the scene, and so a fresh mount of the scene can read the current value of
+/// every property.
 struct Scene {
     nodes: Vec<SceneNode>,
-    colors: Vec<Setter<Color>>,
-    widths: Vec<Setter<Length>>,
-    radii: Vec<Setter<f32>>,
-    shows: Vec<ShowSignal>,
+    colors: Vec<Tracked<Color>>,
+    widths: Vec<Tracked<Length>>,
+    radii: Vec<Tracked<f32>>,
+    shows: Vec<Tracked<bool>>,
+    hiddens: Vec<Tracked<bool>>,
+    /// The viewport the scene is laid out in, which a viewport edit changes.
+    viewport: Cell<Size>,
+    /// The scale the scene renders at, which a viewport edit changes.
+    scale: Cell<f32>,
 }
 
 impl Scene {
-    /// Creates the signals the scene's bindings read.
-    fn new(data: &SceneData) -> Scene {
+    /// Creates the reactive scene: every bound property is a signal at the
+    /// value its spec starts with.
+    ///
+    /// Signals are what let an edit reach the mounted elements through their
+    /// bindings.
+    fn reactive(data: &SceneData, scale: f32) -> Scene {
+        Scene::build(data, Values::Signals, VIEWPORT, scale)
+    }
+
+    /// Creates the static scene that shows what `from` shows now: every bound
+    /// property holds the value `from`'s property has at this moment, and the
+    /// viewport and scale are copied from it.
+    ///
+    /// Its mount is a fresh app in the state the reactive scene reached.
+    fn fresh(data: &SceneData, from: &Scene) -> Scene {
+        Scene::build(
+            data,
+            Values::Current(from),
+            from.viewport.get(),
+            from.scale.get(),
+        )
+    }
+
+    /// Creates a scene whose bound properties come from `values`.
+    fn build(data: &SceneData, values: Values<'_>, viewport: Size, scale: f32) -> Scene {
         let mut scene = Scene {
             nodes: Vec::with_capacity(data.nodes.len()),
             colors: Vec::new(),
             widths: Vec::new(),
             radii: Vec::new(),
             shows: Vec::new(),
+            hiddens: Vec::new(),
+            viewport: Cell::new(viewport),
+            scale: Cell::new(scale),
         };
+        let (mut color, mut width, mut radius, mut hidden, mut show) =
+            (0usize, 0usize, 0usize, 0usize, 0usize);
         for (index, spec) in data.nodes.iter().enumerate() {
             let color = if spec.bind_background {
-                let (get, set) = property(spec.background.unwrap_or(Color::TRANSPARENT));
-                scene.colors.push(set);
+                let value = match values {
+                    Values::Signals => {
+                        Tracked::reactive(spec.background.unwrap_or(Color::TRANSPARENT))
+                    }
+                    Values::Current(from) => Tracked::static_value(from.colors[color].value.get()),
+                };
+                color += 1;
+                let get = value.get.clone();
+                scene.colors.push(value);
                 Some(get)
             } else {
                 None
             };
             let width = if spec.bind_width {
-                let (get, set) = property(spec.width);
-                scene.widths.push(set);
+                let value = match values {
+                    Values::Signals => Tracked::reactive(spec.width),
+                    Values::Current(from) => Tracked::static_value(from.widths[width].value.get()),
+                };
+                width += 1;
+                let get = value.get.clone();
+                scene.widths.push(value);
                 Some(get)
             } else {
                 None
             };
             let radius = if spec.bind_radius {
-                let (get, set) = property(spec.radius);
-                scene.radii.push(set);
+                let value = match values {
+                    Values::Signals => Tracked::reactive(spec.radius),
+                    Values::Current(from) => Tracked::static_value(from.radii[radius].value.get()),
+                };
+                radius += 1;
+                let get = value.get.clone();
+                scene.radii.push(value);
+                Some(get)
+            } else {
+                None
+            };
+            let hidden = if spec.bind_hidden {
+                let value = match values {
+                    Values::Signals => Tracked::reactive(false),
+                    Values::Current(from) => {
+                        Tracked::static_value(from.hiddens[hidden].value.get())
+                    }
+                };
+                hidden += 1;
+                let get = value.get.clone();
+                scene.hiddens.push(value);
                 Some(get)
             } else {
                 None
             };
             let show = if spec.show {
-                let (get, set) = property(true);
-                scene.shows.push(ShowSignal {
-                    visible: Cell::new(true),
-                    set,
-                });
+                let value = match values {
+                    Values::Signals => Tracked::reactive(true),
+                    Values::Current(from) => Tracked::static_value(from.shows[show].value.get()),
+                };
+                show += 1;
+                let get = value.get.clone();
+                scene.shows.push(value);
                 Some(get)
             } else {
                 None
@@ -341,6 +514,7 @@ impl Scene {
                 color,
                 width,
                 radius,
+                hidden,
                 show,
             });
         }
@@ -350,6 +524,11 @@ impl Scene {
 
 /// Builds the element of the node at `index`, with every child of every node
 /// built the same way.
+///
+/// Every bound property comes from the scene: from a signal in a reactive
+/// scene, and from a plain value in a static one. The builder itself is the
+/// same, so a fresh mount differs from the reactive scene only in where its
+/// values come from.
 fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
     let node = &scene.nodes[index];
     let spec = &node.spec;
@@ -365,6 +544,9 @@ fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
         .border(spec.border)
         .border_color(spec.border_color)
         .clip(spec.clip);
+    if spec.absolute {
+        element = element.absolute().inset(spec.inset);
+    }
     element = match &node.width {
         Some(width) => {
             let width = Rc::clone(width);
@@ -387,6 +569,10 @@ fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
         (None, Some(color)) => element.background(color),
         (None, None) => element,
     };
+    if let Some(hidden) = &node.hidden {
+        let hidden = Rc::clone(hidden);
+        element = element.hidden(move || hidden());
+    }
 
     for &child in &node.children {
         element = match &scene.nodes[child].show {
@@ -404,29 +590,45 @@ fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
 /// One change a case applies to a built scene.
 #[derive(Clone, Debug)]
 enum Edit {
-    /// Sets the background signal at this index to a color.
+    /// Sets the background property at this index to a color.
     Color(usize, Color),
-    /// Sets the width signal at this index to a length.
+    /// Sets the width property at this index to a length.
     Width(usize, Length),
-    /// Sets the corner radius signal at this index to a radius.
+    /// Sets the corner radius property at this index to a radius.
     Radius(usize, f32),
-    /// Flips the visibility signal at this index, which removes the node it
+    /// Flips the visibility property at this index, which removes the node it
     /// mounts or mounts it again.
     Show(usize),
+    /// Flips the hidden property at this index, which lays the node out as
+    /// empty or lays it out again.
+    Hidden(usize),
+    /// Moves the viewport the scene is laid out in, or changes its scale.
+    Viewport(Size, f32),
 }
 
 impl Edit {
-    /// Applies the edit to `scene`, so the next frame sees it.
-    fn apply(&self, scene: &Scene) {
+    /// Applies the edit, so the next frame sees it.
+    ///
+    /// Every edit but a viewport one writes a property of the scene. A
+    /// viewport edit changes the window the harness lays the scene out in,
+    /// which is why it needs the harness.
+    fn apply(&self, scene: &Scene, harness: &mut Harness) {
         match *self {
-            Edit::Color(index, color) => (scene.colors[index])(color),
-            Edit::Width(index, width) => (scene.widths[index])(width),
-            Edit::Radius(index, radius) => (scene.radii[index])(radius),
+            Edit::Color(index, color) => scene.colors[index].write(color),
+            Edit::Width(index, width) => scene.widths[index].write(width),
+            Edit::Radius(index, radius) => scene.radii[index].write(radius),
             Edit::Show(index) => {
                 let show = &scene.shows[index];
-                let visible = !show.visible.get();
-                show.visible.set(visible);
-                (show.set)(visible);
+                show.write(!show.value.get());
+            }
+            Edit::Hidden(index) => {
+                let hidden = &scene.hiddens[index];
+                hidden.write(!hidden.value.get());
+            }
+            Edit::Viewport(viewport, scale) => {
+                scene.viewport.set(viewport);
+                scene.scale.set(scale);
+                harness.app().set_viewport(viewport, scale);
             }
         }
     }
@@ -443,19 +645,25 @@ enum EditKind {
     Radius,
     /// A visibility flip.
     Show,
+    /// A hidden flip.
+    Hidden,
+    /// A viewport or scale change.
+    Viewport,
 }
 
-/// Any edit kind, all four of which every scene has a signal for.
+/// Any edit kind, and every scene has a target for each of them.
 fn any_edit_kind() -> impl Strategy<Value = EditKind> {
     prop_oneof![
         Just(EditKind::Color),
         Just(EditKind::Width),
         Just(EditKind::Radius),
         Just(EditKind::Show),
+        Just(EditKind::Hidden),
+        Just(EditKind::Viewport),
     ]
 }
 
-/// One edit, targeting a signal that `counts` describes.
+/// One edit, targeting a property that `counts` describes.
 fn any_edit(counts: SignalCounts) -> impl Strategy<Value = Edit> {
     any_edit_kind().prop_flat_map(move |kind| match kind {
         EditKind::Color => (0..counts.colors, any_color())
@@ -468,29 +676,60 @@ fn any_edit(counts: SignalCounts) -> impl Strategy<Value = Edit> {
             .prop_map(|(index, radius)| Edit::Radius(index, radius))
             .boxed(),
         EditKind::Show => (0..counts.shows).prop_map(Edit::Show).boxed(),
+        EditKind::Hidden => (0..counts.hiddens).prop_map(Edit::Hidden).boxed(),
+        EditKind::Viewport => (any_viewport(), any_scale())
+            .prop_map(|(viewport, scale)| Edit::Viewport(viewport, scale))
+            .boxed(),
     })
 }
 
-/// A generated case: a scene and the edits applied to it after it is built.
-fn any_case() -> impl Strategy<Value = (SceneData, Vec<Edit>)> {
+/// The edits one frame applies: one to four of them, which the frame carries
+/// together.
+fn any_edit_group(counts: SignalCounts) -> impl Strategy<Value = Vec<Edit>> {
+    prop::collection::vec(any_edit(counts), 1..=MAX_EDITS_PER_FRAME)
+}
+
+/// A generated case: a scene and the edits applied to it after it is built,
+/// one group per frame.
+fn any_case() -> impl Strategy<Value = (SceneData, Vec<Vec<Edit>>)> {
     prop::collection::vec(any_spec(), 2..=40)
         .prop_map(SceneData::new)
         .prop_flat_map(|data| {
             let counts = data.signal_counts();
             (
                 Just(data),
-                prop::collection::vec(any_edit(counts), 1..=MAX_EDITS),
+                prop::collection::vec(any_edit_group(counts), 1..=MAX_FRAMES),
             )
         })
 }
 
-/// Builds `data` at `scale`, applies `edits`, and checks the surface after
-/// every frame.
+/// Requires the surface of `harness` to match a fresh mount of the final state
+/// of `data`, byte for byte.
+///
+/// The fresh mount reads no signal: every bound property is the value the
+/// reactive scene holds right now, which is what [`Tracked`] keeps in its
+/// cells. A difference means the incremental frames left the screen stale,
+/// which the full-repaint comparison cannot see because it repaints the same
+/// stale list.
+fn assert_matches_fresh_mount(harness: &Harness, scene: &Scene, data: &SceneData) {
+    let fresh = Rc::new(Scene::fresh(data, scene));
+    let built = Rc::clone(&fresh);
+    let viewport = scene.viewport.get();
+    let scale = scene.scale.get();
+    let mut mount = Harness::new(viewport.width, viewport.height, scale, move || {
+        build_panel(&built, 0)
+    });
+    mount.frame();
+    harness.assert_matches(&mount);
+}
+
+/// Builds `data` at `scale`, applies the edits of each frame, and checks the
+/// surface after every frame.
 ///
 /// The first frame repaints the whole surface, so the comparison only starts
 /// to depend on the damage after the first edit.
-fn check_scene(scale: f32, data: &SceneData, edits: &[Edit]) {
-    let scene = Rc::new(Scene::new(data));
+fn check_scene(scale: f32, data: &SceneData, frames: &[Vec<Edit>]) {
+    let scene = Rc::new(Scene::reactive(data, scale));
     let built = Rc::clone(&scene);
     let mut harness = Harness::new(VIEWPORT.width, VIEWPORT.height, scale, move || {
         build_panel(&built, 0)
@@ -498,11 +737,15 @@ fn check_scene(scale: f32, data: &SceneData, edits: &[Edit]) {
 
     harness.frame();
     harness.assert_matches_full_repaint();
+    assert_matches_fresh_mount(&harness, &scene, data);
 
-    for edit in edits {
-        edit.apply(&scene);
+    for edits in frames {
+        for edit in edits {
+            edit.apply(&scene, &mut harness);
+        }
         harness.frame();
         harness.assert_matches_full_repaint();
+        assert_matches_fresh_mount(&harness, &scene, data);
     }
 }
 
@@ -513,8 +756,8 @@ macro_rules! damage_equivalence_tests {
             #![proptest_config(config())]
             $(
                 #[test]
-                fn $name((data, edits) in any_case()) {
-                    check_scene($scale, &data, &edits);
+                fn $name((data, frames) in any_case()) {
+                    check_scene($scale, &data, &frames);
                 }
             )*
         }
