@@ -12,4 +12,4 @@ mod window;
 
 pub use error::PlatformError;
 pub use present::{PresentStats, PresentStatsHandle};
-pub use window::{WindowOptions, run, run_with};
+pub use window::{FrameHook, WindowOptions, run, run_with};

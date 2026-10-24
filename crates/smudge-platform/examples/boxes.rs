@@ -100,6 +100,8 @@ fn main() -> ExitCode {
             clear_color: Color::rgb(16, 17, 21),
             repaint,
             stats: stats.clone(),
+            on_frame: None,
+            frame_limit: None,
         },
         build,
         move |app| {

@@ -84,6 +84,9 @@ pub struct DamageAccumulator {
     full: bool,
     /// The physical rectangles produced by the last [`DamageAccumulator::finish`].
     out: Vec<PixelRect>,
+    /// The pixel area the rectangles covered after conversion and before the
+    /// merge step, recorded by the last [`DamageAccumulator::finish`].
+    pre_merge_pixels: u64,
 }
 
 impl DamageAccumulator {
@@ -156,10 +159,12 @@ impl DamageAccumulator {
     /// calling this on consecutive frames does not allocate.
     pub fn finish(&mut self, scale: f32, surface_width: u32, surface_height: u32) -> &[PixelRect] {
         self.out.clear();
+        self.pre_merge_pixels = 0;
         let Some(surface) = surface_rect(surface_width, surface_height) else {
             return &self.out;
         };
         if self.full {
+            self.pre_merge_pixels = surface.area();
             self.out.push(surface);
             return &self.out;
         }
@@ -179,8 +184,26 @@ impl DamageAccumulator {
                 self.out.push(intersection);
             }
         }
+        self.pre_merge_pixels = self.out.iter().map(|rect| rect.area()).sum();
         self.merge(surface);
         &self.out
+    }
+
+    /// Behaves like [`DamageAccumulator::finish`], and also returns the pixel
+    /// area the rectangles covered after conversion and before the merge step
+    /// collapsed them, counting an overlap once per rectangle.
+    ///
+    /// The frame pipeline records this with the time the call took, so a run
+    /// can see what the merge step does to the damage.
+    pub(crate) fn finish_measured(
+        &mut self,
+        scale: f32,
+        surface_width: u32,
+        surface_height: u32,
+    ) -> (&[PixelRect], u64) {
+        self.finish(scale, surface_width, surface_height);
+        let pixels = self.pre_merge_pixels;
+        (self.out.as_slice(), pixels)
     }
 
     /// Removes every collected rectangle, keeping the allocated capacity.

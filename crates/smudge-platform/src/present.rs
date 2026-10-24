@@ -34,6 +34,13 @@ pub struct PresentStats {
     /// Four bytes per pixel, so a full present of a 100 by 100 surface copies
     /// 40,000 bytes.
     pub bytes_copied: u64,
+    /// The width of the presented surface in physical pixels.
+    pub surface_width: u32,
+    /// The height of the presented surface in physical pixels.
+    pub surface_height: u32,
+    /// How long the renderer took to paint this frame's damage into its
+    /// surface.
+    pub raster: Duration,
     /// How long the present took, from taking the window buffer to handing it
     /// back to the platform.
     pub present: Duration,

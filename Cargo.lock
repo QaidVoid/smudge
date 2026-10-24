@@ -1914,6 +1914,11 @@ dependencies = [
 [[package]]
 name = "smudge-bench"
 version = "0.1.0"
+dependencies = [
+ "smudge-core",
+ "smudge-cpu",
+ "smudge-platform",
+]
 
 [[package]]
 name = "smudge-core"

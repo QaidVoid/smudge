@@ -2,8 +2,9 @@
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::time::Duration;
 
-use smudge_core::app::{App, AppConfig, RepaintMode};
+use smudge_core::app::{App, AppConfig, FrameStats, RepaintMode};
 use smudge_core::element::IntoElement;
 use smudge_core::geometry::{Color, PixelRect, Size};
 use smudge_core::reactive;
@@ -22,8 +23,16 @@ use winit::window::{Window, WindowId};
 use crate::error::PlatformError;
 use crate::present::{DamageHistory, PresentStats, PresentStatsHandle, copy_rect, damage_region};
 
+/// The measurement hook that receives one pair of statistics per presented
+/// frame.
+///
+/// The platform calls it after each present with the frame's pipeline
+/// statistics and what the present did. Nothing in the library sets it: it
+/// exists so a benchmark can record one entry per frame while the frames run.
+pub type FrameHook = Rc<dyn Fn(FrameStats, PresentStats)>;
+
 /// The settings a window opens with.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct WindowOptions {
     /// The text shown in the window's title bar.
     pub title: String,
@@ -43,6 +52,34 @@ pub struct WindowOptions {
     /// [`PresentStats`] of the most recent present while the window runs.
     /// Without one the platform skips publishing.
     pub stats: Option<PresentStatsHandle>,
+    /// Measurement hook: runs after every presented frame.
+    ///
+    /// The hook receives the frame's [`FrameStats`] and the present's
+    /// [`PresentStats`], in that order. It runs on the main thread between
+    /// frames and must not touch the window. A frame rendered while the
+    /// surface has no pixel, for example while the window is minimized, is not
+    /// presented, so it neither calls the hook nor counts toward the frame
+    /// limit.
+    pub on_frame: Option<FrameHook>,
+    /// Measurement hook: closes the window after this many presented frames.
+    ///
+    /// A run that must last a fixed number of frames sets this instead of
+    /// waiting for the user to close the window.
+    pub frame_limit: Option<u64>,
+}
+
+impl std::fmt::Debug for WindowOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowOptions")
+            .field("title", &self.title)
+            .field("size", &self.size)
+            .field("clear_color", &self.clear_color)
+            .field("repaint", &self.repaint)
+            .field("stats", &self.stats)
+            .field("on_frame", &self.on_frame.is_some())
+            .field("frame_limit", &self.frame_limit)
+            .finish()
+    }
 }
 
 /// Opens a window and runs frames until the window closes.
@@ -87,6 +124,8 @@ pub struct WindowOptions {
 ///         clear_color: Color::WHITE,
 ///         repaint: RepaintMode::Damage,
 ///         stats: None,
+///         on_frame: None,
+///         frame_limit: None,
 ///     },
 ///     || panel().width(px(120.0)).height(px(40.0)).background(Color::BLACK),
 /// )?;
@@ -138,6 +177,8 @@ pub fn run<E: IntoElement + 'static>(
 ///         clear_color: Color::WHITE,
 ///         repaint: RepaintMode::Damage,
 ///         stats: None,
+///         on_frame: None,
+///         frame_limit: None,
 ///     },
 ///     move || panel().width(px(120.0)).background(move || color.get()),
 ///     move |app| {
@@ -222,6 +263,12 @@ struct WindowState {
     stats: PresentStats,
     /// Where to publish the statistics, when the caller asked for them.
     stats_handle: Option<PresentStatsHandle>,
+    /// The measurement hook to call after every presented frame.
+    on_frame: Option<FrameHook>,
+    /// How many frames to present before the window closes.
+    frame_limit: Option<u64>,
+    /// How many frames the window has presented.
+    frames_presented: u64,
     /// The number of physical pixels per logical pixel the app last used.
     scale: f32,
     /// The window's size in physical pixels when the app last used it.
@@ -307,6 +354,9 @@ where
             reported: Vec::new(),
             stats: PresentStats::default(),
             stats_handle: self.options.stats.clone(),
+            on_frame: self.options.on_frame.take(),
+            frame_limit: self.options.frame_limit,
+            frames_presented: 0,
             scale,
             physical: (physical.width, physical.height),
         })
@@ -350,15 +400,23 @@ where
             return Ok(());
         };
         let tick = state.app.has_tick();
+        let raster;
         {
             let output = state.app.frame();
+            let start = Instant::now();
             state.renderer.render(&output);
+            raster = start.elapsed();
             let pending = &mut state.pending;
             pending.damage.clear();
             pending.damage.extend_from_slice(output.damage);
             pending.full = output.full;
         }
-        state.present()?;
+        if state.present(raster)? {
+            state.frames_presented += 1;
+            if let Some(on_frame) = &state.on_frame {
+                on_frame(state.app.stats().clone(), state.stats);
+            }
+        }
         if tick {
             state.window.request_redraw();
         }
@@ -413,7 +471,13 @@ where
                     None => Ok(()),
                 }
             }
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::RedrawRequested => {
+                let result = self.redraw();
+                if result.is_ok() && self.state.as_ref().is_some_and(WindowState::finished) {
+                    event_loop.exit();
+                }
+                result
+            }
             _ => Ok(()),
         };
         if let Err(error) = result {
@@ -423,17 +487,26 @@ where
 }
 
 impl WindowState {
+    /// Returns whether the window has presented the number of frames its frame
+    /// limit sets, or `false` when no limit is set.
+    fn finished(&self) -> bool {
+        self.frame_limit
+            .is_some_and(|limit| self.frames_presented >= limit)
+    }
+
     /// Presents the frame the last redraw rendered.
     ///
     /// The frame's damage and the recorded damage of the frames still in a
     /// window buffer decide what has to be copied: when the buffer's age says
     /// which frame it holds and no full repaint happened since, only their
     /// union is copied and the present reports it as damage. Every other case
-    /// copies the whole pixmap.
-    fn present(&mut self) -> Result<(), PlatformError> {
+    /// copies the whole pixmap. `raster` is the time the renderer took for the
+    /// frame and is recorded with the present's statistics. Returns `false`
+    /// when the surface has no pixel, so nothing was presented.
+    fn present(&mut self, raster: Duration) -> Result<bool, PlatformError> {
         let (width, height) = (self.renderer.width(), self.renderer.height());
         if width == 0 || height == 0 {
-            return Ok(());
+            return Ok(false);
         }
         let start = Instant::now();
         let mut buffer = self.surface.buffer_mut().map_err(PlatformError::Surface)?;
@@ -493,12 +566,15 @@ impl WindowState {
             buffer_age: age,
             with_damage,
             bytes_copied,
+            surface_width: width,
+            surface_height: height,
+            raster,
             present: start.elapsed(),
         };
         if let Some(handle) = &self.stats_handle {
             handle.store(self.stats);
         }
-        Ok(())
+        Ok(true)
     }
 }
 

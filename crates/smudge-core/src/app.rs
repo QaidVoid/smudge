@@ -69,6 +69,8 @@ pub struct FrameStats {
     pub paint: Duration,
     /// Time spent rebuilding the display list.
     pub list: Duration,
+    /// Time spent converting and merging the damage.
+    pub damage: Duration,
     /// Whether the layout pass ran the layout engine.
     pub layout_ran: bool,
     /// How many nodes the paint pass regenerated.
@@ -78,6 +80,12 @@ pub struct FrameStats {
     /// How many physical pixels the damage covers, counting an overlap once per
     /// rectangle.
     pub damage_pixels: u64,
+    /// How many physical pixels the damage covered before the merge step
+    /// collapsed the rectangles, counting an overlap once per rectangle.
+    ///
+    /// Together with [`FrameStats::damage_pixels`] this shows what the merge
+    /// step traded: rectangles for area.
+    pub damage_pixels_before_merge: u64,
     /// How many flush and apply rounds the frame ran.
     pub flush_rounds: u32,
 }
@@ -296,9 +304,14 @@ impl App {
         }
 
         let (width, height) = self.surface_size();
-        let damage = self.damage.finish(self.config.scale, width, height);
+        let damage_start = Instant::now();
+        let (damage, damage_pixels_before_merge) =
+            self.damage
+                .finish_measured(self.config.scale, width, height);
+        self.stats.damage = damage_start.elapsed();
         self.stats.damage_rects = damage.len() as u32;
         self.stats.damage_pixels = damage.iter().map(|rect| rect.area()).sum();
+        self.stats.damage_pixels_before_merge = damage_pixels_before_merge;
 
         FrameOutput {
             list: &self.list,
