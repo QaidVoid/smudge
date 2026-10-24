@@ -202,6 +202,29 @@ fn a_background_binding_repaints_one_box() {
 }
 
 #[test]
+fn a_repaint_in_place_adds_its_rectangle_once() {
+    let (color, set_color) = signal_local(Color::BLACK);
+    let mut app = App::new(config(RepaintMode::Damage), move || {
+        panel().child(
+            panel()
+                .width(px(50.0))
+                .height(px(20.0))
+                .background(move || color.get()),
+        )
+    });
+    frame(&mut app);
+
+    set_color.set(Color::rgb(255, 0, 0));
+    frame(&mut app);
+
+    assert_eq!(
+        app.stats().damage_pixels_before_merge,
+        50 * 20,
+        "the old and new bounds are the same rectangle, so the merge sees it once"
+    );
+}
+
+#[test]
 fn full_repaint_mode_damages_the_whole_surface_and_lists_the_same_items() {
     let mut damage_mode = App::new(config(RepaintMode::Damage), scene);
     let mut full_mode = App::new(config(RepaintMode::Full), scene);

@@ -24,7 +24,8 @@ impl WidgetTree {
     /// [`Dirty::Clean`], which means its layout or its paint properties
     /// changed. The pass adds the bounds the node painted last frame to
     /// `damage`, regenerates the node's operations, and adds the bounds it
-    /// paints now. A node's painted bounds are the union of its operations'
+    /// paints now unless they equal the old ones, which already cover them. A
+    /// node's painted bounds are the union of its operations'
     /// bounds, kept together with the clip the layout pass gave it, and the two
     /// are intersected in physical pixels when the damage is finished. A child
     /// that overflows a clipping parent therefore damages only the part inside
@@ -49,7 +50,8 @@ impl WidgetTree {
                 continue;
             }
 
-            if let Some(bounds) = node.painted.take() {
+            let old = node.painted.take();
+            if let Some(bounds) = old {
                 damage.add_clipped(bounds.bounds, bounds.clip);
             }
 
@@ -74,7 +76,9 @@ impl WidgetTree {
                     clip: node.clip,
                 })
             };
-            if let Some(bounds) = node.painted {
+            if let Some(bounds) = node.painted
+                && node.painted != old
+            {
                 damage.add_clipped(bounds.bounds, bounds.clip);
             }
             node.dirty = Dirty::Clean;
