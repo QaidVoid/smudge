@@ -2257,6 +2257,7 @@ dependencies = [
  "proptest",
  "reactive_graph",
  "slotmap",
+ "smudge-test",
  "taffy",
  "web-time",
 ]

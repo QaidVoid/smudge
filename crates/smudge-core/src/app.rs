@@ -225,21 +225,31 @@ impl App {
 
     /// Handles one input event between frames.
     ///
-    /// The app records what its routing needs: the pointer position from
-    /// pointer events and the keyboard modifiers from key and modifiers
-    /// events. Events that
-    /// reach no handler yet change nothing else. A handler that writes a
-    /// signal makes the change visible by calling [`App::frame`] afterwards.
+    /// The pointer events are routed to the tree: a move moves the hovered
+    /// chain, a primary press captures the node under the pointer, and a
+    /// release runs the captured node's `on_press` when it happens over it.
+    /// Handlers run at once, inside their node's owner, and a handler that
+    /// writes a signal makes the change visible with the next call to
+    /// [`App::frame`]. The app also records the pointer position from pointer
+    /// events and the keyboard modifiers from key and modifiers events.
     pub fn handle_event(&mut self, event: InputEvent) {
         match event {
-            InputEvent::PointerMoved { position } => self.pointer = position,
-            InputEvent::PointerDown { position, .. } | InputEvent::PointerUp { position, .. } => {
+            InputEvent::PointerMoved { position } => {
                 self.pointer = position;
+                self.tree.pointer_move(position);
             }
+            InputEvent::PointerDown { position, button } => {
+                self.pointer = position;
+                self.tree.pointer_down(position, button);
+            }
+            InputEvent::PointerUp { position, button } => {
+                self.pointer = position;
+                self.tree.pointer_up(position, button);
+            }
+            InputEvent::PointerLeft => self.tree.pointer_left(),
             InputEvent::Key(key) => self.modifiers = key.modifiers,
             InputEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
-            InputEvent::PointerLeft
-            | InputEvent::Wheel { .. }
+            InputEvent::Wheel { .. }
             | InputEvent::ImePreedit { .. }
             | InputEvent::ImeCommit { .. }
             | InputEvent::WindowFocus(_) => {}

@@ -41,12 +41,13 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use crate::geometry::{Color, Corners, Size};
+use crate::geometry::{Color, Corners, Point, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{self, Owner, RenderEffect};
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
 };
+use crate::tree::interaction::Handlers;
 use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::widget::{PaintCx, Widget};
 
@@ -217,6 +218,22 @@ impl Binding {
         }
     }
 
+    /// A binding that writes the node's disabled bit.
+    fn disabled(get: Rc<dyn Fn() -> bool>) -> Binding {
+        Binding {
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                binding_effect(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_disabled(id, value);
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes one property of the node's widget.
     ///
     /// The apply function reports how much of the node its write invalidated,
@@ -263,6 +280,10 @@ pub struct Element<W: Widget> {
     style: Style,
     /// Bindings installed when the node mounts.
     bindings: Vec<Binding>,
+    /// The input handlers the node will own.
+    handlers: Handlers,
+    /// Whether the node starts disabled.
+    disabled: bool,
     /// The children, in paint order.
     children: Vec<AnyElement>,
 }
@@ -281,6 +302,8 @@ impl<W: Widget> Element<W> {
             widget,
             style: Style::default(),
             bindings: Vec::new(),
+            handlers: Handlers::default(),
+            disabled: false,
             children: Vec::new(),
         }
     }
@@ -509,6 +532,111 @@ impl<W: Widget> Element<W> {
         })
     }
 
+    /// Runs `handler` when the primary button is released over the node after
+    /// a press that started on it.
+    ///
+    /// The press is captured: between the press and the release the node keeps
+    /// the pointer even when it moves away, and the handler runs only when the
+    /// release happens over the node again. A press released elsewhere runs
+    /// nothing.
+    ///
+    /// ```
+    /// use std::cell::Cell;
+    /// use std::rc::Rc;
+    ///
+    /// use smudge_core::app::{App, AppConfig, RepaintMode};
+    /// use smudge_core::geometry::{Color, Point, Size};
+    /// use smudge_core::input::{InputEvent, PointerButton};
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let presses = Rc::new(Cell::new(0u32));
+    /// let counted = Rc::clone(&presses);
+    /// let mut app = App::new(
+    ///     AppConfig {
+    ///         viewport: Size {
+    ///             width: 100.0,
+    ///             height: 60.0,
+    ///         },
+    ///         scale: 1.0,
+    ///         clear_color: Color::WHITE,
+    ///         repaint: RepaintMode::Damage,
+    ///     },
+    ///     move || {
+    ///         panel().width(px(40.0)).height(px(20.0)).on_press(move || {
+    ///             counted.set(counted.get() + 1);
+    ///         })
+    ///     },
+    /// );
+    /// app.frame();
+    ///
+    /// let corner = Point { x: 10.0, y: 5.0 };
+    /// app.handle_event(InputEvent::PointerMoved { position: corner });
+    /// app.handle_event(InputEvent::PointerDown {
+    ///     position: corner,
+    ///     button: PointerButton::Primary,
+    /// });
+    /// app.handle_event(InputEvent::PointerUp {
+    ///     position: corner,
+    ///     button: PointerButton::Primary,
+    /// });
+    /// assert_eq!(presses.get(), 1);
+    /// ```
+    pub fn on_press(mut self, handler: impl FnMut() + 'static) -> Self {
+        self.handlers.on_press = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when the node enters (`true`) or leaves (`false`) the
+    /// hovered chain.
+    ///
+    /// The hovered chain is the node under the pointer and all of its
+    /// ancestors, so a container stays hovered while the pointer is over one
+    /// of its children. While a press is held, hover does not change until the
+    /// button is released. The handler runs inside the node's owner, so it can
+    /// write the signals the element's bindings read.
+    pub fn on_hover(mut self, handler: impl FnMut(bool) + 'static) -> Self {
+        self.handlers.on_hover = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when a pointer button is pressed on the node.
+    ///
+    /// The position is in logical pixels, relative to the top left of the
+    /// window. Every button runs the handler; only the primary button also
+    /// starts a press that [`Element::on_press`] hears.
+    pub fn on_pointer_down(mut self, handler: impl FnMut(Point) + 'static) -> Self {
+        self.handlers.on_pointer_down = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when a primary press targets a node that is neither this
+    /// node nor one of its descendants.
+    ///
+    /// A press on the node itself, on a child, or on a deeper descendant does
+    /// not run it, so a popup asks for presses outside itself and closes on
+    /// the ones it gets. A press that reaches no node at all is outside every
+    /// node.
+    pub fn on_press_outside(mut self, handler: impl FnMut() + 'static) -> Self {
+        self.handlers.on_press_outside = Some(Box::new(handler));
+        self
+    }
+
+    /// Disables the node, which takes it out of hit testing, or enables it
+    /// again.
+    ///
+    /// A disabled node receives no pointer events of its own: its handlers
+    /// never run, and a press over it passes to whatever enabled node is hit
+    /// instead. Its children are still hit. This can be bound to a signal,
+    /// like the style builders.
+    pub fn disabled(mut self, disabled: impl Into<Value<bool>>) -> Self {
+        match disabled.into() {
+            Value::Static(disabled) => self.disabled = disabled,
+            Value::Dynamic(get) => self.bindings.push(Binding::disabled(get)),
+        }
+        self
+    }
+
     /// Binds one property of the element's own widget.
     ///
     /// `apply` writes the value into the widget and returns how much of the
@@ -561,6 +689,10 @@ pub struct AnyElement {
     style: Style,
     /// Bindings installed when the node mounts.
     bindings: Vec<Binding>,
+    /// The input handlers the node will own.
+    handlers: Handlers,
+    /// Whether the node starts disabled.
+    disabled: bool,
     /// The children, in paint order.
     children: Vec<AnyElement>,
 }
@@ -572,6 +704,8 @@ impl AnyElement {
             widget: Box::new(element.widget),
             style: element.style,
             bindings: element.bindings,
+            handlers: element.handlers,
+            disabled: element.disabled,
             children: element.children,
         }
     }
@@ -611,9 +745,13 @@ pub(crate) fn mount(
         widget,
         style,
         bindings,
+        handlers,
+        disabled,
         children,
     } = element;
     let id = tree.insert(parent, widget, style);
+    tree.set_disabled(id, disabled);
+    tree.set_handlers(id, handlers);
     let owner = tree.owner(id).expect("the node was just inserted").clone();
     for binding in bindings {
         let effect = owner.with(|| (binding.install)(id, queue));

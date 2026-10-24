@@ -21,10 +21,14 @@ use crate::widget::Widget;
 
 #[path = "display_list_pass.rs"]
 mod display_list_pass;
+#[path = "interaction.rs"]
+pub(crate) mod interaction;
 #[path = "layout.rs"]
 mod layout;
 #[path = "paint_pass.rs"]
 mod paint_pass;
+
+use self::interaction::{Handlers, Interaction};
 
 new_key_type! {
     /// Identifies one node in the widget tree.
@@ -89,6 +93,10 @@ struct Node {
     rect: Rect,
     /// The rectangle the node's subtree is clipped to, set by the layout pass.
     clip: Rect,
+    /// The node's pointer state: hovered, pressed and disabled.
+    interaction: Interaction,
+    /// The input handlers the node owns, set by its element's builders.
+    handlers: Handlers,
     /// The node's cached paint output, filled by the paint pass.
     ops: Vec<PaintOp>,
     /// The bounds the node painted last frame and the clip it painted under.
@@ -115,6 +123,11 @@ pub(crate) struct WidgetTree {
     viewport: Option<Size>,
     /// How many times the layout engine has run for this tree.
     layout_runs: u64,
+    /// The deepest node the pointer is over, or `None` when it is over no
+    /// node that can respond.
+    hovered: Option<WidgetId>,
+    /// The node a primary press captured, while the button is held.
+    pressed: Option<WidgetId>,
 }
 
 impl WidgetTree {
@@ -129,6 +142,8 @@ impl WidgetTree {
             removed_damage: Vec::new(),
             viewport: None,
             layout_runs: 0,
+            hovered: None,
+            pressed: None,
         }
     }
 
@@ -184,6 +199,8 @@ impl WidgetTree {
             dirty: Dirty::Clean,
             rect: Rect::default(),
             clip: Rect::default(),
+            interaction: Interaction::default(),
+            handlers: Handlers::default(),
             ops: Vec::new(),
             painted: None,
         };
