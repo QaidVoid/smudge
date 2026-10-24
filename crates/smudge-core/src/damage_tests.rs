@@ -21,7 +21,7 @@ fn any_scattered_rect() -> impl Strategy<Value = Rect> {
 fn accumulate(rects: &[Rect]) -> DamageAccumulator {
     let mut damage = DamageAccumulator::new();
     for rect in rects {
-        damage.add(*rect);
+        damage.add_clipped(*rect, *rect);
     }
     damage
 }
@@ -199,7 +199,7 @@ fn damage_over_sixty_percent_of_the_surface_becomes_one_rect() {
 #[test]
 fn a_full_frame_is_one_rect_covering_the_surface() {
     let mut damage = DamageAccumulator::new();
-    damage.add(Rect::new(1.0, 1.0, 2.0, 2.0));
+    damage.add_clipped(Rect::new(1.0, 1.0, 2.0, 2.0), Rect::new(1.0, 1.0, 2.0, 2.0));
     damage.add_full();
     assert_eq!(
         damage.finish(2.0, 40, 30),
@@ -274,7 +274,10 @@ fn damage_partly_outside_the_surface_is_clamped() {
 #[test]
 fn a_surface_with_no_pixels_has_no_damage() {
     let mut damage = DamageAccumulator::new();
-    damage.add(Rect::new(0.0, 0.0, 10.0, 10.0));
+    damage.add_clipped(
+        Rect::new(0.0, 0.0, 10.0, 10.0),
+        Rect::new(0.0, 0.0, 10.0, 10.0),
+    );
     assert!(damage.finish(1.0, 0, 100).is_empty());
     damage.add_full();
     assert!(damage.finish(1.0, 100, 0).is_empty());

@@ -152,23 +152,6 @@ impl Rect {
             ),
         }
     }
-
-    /// Returns the rectangle moved by `dx` and `dy` logical pixels.
-    pub fn translate(self, dx: f32, dy: f32) -> Rect {
-        Rect::new(self.x0 + dx, self.y0 + dy, self.x1 + dx, self.y1 + dy)
-    }
-
-    /// Returns the rectangle grown by `amount` logical pixels on every side.
-    ///
-    /// A negative amount shrinks the rectangle, which can make it empty.
-    pub fn inflate(self, amount: f32) -> Rect {
-        Rect::new(
-            self.x0 - amount,
-            self.y0 - amount,
-            self.x1 + amount,
-            self.y1 + amount,
-        )
-    }
 }
 
 /// A rectangle in physical pixels, relative to the top left of the surface.
@@ -370,14 +353,6 @@ impl Corners {
             bottom_right: radius,
             bottom_left: radius,
         }
-    }
-
-    /// Returns `true` when every radius is zero.
-    pub fn is_zero(self) -> bool {
-        self.top_left == 0.0
-            && self.top_right == 0.0
-            && self.bottom_right == 0.0
-            && self.bottom_left == 0.0
     }
 }
 
