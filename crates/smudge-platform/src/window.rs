@@ -21,6 +21,7 @@ use winit::raw_window_handle::{
 use winit::window::{Window, WindowId};
 
 use crate::error::PlatformError;
+use crate::events::EventTranslator;
 use crate::present::{
     DamageHistory, PresentStats, PresentStatsHandle, copy_rect, damage_region, present_skipped,
     tint_rects,
@@ -263,6 +264,8 @@ struct WindowState {
     surface: Surface<SharedWindow, SharedWindow>,
     /// The app whose frames the window runs.
     app: App,
+    /// The translator that turns window events into input events.
+    translator: EventTranslator,
     /// The renderer that paints the app's damage into a pixmap.
     renderer: CpuRenderer,
     /// Whether every present tints the frame's damage in the window buffer.
@@ -363,6 +366,7 @@ where
             window,
             surface,
             app,
+            translator: EventTranslator::new(),
             renderer,
             show_damage: self.options.show_damage,
             history: DamageHistory::default(),
@@ -506,7 +510,15 @@ where
                 }
                 result
             }
-            _ => Ok(()),
+            other => {
+                if let Some(state) = self.state.as_mut() {
+                    let input = state.translator.translate(&other, state.scale);
+                    if let Some(input) = input {
+                        state.app.handle_event(input);
+                    }
+                }
+                Ok(())
+            }
         };
         if let Err(error) = result {
             self.fail(event_loop, error);

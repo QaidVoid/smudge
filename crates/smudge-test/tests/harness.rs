@@ -6,7 +6,8 @@
 use std::marker::PhantomData;
 
 use smudge_core::element::Element;
-use smudge_core::geometry::{Color, PixelRect, Size};
+use smudge_core::geometry::{Color, PixelRect, Point, Size};
+use smudge_core::input::{Key, Modifiers};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{prelude::*, signal_local};
 use smudge_core::style::px;
@@ -130,4 +131,25 @@ fn a_viewport_change_resizes_the_surface_and_repaints_it() {
 fn comparing_before_any_frame_panics() {
     let harness = Harness::new(10.0, 10.0, 1.0, panel);
     harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn an_injected_click_delivers_the_pointer_and_the_keys() {
+    let mut harness = Harness::new(100.0, 60.0, 1.0, panel);
+    harness.frame();
+
+    let position = Point { x: 30.0, y: 20.0 };
+    harness.click(position);
+    assert_eq!(harness.app().pointer_position(), position);
+
+    harness.press_key(Key::Tab);
+    harness.type_text("sm");
+    assert_eq!(
+        harness.app().modifiers(),
+        Modifiers::default(),
+        "typed keys carry no modifiers"
+    );
+
+    let frame = harness.frame();
+    assert_eq!(frame.damage.len(), 0, "input alone repaints nothing");
 }

@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod events;
 mod present;
 mod window;
 

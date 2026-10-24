@@ -11,7 +11,8 @@ use std::path::PathBuf;
 
 use smudge_core::app::{App, AppConfig, FrameOutput, RepaintMode};
 use smudge_core::element::IntoElement;
-use smudge_core::geometry::{Color, PixelRect, Size};
+use smudge_core::geometry::{Color, PixelRect, Point, Size};
+use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::paint::DisplayList;
 use smudge_cpu::CpuRenderer;
 
@@ -169,6 +170,78 @@ impl Harness {
     /// the tick callback.
     pub fn app(&mut self) -> &mut App {
         &mut self.app
+    }
+
+    /// Injects one input event into the app, between frames.
+    ///
+    /// The event goes through [`App::handle_event`], exactly as a window
+    /// delivers it. A handler's change to the tree becomes visible in the
+    /// next call to [`Harness::frame`], which a test calls itself.
+    pub fn event(&mut self, event: InputEvent) {
+        self.app.handle_event(event);
+    }
+
+    /// Injects a pointer move to `position`, in logical pixels.
+    pub fn move_to(&mut self, position: Point) {
+        self.event(InputEvent::PointerMoved { position });
+    }
+
+    /// Injects a primary-button click at `position`, in logical pixels.
+    ///
+    /// The pointer moves there first, then the button goes down and up at
+    /// that position, the three events a real click delivers in order.
+    pub fn click(&mut self, position: Point) {
+        self.move_to(position);
+        self.event(InputEvent::PointerDown {
+            position,
+            button: PointerButton::Primary,
+        });
+        self.event(InputEvent::PointerUp {
+            position,
+            button: PointerButton::Primary,
+        });
+    }
+
+    /// Injects a press and release of `key`, without modifiers or repeat.
+    pub fn press_key(&mut self, key: Key) {
+        self.event(InputEvent::Key(KeyEvent {
+            key: key.clone(),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+            text: None,
+        }));
+        self.event(InputEvent::Key(KeyEvent {
+            key,
+            pressed: false,
+            repeat: false,
+            modifiers: Modifiers::default(),
+            text: None,
+        }));
+    }
+
+    /// Injects `text` as typed input, one key press and release per character.
+    ///
+    /// Every press carries its character as the event's text, so an editor
+    /// can insert it without reading the key name.
+    pub fn type_text(&mut self, text: &str) {
+        for character in text.chars() {
+            let key = Key::Character(character.to_string());
+            self.event(InputEvent::Key(KeyEvent {
+                key: key.clone(),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+                text: Some(character.to_string()),
+            }));
+            self.event(InputEvent::Key(KeyEvent {
+                key,
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::default(),
+                text: None,
+            }));
+        }
     }
 
     /// Encodes the current surface as a PNG image.

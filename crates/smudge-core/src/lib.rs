@@ -10,6 +10,7 @@ pub mod app;
 mod damage;
 pub mod element;
 pub mod geometry;
+pub mod input;
 pub mod paint;
 pub mod reactive;
 pub mod style;

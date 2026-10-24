@@ -11,7 +11,8 @@ use web_time::Instant;
 
 use crate::damage::DamageAccumulator;
 use crate::element::{IntoElement, UpdateQueue, mount};
-use crate::geometry::{Color, PixelRect, Rect, Size};
+use crate::geometry::{Color, PixelRect, Point, Rect, Size};
+use crate::input::{InputEvent, Modifiers};
 use crate::paint::DisplayList;
 use crate::reactive::{self, Owner};
 use crate::tree::WidgetTree;
@@ -135,6 +136,11 @@ pub struct App {
     list: DisplayList,
     /// The settings the frame uses.
     config: AppConfig,
+    /// The pointer position the last pointer event reported, in logical
+    /// pixels.
+    pointer: Point,
+    /// The keyboard modifiers the last key event reported.
+    modifiers: Modifiers,
     /// The timings and counts of the last frame.
     stats: FrameStats,
     /// The callback that runs at the start of every frame.
@@ -174,6 +180,8 @@ impl App {
             damage: DamageAccumulator::new(),
             list: DisplayList::new(),
             config,
+            pointer: Point::default(),
+            modifiers: Modifiers::default(),
             stats: FrameStats::default(),
             tick: None,
             force_full: true,
@@ -213,6 +221,47 @@ impl App {
     /// Returns whether a frame tick callback is set.
     pub fn has_tick(&self) -> bool {
         self.tick.is_some()
+    }
+
+    /// Handles one input event between frames.
+    ///
+    /// The app records what its routing needs: the pointer position from
+    /// pointer events and the keyboard modifiers from key and modifiers
+    /// events. Events that
+    /// reach no handler yet change nothing else. A handler that writes a
+    /// signal makes the change visible by calling [`App::frame`] afterwards.
+    pub fn handle_event(&mut self, event: InputEvent) {
+        match event {
+            InputEvent::PointerMoved { position } => self.pointer = position,
+            InputEvent::PointerDown { position, .. } | InputEvent::PointerUp { position, .. } => {
+                self.pointer = position;
+            }
+            InputEvent::Key(key) => self.modifiers = key.modifiers,
+            InputEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            InputEvent::PointerLeft
+            | InputEvent::Wheel { .. }
+            | InputEvent::ImePreedit { .. }
+            | InputEvent::ImeCommit { .. }
+            | InputEvent::WindowFocus(_) => {}
+        }
+    }
+
+    /// Returns the pointer position the last pointer event reported, in
+    /// logical pixels.
+    ///
+    /// The position starts at the origin and moves only when a pointer event
+    /// carries a position, so it lags the real pointer until the first event
+    /// arrives.
+    pub fn pointer_position(&self) -> Point {
+        self.pointer
+    }
+
+    /// Returns the keyboard modifiers the last key or modifiers event
+    /// reported.
+    ///
+    /// They start at none and change only when one of those events arrives.
+    pub fn modifiers(&self) -> Modifiers {
+        self.modifiers
     }
 
     /// Returns the surface size in physical pixels.
