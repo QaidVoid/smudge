@@ -8,6 +8,10 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+smudge-core = { version = "0.1.0", path = "../smudge-core" }
+smudge-cpu = { version = "0.1.0", path = "../smudge-cpu" }
+softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 
 [lints]
 workspace = true
