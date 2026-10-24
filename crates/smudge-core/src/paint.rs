@@ -8,7 +8,79 @@
 //! A renderer skips items whose bounds miss the damaged area, so
 //! [`PaintOp::bounds`] must cover every pixel an operation can change.
 
+use std::rc::Rc;
+use std::sync::Arc;
+
 use crate::geometry::{Color, Corners, Rect};
+
+/// The bytes of one font file, shared by every glyph run that uses it.
+///
+/// Glyph runs carry the font as plain bytes so that paint operations never
+/// depend on a particular shaping library. `id` identifies the data uniquely
+/// for the lifetime of the process, which renderers use as a glyph cache key
+/// without hashing the bytes. `index` selects one face inside a font file that
+/// holds several.
+#[derive(Clone)]
+pub struct FontBlob {
+    /// The unique identifier of the font data within this process.
+    pub id: u64,
+    /// The bytes of the font file.
+    pub data: Arc<dyn AsRef<[u8]> + Send + Sync>,
+    /// The face to use when the file holds a collection of fonts.
+    pub index: u32,
+}
+
+impl PartialEq for FontBlob {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.index == other.index
+    }
+}
+
+impl std::fmt::Debug for FontBlob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FontBlob")
+            .field("id", &self.id)
+            .field("index", &self.index)
+            .field("len", &self.data.as_ref().as_ref().len())
+            .finish()
+    }
+}
+
+/// One glyph of a [`GlyphRun`], positioned in absolute logical window
+/// coordinates.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PositionedGlyph {
+    /// The glyph identifier inside the run's font, as shaping produced it.
+    pub id: u32,
+    /// Horizontal position of the glyph's baseline origin.
+    pub x: f32,
+    /// Vertical position of the glyph's baseline origin.
+    pub y: f32,
+}
+
+/// A shaped run of glyphs that all use one font, size and color.
+///
+/// Glyph positions are absolute logical window coordinates, with each glyph's
+/// `x` and `y` at its baseline origin. A renderer rasterizes each glyph
+/// separately and blits it in its run's color, so nothing else about the text,
+/// such as clusters or line breaking, travels with the run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlyphRun {
+    /// The font the glyph identifiers refer to.
+    pub font: FontBlob,
+    /// The font size in logical pixels.
+    pub size: f32,
+    /// The straight-alpha sRGB color the glyphs paint with.
+    pub color: Color,
+    /// The glyphs of the run, in paint order.
+    pub glyphs: Vec<PositionedGlyph>,
+    /// The rectangle in absolute logical coordinates that covers the ink of
+    /// every glyph, plus one logical pixel on every side for anti-aliasing.
+    ///
+    /// A renderer may rely on it as the area the run can change: ink outside
+    /// it is not guaranteed to be drawn.
+    pub ink_bounds: Rect,
+}
 
 /// A single drawing operation in absolute logical window coordinates.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,6 +106,11 @@ pub enum PaintOp {
         /// Straight-alpha sRGB border color.
         color: Color,
     },
+    /// A shaped run of glyphs, painted in one font, size and color.
+    ///
+    /// The run is shared in an `Rc` so that rebuilding the display list for a
+    /// frame in which text did not change copies no glyph vectors.
+    Glyphs(Rc<GlyphRun>),
 }
 
 impl PaintOp {
@@ -47,6 +124,7 @@ impl PaintOp {
     pub fn bounds(&self) -> Rect {
         match self {
             PaintOp::FillRect { rect, .. } | PaintOp::StrokeRect { rect, .. } => *rect,
+            PaintOp::Glyphs(run) => run.ink_bounds,
         }
     }
 }

@@ -577,6 +577,12 @@ impl<W: Widget> IntoElement for Element<W> {
     }
 }
 
+impl IntoElement for AnyElement {
+    fn into_any(self) -> AnyElement {
+        self
+    }
+}
+
 /// Mounts `element` as a child of `parent`, or as the root when `parent` is
 /// `None`, and returns the id of the node it created.
 ///

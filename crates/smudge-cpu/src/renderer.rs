@@ -6,6 +6,7 @@ use smudge_core::geometry::PixelRect;
 use tiny_skia::Pixmap;
 
 use crate::draw::Canvas;
+use crate::glyph_cache::GlyphCache;
 
 /// A renderer that keeps a premultiplied RGBA surface between frames and
 /// repaints only the damaged rectangles of each frame.
@@ -16,7 +17,12 @@ use crate::draw::Canvas;
 /// the operations covering it, so redrawing a rectangle gives the same bytes a
 /// full repaint would.
 ///
-/// Drawing needs no buffer of its own, so a frame allocates nothing.
+/// Glyphs are drawn from a cache of alpha masks that survives between frames
+/// with the surface, so a glyph is rasterized once no matter how often it is
+/// repainted.
+///
+/// Drawing needs no buffer of its own, so a frame whose glyphs are all in the
+/// cache allocates nothing. A glyph seen for the first time allocates its mask.
 ///
 /// # Examples
 ///
@@ -50,6 +56,8 @@ pub struct CpuRenderer {
     /// The surface that survives between frames, or `None` when the surface
     /// has no pixel.
     pixmap: Option<Pixmap>,
+    /// The glyph masks that survive between frames.
+    glyphs: GlyphCache,
 }
 
 impl CpuRenderer {
@@ -62,6 +70,7 @@ impl CpuRenderer {
     pub fn new(width: u32, height: u32) -> CpuRenderer {
         CpuRenderer {
             pixmap: Pixmap::new(width, height),
+            glyphs: GlyphCache::new(),
         }
     }
 
@@ -69,6 +78,8 @@ impl CpuRenderer {
     ///
     /// The contents are undefined until the next frame that damages the whole
     /// surface, so callers resize only when they also force a full repaint.
+    /// The glyph cache survives a resize, because a mask depends on the glyph
+    /// and its size but not on the surface.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.pixmap = Pixmap::new(width, height);
     }
@@ -109,6 +120,7 @@ impl CpuRenderer {
             width,
             height,
             scale: frame.scale,
+            glyphs: &mut self.glyphs,
         };
         for &rect in frame.damage {
             canvas.clear(rect, frame.clear_color);

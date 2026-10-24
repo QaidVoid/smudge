@@ -19,6 +19,7 @@ system-fonts = ["parley/system", "fontique/fontconfig-dlopen"]
 [dependencies]
 fontique = { version = "0.12.0", default-features = false }
 parley = { version = "0.12.0", default-features = false, features = ["std"] }
+skrifa = "0.44.0"
 smudge-core = { version = "0.1.0", path = "../smudge-core" }
 
 [lints]

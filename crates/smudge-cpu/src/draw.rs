@@ -3,12 +3,25 @@
 //! Every pixel's coverage is computed from its own absolute position and the
 //! shape that covers it, never from the area being drawn. Drawing any part of
 //! the surface on its own therefore produces exactly the bytes a full repaint
-//! would, however the damage is split.
+//! would, however the damage is split. Glyphs meet the same rule through their
+//! masks, which are rasterized whole and depend on nothing but the glyph, its
+//! size and its subpixel phase.
 
 use std::ops::Range;
 
 use smudge_core::geometry::{Color, Corners, PixelRect, Rect};
-use smudge_core::paint::{DisplayItem, PaintOp};
+use smudge_core::paint::{DisplayItem, GlyphRun, PaintOp};
+
+use crate::glyph_cache::{GlyphCache, MAX_GLYPH_SIZE, MaskKey};
+
+/// The largest glyph position, in physical pixels from the surface origin,
+/// that is placed at all.
+///
+/// It only keeps the integer placement of a glyph from overflowing. Ordinary
+/// fonts keep their bearings within a few tens of thousands of pixels, so no
+/// glyph they shape onto a surface comes near it. Culling by distance is left
+/// to the clip, because a crafted font's bearing has no useful bound.
+const PLACEMENT_LIMIT: f32 = 1.0e9;
 
 /// The surface pixels and the scale that logical coordinates convert with.
 pub(crate) struct Canvas<'a> {
@@ -20,6 +33,8 @@ pub(crate) struct Canvas<'a> {
     pub(crate) height: u32,
     /// Physical pixels per logical pixel.
     pub(crate) scale: f32,
+    /// The cache of rasterized glyph masks, shared across frames.
+    pub(crate) glyphs: &'a mut GlyphCache,
 }
 
 impl Canvas<'_> {
@@ -110,6 +125,107 @@ impl Canvas<'_> {
                         |y| outer.steady(y),
                     ),
                 }
+            }
+            PaintOp::Glyphs(ref run) => self.draw_glyphs(run.as_ref(), area),
+        }
+    }
+
+    /// Blits every glyph of `run` that reaches into `area`, the part of the
+    /// run's ink bounds inside the clip.
+    ///
+    /// Each glyph is drawn from its cached alpha mask at its own physical
+    /// position. A glyph's mask depends on the glyph, its quantized size and
+    /// its subpixel x phase only, so the same text blits the same bytes
+    /// whichever part of the surface is drawn. Glyphs whose ink bounds claim
+    /// no pixels draw nothing, which keeps a run inside the damage its bounds
+    /// produced even when a font's metrics disagree with its outlines.
+    ///
+    /// A glyph whose size or position is not finite, whose size exceeds
+    /// [`MAX_GLYPH_SIZE`] physical pixels, or whose origin lies more than
+    /// [`PLACEMENT_LIMIT`] physical pixels from the surface origin draws
+    /// nothing.
+    fn draw_glyphs(&mut self, run: &GlyphRun, area: PixelRect) {
+        let size_px = run.size * self.scale;
+        if !run.size.is_finite()
+            || run.size <= 0.0
+            || !size_px.is_finite()
+            || size_px <= 0.0
+            || size_px > MAX_GLYPH_SIZE
+        {
+            return;
+        }
+        // The size the masks are rasterized at, quantized to 1/64 of a pixel,
+        // is what the cache keys a glyph by.
+        let size = (size_px * 64.0).round() as i32;
+        if size <= 0 {
+            return;
+        }
+        let Canvas {
+            pixels,
+            width,
+            scale,
+            glyphs,
+            ..
+        } = self;
+        let scale = *scale;
+        for glyph in &run.glyphs {
+            let x = glyph.x * scale;
+            let y = (glyph.y * scale).round();
+            // Only positions far past any surface are skipped, so the integer
+            // placement below cannot overflow. A bearing is not bounded by
+            // the mask size, so nothing closer may be skipped, and the clip to
+            // `area` handles everything in between.
+            if !(-PLACEMENT_LIMIT..=PLACEMENT_LIMIT).contains(&x)
+                || !(-PLACEMENT_LIMIT..=PLACEMENT_LIMIT).contains(&y)
+            {
+                continue;
+            }
+            let origin_x = x.floor();
+            let subpixel = ((x - origin_x) * 4.0) as u32 % 4;
+            let key = MaskKey {
+                font_id: run.font.id,
+                font_index: run.font.index,
+                glyph_id: glyph.id,
+                size,
+                subpixel,
+            };
+            let Some(entry) = glyphs.entry(key, &run.font) else {
+                continue;
+            };
+            let (mask_width, mask_height) = (entry.width(), entry.height());
+            if mask_width == 0 || mask_height == 0 {
+                continue;
+            }
+
+            // The mask is placed at the glyph's baseline origin, offset by its
+            // bearings. Intersecting with `area` keeps every write inside the
+            // run's ink bounds and the clip, which is what the damage covers.
+            let x0 = origin_x as i64 + i64::from(entry.left());
+            let y0 = y as i64 + i64::from(entry.top());
+            let x1 = x0 + i64::from(mask_width);
+            let y1 = y0 + i64::from(mask_height);
+            let ix0 = x0.max(i64::from(area.x));
+            let iy0 = y0.max(i64::from(area.y));
+            let ix1 = x1.min(i64::from(area.x) + i64::from(area.width));
+            let iy1 = y1.min(i64::from(area.y) + i64::from(area.height));
+            if ix0 >= ix1 || iy0 >= iy1 {
+                continue;
+            }
+
+            let mut mask_offset = ((iy0 - y0) as usize) * mask_width as usize + (ix0 - x0) as usize;
+            let row_bytes = (ix1 - ix0) as usize * 4;
+            for y in iy0..iy1 {
+                let start = (y as usize * *width as usize + ix0 as usize) * 4;
+                let row = &mut pixels[start..start + row_bytes];
+                let coverage = &entry.data()[mask_offset..mask_offset + (ix1 - ix0) as usize];
+                for (target, &coverage) in row.as_chunks_mut::<4>().0.iter_mut().zip(coverage) {
+                    if coverage == 0 {
+                        continue;
+                    }
+                    let alpha = (u32::from(coverage) * u32::from(run.color.a) + 127) / 255;
+                    blend(target, run.color, alpha);
+                }
+                mask_offset += mask_width as usize;
             }
         }
     }

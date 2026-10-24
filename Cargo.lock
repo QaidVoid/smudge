@@ -2266,7 +2266,9 @@ name = "smudge-cpu"
 version = "0.1.0"
 dependencies = [
  "insta",
+ "skrifa",
  "smudge-core",
+ "smudge-text",
  "tiny-skia",
 ]
 
@@ -2289,6 +2291,7 @@ dependencies = [
  "proptest",
  "smudge-core",
  "smudge-cpu",
+ "smudge-text",
 ]
 
 [[package]]
@@ -2298,6 +2301,7 @@ dependencies = [
  "fontique",
  "insta",
  "parley",
+ "skrifa",
  "smudge-core",
 ]
 
