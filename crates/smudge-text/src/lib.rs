@@ -21,10 +21,12 @@
 
 mod fonts;
 mod glyphs;
+mod label;
 mod layout;
 mod style;
 mod system;
 
+pub use label::{Label, LabelExt, label};
 pub use layout::TextLayout;
 pub use style::{TextStyle, current_text_style, provide_text_style};
 pub use system::TextSystem;

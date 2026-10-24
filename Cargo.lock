@@ -2303,6 +2303,7 @@ dependencies = [
  "parley",
  "skrifa",
  "smudge-core",
+ "smudge-test",
 ]
 
 [[package]]

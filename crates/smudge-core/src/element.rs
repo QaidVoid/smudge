@@ -124,6 +124,18 @@ static_values!(
     Justify,
 );
 
+impl From<String> for Value<String> {
+    fn from(text: String) -> Value<String> {
+        Value::Static(text)
+    }
+}
+
+impl From<&str> for Value<String> {
+    fn from(text: &str) -> Value<String> {
+        Value::Static(text.to_owned())
+    }
+}
+
 impl<F: Fn() -> T + 'static, T: 'static> From<F> for Value<T> {
     fn from(get: F) -> Value<T> {
         Value::Dynamic(Rc::new(get))

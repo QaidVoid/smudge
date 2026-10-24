@@ -27,3 +27,4 @@ workspace = true
 
 [dev-dependencies]
 insta = "1.49.0"
+smudge-test = { path = "../smudge-test" }
