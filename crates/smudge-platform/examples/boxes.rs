@@ -1,8 +1,9 @@
 //! A grid of rounded boxes with one box changing color on every frame.
 //!
 //! Run with `cargo run --example boxes -p smudge-platform`. Pass `--full` to
-//! repaint the whole surface every frame instead of only the damage, and
-//! `--stats` to print a presentation summary every 120 frames.
+//! repaint the whole surface every frame instead of only the damage, `--stats`
+//! to print a presentation summary every 120 frames, and `--show-damage` to
+//! tint the pixels each frame repainted.
 
 // The summaries are the output the example exists to produce.
 #![allow(clippy::print_stdout)]
@@ -55,6 +56,9 @@ fn main() -> ExitCode {
         RepaintMode::Damage
     };
     let report = env::args().skip(1).any(|argument| argument == "--stats");
+    let show_damage = env::args()
+        .skip(1)
+        .any(|argument| argument == "--show-damage");
     let stats = report.then(PresentStatsHandle::new);
 
     let setters: Rc<RefCell<Vec<SetColor>>> = Rc::new(RefCell::new(Vec::with_capacity(BOXES)));
@@ -99,6 +103,7 @@ fn main() -> ExitCode {
             },
             clear_color: Color::rgb(16, 17, 21),
             repaint,
+            show_damage,
             stats: stats.clone(),
             on_frame: None,
             frame_limit: None,

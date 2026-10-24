@@ -469,6 +469,7 @@ fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
             size: scene.viewport,
             clear_color: CLEAR_COLOR,
             repaint: args.mode,
+            show_damage: false,
             stats: None,
             on_frame: Some(on_frame),
             frame_limit: Some(per_repeat * repeats),

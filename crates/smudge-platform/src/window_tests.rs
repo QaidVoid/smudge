@@ -18,6 +18,7 @@ fn options(clear_color: Color) -> WindowOptions {
         },
         clear_color,
         repaint: RepaintMode::Damage,
+        show_damage: false,
         stats: None,
         on_frame: None,
         frame_limit: None,

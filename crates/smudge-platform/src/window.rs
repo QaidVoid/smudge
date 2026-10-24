@@ -23,6 +23,7 @@ use winit::window::{Window, WindowId};
 use crate::error::PlatformError;
 use crate::present::{
     DamageHistory, PresentStats, PresentStatsHandle, copy_rect, damage_region, present_skipped,
+    tint_rects,
 };
 
 /// The measurement hook that receives one pair of statistics per presented
@@ -49,6 +50,14 @@ pub struct WindowOptions {
     pub clear_color: Color,
     /// How much of the surface each frame repaints.
     pub repaint: RepaintMode,
+    /// Whether every present tints the pixels the frame repainted.
+    ///
+    /// A debugging aid for damage regressions: while it is on, every present
+    /// copies the whole pixmap and blends a translucent tint over the frame's
+    /// damage rectangles in the window buffer alone, so the window shows what
+    /// each frame paid for. Damage presentation is off while the overlay is
+    /// on, and neither the renderer's pixmap nor a later frame keeps a tint.
+    pub show_damage: bool,
     /// Where the platform publishes presentation statistics, when given.
     ///
     /// Pass a [`PresentStatsHandle`] and keep the original to read the
@@ -78,6 +87,7 @@ impl std::fmt::Debug for WindowOptions {
             .field("size", &self.size)
             .field("clear_color", &self.clear_color)
             .field("repaint", &self.repaint)
+            .field("show_damage", &self.show_damage)
             .field("stats", &self.stats)
             .field("on_frame", &self.on_frame.is_some())
             .field("frame_limit", &self.frame_limit)
@@ -126,6 +136,7 @@ impl std::fmt::Debug for WindowOptions {
 ///         },
 ///         clear_color: Color::WHITE,
 ///         repaint: RepaintMode::Damage,
+///         show_damage: false,
 ///         stats: None,
 ///         on_frame: None,
 ///         frame_limit: None,
@@ -180,6 +191,7 @@ pub fn run<E: IntoElement + 'static>(
 ///         },
 ///         clear_color: Color::WHITE,
 ///         repaint: RepaintMode::Damage,
+///         show_damage: false,
 ///         stats: None,
 ///         on_frame: None,
 ///         frame_limit: None,
@@ -253,6 +265,8 @@ struct WindowState {
     app: App,
     /// The renderer that paints the app's damage into a pixmap.
     renderer: CpuRenderer,
+    /// Whether every present tints the frame's damage in the window buffer.
+    show_damage: bool,
     /// The damage of the frames the window presented, most recent first.
     history: DamageHistory,
     /// The frame that was rendered and waits to be presented.
@@ -350,6 +364,7 @@ where
             surface,
             app,
             renderer,
+            show_damage: self.options.show_damage,
             history: DamageHistory::default(),
             pending: PendingFrame::default(),
             region: Vec::new(),
@@ -513,22 +528,26 @@ impl WindowState {
     /// window buffer decide what has to be copied: when the buffer's age says
     /// which frame it holds and no full repaint happened since, only their
     /// union is copied and the present reports it as damage. Every other case
-    /// copies the whole pixmap. `raster` is the time the renderer took for the
+    /// copies the whole pixmap. While the damage overlay is on, every present
+    /// copies the whole pixmap and blends the tint over the frame's damage in
+    /// the window buffer, so no tint reaches the pixmap a later frame repaints
+    /// from. It also presents a frame with no damage, so a tint never outlives
+    /// the frame that caused it. `raster` is the time the renderer took for the
     /// frame and is recorded with the present's statistics. `has_tick` says
     /// whether the app runs a per-frame tick. Returns `false` when nothing was
-    /// presented, which is the case for a surface without pixels and for a
-    /// frame with no damage while a tick runs: such a frame changed nothing,
-    /// so the window still shows the last present and no buffer is taken, no
-    /// statistics are published, and the frame limit does not count it. An
-    /// empty frame without a tick is a redraw the window system asked for,
-    /// such as an X11 window being shown again, and presents the whole pixmap
-    /// to restore the window's contents.
+    /// presented, which is the case for a surface without pixels and, while the
+    /// overlay is off, for a frame with no damage while a tick runs: such a
+    /// frame changed nothing, so the window still shows the last present and no
+    /// buffer is taken, no statistics are published, and the frame limit does
+    /// not count it. An empty frame without a tick is a redraw the window
+    /// system asked for, such as an X11 window being shown again, and presents
+    /// the whole pixmap to restore the window's contents.
     fn present(&mut self, raster: Duration, has_tick: bool) -> Result<bool, PlatformError> {
         let (width, height) = (self.renderer.width(), self.renderer.height());
         if width == 0 || height == 0 {
             return Ok(false);
         }
-        if present_skipped(&self.pending.damage, has_tick) {
+        if present_skipped(&self.pending.damage, has_tick, self.show_damage) {
             return Ok(false);
         }
         let acquire_start = Instant::now();
@@ -541,13 +560,14 @@ impl WindowState {
             "the window buffer must hold one entry per rendered pixel"
         );
         let age = buffer.age();
-        let with_damage = damage_region(
-            age,
-            &self.pending.damage,
-            self.pending.full,
-            &self.history,
-            &mut self.region,
-        );
+        let with_damage = !self.show_damage
+            && damage_region(
+                age,
+                &self.pending.damage,
+                self.pending.full,
+                &self.history,
+                &mut self.region,
+            );
         let mut bytes_copied = 0;
         if with_damage {
             self.reported.clear();
@@ -584,6 +604,9 @@ impl WindowState {
                     height,
                 },
             );
+            if self.show_damage {
+                tint_rects(&mut buffer, width, &self.pending.damage);
+            }
             buffer.present().map_err(PlatformError::Surface)?;
         }
         self.history.push(&self.pending.damage, self.pending.full);

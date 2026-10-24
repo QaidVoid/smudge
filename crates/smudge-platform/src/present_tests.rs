@@ -3,7 +3,7 @@
 
 use smudge_core::geometry::PixelRect;
 
-use super::{DamageHistory, copy_rect, damage_region, present_skipped};
+use super::{DamageHistory, copy_rect, damage_region, present_skipped, tint_rects};
 
 /// Returns a one-pixel rectangle at the given position, so tests can tell
 /// rectangles apart by their position.
@@ -215,17 +215,22 @@ fn a_frame_without_damage_copies_everything() {
 
 #[test]
 fn an_unchanged_frame_with_a_tick_skips_its_present() {
-    assert!(present_skipped(&[], true));
+    assert!(present_skipped(&[], true, false));
 }
 
 #[test]
 fn an_unchanged_frame_without_a_tick_presents_to_restore_the_window() {
-    assert!(!present_skipped(&[], false));
+    assert!(!present_skipped(&[], false, false));
+}
+
+#[test]
+fn an_unchanged_frame_with_a_tick_presents_while_the_damage_overlay_is_on() {
+    assert!(!present_skipped(&[], true, true));
 }
 
 #[test]
 fn a_changed_frame_with_a_tick_presents() {
-    assert!(!present_skipped(&[rect(0, 0)], true));
+    assert!(!present_skipped(&[rect(0, 0)], true, false));
 }
 
 #[test]
@@ -247,4 +252,44 @@ fn a_region_that_changes_every_frame_is_copied_once() {
         [wide, rect(5, 5)],
         "the rectangles the current damage contains add nothing to copy"
     );
+}
+
+#[test]
+fn the_tint_changes_only_the_pixels_inside_the_damage_rect() {
+    let outside = 0x0010_2030_u32;
+    let mut buffer = [outside; 9];
+
+    tint_rects(
+        &mut buffer,
+        3,
+        &[PixelRect {
+            x: 1,
+            y: 1,
+            width: 1,
+            height: 1,
+        }],
+    );
+
+    assert_eq!(buffer[4], 0x006a_2c36);
+    let mut expected = [outside; 9];
+    expected[4] = buffer[4];
+    assert_eq!(buffer, expected);
+}
+
+#[test]
+fn the_tint_blends_toward_its_color_instead_of_replacing() {
+    let mut buffer = [0x00ff_ffff_u32];
+
+    tint_rects(
+        &mut buffer,
+        1,
+        &[PixelRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        }],
+    );
+
+    assert_eq!(buffer, [0x00ff_b7b7]);
 }

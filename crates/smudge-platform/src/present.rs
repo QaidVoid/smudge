@@ -126,6 +126,46 @@ pub(crate) fn copy_rect(
     }
 }
 
+/// Blends the damage overlay's tint over the frame's damage rectangles.
+///
+/// `buffer` holds one `0x00RRGGBB` entry per pixel with `surface_width` entries
+/// per row, as [`copy_rect`] writes it. Only the pixels inside `rects` change.
+/// The tint lives in the window buffer alone: the next present copies the whole
+/// pixmap again, so no tint reaches the renderer's pixmap and none survives in
+/// a reused window buffer.
+///
+/// # Panics
+///
+/// Panics when a rect reaches outside the surface, which means the frame was
+/// produced for a surface of a different size. That is a broken invariant of
+/// the caller, not input from outside the library.
+pub(crate) fn tint_rects(buffer: &mut [u32], surface_width: u32, rects: &[PixelRect]) {
+    for rect in rects {
+        let row_width = rect.width as usize;
+        for y in rect.y..rect.y + rect.height {
+            let row =
+                &mut buffer[y as usize * surface_width as usize + rect.x as usize..][..row_width];
+            for pixel in row {
+                let red = tinted(*pixel >> 16 & 0xff, TINT_RGB[0]);
+                let green = tinted(*pixel >> 8 & 0xff, TINT_RGB[1]);
+                let blue = tinted(*pixel & 0xff, TINT_RGB[2]);
+                *pixel = red << 16 | green << 8 | blue;
+            }
+        }
+    }
+}
+
+/// The color the damage overlay tints with, as 8-bit sRGB channels.
+const TINT_RGB: [u8; 3] = [255, 64, 64];
+
+/// How strongly the damage overlay tints, out of 255.
+const TINT_ALPHA: u32 = 96;
+
+/// Blends one color channel toward the tint by the tint's opacity.
+fn tinted(channel: u32, tint: u8) -> u32 {
+    (channel * (255 - TINT_ALPHA) + u32::from(tint) * TINT_ALPHA + 127) / 255
+}
+
 /// The damage of the last few frames.
 ///
 /// A buffer age of `N` means the window buffer holds the frame from `N`
@@ -182,9 +222,10 @@ impl DamageHistory {
 /// whole surface only to write the same pixels again. A frame with no damage
 /// without a tick is how the window system asks for a redraw, for example
 /// after an X11 window was uncovered, and the full present it gets restores
-/// the window's contents.
-pub(crate) fn present_skipped(damage: &[PixelRect], has_tick: bool) -> bool {
-    damage.is_empty() && has_tick
+/// the window's contents. While the damage overlay is on, no present is
+/// skipped, so the previous frame's tint never outlives that frame.
+pub(crate) fn present_skipped(damage: &[PixelRect], has_tick: bool, show_damage: bool) -> bool {
+    damage.is_empty() && has_tick && !show_damage
 }
 
 /// Chooses the region a present of `age` has to copy, writing it to `out`.
