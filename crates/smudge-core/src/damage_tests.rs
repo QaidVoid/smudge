@@ -197,6 +197,61 @@ fn damage_over_sixty_percent_of_the_surface_becomes_one_rect() {
 }
 
 #[test]
+fn scattered_damage_beyond_the_reduce_limit_becomes_one_full_rect() {
+    let rects: Vec<Rect> = (0..=REDUCE_LIMIT)
+        .map(|index| {
+            let x = (index % 16) as f32 * 32.0;
+            let y = (index / 16) as f32 * 32.0;
+            Rect::new(x, y, x + 2.0, y + 2.0)
+        })
+        .collect();
+    let mut damage = accumulate(&rects);
+
+    assert_eq!(
+        damage.finish(1.0, 512, 512),
+        &[PixelRect {
+            x: 0,
+            y: 0,
+            width: 512,
+            height: 512,
+        }],
+        "the reduction is cubic in the rect count, so damage past the limit \
+         collapses to the surface instead of being reduced"
+    );
+}
+
+#[test]
+fn exactly_the_reduce_limit_rects_still_reduce_to_the_cap() {
+    let rects: Vec<Rect> = (0..REDUCE_LIMIT)
+        .map(|index| {
+            let x = (index % 8) as f32 * 128.0;
+            let y = (index / 8) as f32 * 128.0;
+            Rect::new(x, y, x + 2.0, y + 2.0)
+        })
+        .collect();
+    let mut damage = accumulate(&rects);
+    let output = damage.finish(1.0, 2048, 2048);
+
+    assert_eq!(
+        output.len(),
+        MAX_RECTS,
+        "the reduction still runs at the limit"
+    );
+    for rect in &rects {
+        let pixels = PixelRect {
+            x: rect.x0 as u32,
+            y: rect.y0 as u32,
+            width: 2,
+            height: 2,
+        };
+        assert!(
+            output.iter().any(|out| out.contains_rect(pixels)),
+            "damage {output:?} misses {pixels:?}"
+        );
+    }
+}
+
+#[test]
 fn a_full_frame_is_one_rect_covering_the_surface() {
     let mut damage = DamageAccumulator::new();
     damage.add_clipped(Rect::new(1.0, 1.0, 2.0, 2.0), Rect::new(1.0, 1.0, 2.0, 2.0));

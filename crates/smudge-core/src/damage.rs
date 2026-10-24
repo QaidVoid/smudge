@@ -10,7 +10,10 @@
 //!
 //! The cost of merging grows quickly with the number of input rectangles,
 //! because the merge compares every pair. On a scene of 600 boxes that all
-//! change on every frame, it takes about 1.5 percent of the frame.
+//! change on every frame, it takes about 1.5 percent of the frame. Damage that
+//! stays scattered past a fixed rectangle count skips the reduction that
+//! would shrink it and collapses to the full surface instead, because that
+//! reduction is cubic and soon costs more than a full repaint.
 
 use crate::geometry::{PixelRect, Rect};
 
@@ -30,6 +33,20 @@ const MAX_RECTS: usize = 16;
 ///
 /// The benchmark suite tunes this value.
 const FULL_FRAME_RATIO: f64 = 0.6;
+
+/// The number of rectangles above which the output collapses to one
+/// full-surface rectangle instead of being reduced to [`MAX_RECTS`].
+///
+/// The reduction merges one pair at a time and searches every remaining pair
+/// for each merge, which is cubic in the number of rectangles. Measured in a
+/// release build on a frame that changed scattered boxes in a grid: the
+/// damage step spent about 46 ms on 500 rectangles, 291 ms on 1000 and 2.3 s
+/// on 2000, nearly all of it in the reduction. A full repaint of a
+/// 1920 by 1080 surface holding 600 rounded boxes costs about 3.7 ms on the
+/// same machine, so past this limit a full repaint is the cheaper choice,
+/// while at 64 rectangles the reduction still costs well under a
+/// millisecond.
+const REDUCE_LIMIT: usize = 64;
 
 /// A logical rectangle a node painted, with the clip it was drawn under.
 ///
@@ -119,7 +136,9 @@ impl DamageAccumulator {
     /// result. Once the output covers more than a fixed fraction of the
     /// surface, or the whole surface was marked with
     /// [`DamageAccumulator::add_full`], the output is one rectangle covering
-    /// the surface.
+    /// the surface. The same collapse happens when more rectangles survive the
+    /// merge than a fixed limit, because the reduction that would shrink them
+    /// costs more than repainting the surface.
     ///
     /// The returned slice is valid until the next call to
     /// [`DamageAccumulator::clear`], and the internal buffers are reused, so
@@ -199,6 +218,12 @@ impl DamageAccumulator {
             if self.out.len() == before {
                 break;
             }
+        }
+
+        if self.out.len() > REDUCE_LIMIT {
+            self.out.clear();
+            self.out.push(surface);
+            return;
         }
 
         while self.out.len() > MAX_RECTS {
