@@ -3,10 +3,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::geometry::{Color, Rect};
+use crate::geometry::{Color, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{self, Owner, RenderEffect, prelude::*};
-use crate::style::{Length, Style};
+use crate::style::{Edges, Length, Position, Style};
 use crate::tree::{Dirty, PaintedBounds, WidgetId, WidgetTree};
 use crate::widget::{PaintCx, Widget};
 
@@ -31,6 +31,46 @@ fn clean(tree: &mut WidgetTree, id: WidgetId) {
     tree.nodes[id].dirty = Dirty::Clean;
     tree.paint_queue.clear();
     tree.layout_dirty = false;
+}
+
+#[test]
+fn removing_an_absolute_child_keeps_its_parent_in_the_layout_tree() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), Style::default());
+    let mut spacer = Style::default();
+    spacer.layout.width = Length::px(15.0);
+    let _spacer = tree.insert(Some(root), Box::new(Empty), spacer);
+    let holder = tree.insert(Some(root), Box::new(Empty), Style::default());
+    let mut absolute = Style::default();
+    absolute.layout.position = Position::Absolute;
+    absolute.layout.inset = Edges {
+        top: Length::px(2.0),
+        right: Length::Auto,
+        bottom: Length::Auto,
+        left: Length::px(3.0),
+    };
+    let child = tree.insert(Some(holder), Box::new(Empty), absolute);
+
+    let viewport = Size {
+        width: 100.0,
+        height: 80.0,
+    };
+    assert!(tree.layout(viewport));
+    assert_eq!(
+        tree.rect(holder).map(|rect| rect.x0),
+        Some(15.0),
+        "the empty holder sits after the spacer in the row"
+    );
+
+    tree.remove(child);
+    assert!(tree.layout(viewport));
+    tree.debug_assert_consistent();
+    assert_eq!(
+        tree.rect(holder).map(|rect| rect.x0),
+        Some(15.0),
+        "the holder's layout node stays reachable, so the pass still \
+         positions it"
+    );
 }
 
 #[test]

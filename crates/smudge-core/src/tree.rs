@@ -239,6 +239,7 @@ impl WidgetTree {
 
         // Deepest node first, so every taffy node is still attached to a live
         // parent when it is removed.
+        let mut removed_taffy = Vec::new();
         for current in order.into_iter().rev() {
             let Some(node) = self.nodes.get_mut(current) else {
                 continue;
@@ -258,11 +259,98 @@ impl WidgetTree {
                 .remove(taffy)
                 .expect("every widget node has a live layout node");
             self.nodes.remove(current);
+            removed_taffy.push(taffy);
         }
 
         if let Some(parent) = parent {
             self.mark(parent, Dirty::Layout);
         }
+        self.drop_stale_hoisted_children(parent, &removed_taffy);
+    }
+
+    /// Recreates the layout node of every ancestor, starting at `parent`,
+    /// whose hoisted child list still names one of `removed_taffy`.
+    ///
+    /// The layout engine records an absolutely positioned node in the hoisted
+    /// child list of its containing block, and clears that list only when the
+    /// block's own layout runs again. A block that lost its last child, or one
+    /// that is hidden, runs no layout of its own, so it keeps the stale id and
+    /// the next layout pass reads it and panics. A containing block is always
+    /// an ancestor, so only the removed node's ancestors need checking.
+    fn drop_stale_hoisted_children(
+        &mut self,
+        parent: Option<WidgetId>,
+        removed_taffy: &[taffy::NodeId],
+    ) {
+        let mut ancestor = parent;
+        while let Some(id) = ancestor {
+            let Some(node) = self.nodes.get(id) else {
+                break;
+            };
+            ancestor = node.parent;
+            let stale = self
+                .taffy
+                .hoisted_children(node.taffy)
+                .expect("every widget node has a live layout node")
+                .iter()
+                .any(|hoisted| removed_taffy.contains(hoisted));
+            if stale {
+                self.recreate_layout_node(id);
+            }
+        }
+    }
+
+    /// Replaces the layout node of `id` with a fresh one, which carries an
+    /// empty hoisted child list that the next layout pass rebuilds.
+    ///
+    /// The fresh node takes the old node's place among its parent's layout
+    /// children, because the engine only lays out nodes it reaches from the
+    /// root, and an unattached node would keep the default empty layout.
+    fn recreate_layout_node(&mut self, id: WidgetId) {
+        let node = self.nodes.get(id).expect("the node is live");
+        let style = node.style.layout.to_taffy();
+        let old = node.taffy;
+        let parent = self.taffy.parent(old);
+        let index = parent.and_then(|parent| {
+            self.taffy
+                .children(parent)
+                .expect("the parent is a live layout node")
+                .iter()
+                .position(|child| *child == old)
+        });
+        let children = self
+            .taffy
+            .children(old)
+            .expect("every widget node has a live layout node");
+        self.taffy
+            .remove(old)
+            .expect("every widget node has a live layout node");
+        let taffy = self
+            .taffy
+            .new_leaf(style)
+            .expect("the layout engine accepts a new leaf node");
+        self.taffy
+            .set_node_context(taffy, Some(id))
+            .expect("the new layout node is live");
+        for child in children {
+            self.taffy
+                .add_child(taffy, child)
+                .expect("the reattached children are live layout nodes");
+        }
+        if let Some(parent) = parent {
+            match index {
+                Some(index) => self
+                    .taffy
+                    .insert_child_at_index(parent, index, taffy)
+                    .expect("the index fits the parent's child list"),
+                None => self
+                    .taffy
+                    .add_child(parent, taffy)
+                    .expect("both layout nodes are live"),
+            }
+        }
+        self.nodes.get_mut(id).expect("the node is live").taffy = taffy;
+        self.mark(id, Dirty::Layout);
     }
 
     /// Reorders the children of `id` to `children` and marks the node for
