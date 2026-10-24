@@ -53,10 +53,13 @@ fn glyphs_draw_nothing_outside_their_claimed_ink_bounds() {
             (surface.height() * scale).ceil() as u32,
         );
         for offset in [0.0, 0.3, 0.55, 0.8] {
-            let runs = layout.glyph_runs_at(Point {
-                x: 4.0 + offset,
-                y: 4.0 + offset,
-            });
+            let runs = layout.glyph_runs_at(
+                Point {
+                    x: 4.0 + offset,
+                    y: 4.0 + offset,
+                },
+                Color::BLACK,
+            );
             let unclipped: Vec<GlyphRun> = runs
                 .iter()
                 .map(|run| GlyphRun {
@@ -80,7 +83,7 @@ fn a_quarter_pixel_shift_moves_the_glyph() {
     TextSystem::bundled_only().install();
     let layout = TextLayout::new("H", &TextStyle::default(), None);
     let at = |x: f32| {
-        let runs = layout.glyph_runs_at(Point { x, y: 4.0 });
+        let runs = layout.glyph_runs_at(Point { x, y: 4.0 }, Color::BLACK);
         render(&runs, 32, 32, 1.0)
     };
 
@@ -99,7 +102,7 @@ fn a_glyph_far_outside_the_surface_draws_nothing() {
     TextSystem::bundled_only().install();
     let layout = TextLayout::new("H", &TextStyle::default(), None);
     let runs: Vec<GlyphRun> = layout
-        .glyph_runs_at(Point { x: 4.0, y: 4.0 })
+        .glyph_runs_at(Point { x: 4.0, y: 4.0 }, Color::BLACK)
         .into_iter()
         .map(|mut run| {
             for glyph in &mut run.glyphs {

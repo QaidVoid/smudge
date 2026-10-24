@@ -7,9 +7,10 @@
 use std::any::Any;
 
 use crate::element::Element;
-use crate::geometry::{Rect, Size};
+use crate::geometry::{Corners, Rect, Size};
 use crate::paint::PaintOp;
 use crate::style::{Edges, Style};
+use crate::theme::Theme;
 
 /// The space a measure call offers on one axis, or the intrinsic size it asks
 /// for instead.
@@ -120,6 +121,8 @@ pub struct PaintCx<'a> {
     pub rect: Rect,
     /// The node's resolved style.
     pub style: &'a Style,
+    /// The theme that style values which name a token resolve against.
+    pub theme: &'a Theme,
 }
 
 /// A container that paints a background and a border and does nothing else.
@@ -136,21 +139,24 @@ pub fn panel() -> Element<Panel> {
 impl Widget for Panel {
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
         let paint = &cx.style.paint;
-        if let Some(color) = paint.background {
+        // The radius is resolved only for an operation that uses it, so a node
+        // that paints nothing never consults the theme and a theme switch
+        // leaves it alone.
+        if let Some(background) = &paint.background {
             out.push(PaintOp::FillRect {
                 rect: cx.rect,
-                radius: paint.corner_radius,
-                color,
+                radius: Corners::all(paint.corner_radius.resolve(cx.theme)),
+                color: background.resolve(cx.theme),
             });
         }
-        if let Some(color) = paint.border_color {
+        if let Some(border) = &paint.border_color {
             let width = widest_side(cx.style.layout.border_width);
             if width > 0.0 {
                 out.push(PaintOp::StrokeRect {
                     rect: cx.rect,
-                    radius: paint.corner_radius,
+                    radius: Corners::all(paint.corner_radius.resolve(cx.theme)),
                     width,
-                    color,
+                    color: border.resolve(cx.theme),
                 });
             }
         }

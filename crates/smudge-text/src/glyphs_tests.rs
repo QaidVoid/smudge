@@ -3,7 +3,7 @@
 use crate::layout::TextLayout;
 use crate::style::TextStyle;
 use crate::system::TextSystem;
-use smudge_core::geometry::Point;
+use smudge_core::geometry::{Color, Point};
 
 /// Installs a bundled-only system, so the runs carry the bundled fonts and no
 /// layout depends on the fonts installed on the machine.
@@ -16,7 +16,7 @@ fn runs_carry_the_bundled_font_bytes() {
     setup();
 
     let layout = TextLayout::new("Hand", &TextStyle::default(), None);
-    let runs = layout.glyph_runs_at(Point { x: 0.0, y: 0.0 });
+    let runs = layout.glyph_runs_at(Point { x: 0.0, y: 0.0 }, Color::BLACK);
 
     assert!(!runs.is_empty(), "text with letters shapes to a run");
     assert!(
@@ -36,8 +36,8 @@ fn positions_are_absolute_and_follow_the_origin() {
     setup();
 
     let layout = TextLayout::new("Ay", &TextStyle::default(), None);
-    let at_origin = layout.glyph_runs_at(Point { x: 0.0, y: 0.0 });
-    let moved = layout.glyph_runs_at(Point { x: 30.5, y: 12.25 });
+    let at_origin = layout.glyph_runs_at(Point { x: 0.0, y: 0.0 }, Color::BLACK);
+    let moved = layout.glyph_runs_at(Point { x: 30.5, y: 12.25 }, Color::BLACK);
 
     let mut origin_glyphs = at_origin.into_iter().flat_map(|run| run.glyphs);
     for run in moved {
@@ -55,7 +55,7 @@ fn glyphs_claim_ink_and_whitespace_does_not() {
     setup();
 
     let text = TextLayout::new("Ay", &TextStyle::default(), None);
-    let runs: Vec<_> = text.glyph_runs_at(Point { x: 5.0, y: 20.0 });
+    let runs: Vec<_> = text.glyph_runs_at(Point { x: 5.0, y: 20.0 }, Color::BLACK);
     assert!(!runs.is_empty());
     for run in runs {
         assert!(
@@ -65,7 +65,7 @@ fn glyphs_claim_ink_and_whitespace_does_not() {
     }
 
     let spaces = TextLayout::new("   ", &TextStyle::default(), None);
-    for run in spaces.glyph_runs_at(Point { x: 5.0, y: 20.0 }) {
+    for run in spaces.glyph_runs_at(Point { x: 5.0, y: 20.0 }, Color::BLACK) {
         assert!(
             run.ink_bounds.is_empty(),
             "a space has no outline, so the run claims no ink"

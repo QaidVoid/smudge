@@ -12,7 +12,7 @@ use crate::tree::interaction::Interaction;
 /// A base style whose background tells the patches apart.
 fn base() -> Style {
     let mut style = Style::default();
-    style.paint.background = Some(Color::BLACK);
+    style.paint.background = Some(Color::BLACK.into());
     style
 }
 
@@ -59,28 +59,28 @@ fn patches_apply_in_a_fixed_order_and_pressed_overrides_hovered() {
 
     assert_eq!(
         resolve(&base(), &variants, disabled).paint.background,
-        Some(Color::rgb(40, 0, 0)),
+        Some(Color::rgb(40, 0, 0).into()),
         "the disabled patch wins over every other state"
     );
     assert_eq!(
         resolve(&base(), &variants, pressed).paint.background,
-        Some(Color::rgb(30, 0, 0)),
+        Some(Color::rgb(30, 0, 0).into()),
         "pressed overrides hovered and focused for the same field"
     );
     assert_eq!(
         resolve(&base(), &variants, focused).paint.background,
-        Some(Color::rgb(20, 0, 0)),
+        Some(Color::rgb(20, 0, 0).into()),
         "focused overrides hovered for the same field"
     );
     assert_eq!(
         resolve(&base(), &variants, hovered).paint.background,
-        Some(Color::rgb(10, 0, 0))
+        Some(Color::rgb(10, 0, 0).into())
     );
     assert_eq!(
         resolve(&base(), &variants, interaction(&[]))
             .paint
             .background,
-        Some(Color::BLACK),
+        Some(Color::BLACK.into()),
         "without any state the base style stands"
     );
 }
@@ -95,14 +95,14 @@ fn a_focused_patch_applies_only_while_keyboard_navigation_is_on() {
     let mouse = interaction(&[Interaction::FOCUSED]);
     assert_eq!(
         resolve(&base(), &variants, mouse).paint.background,
-        Some(Color::BLACK),
+        Some(Color::BLACK.into()),
         "a focus that a press moved draws no focus style"
     );
 
     let keyboard = interaction(&[Interaction::FOCUSED, Interaction::KEYBOARD_FOCUS]);
     assert_eq!(
         resolve(&base(), &variants, keyboard).paint.background,
-        Some(Color::rgb(20, 0, 0)),
+        Some(Color::rgb(20, 0, 0).into()),
         "a focus that Tab moved applies the focused patch"
     );
 }
@@ -117,7 +117,7 @@ fn a_patch_overrides_only_the_fields_its_setters_wrote() {
     };
 
     let resolved = resolve(&base_style, &variants, interaction(&[Interaction::HOVERED]));
-    assert_eq!(resolved.paint.background, Some(Color::rgb(10, 0, 0)));
+    assert_eq!(resolved.paint.background, Some(Color::rgb(10, 0, 0).into()));
     assert_eq!(
         resolved.layout.width,
         Length::px(10.0),
@@ -139,7 +139,7 @@ fn a_state_without_a_patch_keeps_the_base_style() {
     );
     assert_eq!(
         resolved.paint.background,
-        Some(Color::BLACK),
+        Some(Color::BLACK.into()),
         "hovered and disabled have no patch, so the base background stands"
     );
 }

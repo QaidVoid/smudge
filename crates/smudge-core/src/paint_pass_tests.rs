@@ -36,7 +36,7 @@ fn fixed(width: f32, height: f32) -> Style {
 /// A style with a fixed size and a background, which paints one rectangle.
 fn boxed(width: f32, height: f32) -> Style {
     let mut style = fixed(width, height);
-    style.paint.background = Some(Color::BLACK);
+    style.paint.background = Some(Color::BLACK.into());
     style
 }
 
@@ -98,7 +98,7 @@ fn changing_a_box_color_damages_exactly_its_rect() {
     };
     assert_eq!(first, vec![rect], "the box paints its own rectangle");
 
-    tree.apply_paint(card, |paint| paint.background = Some(Color::WHITE));
+    tree.apply_paint(card, |paint| paint.background = Some(Color::WHITE.into()));
     let (painted, second) = paint_frame(&mut tree, &mut damage);
 
     assert_eq!(painted, 1, "only the changed box repaints");
@@ -268,7 +268,7 @@ fn a_node_cut_off_by_a_clip_damages_the_pixels_the_clip_edge_passes_through() {
     tree.layout(VIEWPORT);
     paint_frame_at(&mut tree, &mut damage, 1.25);
 
-    tree.apply_paint(below, |paint| paint.background = Some(Color::WHITE));
+    tree.apply_paint(below, |paint| paint.background = Some(Color::WHITE.into()));
     let (_, repainted) = paint_frame_at(&mut tree, &mut damage, 1.25);
 
     assert_eq!(

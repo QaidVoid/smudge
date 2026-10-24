@@ -54,7 +54,7 @@ pub struct FrameReport {
 ///     panel()
 ///         .width(px(20.0))
 ///         .height(px(10.0))
-///         .background(move || color.get())
+///         .background(move || color.get().into())
 /// });
 ///
 /// assert!(harness.frame().full, "the first frame repaints everything");

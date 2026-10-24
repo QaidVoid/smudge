@@ -10,16 +10,17 @@ use crate::system::TextSystem;
 use parley::PositionedLayoutItem;
 use parley::StyleProperty;
 use parley::style::LineHeight;
-use smudge_core::geometry::Color;
 use smudge_core::geometry::Size;
 
 /// A block of text laid out in logical pixels against one style.
 ///
 /// The layout is computed eagerly by [`TextLayout::new`] and never changes
-/// afterwards. A new layout replaces an old one rather than being edited.
+/// afterwards. A new layout replaces an old one rather than being edited. It
+/// carries no color: layout runs without a theme, and the caller paints the
+/// glyph runs in whatever color it resolves when it paints.
 pub struct TextLayout {
     /// The shaped and line-broken text.
-    layout: parley::Layout<Color>,
+    layout: parley::Layout<()>,
 }
 
 impl TextLayout {
@@ -46,7 +47,6 @@ impl TextLayout {
             builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
                 style.line_height,
             )));
-            builder.push_default(StyleProperty::Brush(style.color));
 
             let mut layout = builder.build(text);
             layout.break_all_lines(max_width);
@@ -72,10 +72,11 @@ impl TextLayout {
 
     /// Iterates the glyph runs of every line, in visual order.
     ///
-    /// A glyph run carries its font, size, color and positioned glyphs. The
+    /// A glyph run carries its font, size and positioned glyphs, and no color:
+    /// the caller supplies it when converting runs with `glyph_runs_at`. The
     /// item type is parley's, and its coordinates are relative to the top
     /// left of the layout.
-    pub fn glyph_runs(&self) -> impl Iterator<Item = parley::GlyphRun<'_, Color>> + Clone + '_ {
+    pub fn glyph_runs(&self) -> impl Iterator<Item = parley::GlyphRun<'_, ()>> + Clone + '_ {
         self.layout.lines().flat_map(|line| {
             line.items().filter_map(|item| match item {
                 PositionedLayoutItem::GlyphRun(run) => Some(run),

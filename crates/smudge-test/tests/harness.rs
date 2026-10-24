@@ -29,7 +29,7 @@ fn a_bound_box_repaints_its_own_rectangle() {
             panel()
                 .width(px(50.0))
                 .height(px(20.0))
-                .background(move || color.get()),
+                .background(move || color.get().into()),
         )
     });
 

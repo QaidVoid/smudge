@@ -10,6 +10,7 @@ use crate::geometry::Color;
 use crate::paint::PaintOp;
 use crate::reactive::{self, Owner, WriteSignal, prelude::*};
 use crate::style::Length;
+use crate::theme::ColorValue;
 use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::widget::{PaintCx, Widget, panel};
 
@@ -40,7 +41,7 @@ fn a_static_background_lands_in_the_paint_properties() {
 
     let style = tree.style(root).expect("the root is live");
     assert_eq!(style.layout.width, Length::px(120.0));
-    assert_eq!(style.paint.background, Some(Color::WHITE));
+    assert_eq!(style.paint.background, Some(Color::WHITE.into()));
     assert_eq!(
         tree.dirty(root),
         Some(Dirty::Layout),
@@ -52,13 +53,13 @@ fn a_static_background_lands_in_the_paint_properties() {
 #[test]
 fn a_binding_reads_its_value_when_the_node_mounts() {
     let (color, _set_color) = signal_local(Color::BLACK);
-    let (mut tree, queue, root) = mount_root(panel().background(move || color.get()));
+    let (mut tree, queue, root) = mount_root(panel().background(move || color.get().into()));
 
     queue.apply(&mut tree);
 
     assert_eq!(
         tree.style(root).expect("the root is live").paint.background,
-        Some(Color::BLACK),
+        Some(Color::BLACK.into()),
         "the first run is queued at mount, before any flush"
     );
 }
@@ -66,8 +67,13 @@ fn a_binding_reads_its_value_when_the_node_mounts() {
 #[test]
 fn a_background_binding_marks_the_node_for_paint_only() {
     let (on, set_on) = signal_local(false);
-    let (mut tree, queue, root) =
-        mount_root(panel().background(move || if on.get() { Color::BLACK } else { Color::WHITE }));
+    let (mut tree, queue, root) = mount_root(panel().background(move || {
+        if on.get() {
+            Color::BLACK.into()
+        } else {
+            Color::WHITE.into()
+        }
+    }));
     settle(&mut tree, &queue);
     tree.clear_dirty();
 
@@ -76,7 +82,7 @@ fn a_background_binding_marks_the_node_for_paint_only() {
 
     assert_eq!(
         tree.style(root).expect("the root is live").paint.background,
-        Some(Color::BLACK)
+        Some(Color::BLACK.into())
     );
     assert_eq!(tree.dirty(root), Some(Dirty::Paint));
     assert!(!tree.layout_is_dirty(), "a paint change never needs layout");
@@ -103,8 +109,13 @@ fn a_width_binding_marks_the_node_for_layout() {
 #[test]
 fn a_binding_change_waits_for_the_queue_to_drain() {
     let (on, set_on) = signal_local(false);
-    let (mut tree, queue, root) =
-        mount_root(panel().background(move || if on.get() { Color::BLACK } else { Color::WHITE }));
+    let (mut tree, queue, root) = mount_root(panel().background(move || {
+        if on.get() {
+            Color::BLACK.into()
+        } else {
+            Color::WHITE.into()
+        }
+    }));
     settle(&mut tree, &queue);
 
     set_on.set(true);
@@ -112,7 +123,7 @@ fn a_binding_change_waits_for_the_queue_to_drain() {
 
     assert_eq!(
         tree.style(root).expect("the root is live").paint.background,
-        Some(Color::WHITE),
+        Some(Color::WHITE.into()),
         "the effect queued the change and left the tree alone"
     );
 
@@ -120,7 +131,7 @@ fn a_binding_change_waits_for_the_queue_to_drain() {
 
     assert_eq!(
         tree.style(root).expect("the root is live").paint.background,
-        Some(Color::BLACK)
+        Some(Color::BLACK.into())
     );
 }
 
@@ -134,7 +145,7 @@ fn children_are_mounted_in_the_order_they_were_added() {
 
     let children = tree.children(root).expect("the root is live");
     assert_eq!(children.len(), 3);
-    let backgrounds: Vec<Option<Color>> = children
+    let backgrounds: Vec<Option<ColorValue>> = children
         .iter()
         .map(|child| {
             tree.style(*child)
@@ -146,9 +157,9 @@ fn children_are_mounted_in_the_order_they_were_added() {
     assert_eq!(
         backgrounds,
         vec![
-            Some(Color::WHITE),
-            Some(Color::BLACK),
-            Some(Color::TRANSPARENT)
+            Some(Color::WHITE.into()),
+            Some(Color::BLACK.into()),
+            Some(Color::TRANSPARENT.into())
         ]
     );
     tree.debug_assert_consistent();
@@ -201,7 +212,7 @@ fn show_mounts_its_child_while_the_signal_is_true() {
             let counter = Rc::clone(&counter);
             panel().background(move || {
                 counter.set(counter.get() + 1);
-                color.get()
+                color.get().into()
             })
         },
     ));
@@ -261,7 +272,7 @@ fn show_keeps_the_signals_its_child_created_while_the_child_stays_mounted() {
             counter.set(counter.get() + 1);
             let (color, set_color) = signal_local(Color::BLACK);
             stash.borrow_mut().get_or_insert(set_color);
-            panel().background(move || color.get())
+            panel().background(move || color.get().into())
         },
     ));
     settle(&mut tree, &queue);
@@ -288,7 +299,7 @@ fn show_keeps_the_signals_its_child_created_while_the_child_stays_mounted() {
             .expect("the child is live")
             .paint
             .background,
-        Some(Color::WHITE),
+        Some(Color::WHITE.into()),
         "the signal the child created still drives its binding"
     );
 }

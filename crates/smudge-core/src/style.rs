@@ -8,7 +8,8 @@
 //! There is no cascade and no inheritance: every node carries a complete
 //! [`Style`] of its own.
 
-use crate::geometry::{Color, Corners, Size};
+use crate::geometry::Size;
+use crate::theme::{ColorValue, RadiusValue};
 
 /// A length along one axis.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -325,15 +326,23 @@ impl LayoutProps {
 }
 
 /// The properties that are painted but never laid out.
+///
+/// Colors and radii are [`ColorValue`]s and [`RadiusValue`]s, so a style can
+/// name a theme token. They resolve to concrete values when the node paints,
+/// against the theme that is current then.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PaintProps {
     /// Fill painted behind the node's content, or `None` for no fill.
-    pub background: Option<Color>,
+    pub background: Option<ColorValue>,
     /// Color of the border drawn inside the node's edge, or `None` for no
     /// border. Its thickness is [`LayoutProps::border_width`].
-    pub border_color: Option<Color>,
-    /// Corner radii of the background and the border.
-    pub corner_radius: Corners,
+    pub border_color: Option<ColorValue>,
+    /// Color a widget's text paints with, or `None` to let the widget use its
+    /// own. Widgets without text ignore it.
+    pub text_color: Option<ColorValue>,
+    /// Corner radius of the background and the border, the same on all four
+    /// corners.
+    pub corner_radius: RadiusValue,
 }
 
 /// The complete style of one node.

@@ -501,8 +501,7 @@ impl Widget for TextBlock {
             *cache = Some((self.text.clone(), TextLayout::new(&self.text, &style, None)));
         }
         let layout = &cache.as_ref().expect("the layout was just built").1;
-        for mut run in layout.glyph_runs_at(cx.rect.origin()) {
-            run.color = self.color;
+        for run in layout.glyph_runs_at(cx.rect.origin(), self.color) {
             out.push(PaintOp::Glyphs(Rc::new(run)));
         }
     }
@@ -793,14 +792,14 @@ fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
     element = match &node.radius {
         Some(radius) => {
             let radius = Rc::clone(radius);
-            element.corner_radius(move || radius())
+            element.corner_radius(move || radius().into())
         }
         None => element.corner_radius(spec.radius),
     };
     element = match (&node.color, spec.background) {
         (Some(color), _) => {
             let color = Rc::clone(color);
-            element.background(move || color())
+            element.background(move || color().into())
         }
         (None, Some(color)) => element.background(color),
         (None, None) => element,

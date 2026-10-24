@@ -197,7 +197,7 @@ pub fn run<E: IntoElement + 'static>(
 ///         on_frame: None,
 ///         frame_limit: None,
 ///     },
-///     move || panel().width(px(120.0)).background(move || color.get()),
+///     move || panel().width(px(120.0)).background(move || color.get().into()),
 ///     move |app| {
 ///         let mut dark = false;
 ///         app.set_tick(move |_| {

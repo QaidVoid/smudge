@@ -1,6 +1,7 @@
 use crate::geometry::{Color, Corners, Rect};
 use crate::paint::PaintOp;
 use crate::style::{Edges, Style};
+use crate::theme::{RadiusValue, Theme};
 use crate::widget::{PaintCx, Panel, Widget};
 
 /// The rectangle the tests paint into.
@@ -15,6 +16,7 @@ fn paint(style: &Style) -> Vec<PaintOp> {
         &PaintCx {
             rect: rect(),
             style,
+            theme: &Theme::light(),
         },
         &mut ops,
     );
@@ -24,9 +26,9 @@ fn paint(style: &Style) -> Vec<PaintOp> {
 #[test]
 fn a_panel_paints_its_background_and_border() {
     let mut style = Style::default();
-    style.paint.background = Some(Color::WHITE);
-    style.paint.border_color = Some(Color::BLACK);
-    style.paint.corner_radius = Corners::all(4.0);
+    style.paint.background = Some(Color::WHITE.into());
+    style.paint.border_color = Some(Color::BLACK.into());
+    style.paint.corner_radius = RadiusValue::from(4.0);
     style.layout.border_width = Edges::all(2.0);
 
     assert_eq!(
@@ -55,7 +57,7 @@ fn a_panel_without_paint_properties_paints_nothing() {
 #[test]
 fn a_panel_border_with_different_sides_uses_the_widest() {
     let mut style = Style::default();
-    style.paint.border_color = Some(Color::BLACK);
+    style.paint.border_color = Some(Color::BLACK.into());
     style.layout.border_width = Edges {
         top: 1.0,
         right: 4.0,
@@ -77,7 +79,7 @@ fn a_panel_border_with_different_sides_uses_the_widest() {
 #[test]
 fn a_panel_border_without_width_paints_nothing() {
     let mut style = Style::default();
-    style.paint.border_color = Some(Color::BLACK);
+    style.paint.border_color = Some(Color::BLACK.into());
 
     assert!(
         paint(&style).is_empty(),

@@ -18,6 +18,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RenderEffect};
 use crate::style::{LayoutProps, PaintProps, Style};
+use crate::theme::Theme;
 use crate::variants::{Variants, resolve};
 use crate::widget::Widget;
 
@@ -89,6 +90,9 @@ struct Node {
     /// The style patches per interaction state, when the element declared
     /// any. Without patches the resolved style tracks the base style.
     variants: Option<Rc<Variants>>,
+    /// Whether the widget's last paint resolved a value from the theme, so a
+    /// theme switch repaints the node.
+    uses_tokens: bool,
     /// The node's id in the layout engine's tree.
     taffy: taffy::NodeId,
     /// The reactive owner that every binding of this node runs under.
@@ -158,6 +162,8 @@ pub(crate) struct WidgetTree {
     /// can draw for keyboard users alone. A Tab or an arrow key turns this on
     /// and a pointer press turns it off.
     keyboard_nav: bool,
+    /// The theme that paint-time token resolution reads.
+    theme: Theme,
 }
 
 impl WidgetTree {
@@ -179,6 +185,7 @@ impl WidgetTree {
             focused: None,
             stale_focus: None,
             keyboard_nav: false,
+            theme: Theme::light(),
         }
     }
 
@@ -222,7 +229,6 @@ impl WidgetTree {
                 .child(),
             None => Owner::new(),
         };
-
         let node = Node {
             widget,
             parent,
@@ -230,6 +236,7 @@ impl WidgetTree {
             resolved: style.clone(),
             base: style,
             variants: None,
+            uses_tokens: false,
             taffy,
             owner,
             effects: Vec::new(),
@@ -579,7 +586,8 @@ impl WidgetTree {
         let became_hidden = resolved.layout.hidden && !node.resolved.layout.hidden;
         let layout_changed = resolved.layout != node.resolved.layout;
         let taffy_style = resolved.layout.to_taffy();
-        self.nodes.get_mut(id).expect("the node is live").resolved = resolved;
+        let node = self.nodes.get_mut(id).expect("the node is live");
+        node.resolved = resolved;
         if layout_changed {
             let taffy = self.nodes[id].taffy;
             self.taffy
@@ -591,6 +599,28 @@ impl WidgetTree {
         }
         if became_hidden {
             self.drop_invalid_focus();
+        }
+    }
+
+    /// Replaces the theme and marks every node whose last paint resolved a
+    /// value from the theme for repainting.
+    ///
+    /// Nodes whose paint consults no token paint the same pixels under any
+    /// theme, so they are left alone. An equal theme marks nothing. Which
+    /// nodes consulted the theme is what the paint pass recorded.
+    pub(crate) fn set_theme(&mut self, theme: Theme) {
+        if theme == self.theme {
+            return;
+        }
+        self.theme = theme;
+        let marked: Vec<WidgetId> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.uses_tokens)
+            .map(|(id, _)| id)
+            .collect();
+        for id in marked {
+            self.mark(id, Dirty::Paint);
         }
     }
 

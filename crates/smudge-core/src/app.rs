@@ -10,11 +10,12 @@ use std::time::Duration;
 use web_time::Instant;
 
 use crate::damage::DamageAccumulator;
-use crate::element::{IntoElement, UpdateQueue, mount};
+use crate::element::{IntoElement, UpdateQueue, binding_effect, mount};
 use crate::geometry::{Color, PixelRect, Point, Rect, Size};
 use crate::input::{InputEvent, Modifiers};
 use crate::paint::DisplayList;
-use crate::reactive::{self, Owner};
+use crate::reactive::{self, Owner, RenderEffect};
+use crate::theme::Theme;
 use crate::tree::{WidgetId, WidgetTree};
 
 /// How many flush and apply rounds a frame runs before it reports a cycle.
@@ -147,6 +148,11 @@ pub struct App {
     tick: Option<Box<dyn FnMut(Instant)>>,
     /// Whether the next frame repaints the whole surface.
     force_full: bool,
+    /// The handles to the effects that keep the theme current.
+    ///
+    /// Dropping a handle stops its effect, so the app holds them for as long
+    /// as it lives.
+    theme_bindings: Vec<RenderEffect<()>>,
     /// The owner that the build closure, the signals it created and every
     /// node's owner live under.
     ///
@@ -185,6 +191,7 @@ impl App {
             stats: FrameStats::default(),
             tick: None,
             force_full: true,
+            theme_bindings: Vec::new(),
             _root: root,
         }
     }
@@ -206,6 +213,91 @@ impl App {
     pub fn set_repaint_mode(&mut self, mode: RepaintMode) {
         self.config.repaint = mode;
         self.force_full = true;
+    }
+
+    /// Replaces the theme that style values which name a token resolve
+    /// against, and marks for repainting every node whose last paint looked
+    /// up a token, whether through its style or inside its widget's own
+    /// `paint`.
+    ///
+    /// The tree starts on [`Theme::light`]. Nodes whose paint resolves no
+    /// value from the theme paint the same pixels under any theme and are not
+    /// repainted, so a switch damages only what the switch can change. An
+    /// equal theme marks nothing.
+    ///
+    /// ```
+    /// use smudge_core::app::{App, AppConfig, RepaintMode};
+    /// use smudge_core::geometry::{Color, Size};
+    /// use smudge_core::style::px;
+    /// use smudge_core::theme::{ColorToken, Theme};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let mut app = App::new(
+    ///     AppConfig {
+    ///         viewport: Size {
+    ///             width: 120.0,
+    ///             height: 80.0,
+    ///         },
+    ///         scale: 1.0,
+    ///         clear_color: Color::WHITE,
+    ///         repaint: RepaintMode::Damage,
+    ///     },
+    ///     || panel().width(px(40.0)).height(px(20.0)).background(ColorToken::SURFACE),
+    /// );
+    /// app.frame();
+    ///
+    /// app.set_theme(Theme::dark());
+    /// app.frame();
+    /// assert_eq!(app.stats().nodes_painted, 1);
+    /// ```
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.tree.set_theme(theme);
+    }
+
+    /// Installs one effect that keeps the theme current.
+    ///
+    /// The closure is read when it is installed and again whenever a signal it
+    /// reads changes; each run hands the theme it returns to
+    /// [`App::set_theme`] through the update queue, so the change lands inside
+    /// a frame like any other reactive update. Pass a closure that builds the
+    /// theme from a signal to switch the theme reactively:
+    ///
+    /// ```
+    /// use smudge_core::app::{App, AppConfig, RepaintMode};
+    /// use smudge_core::geometry::{Color, Size};
+    /// use smudge_core::reactive::{prelude::*, signal_local};
+    /// use smudge_core::style::px;
+    /// use smudge_core::theme::{ColorToken, Theme};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let (dark, set_dark) = signal_local(false);
+    /// let mut app = App::new(
+    ///     AppConfig {
+    ///         viewport: Size {
+    ///             width: 120.0,
+    ///             height: 80.0,
+    ///         },
+    ///         scale: 1.0,
+    ///         clear_color: Color::WHITE,
+    ///         repaint: RepaintMode::Damage,
+    ///     },
+    ///     || panel().width(px(40.0)).height(px(20.0)).background(ColorToken::SURFACE),
+    /// );
+    /// app.bind_theme(move || if dark.get() { Theme::dark() } else { Theme::light() });
+    /// app.frame();
+    ///
+    /// set_dark.set(true);
+    /// app.frame();
+    /// assert_eq!(app.stats().nodes_painted, 1);
+    /// ```
+    pub fn bind_theme(&mut self, get: impl Fn() -> Theme + 'static) {
+        let queue = self.queue.clone();
+        let effect = binding_effect(move || {
+            let theme = get();
+            let queue = queue.clone();
+            queue.push(Box::new(move |tree| tree.set_theme(theme)));
+        });
+        self.theme_bindings.push(effect);
     }
 
     /// Sets a callback that runs once at the start of every frame with the

@@ -29,9 +29,9 @@
 //!     .corner_radius(6.0)
 //!     .background(move || {
 //!         if on.get() {
-//!             Color::rgb(220, 60, 60)
+//!             Color::rgb(220, 60, 60).into()
 //!         } else {
-//!             Color::rgb(60, 60, 220)
+//!             Color::rgb(60, 60, 220).into()
 //!         }
 //!     })
 //!     .child(panel().width(px(20.0)).height(px(20.0)).background(Color::WHITE));
@@ -41,13 +41,14 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use crate::geometry::{Color, Corners, Point, Size};
+use crate::geometry::{Color, Point, Size};
 use crate::input::{Handled, KeyEvent};
 use crate::paint::PaintOp;
 use crate::reactive::{self, Owner, RenderEffect};
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
 };
+use crate::theme::{ColorToken, ColorValue, RadiusToken, RadiusValue};
 use crate::tree::interaction::Handlers;
 use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::variants::{PatchBuilder, StylePatch, Variants};
@@ -116,7 +117,8 @@ macro_rules! static_values {
 }
 
 static_values!(
-    Color,
+    ColorValue,
+    RadiusValue,
     Length,
     Size,
     Edges<Length>,
@@ -136,6 +138,30 @@ impl From<String> for Value<String> {
 impl From<&str> for Value<String> {
     fn from(text: &str) -> Value<String> {
         Value::Static(text.to_owned())
+    }
+}
+
+impl From<Color> for Value<ColorValue> {
+    fn from(color: Color) -> Value<ColorValue> {
+        Value::Static(color.into())
+    }
+}
+
+impl From<ColorToken> for Value<ColorValue> {
+    fn from(token: ColorToken) -> Value<ColorValue> {
+        Value::Static(token.into())
+    }
+}
+
+impl From<f32> for Value<RadiusValue> {
+    fn from(radius: f32) -> Value<RadiusValue> {
+        Value::Static(radius.into())
+    }
+}
+
+impl From<RadiusToken> for Value<RadiusValue> {
+    fn from(token: RadiusToken) -> Value<RadiusValue> {
+        Value::Static(token.into())
     }
 }
 
@@ -159,7 +185,7 @@ const MAX_RUNS_PER_FLUSH: u32 = 16;
 /// part of a cycle: it writes a signal that wakes it again, either directly or
 /// through another binding that writes a signal it reads. A release build
 /// keeps running it and the flush never returns.
-fn binding_effect(run: impl Fn() + 'static) -> RenderEffect<()> {
+pub(crate) fn binding_effect(run: impl Fn() + 'static) -> RenderEffect<()> {
     let runs = Cell::new((reactive::flush_generation(), 0u32));
     RenderEffect::new(move |_| {
         let generation = reactive::flush_generation();
@@ -522,21 +548,44 @@ impl<W: Widget> Element<W> {
 
     /// Sets the fill painted behind the node. This repaints the node without
     /// laying it out again.
-    pub fn background(self, color: impl Into<Value<Color>>) -> Self {
+    ///
+    /// The color can be a [`Color`] or a
+    /// [`ColorToken`]. A token resolves against the
+    /// theme that is current when the node paints.
+    pub fn background(self, color: impl Into<Value<ColorValue>>) -> Self {
         self.paint_value(color, |paint, color| paint.background = Some(color))
     }
 
     /// Sets the color of the border whose width [`Element::border`] sets. This
     /// repaints the node without laying it out again.
-    pub fn border_color(self, color: impl Into<Value<Color>>) -> Self {
+    ///
+    /// The color can be a [`Color`] or a
+    /// [`ColorToken`]. A token resolves against the
+    /// theme that is current when the node paints.
+    pub fn border_color(self, color: impl Into<Value<ColorValue>>) -> Self {
         self.paint_value(color, |paint, color| paint.border_color = Some(color))
+    }
+
+    /// Sets the color a widget's text paints with. This repaints the node
+    /// without laying it out again.
+    ///
+    /// Widgets that show text read it; widgets without text ignore it. The
+    /// color can be a [`Color`] or a
+    /// [`ColorToken`]. A token resolves against the
+    /// theme that is current when the node paints.
+    pub fn text_color(self, color: impl Into<Value<ColorValue>>) -> Self {
+        self.paint_value(color, |paint, color| paint.text_color = Some(color))
     }
 
     /// Sets the corner radius of the background and the border, the same on all
     /// four corners. This repaints the node without laying it out again.
-    pub fn corner_radius(self, radius: impl Into<Value<f32>>) -> Self {
+    ///
+    /// The radius can be an [`f32`] or a
+    /// [`RadiusToken`]. A token resolves against
+    /// the theme that is current when the node paints.
+    pub fn corner_radius(self, radius: impl Into<Value<RadiusValue>>) -> Self {
         self.paint_value(radius, |paint, radius| {
-            paint.corner_radius = Corners::all(radius);
+            paint.corner_radius = radius;
         })
     }
 

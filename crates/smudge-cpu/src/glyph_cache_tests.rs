@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use smudge_core::geometry::Point;
+use smudge_core::geometry::{Color, Point};
 use smudge_core::paint::FontBlob;
 use smudge_text::{TextLayout, TextStyle, TextSystem};
 
@@ -23,7 +23,7 @@ fn setup() {
 fn keys(text: &str, index: usize, count: usize) -> (FontBlob, Vec<MaskKey>) {
     let style = TextStyle::default();
     let layout = TextLayout::new(text, &style, None);
-    let runs = layout.glyph_runs_at(Point { x: 0.0, y: 64.0 });
+    let runs = layout.glyph_runs_at(Point { x: 0.0, y: 64.0 }, Color::BLACK);
     let run = runs.first().expect("the text has at least one run");
     let glyph = run.glyphs[index];
     let keys = (0..count)
@@ -76,7 +76,7 @@ fn a_glyph_without_outline_is_cached_as_empty() {
 
     let style = TextStyle::default();
     let layout = TextLayout::new("a b", &style, None);
-    let runs = layout.glyph_runs_at(Point { x: 0.0, y: 20.0 });
+    let runs = layout.glyph_runs_at(Point { x: 0.0, y: 20.0 }, Color::BLACK);
     let run = runs.first().expect("the text shapes to a run");
     let font = clone_font_blob(&run.font);
     let keys: Vec<_> = run

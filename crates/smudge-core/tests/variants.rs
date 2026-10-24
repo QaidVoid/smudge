@@ -126,7 +126,7 @@ fn a_background_binding_change_while_hovered_keeps_the_hover_background() {
             panel()
                 .width(px(40.0))
                 .height(px(20.0))
-                .background(move || color.get())
+                .background(move || color.get().into())
                 .hover(|p| p.background(HOVER)),
         )
     });

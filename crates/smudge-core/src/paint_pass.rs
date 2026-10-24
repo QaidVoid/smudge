@@ -33,6 +33,12 @@ impl WidgetTree {
     /// whose clip is empty, such as a hidden node, keeps no operations and its
     /// widget is not asked to paint.
     ///
+    /// Before a widget paints, the pass clears the theme's consultation flag,
+    /// and after it paints, the node's `uses_tokens` flag records whether the
+    /// widget resolved a token. That is how a theme switch finds the nodes
+    /// that have to repaint, including widgets that resolve tokens inside
+    /// their own paint.
+    ///
     /// Every painted node ends [`Dirty::Clean`]. The bounds of nodes removed
     /// since the last frame are added to `damage` as well.
     ///
@@ -57,11 +63,17 @@ impl WidgetTree {
 
             node.ops.clear();
             if !node.clip.is_empty() {
+                self.theme.reset_consulted();
                 let cx = PaintCx {
                     rect: node.rect,
                     style: &node.resolved,
+                    theme: &self.theme,
                 };
                 node.widget.paint(&cx, &mut node.ops);
+                node.uses_tokens = self.theme.consulted();
+            } else {
+                // A node that paints nothing shows no theme value.
+                node.uses_tokens = false;
             }
 
             let bounds = node

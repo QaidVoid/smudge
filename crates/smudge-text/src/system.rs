@@ -11,7 +11,6 @@
 //! choices first and to the bundled face last, while the default text style
 //! names the bundled family directly, so it never depends on the host.
 
-use smudge_core::geometry::Color;
 use std::cell::RefCell;
 
 /// The font and layout contexts a thread lays text out with.
@@ -23,7 +22,7 @@ pub struct TextSystem {
     /// The registered fonts and the queries against them.
     pub(crate) fonts: parley::FontContext,
     /// Scratch space reused across layouts.
-    pub(crate) layouts: parley::LayoutContext<Color>,
+    pub(crate) layouts: parley::LayoutContext<()>,
 }
 
 impl TextSystem {

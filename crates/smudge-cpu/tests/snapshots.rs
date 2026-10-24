@@ -100,7 +100,7 @@ fn text_scene() -> DisplayList {
         radius: Corners::ZERO,
         color: Color::WHITE,
     });
-    for run in layout.glyph_runs_at(Point { x: 4.0, y: 4.0 }) {
+    for run in layout.glyph_runs_at(Point { x: 4.0, y: 4.0 }, Color::BLACK) {
         list.push_op(PaintOp::Glyphs(Rc::new(run)));
     }
     list.finish();

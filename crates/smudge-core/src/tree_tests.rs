@@ -186,14 +186,14 @@ fn an_unchanged_paint_value_leaves_the_node_clean() {
     assert!(!tree.layout_dirty, "a paint change never needs layout");
     assert!(tree.paint_queue.is_empty(), "a clean node is not queued");
 
-    tree.apply_paint(id, |paint| paint.background = Some(Color::BLACK));
+    tree.apply_paint(id, |paint| paint.background = Some(Color::BLACK.into()));
 
     assert_eq!(tree.nodes[id].dirty, Dirty::Paint);
     assert!(!tree.layout_dirty);
     assert_eq!(tree.paint_queue, vec![id]);
     assert_eq!(
         tree.style(id).expect("the node is live").paint.background,
-        Some(Color::BLACK)
+        Some(Color::BLACK.into())
     );
 }
 

@@ -7,6 +7,7 @@
 use smudge_core::geometry::{Color, Rect};
 use smudge_core::reactive::{prelude::*, signal_local};
 use smudge_core::style::{Align, px};
+use smudge_core::theme::{ColorToken, Theme};
 use smudge_core::widget::panel;
 use smudge_test::Harness;
 use smudge_text::{LabelExt, TextStyle, TextSystem, label, provide_text_style};
@@ -25,7 +26,7 @@ fn text_color_change_repaints_without_layout() {
     TextSystem::bundled_only().install();
     let (color, set_color) = signal_local(Color::BLACK);
     let mut harness = Harness::new(200.0, 100.0, 1.0, move || {
-        label("Hello").text_color(move || color.get())
+        label("Hello").text_color(move || color.get().into())
     });
     harness.frame();
 
@@ -238,4 +239,92 @@ fn a_label_in_a_row_too_narrow_for_it_wraps_and_leaves_its_sibling_room() {
         sibling.width() > 0.0,
         "the sibling keeps part of its width, not {sibling:?}"
     );
+}
+
+#[test]
+fn a_theme_switch_repaints_a_label_whose_text_color_is_a_token() {
+    TextSystem::bundled_only().install();
+    let mut harness = Harness::new(200.0, 100.0, 1.0, || {
+        label("Hello").text_color(ColorToken::TEXT)
+    });
+    harness.frame();
+
+    harness.app().set_theme(Theme::dark());
+    let report = harness.frame();
+
+    assert_eq!(
+        report.nodes_painted, 1,
+        "the token-using label repaints on a theme switch"
+    );
+    assert!(!report.layout_ran, "a color change never lays out again");
+
+    let mut expected = Harness::new(200.0, 100.0, 1.0, || {
+        label("Hello").text_color(Theme::dark().color(ColorToken::TEXT))
+    });
+    expected.frame();
+    harness.assert_matches(&expected);
+}
+
+#[test]
+fn a_default_label_paints_with_the_theme_s_text_color() {
+    TextSystem::bundled_only().install();
+    let mut harness = Harness::new(200.0, 100.0, 1.0, || label("Hello"));
+    harness.app().set_theme(Theme::dark());
+    harness.frame();
+
+    let mut expected = Harness::new(200.0, 100.0, 1.0, || {
+        label("Hello").text_color(Theme::dark().color(ColorToken::TEXT))
+    });
+    expected.frame();
+    harness.assert_matches(&expected);
+}
+
+#[test]
+fn a_theme_switch_repaints_a_default_label_and_damages_it() {
+    TextSystem::bundled_only().install();
+    let mut harness = Harness::new(200.0, 100.0, 1.0, || label("Hello"));
+    harness.frame();
+
+    harness.app().set_theme(Theme::dark());
+    let report = harness.frame();
+
+    assert_eq!(
+        report.nodes_painted, 1,
+        "the default label follows the theme's text token, so it repaints"
+    );
+    assert!(!report.layout_ran, "a color change never lays out again");
+    assert!(
+        !report.damage.is_empty(),
+        "the switch damages the label's area"
+    );
+
+    let mut expected = Harness::new(200.0, 100.0, 1.0, || {
+        label("Hello").text_color(Theme::dark().color(ColorToken::TEXT))
+    });
+    expected.frame();
+    harness.assert_matches(&expected);
+}
+
+#[test]
+fn a_label_with_a_literal_text_color_ignores_a_theme_switch() {
+    TextSystem::bundled_only().install();
+    const LITERAL: Color = Color::rgb(10, 20, 30);
+    let mut harness = Harness::new(200.0, 100.0, 1.0, || label("Hello").text_color(LITERAL));
+    harness.frame();
+
+    harness.app().set_theme(Theme::dark());
+    let report = harness.frame();
+
+    assert_eq!(
+        report.nodes_painted, 0,
+        "a literal color consults no token, so nothing repaints"
+    );
+    assert!(
+        report.damage.is_empty(),
+        "a theme switch that the label ignores damages nothing"
+    );
+
+    let mut expected = Harness::new(200.0, 100.0, 1.0, || label("Hello").text_color(LITERAL));
+    expected.frame();
+    harness.assert_matches(&expected);
 }

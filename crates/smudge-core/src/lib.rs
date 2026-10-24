@@ -14,6 +14,7 @@ pub mod input;
 pub mod paint;
 pub mod reactive;
 pub mod style;
+pub mod theme;
 pub mod tree;
 pub mod variants;
 pub mod widget;

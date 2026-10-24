@@ -84,7 +84,7 @@ fn main() -> ExitCode {
                     .corner_radius(8.0)
                     .border(2.0)
                     .border_color(Color::rgb(70, 74, 88))
-                    .background(move || color.get()),
+                    .background(move || color.get().into()),
             );
         }
         panel()

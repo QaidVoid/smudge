@@ -159,7 +159,7 @@ fn mount_boxes(driver: &mut Driver) -> Element<Panel> {
     for _ in 0..BOXES {
         let (color, set_color) = reactive::signal_local(rng.color());
         driver.register(Box::new(move |color| set_color.set(color)));
-        grid = grid.child(bordered_box().background(move || color.get()));
+        grid = grid.child(bordered_box().background(move || color.get().into()));
     }
     panel().align_items(Align::Start).child(grid)
 }
@@ -185,7 +185,7 @@ fn mount_counter(driver: &mut Driver) -> Element<Panel> {
     let counter = bordered_box()
         .width(px(COUNTER_SIZE.0))
         .height(px(COUNTER_SIZE.1))
-        .background(move || color.get());
+        .background(move || color.get().into());
     panel()
         .align_items(Align::Start)
         .column()
@@ -210,7 +210,7 @@ fn step_counter(driver: &mut Driver, frame: u64) {
 fn mount_full_change(driver: &mut Driver) -> Element<Panel> {
     let (color, set_color) = reactive::signal_local(Xorshift::new(S3_SEED).color());
     driver.register(Box::new(move |color| set_color.set(color)));
-    panel().background(move || color.get())
+    panel().background(move || color.get().into())
 }
 
 /// Writes one fresh color to the root background of the third scene.

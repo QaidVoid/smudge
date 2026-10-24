@@ -179,7 +179,7 @@ fn a_background_binding_repaints_one_box() {
             panel()
                 .width(px(50.0))
                 .height(px(20.0))
-                .background(move || color.get()),
+                .background(move || color.get().into()),
         )
     });
     frame(&mut app);
@@ -209,7 +209,7 @@ fn a_repaint_in_place_adds_its_rectangle_once() {
             panel()
                 .width(px(50.0))
                 .height(px(20.0))
-                .background(move || color.get()),
+                .background(move || color.get().into()),
         )
     });
     frame(&mut app);
@@ -306,7 +306,7 @@ fn a_binding_that_writes_what_it_reads_panics_in_debug_builds() {
         panel().background(move || {
             let value = shade.get();
             set_shade.set(value.wrapping_add(1));
-            Color::rgb(value, 0, 0)
+            Color::rgb(value, 0, 0).into()
         })
     });
 
@@ -325,12 +325,12 @@ fn two_bindings_that_write_each_others_signals_panic_in_debug_builds() {
             .background(move || {
                 let value = left.get();
                 set_right.set(value.wrapping_add(1));
-                Color::rgb(value, 0, 0)
+                Color::rgb(value, 0, 0).into()
             })
             .child(panel().background(move || {
                 let value = right.get();
                 set_left.set(value.wrapping_add(1));
-                Color::rgb(0, value, 0)
+                Color::rgb(0, value, 0).into()
             }))
     });
 
@@ -346,7 +346,7 @@ fn a_binding_that_corrects_what_it_reads_settles() {
             if value > 100 {
                 set_shade.set(100);
             }
-            Color::rgb(value, 0, 0)
+            Color::rgb(value, 0, 0).into()
         })
     });
     frame(&mut app);
@@ -371,7 +371,11 @@ fn bindings_see_the_context_the_build_closure_provides() {
 
     let mut app = App::new(config(RepaintMode::Damage), || {
         provide_context(Accent(Color::BLACK));
-        panel().background(|| use_context::<Accent>().map_or(Color::WHITE, |accent| accent.0))
+        panel().background(|| {
+            use_context::<Accent>()
+                .map_or(Color::WHITE, |accent| accent.0)
+                .into()
+        })
     });
 
     let first = frame(&mut app);

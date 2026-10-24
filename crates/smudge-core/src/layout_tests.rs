@@ -97,7 +97,7 @@ fn a_paint_only_change_skips_layout() {
     tree.clear_dirty();
     let runs = tree.layout_runs();
 
-    tree.apply_paint(child, |paint| paint.background = Some(Color::BLACK));
+    tree.apply_paint(child, |paint| paint.background = Some(Color::BLACK.into()));
 
     assert!(
         !tree.layout(Size {

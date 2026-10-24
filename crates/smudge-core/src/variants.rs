@@ -35,8 +35,9 @@
 
 use std::rc::Rc;
 
-use crate::geometry::{Color, Corners, Size};
+use crate::geometry::Size;
 use crate::style::{Align, Direction, Edges, Justify, Length, Overflow, Position, Style};
+use crate::theme::{ColorValue, RadiusValue};
 
 use crate::tree::interaction::Interaction;
 
@@ -234,20 +235,46 @@ impl PatchBuilder {
     }
 
     /// Sets the fill painted behind the node.
-    pub fn background(self, color: Color) -> Self {
+    ///
+    /// The color can be a [`Color`](crate::geometry::Color) or a
+    /// [`ColorToken`](crate::theme::ColorToken). A token resolves against the
+    /// theme that is current when the node paints.
+    pub fn background(self, color: impl Into<ColorValue>) -> Self {
+        let color = color.into();
         self.push(move |style| style.paint.background = Some(color))
     }
 
     /// Sets the color of the border whose width [`PatchBuilder::border`]
     /// sets.
-    pub fn border_color(self, color: Color) -> Self {
+    ///
+    /// The color can be a [`Color`](crate::geometry::Color) or a
+    /// [`ColorToken`](crate::theme::ColorToken). A token resolves against the
+    /// theme that is current when the node paints.
+    pub fn border_color(self, color: impl Into<ColorValue>) -> Self {
+        let color = color.into();
         self.push(move |style| style.paint.border_color = Some(color))
+    }
+
+    /// Sets the color a widget's text paints with.
+    ///
+    /// Widgets that show text read it; widgets without text ignore it. The
+    /// color can be a [`Color`](crate::geometry::Color) or a
+    /// [`ColorToken`](crate::theme::ColorToken). A token resolves against the
+    /// theme that is current when the node paints.
+    pub fn text_color(self, color: impl Into<ColorValue>) -> Self {
+        let color = color.into();
+        self.push(move |style| style.paint.text_color = Some(color))
     }
 
     /// Sets the corner radius of the background and the border, the same on
     /// all four corners.
-    pub fn corner_radius(self, radius: f32) -> Self {
-        self.push(move |style| style.paint.corner_radius = Corners::all(radius))
+    ///
+    /// The radius can be an [`f32`] or a
+    /// [`RadiusToken`](crate::theme::RadiusToken). A token resolves against
+    /// the theme that is current when the node paints.
+    pub fn corner_radius(self, radius: impl Into<RadiusValue>) -> Self {
+        let radius = radius.into();
+        self.push(move |style| style.paint.corner_radius = radius)
     }
 
     /// Consumes the builder into the patch it recorded.

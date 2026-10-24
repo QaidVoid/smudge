@@ -9,7 +9,12 @@
 //! Create one with [`label`] and shape it with the [`LabelExt`] builder
 //! methods. At mount the label reads the ambient text style, which
 //! [`provide_text_style`](crate::provide_text_style) sets, and fills every
-//! style field that no builder method set.
+//! style field that no builder method set. The color the glyphs paint with
+//! resolves against the theme when the label paints, so a theme switch
+//! repaints it: the node's
+//! [`text_color`](smudge_core::element::Element::text_color) when it sets
+//! one, which may name a theme token, and otherwise the ambient style's
+//! color, which defaults to the theme's text token.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -38,7 +43,7 @@ use crate::style::current_text_style;
 /// Build one with [`label`]. The label keeps the layout of its current text
 /// and rebuilds it only when the text, the style or the offered width
 /// changes, and keeps the glyph runs of that layout and rebuilds them only
-/// when the layout or the node's position changes.
+/// when the layout, the node's position or the resolved text color changes.
 pub struct Label {
     /// The text the label shows.
     text: String,
@@ -60,9 +65,20 @@ pub struct Label {
     /// It is cached apart from [`Label::layout`], so answering a min-content
     /// request never replaces the layout the label paints.
     min_content: Option<Size>,
-    /// The glyph runs of the current layout, with the origin they were built
-    /// at. Paint operations share them through an `Rc`.
-    runs: RefCell<Option<(Point, Vec<Rc<GlyphRun>>)>>,
+    /// The glyph runs of the current layout, with the origin and the resolved
+    /// color they were built at. Paint operations share them through an `Rc`.
+    runs: RefCell<Option<CachedRuns>>,
+}
+
+/// The glyph runs of one layout, with the origin and resolved color they were
+/// built at.
+struct CachedRuns {
+    /// The origin the glyph positions are absolute to.
+    origin: Point,
+    /// The color every run was built with.
+    color: Color,
+    /// The runs, shared by the paint operations that show them.
+    runs: Vec<Rc<GlyphRun>>,
 }
 
 impl Label {
@@ -130,9 +146,12 @@ impl Widget for Label {
 
     /// Appends one [`PaintOp::Glyphs`] per run of the current layout.
     ///
-    /// The runs are rebuilt when they were invalidated or when the node paints
-    /// at another position, because glyph positions are absolute. Each run
-    /// carries the color the style has when the runs are built.
+    /// The runs are rebuilt when they were invalidated, when the node paints
+    /// at another position, or when the resolved text color changed, because
+    /// glyph positions and colors are baked into them. Each run carries the
+    /// color the node's text color or the label's style resolves to under the
+    /// current theme. When that color is a token, resolving it marks the node
+    /// to repaint on a theme switch, and a literal color does not.
     ///
     /// # Panics
     ///
@@ -143,28 +162,43 @@ impl Widget for Label {
         let Some(layout) = &self.layout else {
             return;
         };
+        let color = self.text_color(cx);
         let origin = cx.rect.origin();
         let mut cache = self.runs.borrow_mut();
         let rebuild = match &*cache {
-            Some((cached_origin, _)) => *cached_origin != origin,
+            Some(cached) => cached.origin != origin || cached.color != color,
             None => true,
         };
         if rebuild {
-            // The color is patched onto the runs here rather than baked into
-            // the layout, so a color change repaints the label without laying
+            // The color is baked into the runs here rather than into the
+            // layout, so a color change repaints the label without laying
             // its text out again.
             let runs = layout
-                .glyph_runs_at(origin)
+                .glyph_runs_at(origin, color)
                 .into_iter()
-                .map(|mut run| {
-                    run.color = self.style.color;
-                    Rc::new(run)
-                })
+                .map(Rc::new)
                 .collect();
-            *cache = Some((origin, runs));
+            *cache = Some(CachedRuns {
+                origin,
+                color,
+                runs,
+            });
         }
-        if let Some((_, runs)) = cache.as_ref() {
-            out.extend(runs.iter().cloned().map(PaintOp::Glyphs));
+        if let Some(cached) = cache.as_ref() {
+            out.extend(cached.runs.iter().cloned().map(PaintOp::Glyphs));
+        }
+    }
+}
+
+impl Label {
+    /// Returns the color the glyphs paint with: the node's text color when it
+    /// sets one, otherwise the label's style color. Both may name a theme
+    /// token, so both resolve against the theme that is current at paint
+    /// time.
+    fn text_color(&self, cx: &PaintCx<'_>) -> Color {
+        match &cx.style.paint.text_color {
+            Some(color) => color.resolve(cx.theme),
+            None => self.style.color.resolve(cx.theme),
         }
     }
 }
@@ -194,26 +228,23 @@ pub fn label(text: impl Into<Value<String>>) -> Element<Label> {
 /// Import the trait to use them:
 ///
 /// ```
-/// use smudge_core::geometry::Color;
 /// use smudge_text::LabelExt;
 /// use smudge_text::label;
 ///
-/// let element = label("Hello").text_size(18.0).text_color(Color::BLACK);
+/// let element = label("Hello").text_size(18.0);
 /// ```
 ///
 /// Every method sets one field of the label's text style; the remaining
-/// fields come from the ambient style at mount.
+/// fields come from the ambient style at mount. The color the glyphs paint
+/// with is a paint property of the node, set with
+/// [`text_color`](smudge_core::element::Element::text_color), which needs no
+/// import.
 pub trait LabelExt: Sized {
     /// Sets the font size in logical pixels.
     ///
     /// The size changes what the label measures, so the node is laid out
     /// again.
     fn text_size(self, size: impl Into<Value<f32>>) -> Self;
-
-    /// Sets the color the glyphs paint with.
-    ///
-    /// The color changes no measurement, so the node is only repainted.
-    fn text_color(self, color: impl Into<Value<Color>>) -> Self;
 
     /// Sets the weight the family is matched with.
     ///
@@ -231,10 +262,6 @@ pub trait LabelExt: Sized {
 impl LabelExt for Element<Label> {
     fn text_size(self, size: impl Into<Value<f32>>) -> Self {
         self.bind(size, set_text_size)
-    }
-
-    fn text_color(self, color: impl Into<Value<Color>>) -> Self {
-        self.bind(color, set_text_color)
     }
 
     fn weight(self, weight: FontWeight) -> Self {
@@ -258,8 +285,6 @@ struct ExplicitStyle {
     size: bool,
     /// The weight was set by [`LabelExt::weight`].
     weight: bool,
-    /// The color was set by [`LabelExt::text_color`].
-    color: bool,
 }
 
 /// Writes `text` into the label and relays it out when it changed.
@@ -281,17 +306,6 @@ fn set_text_size(label: &mut Label, size: f32) -> Dirty {
     label.style.size = size;
     label.invalidate_layout();
     Dirty::Layout
-}
-
-/// Writes `color` into the label's style and repaints it when it changed.
-fn set_text_color(label: &mut Label, color: Color) -> Dirty {
-    label.explicit.color = true;
-    if label.style.color == color {
-        return Dirty::Clean;
-    }
-    label.style.color = color;
-    *label.runs.borrow_mut() = None;
-    Dirty::Paint
 }
 
 /// Writes `weight` into the label's style and relays it out when it changed.
@@ -328,9 +342,6 @@ fn apply_ambient_style(label: &mut Label, mut ambient: TextStyle) -> Dirty {
     }
     if explicit.weight {
         ambient.weight = label.style.weight;
-    }
-    if explicit.color {
-        ambient.color = label.style.color;
     }
     if ambient == label.style {
         return Dirty::Clean;

@@ -6,8 +6,8 @@
 //! with [`current_text_style`].
 
 use parley::FontWeight;
-use smudge_core::geometry::Color;
 use smudge_core::reactive::{provide_context, use_context};
+use smudge_core::theme::{ColorToken, ColorValue};
 
 /// How a text widget lays out and paints its text.
 #[derive(Clone, Debug, PartialEq)]
@@ -20,8 +20,9 @@ pub struct TextStyle {
     pub weight: FontWeight,
     /// The line height as a multiple of the font size.
     pub line_height: f32,
-    /// The color the glyphs paint with.
-    pub color: Color,
+    /// The color the glyphs paint with, which may name a theme token and
+    /// resolves when the widget paints.
+    pub color: ColorValue,
 }
 
 impl Default for TextStyle {
@@ -31,7 +32,7 @@ impl Default for TextStyle {
             size: 14.0,
             weight: FontWeight::NORMAL,
             line_height: 1.3,
-            color: Color::BLACK,
+            color: ColorValue::Token(ColorToken::TEXT),
         }
     }
 }

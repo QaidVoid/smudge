@@ -10,14 +10,13 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use crate::layout::TextLayout;
 use parley::FontData;
 use skrifa::GlyphId;
 use skrifa::MetadataProvider;
 use skrifa::instance::{LocationRef, Size};
-use smudge_core::geometry::{Point, Rect};
+use smudge_core::geometry::{Color, Point, Rect};
 use smudge_core::paint::{FontBlob, GlyphRun, PositionedGlyph};
-
-use crate::layout::TextLayout;
 
 thread_local! {
     /// The font blobs already mapped out of parley's font data, keyed by the
@@ -35,22 +34,23 @@ impl TextLayout {
     ///
     /// `origin` is where the top left corner of the layout box goes, in
     /// logical window coordinates, so the first line's baseline lies one
-    /// ascent below it. Each returned run carries the font as bytes, the size
-    /// and color its style used, and glyphs positioned in absolute logical
-    /// window coordinates. A run whose text is empty produces no runs.
+    /// ascent below it. The layout itself carries no color, so `color` is the
+    /// color every returned run paints with, resolved by the caller at paint
+    /// time. Each run carries the font as bytes, the size its style used, the
+    /// given color, and glyphs positioned in absolute logical window
+    /// coordinates. A run whose text is empty produces no runs.
     ///
     /// # Panics
     ///
     /// Panics under the conditions of [`crate::TextSystem::with`], in
     /// particular when called from inside another `with` call on the same
     /// thread.
-    pub fn glyph_runs_at(&self, origin: Point) -> Vec<GlyphRun> {
+    pub fn glyph_runs_at(&self, origin: Point, color: Color) -> Vec<GlyphRun> {
         self.glyph_runs()
             .map(|run| {
                 let parley_run = run.run();
                 let font = font_blob(parley_run.font());
                 let size = parley_run.font_size();
-                let color = run.style().brush;
                 // skrifa reads the font once per run, not once per glyph.
                 let metrics = skrifa::FontRef::from_index(
                     parley_run.font().data.as_ref(),
