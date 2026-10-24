@@ -33,6 +33,20 @@ const MAX_RECTS: usize = 16;
 /// The benchmark suite tunes this value.
 const FULL_FRAME_RATIO: f64 = 0.6;
 
+/// A logical rectangle a node painted, with the clip it was drawn under.
+///
+/// The two are kept apart because a renderer applies a clip in physical
+/// pixels: it draws a pixel when any part of it lies inside the clip. Damage
+/// that intersected the two in logical space first would miss the pixels a
+/// clip edge only partly covers.
+#[derive(Copy, Clone, Debug)]
+struct ClippedRect {
+    /// The union of the node's paint operation bounds, before clipping.
+    bounds: Rect,
+    /// The rectangle the node was clipped to.
+    clip: Rect,
+}
+
 /// Collects logical damage rectangles and turns them into a small set of
 /// physical pixel rectangles that cover every damaged pixel.
 ///
@@ -64,6 +78,8 @@ pub struct DamageAccumulator {
     /// Logical rectangles added since the last clear, in the order they were
     /// added.
     rects: Vec<Rect>,
+    /// Logical rectangles added with a clip, in the order they were added.
+    clipped: Vec<ClippedRect>,
     /// Whether the whole surface must be repainted.
     full: bool,
     /// The physical rectangles produced by the last [`DamageAccumulator::finish`].
@@ -88,6 +104,20 @@ impl DamageAccumulator {
         self.rects.push(rect);
     }
 
+    /// Adds the part of `bounds` that a renderer can draw inside `clip`.
+    ///
+    /// A renderer draws a pixel when any part of it lies inside the clip, so
+    /// the intersection is taken after both rectangles are rounded outward to
+    /// physical pixels. A node that a clip cuts off entirely, whose bounds
+    /// only touch the clip edge, still damages the pixels that edge passes
+    /// through.
+    pub(crate) fn add_clipped(&mut self, bounds: Rect, clip: Rect) {
+        if bounds.is_empty() || clip.is_empty() {
+            return;
+        }
+        self.clipped.push(ClippedRect { bounds, clip });
+    }
+
     /// Marks the whole surface as damaged.
     ///
     /// This overrides the rectangles added around it: the finished damage is
@@ -101,7 +131,7 @@ impl DamageAccumulator {
     /// Only the rectangles added so far are considered, so a rectangle that
     /// turns out to lie outside the surface still counts as damage here.
     pub fn is_empty(&self) -> bool {
-        !self.full && self.rects.is_empty()
+        !self.full && self.rects.is_empty() && self.clipped.is_empty()
     }
 
     /// Converts the collected rectangles to physical pixels, merges them, and
@@ -140,6 +170,15 @@ impl DamageAccumulator {
                 self.out.push(pixel_rect);
             }
         }
+        for rect in &self.clipped {
+            let bounds = PixelRect::from_logical(rect.bounds, scale, surface_width, surface_height);
+            let clip = PixelRect::from_logical(rect.clip, scale, surface_width, surface_height);
+            if let (Some(bounds), Some(clip)) = (bounds, clip)
+                && let Some(intersection) = bounds.intersect(clip)
+            {
+                self.out.push(intersection);
+            }
+        }
         self.merge(surface);
         &self.out
     }
@@ -147,6 +186,7 @@ impl DamageAccumulator {
     /// Removes every collected rectangle, keeping the allocated capacity.
     pub fn clear(&mut self) {
         self.rects.clear();
+        self.clipped.clear();
         self.out.clear();
         self.full = false;
     }

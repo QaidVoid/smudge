@@ -1,7 +1,7 @@
 use crate::damage::DamageAccumulator;
 use crate::geometry::{Color, Corners, PixelRect, Rect, Size};
 use crate::paint::PaintOp;
-use crate::style::{Align, Length, Overflow, Style};
+use crate::style::{Align, Direction, Length, Overflow, Style};
 use crate::tree::WidgetTree;
 use crate::widget::{PaintCx, Panel, Widget};
 
@@ -48,15 +48,29 @@ fn packing() -> Style {
     style
 }
 
-/// Paints the tree as a frame does, returning how many nodes painted and the
-/// physical damage, and leaves the accumulator empty for the next frame.
-fn paint_frame(tree: &mut WidgetTree, damage: &mut DamageAccumulator) -> (u32, Vec<PixelRect>) {
+/// Paints the tree as a frame does at `scale`, returning how many nodes
+/// painted and the physical damage, and leaves the accumulator empty for the
+/// next frame.
+fn paint_frame_at(
+    tree: &mut WidgetTree,
+    damage: &mut DamageAccumulator,
+    scale: f32,
+) -> (u32, Vec<PixelRect>) {
     let painted = tree.paint(damage);
     let rects = damage
-        .finish(1.0, VIEWPORT.width as u32, VIEWPORT.height as u32)
+        .finish(
+            scale,
+            (VIEWPORT.width * scale) as u32,
+            (VIEWPORT.height * scale) as u32,
+        )
         .to_vec();
     damage.clear();
     (painted, rects)
+}
+
+/// Paints the tree as a frame does at a scale of one.
+fn paint_frame(tree: &mut WidgetTree, damage: &mut DamageAccumulator) -> (u32, Vec<PixelRect>) {
+    paint_frame_at(tree, damage, 1.0)
 }
 
 /// Returns `true` when one of the damaged rectangles covers `rect` entirely.
@@ -232,5 +246,39 @@ fn hiding_a_node_damages_only_where_it_painted() {
             height: 10,
         }],
         "the hidden node clears its old pixels and paints nowhere else"
+    );
+}
+
+#[test]
+fn a_node_cut_off_by_a_clip_damages_the_pixels_the_clip_edge_passes_through() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Panel), packing());
+    let mut frame_style = fixed(8.0, 2.0);
+    frame_style.layout.overflow = Overflow::Clip;
+    frame_style.layout.direction = Direction::Column;
+    let frame = tree.insert(Some(root), Box::new(Panel), frame_style);
+    let mut filler_style = fixed(8.0, 2.0);
+    filler_style.layout.shrink = 0.0;
+    tree.insert(Some(frame), Box::new(Panel), filler_style);
+    let mut below_style = boxed(8.0, 2.0);
+    below_style.layout.shrink = 0.0;
+    let below = tree.insert(Some(frame), Box::new(Panel), below_style);
+
+    let mut damage = DamageAccumulator::new();
+    tree.layout(VIEWPORT);
+    paint_frame_at(&mut tree, &mut damage, 1.25);
+
+    tree.apply_paint(below, |paint| paint.background = Some(Color::WHITE));
+    let (_, repainted) = paint_frame_at(&mut tree, &mut damage, 1.25);
+
+    assert_eq!(
+        repainted,
+        vec![PixelRect {
+            x: 0,
+            y: 2,
+            width: 10,
+            height: 1,
+        }],
+        "a node the clip cuts off still damages the pixel row the clip edge passes through"
     );
 }

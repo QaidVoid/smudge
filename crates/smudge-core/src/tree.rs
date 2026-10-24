@@ -50,6 +50,20 @@ pub enum Dirty {
     Layout,
 }
 
+/// The bounds a node painted in the last frame, and the clip it painted under.
+///
+/// The bounds are the union of the node's paint operation bounds before
+/// clipping. The clip is kept beside them, because damage converts the two to
+/// physical pixels separately: a pixel that a clip edge only partly covers is
+/// still drawn, and clipping the bounds in logical space first would miss it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct PaintedBounds {
+    /// The union of the node's paint operation bounds, before clipping.
+    bounds: Rect,
+    /// The rectangle the node's subtree was clipped to.
+    clip: Rect,
+}
+
 /// One widget and everything the frame needs to know about it.
 struct Node {
     /// The widget this node owns.
@@ -77,8 +91,8 @@ struct Node {
     clip: Rect,
     /// The node's cached paint output, filled by the paint pass.
     ops: Vec<PaintOp>,
-    /// The bounds the node painted last frame, already clipped.
-    painted: Option<Rect>,
+    /// The bounds the node painted last frame and the clip it painted under.
+    painted: Option<PaintedBounds>,
 }
 
 /// The retained tree of widgets.
@@ -96,7 +110,7 @@ pub(crate) struct WidgetTree {
     /// Whether any node needs a new layout pass.
     layout_dirty: bool,
     /// The painted bounds of nodes removed since the last frame.
-    removed_damage: Vec<Rect>,
+    removed_damage: Vec<PaintedBounds>,
     /// The viewport the last layout pass ran for, or `None` before the first.
     viewport: Option<Size>,
     /// How many times the layout engine has run for this tree.

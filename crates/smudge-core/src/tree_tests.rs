@@ -7,7 +7,7 @@ use crate::geometry::{Color, Rect};
 use crate::paint::PaintOp;
 use crate::reactive::{self, Owner, RenderEffect, prelude::*};
 use crate::style::{Length, Style};
-use crate::tree::{Dirty, WidgetId, WidgetTree};
+use crate::tree::{Dirty, PaintedBounds, WidgetId, WidgetTree};
 use crate::widget::{PaintCx, Widget};
 
 /// A widget with no behavior, for filling tree nodes.
@@ -122,13 +122,14 @@ fn removing_a_painted_node_damages_its_painted_bounds() {
     let child = tree.insert(Some(root), Box::new(Empty), Style::default());
 
     let bounds = Rect::new(4.0, 8.0, 24.0, 18.0);
-    tree.nodes[child].painted = Some(bounds);
+    let clip = Rect::new(0.0, 0.0, 40.0, 30.0);
+    tree.nodes[child].painted = Some(PaintedBounds { bounds, clip });
 
     tree.remove(child);
 
     assert_eq!(
         tree.removed_damage,
-        vec![bounds],
+        vec![PaintedBounds { bounds, clip }],
         "the area the node painted last frame needs a repaint"
     );
 }

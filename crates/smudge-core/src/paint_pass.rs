@@ -14,7 +14,7 @@ use crate::damage::DamageAccumulator;
 use crate::geometry::Rect;
 use crate::widget::PaintCx;
 
-use super::{Dirty, WidgetTree};
+use super::{Dirty, PaintedBounds, WidgetTree};
 
 impl WidgetTree {
     /// Paints every queued node and adds the pixels each one may have changed
@@ -25,10 +25,11 @@ impl WidgetTree {
     /// changed. The pass adds the bounds the node painted last frame to
     /// `damage`, regenerates the node's operations, and adds the bounds it
     /// paints now. A node's painted bounds are the union of its operations'
-    /// bounds, intersected with the clip the layout pass gave it, so a child
-    /// that overflows a clipping parent damages only the part inside the clip.
-    /// A node with nothing inside its clip keeps no bounds. A node whose clip
-    /// is empty, such as a hidden node, keeps no operations either, and its
+    /// bounds, kept together with the clip the layout pass gave it, and the two
+    /// are intersected in physical pixels when the damage is finished. A child
+    /// that overflows a clipping parent therefore damages only the part inside
+    /// the clip, including the pixels the clip edge passes through. A node
+    /// whose clip is empty, such as a hidden node, keeps no operations and its
     /// widget is not asked to paint.
     ///
     /// Every painted node ends [`Dirty::Clean`]. The bounds of nodes removed
@@ -49,7 +50,7 @@ impl WidgetTree {
             }
 
             if let Some(bounds) = node.painted.take() {
-                damage.add(bounds);
+                damage.add_clipped(bounds.bounds, bounds.clip);
             }
 
             node.ops.clear();
@@ -64,22 +65,24 @@ impl WidgetTree {
             let bounds = node
                 .ops
                 .iter()
-                .fold(Rect::default(), |bounds, op| bounds.union(op.bounds()))
-                .intersect(node.clip);
+                .fold(Rect::default(), |bounds, op| bounds.union(op.bounds()));
             node.painted = if bounds.is_empty() {
                 None
             } else {
-                Some(bounds)
+                Some(PaintedBounds {
+                    bounds,
+                    clip: node.clip,
+                })
             };
             if let Some(bounds) = node.painted {
-                damage.add(bounds);
+                damage.add_clipped(bounds.bounds, bounds.clip);
             }
             node.dirty = Dirty::Clean;
             painted += 1;
         }
 
         for bounds in self.removed_damage.drain(..) {
-            damage.add(bounds);
+            damage.add_clipped(bounds.bounds, bounds.clip);
         }
 
         painted
