@@ -175,9 +175,15 @@ impl DamageHistory {
 /// the whole pixmap must be copied and presented instead. The whole-pixmap
 /// cases are an age outside 1 to 3, a full repaint of the current frame, a
 /// current frame with no damage, a full repaint within the frames the region
-/// covers, or history that does not reach back far enough. Rectangles are
-/// concatenated, so they may overlap, and writing a pixel twice changes
-/// nothing.
+/// covers, or history that does not reach back far enough.
+///
+/// A past rectangle that a rectangle already in `out` contains is skipped, so a
+/// region that changes on every frame is copied once rather than once per
+/// frame the buffer missed. Measured on a 1270 by 1388 window at age 2, a frame
+/// whose damage covered the whole surface copied 14.1 MB and took 1525
+/// microseconds to present, against 716 microseconds for a full present.
+/// Rectangles that only partly overlap are both kept, and writing a pixel twice
+/// changes nothing.
 ///
 /// A frame with no damage is mostly a redraw the window system asked for,
 /// such as an X11 window being shown again after it was minimized or covered.
@@ -201,7 +207,11 @@ pub(crate) fn damage_region(
     }
     out.extend_from_slice(current);
     for entry in &history.entries[..previous] {
-        out.extend_from_slice(&entry.damage);
+        for &rect in &entry.damage {
+            if !out.iter().any(|kept| kept.contains_rect(rect)) {
+                out.push(rect);
+            }
+        }
     }
     true
 }

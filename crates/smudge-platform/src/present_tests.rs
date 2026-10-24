@@ -212,3 +212,24 @@ fn a_frame_without_damage_copies_everything() {
         assert!(out.is_empty());
     }
 }
+
+#[test]
+fn a_region_that_changes_every_frame_is_copied_once() {
+    let wide = PixelRect {
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+    };
+    let mut history = DamageHistory::default();
+    history.push(&[rect(5, 5), wide], false);
+    history.push(&[wide], false);
+    let mut out = Vec::new();
+
+    assert!(damage_region(3, &[wide], false, &history, &mut out));
+    assert_eq!(
+        out,
+        [wide, rect(5, 5)],
+        "the rectangles the current damage contains add nothing to copy"
+    );
+}
