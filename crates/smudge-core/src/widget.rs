@@ -11,7 +11,37 @@ use crate::geometry::{Rect, Size};
 use crate::paint::PaintOp;
 use crate::style::{Edges, Style};
 
-pub use taffy::{AvailableSpace, Size as MeasureSize};
+/// The space a measure call offers on one axis, or the intrinsic size it asks
+/// for instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AvailableSpace {
+    /// Space offered in logical pixels.
+    Definite(f32),
+    /// Asks for the smallest size the content fits in, such as the widest
+    /// word of a text.
+    MinContent,
+    /// Asks for the size the content takes without wrapping.
+    MaxContent,
+}
+
+/// What one measure call offers a widget.
+#[derive(Clone, Copy, Debug)]
+pub struct MeasureInput {
+    /// The width the layout engine treats as fixed for this call.
+    ///
+    /// It can be absent even when the node's style fixes a width: the
+    /// engine's final layout pass passes no fixed size at all.
+    pub known_width: Option<f32>,
+    /// The height the layout engine treats as fixed for this call.
+    ///
+    /// It can be absent even when the node's style fixes a height: the
+    /// engine's final layout pass passes no fixed size at all.
+    pub known_height: Option<f32>,
+    /// The space offered on the x axis, inside the node's padding and border.
+    pub available_width: AvailableSpace,
+    /// The space offered on the y axis, inside the node's padding and border.
+    pub available_height: AvailableSpace,
+}
 
 /// A piece of user interface owned by one tree node.
 ///
@@ -26,13 +56,14 @@ pub trait Widget: Any + type_name::TypeName {
     /// Returns the size of this widget's content, or `None` to let the layout
     /// engine size the node from its style.
     ///
-    /// `known` holds the sizes the engine treats as fixed for this call, and
-    /// may be empty even when the node's style fixes a size. `available` is the
-    /// space left on each axis inside the node's padding and border. An axis
-    /// can also ask for an intrinsic size instead of offering space:
-    /// [`AvailableSpace::MinContent`] asks for the smallest size the content
-    /// fits in, such as the widest word of a text, and
-    /// [`AvailableSpace::MaxContent`] asks for the size the content takes
+    /// `input.known_width` and `input.known_height` hold the sizes the engine
+    /// treats as fixed for this call, and either can be absent even when the
+    /// node's style fixes a size. `input.available_width` and
+    /// `input.available_height` are the space left on each axis inside the
+    /// node's padding and border. An axis can also ask for an intrinsic size
+    /// instead of offering space: [`AvailableSpace::MinContent`] asks for the
+    /// smallest size the content fits in, such as the widest word of a text,
+    /// and [`AvailableSpace::MaxContent`] asks for the size the content takes
     /// without wrapping. The returned size is the content size, so the engine
     /// adds padding and border around it.
     ///
@@ -40,13 +71,9 @@ pub trait Widget: Any + type_name::TypeName {
     ///
     /// The default returns `None`, which suits a widget that only paints. A
     /// widget that returns a size must return the same size for the same
-    /// inputs, because the layout engine caches it until the node is marked for
-    /// layout again.
-    fn measure(
-        &mut self,
-        _known: MeasureSize<Option<f32>>,
-        _available: MeasureSize<AvailableSpace>,
-    ) -> Option<Size> {
+    /// inputs, because the layout engine caches it until the node is marked
+    /// for layout again.
+    fn measure(&mut self, _input: MeasureInput) -> Option<Size> {
         None
     }
 

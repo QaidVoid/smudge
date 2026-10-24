@@ -5,7 +5,7 @@ use crate::geometry::{Color, Rect, Size};
 use crate::paint::PaintOp;
 use crate::style::{Align, Direction, Edges, Length, Overflow, Style};
 use crate::tree::{Dirty, WidgetId, WidgetTree};
-use crate::widget::{AvailableSpace, MeasureSize, PaintCx, Widget};
+use crate::widget::{AvailableSpace, MeasureInput, PaintCx, Widget};
 
 /// A widget with no measurement and no paint.
 struct Empty;
@@ -18,11 +18,7 @@ impl Widget for Empty {
 struct Fixed(f32, f32);
 
 impl Widget for Fixed {
-    fn measure(
-        &mut self,
-        _known: MeasureSize<Option<f32>>,
-        _available: MeasureSize<AvailableSpace>,
-    ) -> Option<Size> {
+    fn measure(&mut self, _input: MeasureInput) -> Option<Size> {
         Some(Size {
             width: self.0,
             height: self.1,
@@ -36,12 +32,23 @@ impl Widget for Fixed {
 struct WidthRecorder(Rc<RefCell<Vec<AvailableSpace>>>);
 
 impl Widget for WidthRecorder {
-    fn measure(
-        &mut self,
-        _known: MeasureSize<Option<f32>>,
-        available: MeasureSize<AvailableSpace>,
-    ) -> Option<Size> {
-        self.0.borrow_mut().push(available.width);
+    fn measure(&mut self, input: MeasureInput) -> Option<Size> {
+        self.0.borrow_mut().push(input.available_width);
+        Some(Size {
+            width: 10.0,
+            height: 10.0,
+        })
+    }
+
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+}
+
+/// A widget that records every measure input and measures 10 by 10.
+struct InputRecorder(Rc<RefCell<Vec<MeasureInput>>>);
+
+impl Widget for InputRecorder {
+    fn measure(&mut self, input: MeasureInput) -> Option<Size> {
+        self.0.borrow_mut().push(input);
         Some(Size {
             width: 10.0,
             height: 10.0,
@@ -339,5 +346,58 @@ fn a_leaf_is_measured_inside_its_own_size_and_padding() {
         tree.rect(leaf),
         Some(Rect::new(0.0, 0.0, 100.0, 30.0)),
         "the padding is added back around the measured content"
+    );
+}
+
+#[test]
+fn a_leaf_with_a_fixed_width_gets_known_width_and_one_without_gets_the_offer() {
+    let fixed_inputs = Rc::new(RefCell::new(Vec::new()));
+    let free_inputs = Rc::new(RefCell::new(Vec::new()));
+    let mut tree = WidgetTree::new();
+    let mut root_style = Style::default();
+    root_style.layout.direction = Direction::Column;
+    root_style.layout.align_items = Some(Align::Start);
+    let root = tree.insert(None, Box::new(Empty), root_style);
+    let mut fixed_style = Style::default();
+    fixed_style.layout.width = Length::px(100.0);
+    tree.insert(
+        Some(root),
+        Box::new(InputRecorder(Rc::clone(&fixed_inputs))),
+        fixed_style,
+    );
+    tree.insert(
+        Some(root),
+        Box::new(InputRecorder(Rc::clone(&free_inputs))),
+        Style::default(),
+    );
+
+    tree.layout(Size {
+        width: 200.0,
+        height: 100.0,
+    });
+
+    let fixed = fixed_inputs.borrow();
+    assert!(!fixed.is_empty(), "the fixed leaf was measured");
+    assert!(
+        fixed.iter().any(|input| input.known_width == Some(100.0)),
+        "a fixed width reaches the widget as known_width, not {fixed:?}"
+    );
+    assert!(
+        fixed
+            .iter()
+            .all(|input| input.known_width.is_none_or(|width| width == 100.0)),
+        "the known width is the node's own width, not {fixed:?}"
+    );
+
+    let free = free_inputs.borrow();
+    assert!(!free.is_empty(), "the free leaf was measured");
+    assert!(
+        free.iter().all(|input| input.known_width.is_none()),
+        "an unfixed width leaves known_width empty, not {free:?}"
+    );
+    assert!(
+        free.iter()
+            .any(|input| input.available_width == AvailableSpace::Definite(200.0)),
+        "the widget is offered the root's content box, not {free:?}"
     );
 }

@@ -6,12 +6,22 @@
 //! pixels, which is the engine's default, so a layout rectangle never carries a
 //! fraction of a pixel.
 
-use taffy::{AvailableSpace, LayoutInput, LayoutOutput, Size as TaffySize};
+use taffy::{AvailableSpace as TaffySpace, LayoutInput, LayoutOutput, Size as TaffySize};
 
 use crate::geometry::{Point, Rect, Size};
 use crate::style::{Length, Overflow};
+use crate::widget::{AvailableSpace, MeasureInput};
 
 use super::{Dirty, WidgetId, WidgetTree};
+
+/// Converts the engine's space variant to the type a widget's measure sees.
+fn from_engine(space: TaffySpace) -> AvailableSpace {
+    match space {
+        TaffySpace::Definite(size) => AvailableSpace::Definite(size),
+        TaffySpace::MinContent => AvailableSpace::MinContent,
+        TaffySpace::MaxContent => AvailableSpace::MaxContent,
+    }
+}
 
 impl WidgetTree {
     /// Lays the tree out for `viewport` and returns whether the layout engine
@@ -56,8 +66,8 @@ impl WidgetTree {
         });
 
         let available = TaffySize {
-            width: AvailableSpace::Definite(viewport.width),
-            height: AvailableSpace::Definite(viewport.height),
+            width: TaffySpace::Definite(viewport.width),
+            height: TaffySpace::Definite(viewport.height),
         };
         let WidgetTree { nodes, taffy, .. } = self;
         let root_node = nodes[root].taffy;
@@ -81,7 +91,15 @@ impl WidgetTree {
                         style,
                         |_, _| 0.0,
                         |known, available| {
-                            node.and_then(|node| node.widget.measure(known, available))
+                            let measured = node.and_then(|node| {
+                                node.widget.measure(MeasureInput {
+                                    known_width: known.width,
+                                    known_height: known.height,
+                                    available_width: from_engine(available.width),
+                                    available_height: from_engine(available.height),
+                                })
+                            });
+                            measured
                                 .map(|size| TaffySize {
                                     width: size.width,
                                     height: size.height,
