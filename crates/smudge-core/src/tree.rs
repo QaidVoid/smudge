@@ -393,6 +393,39 @@ impl WidgetTree {
         self.nodes.get(id).map(|node| &node.owner)
     }
 
+    /// Visits every visible node in paint order, passing the node's depth, the
+    /// name of its widget's concrete type and its absolute rectangle.
+    ///
+    /// The root has depth zero. A hidden node and its subtree are skipped,
+    /// because they are laid out as empty and paint nothing. The tree itself
+    /// stays private: this is how a caller outside the crate reads its
+    /// structure.
+    pub(crate) fn visit_nodes(&self, visit: &mut dyn FnMut(usize, &'static str, Rect)) {
+        if let Some(root) = self.root {
+            self.visit_from(root, 0, visit);
+        }
+    }
+
+    /// Appends `id` and its subtree to the visit started by
+    /// [`WidgetTree::visit_nodes`].
+    fn visit_from(
+        &self,
+        id: WidgetId,
+        depth: usize,
+        visit: &mut dyn FnMut(usize, &'static str, Rect),
+    ) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if node.style.layout.hidden {
+            return;
+        }
+        visit(depth, node.widget.type_name(), node.rect);
+        for &child in &node.children {
+            self.visit_from(child, depth + 1, visit);
+        }
+    }
+
     /// Panics unless the layout engine's tree and the node store describe the
     /// same parents, children, contexts and layout styles.
     #[cfg(test)]

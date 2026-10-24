@@ -9,6 +9,11 @@ version.workspace = true
 publish = false
 
 [dependencies]
+smudge-core = { version = "0.1.0", path = "../smudge-core" }
+smudge-cpu = { version = "0.1.0", path = "../smudge-cpu" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+insta = "1.49.0"

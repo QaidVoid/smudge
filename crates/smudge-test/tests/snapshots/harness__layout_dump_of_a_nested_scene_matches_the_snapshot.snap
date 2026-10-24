@@ -1,0 +1,7 @@
+---
+source: crates/smudge-test/tests/harness.rs
+expression: harness.layout_dump()
+---
+Panel [0, 0, 120, 80]
+  Panel [8, 8, 48, 28]
+    Panel [8, 8, 18, 18]

@@ -11,7 +11,7 @@ use web_time::Instant;
 
 use crate::damage::DamageAccumulator;
 use crate::element::{IntoElement, UpdateQueue, mount};
-use crate::geometry::{Color, PixelRect, Size};
+use crate::geometry::{Color, PixelRect, Rect, Size};
 use crate::paint::DisplayList;
 use crate::reactive::{self, Owner};
 use crate::tree::WidgetTree;
@@ -312,5 +312,44 @@ impl App {
     /// Returns the timings and counts of the last frame.
     pub fn stats(&self) -> &FrameStats {
         &self.stats
+    }
+
+    /// Visits every visible node of the tree in paint order, for diagnostics.
+    ///
+    /// `visit` receives the node's depth, with the root at zero, the full name
+    /// of the widget's concrete type, and the node's absolute rectangle in
+    /// logical pixels as the last layout pass left it. A hidden node and its
+    /// subtree are skipped, because they are laid out as empty and paint
+    /// nothing. The tree itself stays private, so this is the only way code
+    /// outside this crate can describe the structure of a frame.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use smudge_core::app::{App, AppConfig, RepaintMode};
+    /// use smudge_core::geometry::{Color, Size};
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let mut app = App::new(
+    ///     AppConfig {
+    ///         viewport: Size {
+    ///             width: 100.0,
+    ///             height: 50.0,
+    ///         },
+    ///         scale: 1.0,
+    ///         clear_color: Color::WHITE,
+    ///         repaint: RepaintMode::Damage,
+    ///     },
+    ///     || panel().child(panel().width(px(10.0)).height(px(10.0))),
+    /// );
+    /// app.frame();
+    ///
+    /// let mut depths = Vec::new();
+    /// app.visit_nodes(|depth, _type_name, _rect| depths.push(depth));
+    /// assert_eq!(depths, [0, 1]);
+    /// ```
+    pub fn visit_nodes(&self, mut visit: impl FnMut(usize, &'static str, Rect)) {
+        self.tree.visit_nodes(&mut visit);
     }
 }

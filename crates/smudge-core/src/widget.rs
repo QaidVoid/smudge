@@ -20,7 +20,9 @@ pub use taffy::{AvailableSpace, Size as MeasureSize};
 ///
 /// Implementing this trait requires the type to be `'static`, because the tree
 /// downcasts to the concrete type when a binding updates a widget property.
-pub trait Widget: Any {
+/// The `TypeName` bound is met by every type without any code, and supplies
+/// the name of the widget's type that diagnostics print.
+pub trait Widget: Any + type_name::TypeName {
     /// Returns the size of this widget's content, or `None` to let the layout
     /// engine size the node from its style.
     ///
@@ -53,6 +55,25 @@ pub trait Widget: Any {
     /// `cx` carries the node's rectangle after layout and its resolved style.
     /// Paint this node only: its children paint themselves.
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>);
+}
+
+/// The name of a widget's concrete type, which diagnostics print.
+///
+/// The trait is implemented for every type and cannot be named outside this
+/// crate, so a widget can neither implement nor override it.
+pub(crate) mod type_name {
+    /// Reports the name of the implementing type.
+    pub trait TypeName {
+        /// Returns the full name of the implementing type, such as
+        /// `smudge_core::widget::Panel`.
+        fn type_name(&self) -> &'static str;
+    }
+
+    impl<T> TypeName for T {
+        fn type_name(&self) -> &'static str {
+            std::any::type_name::<T>()
+        }
+    }
 }
 
 /// What a widget paints from.
