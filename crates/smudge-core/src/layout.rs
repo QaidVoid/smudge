@@ -49,15 +49,40 @@ impl WidgetTree {
     /// Panics when a node has no live layout node, which is an internal
     /// invariant: every node in the tree owns exactly one layout node.
     pub(crate) fn layout(&mut self, viewport: Size) -> bool {
+        let Some(rects_changed) = self.layout_pass(viewport) else {
+            return false;
+        };
+        // A node that the pass moved under a pointer that stays still keeps a
+        // stale hover, because no pointer event announces the move. The chain
+        // is rebuilt from the last pointer position, unless a held press keeps
+        // the hover on its capture.
+        if rects_changed && self.pointer_inside && self.pressed.is_none() {
+            let target = self.hover_target(self.pointer);
+            self.set_hover_target(target);
+            // A hover style can change the layout, and nothing would ask for
+            // another frame to apply it. One more pass settles it in this
+            // frame. Hover is not recomputed after it, so a style that moves
+            // the node off the pointer cannot loop. Such a hover stays stale
+            // until the pointer moves or a later layout pass changes rects.
+            if self.layout_dirty {
+                self.layout_pass(viewport);
+            }
+        }
+        true
+    }
+
+    /// Runs the layout engine once when anything needs it, and returns whether
+    /// any rectangle or clip changed, or `None` when no pass ran.
+    fn layout_pass(&mut self, viewport: Size) -> Option<bool> {
         let viewport_changed = self.viewport != Some(viewport);
         if !self.layout_dirty && !viewport_changed {
-            return false;
+            return None;
         }
         self.viewport = Some(viewport);
 
         let Some(root) = self.root else {
             self.layout_dirty = false;
-            return false;
+            return None;
         };
 
         self.apply_layout(root, |layout| {
@@ -114,7 +139,7 @@ impl WidgetTree {
         self.layout_runs += 1;
 
         let clip = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        self.update_subtree(root, Point::default(), clip, false);
+        let rects_changed = self.update_subtree(root, Point::default(), clip, false);
 
         self.layout_dirty = false;
         for node in self.nodes.values_mut() {
@@ -122,19 +147,20 @@ impl WidgetTree {
                 node.dirty = Dirty::Paint;
             }
         }
-        true
+        Some(rects_changed)
     }
 
     /// Writes the absolute rectangle and clip of `id` and its subtree, given
-    /// the subtree's origin and inherited clip.
+    /// the subtree's origin and inherited clip, and returns whether any node
+    /// in the subtree changed either one.
     ///
     /// `hidden` reports whether an ancestor is hidden, which makes this node
     /// and everything below it empty.
-    fn update_subtree(&mut self, id: WidgetId, origin: Point, clip: Rect, hidden: bool) {
+    fn update_subtree(&mut self, id: WidgetId, origin: Point, clip: Rect, hidden: bool) -> bool {
         let node = self.nodes.get(id).expect("the id is a live node");
         let taffy_node = node.taffy;
-        let hidden = hidden || node.style.layout.hidden;
-        let overflow = node.style.layout.overflow;
+        let hidden = hidden || node.resolved.layout.hidden;
+        let overflow = node.resolved.layout.overflow;
 
         let layout = *self
             .taffy
@@ -171,6 +197,7 @@ impl WidgetTree {
             y: rect.y0,
         };
 
+        let mut subtree_changed = changed;
         let mut index = 0;
         while let Some(child) = self
             .nodes
@@ -178,9 +205,10 @@ impl WidgetTree {
             .and_then(|node| node.children.get(index))
             .copied()
         {
-            self.update_subtree(child, child_origin, child_clip, hidden);
+            subtree_changed |= self.update_subtree(child, child_origin, child_clip, hidden);
             index += 1;
         }
+        subtree_changed
     }
 }
 

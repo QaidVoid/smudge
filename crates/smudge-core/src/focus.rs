@@ -32,12 +32,18 @@ impl WidgetTree {
     /// must not activate from the keyboard. The key still bubbles from it to
     /// the ancestors that can hear it, so shortcuts above it keep working.
     pub(crate) fn key(&mut self, event: &KeyEvent) {
-        let start = self.focused;
-        if let Some(focused) = self.focused
-            && !self.can_hold_focus(focused)
-        {
-            self.set_focus(None);
-        }
+        // A node that lost the focus by becoming disabled or hidden still
+        // anchors the next key, so shortcuts above it keep working. The key
+        // starts at its parent: the node itself no longer holds the focus,
+        // even if it has been enabled again since.
+        let start = match self.focused {
+            Some(focused) => Some(focused),
+            None => self
+                .stale_focus
+                .take()
+                .and_then(|anchor| self.nodes.get(anchor)?.parent),
+        };
+        self.drop_invalid_focus();
         let handled = self.route_key(start, event);
         if !event.pressed {
             return;
@@ -68,7 +74,7 @@ impl WidgetTree {
             // A disabled or hidden node's handlers never run, but the key keeps
             // bubbling, so shortcuts above it still work.
             if self.nodes.get(id).is_some_and(|node| {
-                node.interaction.has(Interaction::DISABLED) || node.style.layout.hidden
+                node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
             }) {
                 continue;
             }
@@ -106,11 +112,13 @@ impl WidgetTree {
     /// `on_focus` with `false` before the node that gains it is marked and
     /// hears `on_focus` with `true`. A node that already holds the focus keeps
     /// it without hearing `on_focus` again. The keyboard focus bit follows the
-    /// keyboard navigation mode.
+    /// keyboard navigation mode. Any change consumes the key anchor a dropped
+    /// focus left behind, because the focus has moved on purpose.
     pub(super) fn set_focus(&mut self, id: Option<WidgetId>) {
         if self.focused == id {
             return;
         }
+        self.stale_focus = None;
         if let Some(old) = self.focused {
             self.set_bit(old, Interaction::FOCUSED, false);
             self.set_bit(old, Interaction::KEYBOARD_FOCUS, false);
@@ -142,6 +150,24 @@ impl WidgetTree {
     /// Returns the node that holds the keyboard focus, when one does.
     pub(crate) fn focused(&self) -> Option<WidgetId> {
         self.focused
+    }
+
+    /// Clears the focus when the node that holds it can no longer keep it.
+    ///
+    /// A node that became disabled or hidden loses the focus at once, so a
+    /// focus style never draws on a control that is switched off, instead of
+    /// holding it until the next key event notices. The node hears
+    /// `on_focus` with `false` as it goes. The node stays as the anchor the
+    /// next key event bubbles from, so a shortcut above it keeps working.
+    pub(super) fn drop_invalid_focus(&mut self) {
+        let Some(focused) = self
+            .focused
+            .filter(|focused| !self.can_hold_focus(*focused))
+        else {
+            return;
+        };
+        self.set_focus(None);
+        self.stale_focus = Some(focused);
     }
 
     /// Returns whether the keyboard navigation mode is on.
@@ -190,7 +216,7 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.style.layout.hidden {
+        if node.resolved.layout.hidden {
             return;
         }
         let focusable = node.interaction.has(Interaction::FOCUSABLE)
@@ -219,7 +245,7 @@ impl WidgetTree {
             let Some(node) = self.nodes.get(current) else {
                 return false;
             };
-            if node.style.layout.hidden {
+            if node.resolved.layout.hidden {
                 return false;
             }
             next = node.parent;

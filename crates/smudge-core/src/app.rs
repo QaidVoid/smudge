@@ -223,6 +223,18 @@ impl App {
         self.tick.is_some()
     }
 
+    /// Returns whether an event left work that only a frame can finish.
+    ///
+    /// An input event can change how the tree looks without writing a signal,
+    /// for example by hovering a node with a hover style, so the reactive wake
+    /// callback never hears of it. A platform calls this after handing events
+    /// over and asks for a frame when it is `true`. Most pointer moves change
+    /// nothing, and asking for a frame every time would present the window
+    /// for nothing.
+    pub fn needs_frame(&self) -> bool {
+        self.tree.has_pending_work()
+    }
+
     /// Handles one input event between frames.
     ///
     /// The pointer events are routed to the tree: a move moves the hovered

@@ -515,6 +515,9 @@ where
                     let input = state.translator.translate(&other, state.scale);
                     if let Some(input) = input {
                         state.app.handle_event(input);
+                        if state.app.needs_frame() {
+                            state.window.request_redraw();
+                        }
                     }
                 }
                 Ok(())

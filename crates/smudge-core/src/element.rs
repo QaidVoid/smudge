@@ -50,6 +50,7 @@ use crate::style::{
 };
 use crate::tree::interaction::Handlers;
 use crate::tree::{Dirty, WidgetId, WidgetTree};
+use crate::variants::{PatchBuilder, StylePatch, Variants};
 use crate::widget::{PaintCx, Widget};
 
 /// One change to the widget tree, applied by the frame's apply step.
@@ -281,6 +282,8 @@ pub struct Element<W: Widget> {
     style: Style,
     /// Bindings installed when the node mounts.
     bindings: Vec<Binding>,
+    /// The style patches per interaction state, when a variant builder ran.
+    variants: Option<Variants>,
     /// The input handlers the node will own.
     handlers: Handlers,
     /// Whether the node starts disabled.
@@ -305,6 +308,7 @@ impl<W: Widget> Element<W> {
             widget,
             style: Style::default(),
             bindings: Vec::new(),
+            variants: None,
             handlers: Handlers::default(),
             disabled: false,
             focusable: false,
@@ -534,6 +538,103 @@ impl<W: Widget> Element<W> {
         self.paint_value(radius, |paint, radius| {
             paint.corner_radius = Corners::all(radius);
         })
+    }
+
+    /// Records a patch built by `build` into one slot of the element's
+    /// variants.
+    fn variant(
+        mut self,
+        select: impl FnOnce(&mut Variants) -> &mut Option<StylePatch>,
+        build: impl FnOnce(PatchBuilder) -> PatchBuilder,
+    ) -> Self {
+        let builder = build(PatchBuilder::default());
+        let variants = self.variants.get_or_insert_with(Variants::default);
+        *select(variants) = Some(builder.patch());
+        self
+    }
+
+    /// Applies a patch while the node is in the hovered chain, which is the
+    /// node under the pointer that can respond and its ancestors.
+    ///
+    /// The closure records static values into a [`PatchBuilder`]; a reactive
+    /// value has no place in a patch, so the patch methods take plain values.
+    /// While the pointer is over the node the patch overrides the fields it
+    /// sets, and when the pointer leaves, the base style stands again. A node
+    /// with a variant is a target for hover and presses even without
+    /// handlers, so a styled card reacts to the pointer on its own.
+    ///
+    /// A change of hover re-resolves the style: a patch that touches only
+    /// paint properties repaints the node, one that touches layout
+    /// properties lays it out again.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Color;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let card = panel()
+    ///     .background(Color::rgb(50, 50, 50))
+    ///     .hover(|p| p.background(Color::rgb(70, 70, 70)));
+    /// ```
+    pub fn hover(self, patch: impl FnOnce(PatchBuilder) -> PatchBuilder) -> Self {
+        self.variant(|variants| &mut variants.hovered, patch)
+    }
+
+    /// Applies a patch while the node holds the keyboard focus and the focus
+    /// last moved by keyboard navigation.
+    ///
+    /// The focus a press moved draws no focus style, so a ring follows Tab and
+    /// not a mouse click. Everything else works as
+    /// [`hover`](Element::hover) does.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Color;
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let field = panel()
+    ///     .width(px(120.0))
+    ///     .height(px(24.0))
+    ///     .focusable()
+    ///     .focused(|p| p.border(1.0).border_color(Color::rgb(0, 120, 215)));
+    /// ```
+    pub fn focused(self, patch: impl FnOnce(PatchBuilder) -> PatchBuilder) -> Self {
+        self.variant(|variants| &mut variants.focused, patch)
+    }
+
+    /// Applies a patch while a primary press is held on the node.
+    ///
+    /// Everything works as [`hover`](Element::hover) does; the pressed state
+    /// starts when the button goes down on the node and ends when it is
+    /// released.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Color;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let button = panel()
+    ///     .background(Color::rgb(50, 50, 50))
+    ///     .pressed(|p| p.background(Color::rgb(30, 30, 30)));
+    /// ```
+    pub fn pressed(self, patch: impl FnOnce(PatchBuilder) -> PatchBuilder) -> Self {
+        self.variant(|variants| &mut variants.pressed, patch)
+    }
+
+    /// Applies a patch while the node is disabled.
+    ///
+    /// The patch wins over every other state, so a disabled control keeps its
+    /// switched-off look while it is hovered or pressed. Everything else
+    /// works as [`hover`](Element::hover) does.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Color;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let button = panel()
+    ///     .background(Color::rgb(50, 50, 50))
+    ///     .disabled_style(|p| p.background(Color::rgb(35, 35, 35)));
+    /// ```
+    pub fn disabled_style(self, patch: impl FnOnce(PatchBuilder) -> PatchBuilder) -> Self {
+        self.variant(|variants| &mut variants.disabled, patch)
     }
 
     /// Runs `handler` when the primary button is released over the node after
@@ -794,6 +895,8 @@ pub struct AnyElement {
     style: Style,
     /// Bindings installed when the node mounts.
     bindings: Vec<Binding>,
+    /// The style patches per interaction state, when a variant builder ran.
+    variants: Option<Variants>,
     /// The input handlers the node will own.
     handlers: Handlers,
     /// Whether the node starts disabled.
@@ -811,6 +914,7 @@ impl AnyElement {
             widget: Box::new(element.widget),
             style: element.style,
             bindings: element.bindings,
+            variants: element.variants,
             handlers: element.handlers,
             disabled: element.disabled,
             focusable: element.focusable,
@@ -853,12 +957,14 @@ pub(crate) fn mount(
         widget,
         style,
         bindings,
+        variants,
         handlers,
         disabled,
         focusable,
         children,
     } = element;
     let id = tree.insert(parent, widget, style);
+    tree.set_variants(id, variants.map(Rc::new));
     tree.set_disabled(id, disabled);
     tree.set_focusable(id, focusable);
     tree.set_handlers(id, handlers);

@@ -15,6 +15,7 @@ pub mod paint;
 pub mod reactive;
 pub mod style;
 pub mod tree;
+pub mod variants;
 pub mod widget;
 
 pub use app::{App, AppConfig, FrameOutput, FrameStats, RepaintMode};

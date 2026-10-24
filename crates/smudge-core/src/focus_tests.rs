@@ -111,7 +111,7 @@ fn focus_order_skips_hidden_and_disabled_nodes() {
     let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
     let a = focusable_child(&mut tree, root);
     let hidden = focusable_child(&mut tree, root);
-    tree.nodes[hidden].style.layout.hidden = true;
+    tree.apply_layout(hidden, |layout| layout.hidden = true);
     let disabled = focusable_child(&mut tree, root);
     tree.set_disabled(disabled, true);
     let d = focusable_child(&mut tree, root);

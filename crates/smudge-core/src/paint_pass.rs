@@ -59,7 +59,7 @@ impl WidgetTree {
             if !node.clip.is_empty() {
                 let cx = PaintCx {
                     rect: node.rect,
-                    style: &node.style,
+                    style: &node.resolved,
                 };
                 node.widget.paint(&cx, &mut node.ops);
             }

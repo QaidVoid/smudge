@@ -541,3 +541,29 @@ fn a_key_from_a_focused_node_that_became_disabled_reaches_its_ancestors() {
     );
     assert!(harness.app().focused().is_none());
 }
+
+#[test]
+fn a_control_disabled_and_enabled_again_does_not_take_keys_without_focus() {
+    let (disabled, set_disabled) = reactive::signal_local(false);
+    let (enters, on_key) = key_counter(|event| event.key == Key::Enter);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(40.0))
+                .height(px(20.0))
+                .on_key(on_key)
+                .disabled(move || disabled.get()),
+        )
+    });
+    harness.frame();
+    harness.press_key(Key::Tab);
+    set_disabled.set(true);
+    harness.frame();
+    set_disabled.set(false);
+    harness.frame();
+
+    harness.press_key(Key::Enter);
+
+    assert!(harness.app().focused().is_none());
+    assert_eq!(enters.get(), 0, "a control without the focus takes no key");
+}

@@ -10,13 +10,15 @@
 //! queue, so every mutation of the tree happens in one place and in one order.
 
 use std::any::Any;
+use std::rc::Rc;
 
 use slotmap::{SlotMap, new_key_type};
 
-use crate::geometry::{Rect, Size};
+use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RenderEffect};
 use crate::style::{LayoutProps, PaintProps, Style};
+use crate::variants::{Variants, resolve};
 use crate::widget::Widget;
 
 #[path = "display_list_pass.rs"]
@@ -78,8 +80,15 @@ struct Node {
     parent: Option<WidgetId>,
     /// The node's children, in paint order.
     children: Vec<WidgetId>,
-    /// The node's complete style, split into layout and paint properties.
-    style: Style,
+    /// The node's base style, written by the element's builders and their
+    /// bindings.
+    base: Style,
+    /// The style layout and paint read, with the patches of the active
+    /// interaction states applied over the base style.
+    resolved: Style,
+    /// The style patches per interaction state, when the element declared
+    /// any. Without patches the resolved style tracks the base style.
+    variants: Option<Rc<Variants>>,
     /// The node's id in the layout engine's tree.
     taffy: taffy::NodeId,
     /// The reactive owner that every binding of this node runs under.
@@ -128,10 +137,23 @@ pub(crate) struct WidgetTree {
     /// The deepest node the pointer is over, or `None` when it is over no
     /// node that can respond.
     hovered: Option<WidgetId>,
+    /// The pointer position the last pointer event reported, in logical
+    /// pixels, so the hovered chain can be recomputed when the tree moves
+    /// under a pointer that stays still.
+    pointer: Point,
+    /// Whether the pointer is inside the window, so a layout pass only
+    /// recomputes hover from [`WidgetTree::pointer`] while it is.
+    pointer_inside: bool,
     /// The node a primary press captured, while the button is held.
     pressed: Option<WidgetId>,
     /// The node that holds the keyboard focus, when one does.
     focused: Option<WidgetId>,
+    /// The node the focus fell off of because it became disabled or hidden.
+    ///
+    /// The next key event still bubbles from that node, so a shortcut above a
+    /// disabled control keeps working, and any focus change or press consumes
+    /// the anchor.
+    stale_focus: Option<WidgetId>,
     /// Whether the focus last moved by keyboard navigation, so a focus ring
     /// can draw for keyboard users alone. A Tab or an arrow key turns this on
     /// and a pointer press turns it off.
@@ -151,8 +173,11 @@ impl WidgetTree {
             viewport: None,
             layout_runs: 0,
             hovered: None,
+            pointer: Point::default(),
+            pointer_inside: false,
             pressed: None,
             focused: None,
+            stale_focus: None,
             keyboard_nav: false,
         }
     }
@@ -202,7 +227,9 @@ impl WidgetTree {
             widget,
             parent,
             children: Vec::new(),
-            style,
+            resolved: style.clone(),
+            base: style,
+            variants: None,
             taffy,
             owner,
             effects: Vec::new(),
@@ -265,6 +292,9 @@ impl WidgetTree {
         }
         if self.focused.is_some_and(|focused| order.contains(&focused)) {
             self.focused = None;
+        }
+        if self.stale_focus.is_some_and(|stale| order.contains(&stale)) {
+            self.stale_focus = None;
         }
 
         // Deepest node first, so every taffy node is still attached to a live
@@ -338,7 +368,7 @@ impl WidgetTree {
     /// root, and an unattached node would keep the default empty layout.
     fn recreate_layout_node(&mut self, id: WidgetId) {
         let node = self.nodes.get(id).expect("the node is live");
-        let style = node.style.layout.to_taffy();
+        let style = node.resolved.layout.to_taffy();
         let old = node.taffy;
         let parent = self.taffy.parent(old);
         let index = parent.and_then(|parent| {
@@ -468,49 +498,100 @@ impl WidgetTree {
         }
     }
 
-    /// Returns the node's style, or `None` when the id is stale.
+    /// Returns the node's resolved style, with the active variant patches
+    /// applied, or `None` when the id is stale.
     pub(crate) fn style(&self, id: WidgetId) -> Option<&Style> {
-        self.nodes.get(id).map(|node| &node.style)
+        self.nodes.get(id).map(|node| &node.resolved)
     }
 
-    /// Applies `apply` to the node's layout properties.
+    /// Sets the style patches the node resolves its style from, and resolves
+    /// the style again.
     ///
-    /// The layout engine's style is updated and the node marked for layout only
-    /// when the properties change, so applying an equal value does nothing. A
-    /// stale id does nothing.
+    /// Called once, while the node is being mounted, before the interaction
+    /// bits are set. A stale id does nothing.
+    pub(crate) fn set_variants(&mut self, id: WidgetId, variants: Option<Rc<Variants>>) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.variants = variants;
+        }
+        self.re_resolve(id);
+    }
+
+    /// Applies `apply` to the node's base layout properties, then resolves
+    /// the style again.
+    ///
+    /// The resolved style decides what the change invalidated: when its
+    /// layout properties differ from the ones the last resolution produced,
+    /// the layout engine's style is updated and the node marked for layout;
+    /// otherwise nothing happens when the resolved style did not change, or
+    /// the node is marked for paint when only its paint properties changed. A
+    /// patch can hold a base change back, and then no node is marked at all.
+    /// A stale id does nothing.
     pub(crate) fn apply_layout(&mut self, id: WidgetId, apply: impl FnOnce(&mut LayoutProps)) {
         let Some(node) = self.nodes.get_mut(id) else {
             return;
         };
-        let mut layout = node.style.layout.clone();
+        let mut layout = node.base.layout.clone();
         apply(&mut layout);
-        if layout == node.style.layout {
+        if layout == node.base.layout {
             return;
         }
-        let taffy = node.taffy;
-        let taffy_style = layout.to_taffy();
-        node.style.layout = layout;
-        self.taffy
-            .set_style(taffy, taffy_style)
-            .expect("every widget node has a live layout node");
-        self.mark(id, Dirty::Layout);
+        node.base.layout = layout;
+        self.re_resolve(id);
     }
 
-    /// Applies `apply` to the node's paint properties.
-    ///
-    /// The node is marked for paint only when the properties change, so
-    /// applying an equal value does nothing. A stale id does nothing.
+    /// Applies `apply` to the node's base paint properties, then resolves the
+    /// style again, as [`WidgetTree::apply_layout`] does for layout
+    /// properties. A stale id does nothing.
     pub(crate) fn apply_paint(&mut self, id: WidgetId, apply: impl FnOnce(&mut PaintProps)) {
         let Some(node) = self.nodes.get_mut(id) else {
             return;
         };
-        let mut paint = node.style.paint.clone();
+        let mut paint = node.base.paint.clone();
         apply(&mut paint);
-        if paint == node.style.paint {
+        if paint == node.base.paint {
             return;
         }
-        node.style.paint = paint;
-        self.mark(id, Dirty::Paint);
+        node.base.paint = paint;
+        self.re_resolve(id);
+    }
+
+    /// Recomputes the node's resolved style from its base style, its variant
+    /// patches and its interaction state, and marks the node for what the
+    /// change invalidated.
+    ///
+    /// A change to the resolved layout properties updates the layout engine's
+    /// style and marks the node for layout; a change to the paint properties
+    /// alone marks it for paint. An equal resolved style does nothing, so a
+    /// patch that rewrites a value the resolved style already has repaints
+    /// nothing. A node that the resolution hid loses the keyboard focus at
+    /// once, before the style can draw a focus ring on a hidden node. A stale
+    /// id does nothing.
+    pub(crate) fn re_resolve(&mut self, id: WidgetId) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        let empty = Variants::default();
+        let variants = node.variants.as_deref().unwrap_or(&empty);
+        let resolved = resolve(&node.base, variants, node.interaction);
+        if resolved == node.resolved {
+            return;
+        }
+        let became_hidden = resolved.layout.hidden && !node.resolved.layout.hidden;
+        let layout_changed = resolved.layout != node.resolved.layout;
+        let taffy_style = resolved.layout.to_taffy();
+        self.nodes.get_mut(id).expect("the node is live").resolved = resolved;
+        if layout_changed {
+            let taffy = self.nodes[id].taffy;
+            self.taffy
+                .set_style(taffy, taffy_style)
+                .expect("every widget node has a live layout node");
+            self.mark(id, Dirty::Layout);
+        } else {
+            self.mark(id, Dirty::Paint);
+        }
+        if became_hidden {
+            self.drop_invalid_focus();
+        }
     }
 
     /// Returns the node's widget as `W`, or `None` when the id is stale or the
@@ -549,7 +630,7 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.style.layout.hidden {
+        if node.resolved.layout.hidden {
             return;
         }
         visit(depth, node.widget.type_name(), node.rect);
@@ -600,7 +681,7 @@ impl WidgetTree {
                 self.taffy
                     .style(node.taffy)
                     .expect("every widget node has a live layout node"),
-                &node.style.layout.to_taffy(),
+                &node.resolved.layout.to_taffy(),
                 "the layout style agrees"
             );
         }

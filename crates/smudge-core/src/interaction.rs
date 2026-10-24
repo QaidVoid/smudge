@@ -4,7 +4,7 @@
 //! events it receives to the tree, which finds the node under the pointer and
 //! keeps the interaction bits current. That state lives on the nodes instead
 //! of in signals: a change marks the node for style re-resolution, which is
-//! where style variants will read it. Application code that needs a hover
+//! where the style variants read it. Application code that needs a hover
 //! change in its own logic writes its own signal from
 //! [`on_hover`](crate::element::Element::on_hover). Keyboard focus and key
 //! routing live beside it in [`super::focus`].
@@ -116,6 +116,8 @@ impl WidgetTree {
     /// change, because a drag needs the moves to stay with the node the press
     /// started on.
     pub(crate) fn pointer_move(&mut self, position: Point) {
+        self.pointer = position;
+        self.pointer_inside = true;
         if self.pressed.is_some() {
             return;
         }
@@ -135,6 +137,8 @@ impl WidgetTree {
     /// off, and a primary press focuses the target when it can take the focus
     /// or clears the focus when it cannot.
     pub(crate) fn pointer_down(&mut self, position: Point, button: PointerButton) {
+        self.pointer = position;
+        self.pointer_inside = true;
         if self.pressed.is_some() && button != PointerButton::Primary {
             return;
         }
@@ -149,6 +153,9 @@ impl WidgetTree {
         } else {
             self.set_focus(None);
         }
+        // A press is a focus gesture, so it also ends the reach of a focus
+        // that a disabled or hidden node lost earlier.
+        self.stale_focus = None;
         if let Some(previous) = self.pressed.take() {
             self.set_bit(previous, Interaction::PRESSED, false);
         }
@@ -172,6 +179,8 @@ impl WidgetTree {
         if button != PointerButton::Primary {
             return;
         }
+        self.pointer = position;
+        self.pointer_inside = true;
         let hovered = self.hover_target(position);
         let Some(captured) = self.pressed.take() else {
             self.set_hover_target(hovered);
@@ -193,7 +202,14 @@ impl WidgetTree {
     /// A press that is still held keeps its capture, so a drag that leaves the
     /// window stays with the node it started on.
     pub(crate) fn pointer_left(&mut self) {
+        self.pointer_inside = false;
         self.set_hover_target(None);
+    }
+
+    /// Returns whether the tree holds work only a frame can finish: a node to
+    /// lay out or paint, or the pixels of a removed node to clear.
+    pub(crate) fn has_pending_work(&self) -> bool {
+        self.layout_dirty || !self.paint_queue.is_empty() || !self.removed_damage.is_empty()
     }
 
     /// Installs the handlers a node was mounted with.
@@ -209,10 +225,26 @@ impl WidgetTree {
     /// changed.
     ///
     /// Called when a node mounts and again by the binding of a
-    /// [`disabled`](crate::element::Element::disabled) builder value. A stale
-    /// id does nothing.
+    /// [`disabled`](crate::element::Element::disabled) builder value. A node
+    /// that is switched off loses the keyboard focus and, while no press is
+    /// held, gives up its place in the hovered chain, because hover passes
+    /// over a disabled node. A stale id does nothing.
     pub(crate) fn set_disabled(&mut self, id: WidgetId, disabled: bool) {
         self.set_bit(id, Interaction::DISABLED, disabled);
+        if !disabled {
+            return;
+        }
+        self.drop_invalid_focus();
+        // While a press is held the capture keeps the hover of its node, so
+        // the chain is only rebuilt when the pointer is free.
+        if self.pressed.is_none()
+            && self
+                .hovered
+                .is_some_and(|hovered| self.chain(Some(hovered)).contains(&id))
+        {
+            let target = self.hover_target(self.pointer);
+            self.set_hover_target(target);
+        }
     }
 
     /// Sets whether the node can take the keyboard focus, and marks the node
@@ -246,7 +278,7 @@ impl WidgetTree {
     /// Unlike a press, hover passes over a disabled node to the nearest
     /// enabled one that can respond, so a container stays hovered while the
     /// pointer is over a disabled control inside it.
-    fn hover_target(&self, position: Point) -> Option<WidgetId> {
+    pub(super) fn hover_target(&self, position: Point) -> Option<WidgetId> {
         let root = self.root?;
         let mut id = self.hit(root, position)?;
         loop {
@@ -258,13 +290,19 @@ impl WidgetTree {
         }
     }
 
-    /// Returns whether a press can land on the node: it has a handler, or it
-    /// can take the focus.
+    /// Returns whether a press or hover can land on the node: it has a
+    /// handler, it can take the focus, or it carries a style variant, which
+    /// makes a press or a hover visible without any handler.
     fn can_respond(&self, id: WidgetId) -> bool {
         let Some(node) = self.nodes.get(id) else {
             return false;
         };
-        node.handlers.has_any() || node.interaction.has(Interaction::FOCUSABLE)
+        node.handlers.has_any()
+            || node.interaction.has(Interaction::FOCUSABLE)
+            || node
+                .variants
+                .as_ref()
+                .is_some_and(|variants| !variants.is_empty())
     }
 
     /// Returns whether the node can take the keyboard focus.
@@ -284,7 +322,7 @@ impl WidgetTree {
     /// disabled node is not hit, but its children still are.
     fn hit(&self, id: WidgetId, position: Point) -> Option<WidgetId> {
         let node = self.nodes.get(id)?;
-        if node.style.layout.hidden || !node.clip.contains(position) {
+        if node.resolved.layout.hidden || !node.clip.contains(position) {
             return None;
         }
         for child in node.children.iter().rev() {
@@ -320,7 +358,7 @@ impl WidgetTree {
     /// The nodes that leave the chain clear their bit and hear `on_hover`
     /// with `false` before the nodes that join it are set and hear `on_hover`
     /// with `true`.
-    fn set_hover_target(&mut self, target: Option<WidgetId>) {
+    pub(super) fn set_hover_target(&mut self, target: Option<WidgetId>) {
         if target == self.hovered {
             return;
         }
@@ -361,11 +399,14 @@ impl WidgetTree {
 
     /// Marks that the interaction state of `id` changed.
     ///
-    /// Style variants will resolve from the interaction bits, hover and focus
+    /// The style variants resolve from the interaction bits, hover and focus
     /// among them, so a change has to reach the style the node paints with.
-    /// Nothing reads the bits yet, so this stays empty rather than repainting
-    /// nodes whose pixels cannot have changed.
-    fn interaction_changed(&mut self, _id: WidgetId) {}
+    /// Resolution does nothing for a node whose resolved style does not
+    /// change, which keeps a hovered or focused node without patches from
+    /// repainting.
+    fn interaction_changed(&mut self, id: WidgetId) {
+        self.re_resolve(id);
+    }
 
     /// Runs `on_hover` of `id` inside the node's owner.
     fn run_hover(&mut self, id: WidgetId, hovered: bool) {
@@ -405,7 +446,7 @@ impl WidgetTree {
     /// run it, because a disabled node's handlers never run.
     fn run_press(&mut self, id: WidgetId) {
         if self.nodes.get(id).is_none_or(|node| {
-            node.interaction.has(Interaction::DISABLED) || node.style.layout.hidden
+            node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
         }) {
             return;
         }
@@ -480,7 +521,7 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.style.layout.hidden {
+        if node.resolved.layout.hidden {
             return;
         }
         if node.handlers.on_press_outside.is_some() && !node.interaction.has(Interaction::DISABLED)
