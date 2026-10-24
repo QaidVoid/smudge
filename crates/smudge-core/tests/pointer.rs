@@ -9,6 +9,7 @@ use std::rc::Rc;
 use smudge_core::element::IntoElement;
 use smudge_core::geometry::{Color, Point};
 use smudge_core::input::{InputEvent, PointerButton};
+use smudge_core::reactive::{self, prelude::*};
 use smudge_core::style::px;
 use smudge_core::widget::panel;
 use smudge_test::Harness;
@@ -369,5 +370,179 @@ fn another_button_during_a_held_press_keeps_the_capture() {
         *log.borrow(),
         [("panel", true)],
         "a secondary press while the primary is held leaves the captured node hovered"
+    );
+}
+
+#[test]
+fn a_press_on_the_content_of_a_disabled_node_runs_none_of_its_handlers() {
+    let (presses, on_press) = press_counter();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(40.0))
+                .height(px(40.0))
+                .on_press(on_press)
+                .disabled(true)
+                .child(panel().width(px(10.0)).height(px(10.0))),
+        )
+    });
+    harness.frame();
+
+    harness.click(Point { x: 5.0, y: 5.0 });
+
+    assert_eq!(
+        presses.get(),
+        0,
+        "a disabled node swallows a press on its content"
+    );
+}
+
+#[test]
+fn a_container_stays_hovered_over_a_disabled_control_inside_it() {
+    let (log, on_card_hover) = hover_log("card");
+    let (control_log, on_control_hover) = hover_log("control");
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(60.0))
+                .height(px(40.0))
+                .on_hover(on_card_hover)
+                .child(
+                    panel()
+                        .width(px(30.0))
+                        .height(px(30.0))
+                        .focusable()
+                        .on_hover(on_control_hover)
+                        .disabled(true)
+                        .child(panel().width(px(10.0)).height(px(10.0))),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.move_to(Point { x: 50.0, y: 35.0 });
+    harness.move_to(Point { x: 5.0, y: 5.0 });
+    harness.move_to(Point { x: 50.0, y: 35.0 });
+
+    assert_eq!(
+        *log.borrow(),
+        [("card", true)],
+        "the card stays hovered while the pointer crosses the disabled control"
+    );
+    assert!(
+        control_log.borrow().is_empty(),
+        "a disabled control hears no hover"
+    );
+}
+
+#[test]
+fn a_press_released_over_a_disabled_control_inside_the_node_still_presses_it() {
+    let (presses, on_press) = press_counter();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(60.0))
+                .height(px(40.0))
+                .on_press(on_press)
+                .child(
+                    panel()
+                        .width(px(30.0))
+                        .height(px(30.0))
+                        .focusable()
+                        .disabled(true)
+                        .child(panel().width(px(10.0)).height(px(10.0))),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.event(InputEvent::PointerDown {
+        position: Point { x: 50.0, y: 35.0 },
+        button: PointerButton::Primary,
+    });
+    harness.event(InputEvent::PointerUp {
+        position: Point { x: 5.0, y: 5.0 },
+        button: PointerButton::Primary,
+    });
+
+    assert_eq!(
+        presses.get(),
+        1,
+        "the release landed inside the pressed card"
+    );
+}
+
+#[test]
+fn a_node_disabled_during_its_press_does_not_run_on_press() {
+    let (disabled, set_disabled) = reactive::signal_local(false);
+    let (presses, on_press) = press_counter();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(60.0))
+                .height(px(40.0))
+                .on_press(on_press)
+                .disabled(move || disabled.get())
+                .child(panel().width(px(20.0)).height(px(20.0)).on_hover(|_| {})),
+        )
+    });
+    harness.frame();
+
+    harness.event(InputEvent::PointerDown {
+        position: Point { x: 50.0, y: 35.0 },
+        button: PointerButton::Primary,
+    });
+    set_disabled.set(true);
+    harness.frame();
+    harness.event(InputEvent::PointerUp {
+        position: Point { x: 10.0, y: 10.0 },
+        button: PointerButton::Primary,
+    });
+
+    assert_eq!(
+        presses.get(),
+        0,
+        "a node disabled mid-press runs no on_press"
+    );
+}
+
+#[test]
+fn a_hidden_or_disabled_node_hears_no_press_outside() {
+    let (hidden_presses, on_hidden_outside) = press_counter();
+    let (disabled_presses, on_disabled_outside) = press_counter();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(60.0))
+                .height(px(20.0))
+                .child(
+                    panel()
+                        .width(px(20.0))
+                        .height(px(20.0))
+                        .on_press_outside(on_hidden_outside)
+                        .hidden(true),
+                )
+                .child(
+                    panel()
+                        .width(px(20.0))
+                        .height(px(20.0))
+                        .on_press_outside(on_disabled_outside)
+                        .disabled(true),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.click(Point { x: 80.0, y: 50.0 });
+
+    assert_eq!(
+        hidden_presses.get(),
+        0,
+        "a closed popup hears no outside press"
+    );
+    assert_eq!(
+        disabled_presses.get(),
+        0,
+        "a disabled node's handlers never run"
     );
 }

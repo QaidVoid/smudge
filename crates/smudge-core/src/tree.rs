@@ -21,6 +21,8 @@ use crate::widget::Widget;
 
 #[path = "display_list_pass.rs"]
 mod display_list_pass;
+#[path = "focus.rs"]
+pub(crate) mod focus;
 #[path = "interaction.rs"]
 pub(crate) mod interaction;
 #[path = "layout.rs"]
@@ -93,7 +95,7 @@ struct Node {
     rect: Rect,
     /// The rectangle the node's subtree is clipped to, set by the layout pass.
     clip: Rect,
-    /// The node's pointer state: hovered, pressed and disabled.
+    /// The node's interaction state: hovered, pressed, disabled and focus.
     interaction: Interaction,
     /// The input handlers the node owns, set by its element's builders.
     handlers: Handlers,
@@ -128,6 +130,12 @@ pub(crate) struct WidgetTree {
     hovered: Option<WidgetId>,
     /// The node a primary press captured, while the button is held.
     pressed: Option<WidgetId>,
+    /// The node that holds the keyboard focus, when one does.
+    focused: Option<WidgetId>,
+    /// Whether the focus last moved by keyboard navigation, so a focus ring
+    /// can draw for keyboard users alone. A Tab or an arrow key turns this on
+    /// and a pointer press turns it off.
+    keyboard_nav: bool,
 }
 
 impl WidgetTree {
@@ -144,6 +152,8 @@ impl WidgetTree {
             layout_runs: 0,
             hovered: None,
             pressed: None,
+            focused: None,
+            keyboard_nav: false,
         }
     }
 
@@ -252,6 +262,9 @@ impl WidgetTree {
             if let Some(node) = self.nodes.get(current) {
                 stack.extend(node.children.iter().copied());
             }
+        }
+        if self.focused.is_some_and(|focused| order.contains(&focused)) {
+            self.focused = None;
         }
 
         // Deepest node first, so every taffy node is still attached to a live

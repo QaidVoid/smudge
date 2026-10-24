@@ -140,6 +140,18 @@ pub enum Key {
     Other,
 }
 
+/// Whether a key event was taken by a handler.
+///
+/// A key handler returns this to decide whether the event keeps bubbling to
+/// the ancestors of the node it reached.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Handled {
+    /// A handler acted on the event, so it stops bubbling.
+    Yes,
+    /// The handler ignored the event, so it bubbles to the parent.
+    No,
+}
+
 /// The keyboard modifiers held during an input event.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {

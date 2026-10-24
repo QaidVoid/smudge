@@ -1,0 +1,235 @@
+//! Keyboard focus: which node holds it, how it moves, and how keys route.
+//!
+//! The focused node hears key events before they bubble to its ancestors.
+//! Focus moves by a press on a focusable node or by Tab navigation, and the
+//! keyboard navigation mode records which of the two moved it last, so a
+//! focus ring can draw for keyboard users alone. A pointer press turns the
+//! mode off again.
+
+use crate::geometry::Rect;
+use crate::input::{Handled, Key, KeyEvent};
+use crate::widget::Widget;
+
+use super::interaction::Interaction;
+use super::{WidgetId, WidgetTree};
+
+#[cfg(test)]
+#[path = "focus_tests.rs"]
+mod tests;
+
+impl WidgetTree {
+    /// Routes a key event from the focused node through its ancestors.
+    ///
+    /// The focused node hears the key first, then its parent, and so on to the
+    /// root, until a handler reports [`Handled::Yes`]. A press of Tab or an
+    /// arrow key turns the keyboard navigation mode on, whether or not a
+    /// handler took the key, and an unhandled Tab or Shift+Tab moves the focus
+    /// to the next or previous focusable node in tree order. Releases and
+    /// every other key only route.
+    ///
+    /// A focused node that became disabled or hidden since it took the focus
+    /// loses it first, and its own handler does not run: a disabled button
+    /// must not activate from the keyboard. The key still bubbles from it to
+    /// the ancestors that can hear it, so shortcuts above it keep working.
+    pub(crate) fn key(&mut self, event: &KeyEvent) {
+        let start = self.focused;
+        if let Some(focused) = self.focused
+            && !self.can_hold_focus(focused)
+        {
+            self.set_focus(None);
+        }
+        let handled = self.route_key(start, event);
+        if !event.pressed {
+            return;
+        }
+        match event.key {
+            Key::Tab => {
+                self.set_keyboard_nav(true);
+                if handled != Handled::Yes {
+                    self.move_focus(event.modifiers.shift);
+                }
+            }
+            Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown => {
+                self.set_keyboard_nav(true);
+            }
+            _ => {}
+        }
+    }
+
+    /// Delivers the event to `start` and its ancestors, deepest first, and
+    /// returns whether a handler took it.
+    ///
+    /// `start` is the node that held the focus when the key arrived. Without
+    /// one the event reaches no handler.
+    fn route_key(&mut self, start: Option<WidgetId>, event: &KeyEvent) -> Handled {
+        let mut next = start;
+        while let Some(id) = next {
+            next = self.nodes.get(id).and_then(|node| node.parent);
+            // A disabled or hidden node's handlers never run, but the key keeps
+            // bubbling, so shortcuts above it still work.
+            if self.nodes.get(id).is_some_and(|node| {
+                node.interaction.has(Interaction::DISABLED) || node.style.layout.hidden
+            }) {
+                continue;
+            }
+            let Some(owner) = self.owner(id).cloned() else {
+                continue;
+            };
+            let mut handled = Handled::No;
+            owner.with(|| {
+                if let Some(on_key) = self
+                    .nodes
+                    .get_mut(id)
+                    .and_then(|node| node.handlers.on_key.as_mut())
+                {
+                    handled = on_key(event);
+                }
+            });
+            if handled == Handled::Yes {
+                return Handled::Yes;
+            }
+        }
+        Handled::No
+    }
+
+    /// Moves the focus to the next focusable node in tree order, or to the
+    /// previous one when `backwards` is set, wrapping at both ends.
+    fn move_focus(&mut self, backwards: bool) {
+        let next = self.next_focusable(self.focused, backwards);
+        self.set_focus(next);
+        self.scroll_focus_into_view();
+    }
+
+    /// Focuses `id`, or clears the focus when `id` is `None`.
+    ///
+    /// The node that loses the focus clears its focused bit and hears
+    /// `on_focus` with `false` before the node that gains it is marked and
+    /// hears `on_focus` with `true`. A node that already holds the focus keeps
+    /// it without hearing `on_focus` again. The keyboard focus bit follows the
+    /// keyboard navigation mode.
+    pub(super) fn set_focus(&mut self, id: Option<WidgetId>) {
+        if self.focused == id {
+            return;
+        }
+        if let Some(old) = self.focused {
+            self.set_bit(old, Interaction::FOCUSED, false);
+            self.set_bit(old, Interaction::KEYBOARD_FOCUS, false);
+        }
+        self.focused = id;
+        if let Some(new) = id {
+            self.set_bit(new, Interaction::FOCUSED, true);
+            if self.keyboard_nav {
+                self.set_bit(new, Interaction::KEYBOARD_FOCUS, true);
+            }
+        }
+    }
+
+    /// Turns the keyboard navigation mode on or off.
+    ///
+    /// The focused node carries the keyboard focus bit only while the mode is
+    /// on, so a style can react to keyboard focus alone. A pointer press
+    /// clears the mode, which clears the bit of a node that stays focused.
+    pub(super) fn set_keyboard_nav(&mut self, on: bool) {
+        if self.keyboard_nav == on {
+            return;
+        }
+        self.keyboard_nav = on;
+        if let Some(focused) = self.focused {
+            self.set_bit(focused, Interaction::KEYBOARD_FOCUS, on);
+        }
+    }
+
+    /// Returns the node that holds the keyboard focus, when one does.
+    pub(crate) fn focused(&self) -> Option<WidgetId> {
+        self.focused
+    }
+
+    /// Returns whether the keyboard navigation mode is on.
+    pub(crate) fn keyboard_nav(&self) -> bool {
+        self.keyboard_nav
+    }
+
+    /// Returns the area the focused widget reports to the input method, when
+    /// it reports one.
+    ///
+    /// The rectangle is in window coordinates, as the widget's paint
+    /// operations are. A focused node that has since become disabled or
+    /// hidden reports none, as it would hear no key.
+    pub(crate) fn ime_area(&self) -> Option<Rect> {
+        let focused = self.focused.filter(|&id| self.can_hold_focus(id))?;
+        let node = self.nodes.get(focused)?;
+        let widget: &dyn Widget = node.widget.as_ref();
+        widget.ime_area()
+    }
+
+    /// Returns the next focusable node in tree order after `from`, or the
+    /// previous one when `backwards` is set, wrapping at both ends.
+    ///
+    /// Without a focused node, forward navigation starts at the first
+    /// focusable node and backward navigation at the last. A hidden node and
+    /// its subtree are skipped, and a disabled node is skipped while its
+    /// children are still visited, matching hit testing.
+    fn next_focusable(&self, from: Option<WidgetId>, backwards: bool) -> Option<WidgetId> {
+        let mut order = Vec::new();
+        if let Some(root) = self.root {
+            self.collect_focusable(root, &mut order);
+        }
+        if order.is_empty() {
+            return None;
+        }
+        match from.and_then(|id| order.iter().position(|&candidate| candidate == id)) {
+            Some(index) if backwards => Some(order[(index + order.len() - 1) % order.len()]),
+            Some(index) => Some(order[(index + 1) % order.len()]),
+            None if backwards => order.last().copied(),
+            None => order.first().copied(),
+        }
+    }
+
+    /// Appends the focusable nodes of the subtree, in paint order.
+    fn collect_focusable(&self, id: WidgetId, order: &mut Vec<WidgetId>) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if node.style.layout.hidden {
+            return;
+        }
+        let focusable = node.interaction.has(Interaction::FOCUSABLE)
+            && !node.interaction.has(Interaction::DISABLED);
+        if focusable {
+            order.push(id);
+        }
+        for &child in &node.children {
+            self.collect_focusable(child, order);
+        }
+    }
+
+    /// Returns whether `id` may keep the focus: it is not disabled, and
+    /// neither it nor any ancestor is hidden.
+    ///
+    /// A node only clipped out of view, for example scrolled away, keeps it.
+    fn can_hold_focus(&self, id: WidgetId) -> bool {
+        let Some(node) = self.nodes.get(id) else {
+            return false;
+        };
+        if node.interaction.has(Interaction::DISABLED) {
+            return false;
+        }
+        let mut next = Some(id);
+        while let Some(current) = next {
+            let Some(node) = self.nodes.get(current) else {
+                return false;
+            };
+            if node.style.layout.hidden {
+                return false;
+            }
+            next = node.parent;
+        }
+        true
+    }
+
+    /// Scrolls the nearest scrolling ancestor so the focused node is in view.
+    ///
+    /// Nothing scrolls yet: scroll offsets arrive with the scroll view, and
+    /// focus movement calls this hook so the behavior has one home.
+    fn scroll_focus_into_view(&mut self) {}
+}

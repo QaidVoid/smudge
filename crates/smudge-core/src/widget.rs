@@ -82,6 +82,16 @@ pub trait Widget: Any + type_name::TypeName {
     /// `cx` carries the node's rectangle after layout and its resolved style.
     /// Paint this node only: its children paint themselves.
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>);
+
+    /// Returns the rectangle the input method should anchor to while this
+    /// widget holds the keyboard focus, in window coordinates.
+    ///
+    /// The app asks only the focused widget and reports [`None`] when nothing
+    /// is focused or the widget has no area to report. The default reports
+    /// [`None`], which suits a widget that takes no text.
+    fn ime_area(&self) -> Option<Rect> {
+        None
+    }
 }
 
 /// The name of a widget's concrete type, which diagnostics print.

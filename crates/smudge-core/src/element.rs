@@ -42,6 +42,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::geometry::{Color, Corners, Point, Size};
+use crate::input::{Handled, KeyEvent};
 use crate::paint::PaintOp;
 use crate::reactive::{self, Owner, RenderEffect};
 use crate::style::{
@@ -284,6 +285,8 @@ pub struct Element<W: Widget> {
     handlers: Handlers,
     /// Whether the node starts disabled.
     disabled: bool,
+    /// Whether the node can take the keyboard focus.
+    focusable: bool,
     /// The children, in paint order.
     children: Vec<AnyElement>,
 }
@@ -304,6 +307,7 @@ impl<W: Widget> Element<W> {
             bindings: Vec::new(),
             handlers: Handlers::default(),
             disabled: false,
+            focusable: false,
             children: Vec::new(),
         }
     }
@@ -590,9 +594,10 @@ impl<W: Widget> Element<W> {
     /// Runs `handler` when the node enters (`true`) or leaves (`false`) the
     /// hovered chain.
     ///
-    /// The hovered chain is the node under the pointer and all of its
-    /// ancestors, so a container stays hovered while the pointer is over one
-    /// of its children. While a press is held, hover does not change until the
+    /// The hovered chain is the nearest enabled node under the pointer that can
+    /// respond and its enabled ancestors, so a container stays hovered while
+    /// the pointer is over one of its children, and a disabled node never
+    /// hears it. While a press is held, hover does not change until the
     /// button is released. The handler runs inside the node's owner, so it can
     /// write the signals the element's bindings read.
     pub fn on_hover(mut self, handler: impl FnMut(bool) + 'static) -> Self {
@@ -634,6 +639,106 @@ impl<W: Widget> Element<W> {
             Value::Static(disabled) => self.disabled = disabled,
             Value::Dynamic(get) => self.bindings.push(Binding::disabled(get)),
         }
+        self
+    }
+
+    /// Makes the node able to take the keyboard focus, by a press on it or by
+    /// Tab navigation.
+    ///
+    /// While a node holds the focus, key events reach it before they bubble to
+    /// its ancestors, which is what [`Element::on_key`] hears.
+    /// [`Element::on_key`] implies this, so a key handler never needs a
+    /// separate `focusable` call.
+    pub fn focusable(mut self) -> Self {
+        self.focusable = true;
+        self
+    }
+
+    /// Runs `handler` when a key event reaches the node while the node or one
+    /// of its descendants holds the keyboard focus.
+    ///
+    /// The event walks up from the focused node, and the first handler that
+    /// returns [`Handled::Yes`] stops it, so a handler that takes a key hides
+    /// it from its ancestors. Tab moves the focus away only when no handler
+    /// took the Tab key. This makes the node focusable, so a press on it or a
+    /// Tab puts the focus on it.
+    ///
+    /// The handler runs inside the node's owner, so it can write the signals
+    /// the element's bindings read.
+    ///
+    /// ```
+    /// use std::cell::Cell;
+    /// use std::rc::Rc;
+    ///
+    /// use smudge_core::app::{App, AppConfig, RepaintMode};
+    /// use smudge_core::geometry::{Color, Size};
+    /// use smudge_core::input::{Handled, InputEvent, Key, KeyEvent};
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let enters = Rc::new(Cell::new(0u32));
+    /// let counted = Rc::clone(&enters);
+    /// let mut app = App::new(
+    ///     AppConfig {
+    ///         viewport: Size {
+    ///             width: 100.0,
+    ///             height: 60.0,
+    ///         },
+    ///         scale: 1.0,
+    ///         clear_color: Color::WHITE,
+    ///         repaint: RepaintMode::Damage,
+    ///     },
+    ///     move || {
+    ///         panel().child(
+    ///             panel()
+    ///                 .width(px(40.0))
+    ///                 .height(px(20.0))
+    ///                 .on_key(move |event: &KeyEvent| {
+    ///                     if event.pressed && event.key == Key::Enter {
+    ///                         counted.set(counted.get() + 1);
+    ///                         Handled::Yes
+    ///                     } else {
+    ///                         Handled::No
+    ///                     }
+    ///                 }),
+    ///         )
+    ///     },
+    /// );
+    /// app.frame();
+    ///
+    /// // Tab moves the focus to the panel, which then hears the Enter key.
+    /// app.handle_event(InputEvent::Key(KeyEvent {
+    ///     key: Key::Tab,
+    ///     pressed: true,
+    ///     repeat: false,
+    ///     modifiers: Default::default(),
+    ///     text: None,
+    /// }));
+    /// app.handle_event(InputEvent::Key(KeyEvent {
+    ///     key: Key::Enter,
+    ///     pressed: true,
+    ///     repeat: false,
+    ///     modifiers: Default::default(),
+    ///     text: None,
+    /// }));
+    /// assert_eq!(enters.get(), 1);
+    /// ```
+    pub fn on_key(mut self, handler: impl FnMut(&KeyEvent) -> Handled + 'static) -> Self {
+        self.handlers.on_key = Some(Box::new(handler));
+        self.focusable = true;
+        self
+    }
+
+    /// Runs `handler` when the node gains (`true`) or loses (`false`) the
+    /// keyboard focus.
+    ///
+    /// The handler does not make the node focusable; pair it with
+    /// [`Element::focusable`] for that. It runs inside the node's owner, so it
+    /// can write the signals the element's bindings read. A node that is
+    /// removed while focused clears the focus without hearing `on_focus` again,
+    /// because its handlers are being torn down with it.
+    pub fn on_focus(mut self, handler: impl FnMut(bool) + 'static) -> Self {
+        self.handlers.on_focus = Some(Box::new(handler));
         self
     }
 
@@ -693,6 +798,8 @@ pub struct AnyElement {
     handlers: Handlers,
     /// Whether the node starts disabled.
     disabled: bool,
+    /// Whether the node can take the keyboard focus.
+    focusable: bool,
     /// The children, in paint order.
     children: Vec<AnyElement>,
 }
@@ -706,6 +813,7 @@ impl AnyElement {
             bindings: element.bindings,
             handlers: element.handlers,
             disabled: element.disabled,
+            focusable: element.focusable,
             children: element.children,
         }
     }
@@ -747,10 +855,12 @@ pub(crate) fn mount(
         bindings,
         handlers,
         disabled,
+        focusable,
         children,
     } = element;
     let id = tree.insert(parent, widget, style);
     tree.set_disabled(id, disabled);
+    tree.set_focusable(id, focusable);
     tree.set_handlers(id, handlers);
     let owner = tree.owner(id).expect("the node was just inserted").clone();
     for binding in bindings {

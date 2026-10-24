@@ -15,7 +15,7 @@ use crate::geometry::{Color, PixelRect, Point, Rect, Size};
 use crate::input::{InputEvent, Modifiers};
 use crate::paint::DisplayList;
 use crate::reactive::{self, Owner};
-use crate::tree::WidgetTree;
+use crate::tree::{WidgetId, WidgetTree};
 
 /// How many flush and apply rounds a frame runs before it reports a cycle.
 const MAX_FLUSH_ROUNDS: u32 = 16;
@@ -226,12 +226,16 @@ impl App {
     /// Handles one input event between frames.
     ///
     /// The pointer events are routed to the tree: a move moves the hovered
-    /// chain, a primary press captures the node under the pointer, and a
-    /// release runs the captured node's `on_press` when it happens over it.
-    /// Handlers run at once, inside their node's owner, and a handler that
-    /// writes a signal makes the change visible with the next call to
-    /// [`App::frame`]. The app also records the pointer position from pointer
-    /// events and the keyboard modifiers from key and modifiers events.
+    /// chain, a primary press captures the node under the pointer and focuses
+    /// it when it can take the focus, and a release runs the captured node's
+    /// `on_press` when it happens over it. A press elsewhere clears the focus,
+    /// and any press turns the keyboard navigation mode off. Key events are
+    /// routed to the focused node and bubble to its ancestors until a handler
+    /// takes them, and an unhandled Tab or Shift+Tab moves the focus. Handlers
+    /// run at once, inside their node's owner, and a handler that writes a
+    /// signal makes the change visible with the next call to [`App::frame`].
+    /// The app also records the pointer position from pointer events and the
+    /// keyboard modifiers from key and modifiers events.
     pub fn handle_event(&mut self, event: InputEvent) {
         match event {
             InputEvent::PointerMoved { position } => {
@@ -247,7 +251,10 @@ impl App {
                 self.tree.pointer_up(position, button);
             }
             InputEvent::PointerLeft => self.tree.pointer_left(),
-            InputEvent::Key(key) => self.modifiers = key.modifiers,
+            InputEvent::Key(key) => {
+                self.tree.key(&key);
+                self.modifiers = key.modifiers;
+            }
             InputEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
             InputEvent::Wheel { .. }
             | InputEvent::ImePreedit { .. }
@@ -272,6 +279,35 @@ impl App {
     /// They start at none and change only when one of those events arrives.
     pub fn modifiers(&self) -> Modifiers {
         self.modifiers
+    }
+
+    /// Returns the node that holds the keyboard focus, when one does.
+    ///
+    /// A press on a focusable node focuses it, a press elsewhere clears the
+    /// focus, and Tab moves it. Removing the focused node clears the focus.
+    pub fn focused(&self) -> Option<WidgetId> {
+        self.tree.focused()
+    }
+
+    /// Returns whether the keyboard navigation mode is on.
+    ///
+    /// A Tab or an arrow key turns the mode on and a pointer press turns it
+    /// off, so a focus ring can draw for keyboard users alone. A node carries
+    /// the keyboard focus bit only while it holds the focus and this mode is
+    /// on.
+    pub fn keyboard_navigation(&self) -> bool {
+        self.tree.keyboard_nav()
+    }
+
+    /// Returns the area the focused widget reports to the input method, in
+    /// window coordinates, when it reports one.
+    ///
+    /// This is [`None`] while no widget reports an area, which is the default,
+    /// and while nothing is focused. A window presents the area to the
+    /// operating system so the input method can anchor its candidate window to
+    /// it.
+    pub fn ime_area(&self) -> Option<Rect> {
+        self.tree.ime_area()
     }
 
     /// Returns the surface size in physical pixels.
