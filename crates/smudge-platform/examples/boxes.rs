@@ -1,19 +1,24 @@
 //! A grid of rounded boxes with one box changing color on every frame.
 //!
 //! Run with `cargo run --example boxes -p smudge-platform`. Pass `--full` to
-//! repaint the whole surface every frame instead of only the damage.
+//! repaint the whole surface every frame instead of only the damage, and
+//! `--stats` to print a presentation summary every 120 frames.
+
+// The summaries are the output the example exists to produce.
+#![allow(clippy::print_stdout)]
 
 use std::cell::RefCell;
 use std::env;
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::time::Duration;
 
 use smudge_core::app::RepaintMode;
 use smudge_core::geometry::{Color, Size};
 use smudge_core::reactive::{self, prelude::*};
 use smudge_core::style::{Align, Length, px};
 use smudge_core::widget::panel;
-use smudge_platform::{WindowOptions, run_with};
+use smudge_platform::{PresentStatsHandle, WindowOptions, run_with};
 
 /// How many boxes the grid holds.
 const BOXES: usize = 600;
@@ -26,6 +31,9 @@ const GAP: f32 = 4.0;
 
 /// The padding around the grid in logical pixels.
 const PADDING: f32 = 8.0;
+
+/// How many frames lie between two presentation summaries.
+const STATS_EVERY: u64 = 120;
 
 /// Sets the color of one box.
 type SetColor = Box<dyn Fn(Color)>;
@@ -46,6 +54,8 @@ fn main() -> ExitCode {
     } else {
         RepaintMode::Damage
     };
+    let report = env::args().skip(1).any(|argument| argument == "--stats");
+    let stats = report.then(PresentStatsHandle::new);
 
     let setters: Rc<RefCell<Vec<SetColor>>> = Rc::new(RefCell::new(Vec::with_capacity(BOXES)));
     let shared = Rc::clone(&setters);
@@ -89,10 +99,16 @@ fn main() -> ExitCode {
             },
             clear_color: Color::rgb(16, 17, 21),
             repaint,
+            stats: stats.clone(),
         },
         build,
         move |app| {
             let mut next = 0usize;
+            let mut frames = 0_u64;
+            let mut damage_presents = 0_u64;
+            let mut copied = 0_u64;
+            let mut age_total = 0_u64;
+            let mut present_total = Duration::ZERO;
             app.set_tick(move |_| {
                 let index = next % BOXES;
                 let pass = next / BOXES;
@@ -100,6 +116,26 @@ fn main() -> ExitCode {
                     set_color(PALETTE[(pass + index) % PALETTE.len()]);
                 }
                 next = next.wrapping_add(1);
+
+                if let Some(stats) = &stats {
+                    let present = stats.get();
+                    frames += 1;
+                    damage_presents += u64::from(present.with_damage);
+                    copied += present.bytes_copied;
+                    age_total += u64::from(present.buffer_age);
+                    present_total += present.present;
+                    if frames.is_multiple_of(STATS_EVERY) {
+                        println!(
+                            "frame {frames}: mean buffer age {:.2}, damage presents \
+                             {damage_presents}/{frames} ({:.1}%), copied {:.1} MB, \
+                             present {:.2} ms mean",
+                            age_total as f64 / frames as f64,
+                            100.0 * damage_presents as f64 / frames as f64,
+                            copied as f64 / 1_048_576.0,
+                            present_total.as_secs_f64() * 1000.0 / frames as f64,
+                        );
+                    }
+                }
             });
         },
     );

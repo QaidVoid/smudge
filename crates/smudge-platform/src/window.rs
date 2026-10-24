@@ -5,10 +5,11 @@ use std::rc::Rc;
 
 use smudge_core::app::{App, AppConfig, RepaintMode};
 use smudge_core::element::IntoElement;
-use smudge_core::geometry::{Color, Size};
+use smudge_core::geometry::{Color, PixelRect, Size};
 use smudge_core::reactive;
 use smudge_cpu::CpuRenderer;
 use softbuffer::{Context, Surface};
+use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
@@ -19,7 +20,7 @@ use winit::raw_window_handle::{
 use winit::window::{Window, WindowId};
 
 use crate::error::PlatformError;
-use crate::present::copy_pixels;
+use crate::present::{DamageHistory, PresentStats, PresentStatsHandle, copy_rect, damage_region};
 
 /// The settings a window opens with.
 #[derive(Clone, Debug)]
@@ -36,6 +37,12 @@ pub struct WindowOptions {
     pub clear_color: Color,
     /// How much of the surface each frame repaints.
     pub repaint: RepaintMode,
+    /// Where the platform publishes presentation statistics, when given.
+    ///
+    /// Pass a [`PresentStatsHandle`] and keep the original to read the
+    /// [`PresentStats`] of the most recent present while the window runs.
+    /// Without one the platform skips publishing.
+    pub stats: Option<PresentStatsHandle>,
 }
 
 /// Opens a window and runs frames until the window closes.
@@ -79,6 +86,7 @@ pub struct WindowOptions {
 ///         },
 ///         clear_color: Color::WHITE,
 ///         repaint: RepaintMode::Damage,
+///         stats: None,
 ///     },
 ///     || panel().width(px(120.0)).height(px(40.0)).background(Color::BLACK),
 /// )?;
@@ -129,6 +137,7 @@ pub fn run<E: IntoElement + 'static>(
 ///         },
 ///         clear_color: Color::WHITE,
 ///         repaint: RepaintMode::Damage,
+///         stats: None,
 ///     },
 ///     move || panel().width(px(120.0)).background(move || color.get()),
 ///     move |app| {
@@ -201,10 +210,31 @@ struct WindowState {
     app: App,
     /// The renderer that paints the app's damage into a pixmap.
     renderer: CpuRenderer,
+    /// The damage of the frames the window presented, most recent first.
+    history: DamageHistory,
+    /// The frame that was rendered and waits to be presented.
+    pending: PendingFrame,
+    /// Scratch for the region the next present copies.
+    region: Vec<PixelRect>,
+    /// Scratch for the damage rectangles the next present reports.
+    reported: Vec<softbuffer::Rect>,
+    /// What the last present did.
+    stats: PresentStats,
+    /// Where to publish the statistics, when the caller asked for them.
+    stats_handle: Option<PresentStatsHandle>,
     /// The number of physical pixels per logical pixel the app last used.
     scale: f32,
     /// The window's size in physical pixels when the app last used it.
     physical: (u32, u32),
+}
+
+/// The frame that was rendered and waits to be presented.
+#[derive(Default)]
+struct PendingFrame {
+    /// The rectangles the frame changed, in physical pixels.
+    damage: Vec<PixelRect>,
+    /// Whether the frame repainted the whole surface.
+    full: bool,
 }
 
 impl<E, B> Platform<E, B>
@@ -271,6 +301,12 @@ where
             surface,
             app,
             renderer,
+            history: DamageHistory::default(),
+            pending: PendingFrame::default(),
+            region: Vec::new(),
+            reported: Vec::new(),
+            stats: PresentStats::default(),
+            stats_handle: self.options.stats.clone(),
             scale,
             physical: (physical.width, physical.height),
         })
@@ -317,6 +353,10 @@ where
         {
             let output = state.app.frame();
             state.renderer.render(&output);
+            let pending = &mut state.pending;
+            pending.damage.clear();
+            pending.damage.extend_from_slice(output.damage);
+            pending.full = output.full;
         }
         state.present()?;
         if tick {
@@ -383,19 +423,82 @@ where
 }
 
 impl WindowState {
-    /// Copies the renderer's surface into the window and presents it.
+    /// Presents the frame the last redraw rendered.
+    ///
+    /// The frame's damage and the recorded damage of the frames still in a
+    /// window buffer decide what has to be copied: when the buffer's age says
+    /// which frame it holds and no full repaint happened since, only their
+    /// union is copied and the present reports it as damage. Every other case
+    /// copies the whole pixmap.
     fn present(&mut self) -> Result<(), PlatformError> {
-        if self.renderer.width() == 0 || self.renderer.height() == 0 {
+        let (width, height) = (self.renderer.width(), self.renderer.height());
+        if width == 0 || height == 0 {
             return Ok(());
         }
+        let start = Instant::now();
         let mut buffer = self.surface.buffer_mut().map_err(PlatformError::Surface)?;
         debug_assert_eq!(
             buffer.len(),
             self.renderer.pixels().len() / 4,
             "the window buffer must hold one entry per rendered pixel"
         );
-        copy_pixels(self.renderer.pixels(), &mut buffer);
-        buffer.present().map_err(PlatformError::Surface)
+        let age = buffer.age();
+        let with_damage = damage_region(
+            age,
+            &self.pending.damage,
+            self.pending.full,
+            &self.history,
+            &mut self.region,
+        );
+        let mut bytes_copied = 0;
+        if with_damage {
+            self.reported.clear();
+            for rect in &self.region {
+                let (Some(rect_width), Some(rect_height)) =
+                    (NonZeroU32::new(rect.width), NonZeroU32::new(rect.height))
+                else {
+                    continue;
+                };
+                bytes_copied += u64::from(rect.width) * u64::from(rect.height) * 4;
+                self.reported.push(softbuffer::Rect {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect_width,
+                    height: rect_height,
+                });
+            }
+            for &rect in &self.region {
+                copy_rect(self.renderer.pixels(), width, &mut buffer, rect);
+            }
+            buffer
+                .present_with_damage(&self.reported)
+                .map_err(PlatformError::Surface)?;
+        } else {
+            bytes_copied = u64::from(width) * u64::from(height) * 4;
+            copy_rect(
+                self.renderer.pixels(),
+                width,
+                &mut buffer,
+                PixelRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                },
+            );
+            buffer.present().map_err(PlatformError::Surface)?;
+        }
+        self.history.push(&self.pending.damage, self.pending.full);
+        self.stats = PresentStats {
+            buffer_age: age,
+            with_damage,
+            bytes_copied,
+            present: start.elapsed(),
+        };
+        if let Some(handle) = &self.stats_handle {
+            handle.store(self.stats);
+        }
+        Ok(())
     }
 }
 

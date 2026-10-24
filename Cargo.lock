@@ -1947,6 +1947,7 @@ dependencies = [
  "smudge-core",
  "smudge-cpu",
  "softbuffer",
+ "web-time",
  "winit",
 ]
 

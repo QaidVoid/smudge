@@ -1,23 +1,214 @@
-//! Tests for copying the renderer's surface into the window buffer.
+//! Tests for copying the renderer's surface into the window buffer and for
+//! choosing the region a present has to copy.
 
-use super::copy_pixels;
+use smudge_core::geometry::PixelRect;
 
-#[test]
-fn copy_pixels_converts_each_pixel_to_rgb() {
-    let source = [10, 20, 30, 255, 255, 128, 1, 255, 0, 0, 0, 255];
-    let mut destination = [u32::MAX; 3];
+use super::{DamageHistory, copy_rect, damage_region};
 
-    copy_pixels(&source, &mut destination);
-
-    assert_eq!(destination, [0x000a_141e, 0x00ff_8001, 0x0000_0000]);
+/// Returns a one-pixel rectangle at the given position, so tests can tell
+/// rectangles apart by their position.
+fn rect(x: u32, y: u32) -> PixelRect {
+    PixelRect {
+        x,
+        y,
+        width: 1,
+        height: 1,
+    }
 }
 
 #[test]
-fn copy_pixels_leaves_pixels_past_the_source_untouched() {
-    let source = [1, 2, 3, 255];
-    let mut destination = [0x00aa_bbcc; 2];
+fn copy_rect_writes_only_the_rect() {
+    let mut source = Vec::new();
+    for y in 0..3u32 {
+        for x in 0..4u32 {
+            source.extend_from_slice(&[x as u8, y as u8, 32, 255]);
+        }
+    }
+    let mut destination = [0x00aa_bbcc_u32; 12];
 
-    copy_pixels(&source, &mut destination);
+    copy_rect(
+        &source,
+        4,
+        &mut destination,
+        PixelRect {
+            x: 1,
+            y: 1,
+            width: 2,
+            height: 2,
+        },
+    );
 
-    assert_eq!(destination, [0x0001_0203, 0x00aa_bbcc]);
+    assert_eq!(&destination[..4], &[0x00aa_bbcc; 4]);
+    assert_eq!(
+        &destination[4..8],
+        &[0x00aa_bbcc, 0x0001_0120, 0x0002_0120, 0x00aa_bbcc]
+    );
+    assert_eq!(
+        &destination[8..12],
+        &[0x00aa_bbcc, 0x0001_0220, 0x0002_0220, 0x00aa_bbcc]
+    );
+}
+
+#[test]
+fn copy_rect_drops_the_alpha_channel() {
+    let source = [200, 150, 100, 77];
+    let mut destination = [0_u32; 1];
+
+    copy_rect(
+        &source,
+        1,
+        &mut destination,
+        PixelRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        },
+    );
+
+    assert_eq!(destination, [0x00c8_9664]);
+}
+
+#[test]
+fn unknown_ages_copy_everything() {
+    let history = DamageHistory::default();
+    let mut out = Vec::new();
+
+    for age in [0_u8, 4, 200] {
+        assert!(!damage_region(
+            age,
+            &[rect(0, 0)],
+            false,
+            &history,
+            &mut out
+        ));
+        assert!(out.is_empty());
+    }
+}
+
+#[test]
+fn a_full_current_frame_copies_everything() {
+    let history = DamageHistory::default();
+    let mut out = Vec::new();
+
+    for age in [1_u8, 2, 3] {
+        assert!(!damage_region(age, &[rect(0, 0)], true, &history, &mut out));
+        assert!(out.is_empty());
+    }
+}
+
+#[test]
+fn age_one_presents_only_the_current_damage() {
+    let history = DamageHistory::default();
+    let mut out = Vec::new();
+
+    assert!(damage_region(1, &[rect(3, 4)], false, &history, &mut out));
+    assert_eq!(out, [rect(3, 4)]);
+}
+
+#[test]
+fn older_ages_add_the_damage_of_the_frames_they_cover() {
+    let mut history = DamageHistory::default();
+    history.push(&[rect(1, 0)], false);
+    history.push(&[rect(2, 0)], false);
+    let mut out = Vec::new();
+
+    assert!(damage_region(2, &[rect(0, 0)], false, &history, &mut out));
+    assert_eq!(out, [rect(0, 0), rect(2, 0)]);
+
+    assert!(damage_region(3, &[rect(0, 0)], false, &history, &mut out));
+    assert_eq!(out, [rect(0, 0), rect(2, 0), rect(1, 0)]);
+}
+
+#[test]
+fn age_one_ignores_a_full_previous_frame() {
+    let mut history = DamageHistory::default();
+    history.push(&[rect(0, 0)], true);
+    let mut out = Vec::new();
+
+    assert!(damage_region(1, &[rect(1, 1)], false, &history, &mut out));
+    assert_eq!(out, [rect(1, 1)]);
+}
+
+#[test]
+fn a_full_previous_frame_copies_everything_for_the_ages_it_covers() {
+    let mut history = DamageHistory::default();
+    history.push(&[rect(1, 0)], false);
+    history.push(&[rect(2, 0)], true);
+    let mut out = Vec::new();
+
+    assert!(!damage_region(2, &[rect(0, 0)], false, &history, &mut out));
+    assert!(out.is_empty());
+    assert!(!damage_region(3, &[rect(0, 0)], false, &history, &mut out));
+    assert!(out.is_empty());
+}
+
+#[test]
+fn a_full_second_previous_frame_only_blocks_age_three() {
+    let mut history = DamageHistory::default();
+    history.push(&[rect(1, 0)], true);
+    history.push(&[rect(2, 0)], false);
+    let mut out = Vec::new();
+
+    assert!(damage_region(2, &[rect(0, 0)], false, &history, &mut out));
+    assert_eq!(out, [rect(0, 0), rect(2, 0)]);
+    assert!(!damage_region(3, &[rect(0, 0)], false, &history, &mut out));
+    assert!(out.is_empty());
+}
+
+#[test]
+fn a_full_third_previous_frame_blocks_no_age() {
+    let mut history = DamageHistory::default();
+    history.push(&[rect(3, 0)], true);
+    history.push(&[rect(2, 0)], false);
+    history.push(&[rect(1, 0)], false);
+    let mut out = Vec::new();
+
+    for age in [1_u8, 2, 3] {
+        assert!(damage_region(age, &[rect(0, 0)], false, &history, &mut out));
+        assert_eq!(out[0], rect(0, 0));
+    }
+}
+
+#[test]
+fn missing_history_copies_everything() {
+    let mut history = DamageHistory::default();
+    let mut out = Vec::new();
+
+    assert!(damage_region(1, &[rect(0, 0)], false, &history, &mut out));
+    assert!(!damage_region(2, &[rect(0, 0)], false, &history, &mut out));
+    assert!(!damage_region(3, &[rect(0, 0)], false, &history, &mut out));
+
+    history.push(&[rect(1, 0)], false);
+    assert!(damage_region(2, &[rect(0, 0)], false, &history, &mut out));
+    assert!(!damage_region(3, &[rect(0, 0)], false, &history, &mut out));
+
+    history.push(&[rect(2, 0)], false);
+    assert!(damage_region(3, &[rect(0, 0)], false, &history, &mut out));
+}
+
+#[test]
+fn the_ring_keeps_only_the_last_three_frames() {
+    let mut history = DamageHistory::default();
+    history.push(&[rect(9, 9)], false);
+    history.push(&[rect(1, 0)], false);
+    history.push(&[rect(2, 0)], false);
+    history.push(&[rect(3, 0)], false);
+    let mut out = Vec::new();
+
+    assert!(damage_region(3, &[rect(0, 0)], false, &history, &mut out));
+    assert_eq!(out, [rect(0, 0), rect(3, 0), rect(2, 0)]);
+}
+
+#[test]
+fn a_frame_without_damage_copies_everything() {
+    let mut history = DamageHistory::default();
+    history.push(&[rect(1, 0)], false);
+    history.push(&[rect(2, 0)], false);
+    let mut out = Vec::new();
+
+    for age in [1_u8, 2, 3] {
+        assert!(!damage_region(age, &[], false, &history, &mut out));
+        assert!(out.is_empty());
+    }
 }
