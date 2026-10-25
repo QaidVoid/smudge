@@ -2,12 +2,27 @@
 //! and a fresh mount of the same scene.
 //!
 //! Every case builds a random tree of panels and text, applies a random
-//! sequence of edits, and checks the surface after every frame twice. The
+//! sequence of edits, and checks the surface after every frame three ways. The
 //! comparison with a full repaint of the same display list fails when the
 //! damage misses pixels. The comparison with a fresh app built from the final
 //! value of every signal fails when the display list itself is stale, which a
-//! missed invalidation causes and the first comparison cannot see. A difference
-//! in either is a stale pixel on screen.
+//! missed invalidation causes and the first comparison cannot see. The check
+//! that no work is left pending after a frame fails when the tree would need
+//! another frame to settle, which the second layout pass after a hover
+//! recompute exists to prevent. A difference in any of them is a stale pixel
+//! on screen.
+//!
+//! Scenes carry style variants, and the second half of every case drives
+//! pointer and keyboard events into them, so hover, press, focus and disabled
+//! state reach the oracle like signal edits do. The case is generated in two
+//! segments. The first applies every edit kind, all before the first event:
+//! widths, visibility, hidden state and the viewport, which change geometry,
+//! along with disabled toggles and the edits that only repaint. The second
+//! applies events, disabled toggles and the edits that only repaint.
+//! Every event of the second segment therefore meets the same tree the fresh
+//! mount replays it on, which is what lets the mount reproduce the
+//! interaction state by replaying the same events and disabled toggles on the
+//! final tree, and the comparison to stay exact.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -15,7 +30,8 @@ use std::rc::Rc;
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 use smudge_core::element::{AnyElement, Element, IntoElement, show};
-use smudge_core::geometry::{Color, Size};
+use smudge_core::geometry::{Color, Point, Size};
+use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{prelude::*, signal_local};
 use smudge_core::style::{Direction, Edges, Length, px};
@@ -38,8 +54,11 @@ const MAX_DEPTH: u32 = 4;
 /// The most children one generated node asks for.
 const MAX_CHILDREN: u8 = 3;
 
-/// The most frames one case runs, one comparison after each.
-const MAX_FRAMES: usize = 8;
+/// The most frames the geometry segment runs, one comparison after each.
+const MAX_GEOMETRY_FRAMES: usize = 5;
+
+/// The most frames the event segment runs, one comparison after each.
+const MAX_EVENT_FRAMES: usize = 4;
 
 /// The most edits one frame applies, so a frame can carry several changes at
 /// once.
@@ -136,6 +155,19 @@ struct NodeSpec {
     bind_text: bool,
     /// Whether the text color is read from a signal instead of being fixed.
     bind_glyph_color: bool,
+    /// Whether the node restyles while it is in the hovered chain.
+    hover_variant: bool,
+    /// Whether the hovered patch also changes the width, which moves layout.
+    hover_layout: bool,
+    /// Whether the node restyles while a primary press is held on it.
+    pressed_variant: bool,
+    /// Whether the node can take the keyboard focus and restyles while it
+    /// holds it.
+    focused_variant: bool,
+    /// Whether the node restyles while it is disabled.
+    disabled_variant: bool,
+    /// Whether the node's disabled state is read from a signal.
+    bind_disabled: bool,
 }
 
 /// A node's layout properties.
@@ -193,6 +225,24 @@ fn any_text() -> impl Strategy<Value = (bool, bool, bool)> {
     (any::<bool>(), any::<bool>(), any::<bool>())
 }
 
+/// Which interaction states restyle the node, and whether its disabled state
+/// is read from a signal.
+///
+/// Most panels carry a hovered patch, and half of those change the width with
+/// it, so moving the pointer around a dense scene often restyles a node that
+/// takes part in layout. That is the change whose invalidation needs the
+/// second layout pass of a frame to settle.
+fn any_variants() -> impl Strategy<Value = (bool, bool, bool, bool, bool, bool)> {
+    (
+        prop::bool::weighted(0.75),
+        prop::bool::weighted(0.5),
+        prop::bool::weighted(0.4),
+        prop::bool::weighted(0.35),
+        prop::bool::weighted(0.35),
+        prop::bool::weighted(0.3),
+    )
+}
+
 /// Any node of a generated scene.
 fn any_spec() -> impl Strategy<Value = NodeSpec> {
     (
@@ -201,13 +251,22 @@ fn any_spec() -> impl Strategy<Value = NodeSpec> {
         any_position(),
         any_bindings(),
         any_text(),
+        any_variants(),
     )
-        .prop_map(|(layout, paint, position, bindings, text)| {
+        .prop_map(|(layout, paint, position, bindings, text, variants)| {
             let (children, width, height, padding, gap, direction) = layout;
             let (background, border, border_color, radius, clip) = paint;
             let (absolute, inset) = position;
             let (bind_width, bind_background, bind_radius, bind_hidden, show) = bindings;
             let (text, bind_text, bind_glyph_color) = text;
+            let (
+                hover_variant,
+                hover_layout,
+                pressed_variant,
+                focused_variant,
+                disabled_variant,
+                bind_disabled,
+            ) = variants;
             NodeSpec {
                 children,
                 width,
@@ -230,6 +289,12 @@ fn any_spec() -> impl Strategy<Value = NodeSpec> {
                 text,
                 bind_text,
                 bind_glyph_color,
+                hover_variant,
+                hover_layout,
+                pressed_variant,
+                focused_variant,
+                disabled_variant,
+                bind_disabled,
             }
         })
 }
@@ -284,6 +349,11 @@ impl SceneData {
         nodes[0].bind_width = true;
         nodes[0].bind_background = true;
         nodes[0].bind_radius = true;
+        nodes[0].hover_variant = false;
+        nodes[0].pressed_variant = false;
+        nodes[0].focused_variant = false;
+        nodes[0].disabled_variant = false;
+        nodes[0].bind_disabled = false;
         if !nodes[1..].iter().any(|node| node.show) {
             nodes[1].show = true;
         }
@@ -304,6 +374,55 @@ impl SceneData {
             nodes[1].text = true;
             nodes[1].bind_glyph_color = true;
         }
+
+        // A style patch is only visible on a panel, which paints the
+        // background and the border a patch sets. When every child paints
+        // text, one panel is appended so the interaction edits always have a
+        // target that shows its patches.
+        let variant = match nodes[1..].iter().position(|node| !node.text) {
+            Some(offset) => offset + 1,
+            None => {
+                let index = nodes.len();
+                nodes.push(NodeSpec {
+                    children: 0,
+                    width: Length::Auto,
+                    height: Length::Auto,
+                    padding: 2.0,
+                    gap: 2.0,
+                    direction: Direction::Row,
+                    background: None,
+                    border: 0.0,
+                    border_color: Color::BLACK,
+                    radius: 0.0,
+                    clip: false,
+                    absolute: false,
+                    inset: Edges::all(Length::Auto),
+                    bind_width: false,
+                    bind_background: false,
+                    bind_radius: false,
+                    bind_hidden: false,
+                    show: false,
+                    text: false,
+                    bind_text: false,
+                    bind_glyph_color: false,
+                    hover_variant: false,
+                    hover_layout: false,
+                    pressed_variant: false,
+                    focused_variant: false,
+                    disabled_variant: false,
+                    bind_disabled: false,
+                });
+                children[0].push(index);
+                children.push(Vec::new());
+                index
+            }
+        };
+        nodes[variant].hover_variant = true;
+        nodes[variant].hover_layout = true;
+        nodes[variant].pressed_variant = true;
+        nodes[variant].focused_variant = true;
+        nodes[variant].disabled_variant = true;
+        nodes[variant].bind_disabled = true;
 
         SceneData { nodes, children }
     }
@@ -330,6 +449,7 @@ impl SceneData {
                 .iter()
                 .filter(|node| node.text && node.bind_glyph_color)
                 .count(),
+            disableds: self.nodes.iter().filter(|node| node.bind_disabled).count(),
         }
     }
 }
@@ -344,6 +464,7 @@ struct SignalCounts {
     hiddens: usize,
     texts: usize,
     glyph_colors: usize,
+    disableds: usize,
 }
 
 /// Reads one property of a scene.
@@ -358,6 +479,47 @@ fn initial_text(index: usize) -> String {
 /// The color a node's glyphs start with, chosen from its index.
 fn initial_glyph_color(index: usize) -> Color {
     Color::rgb((index * 37) as u8, (index * 73) as u8, (index * 109) as u8)
+}
+
+/// The background the hovered patch of the node at `index` paints.
+fn hover_background(index: usize) -> Color {
+    Color::rgb(
+        (index * 53 + 40) as u8,
+        (index * 29 + 180) as u8,
+        (index * 91 + 20) as u8,
+    )
+}
+
+/// The width the hovered patch of the node at `index` lays it out with.
+fn hover_width(index: usize) -> f32 {
+    24.0 + (index * 17 % 32) as f32
+}
+
+/// The background the pressed patch of the node at `index` paints.
+fn pressed_background(index: usize) -> Color {
+    Color::rgb(
+        (index * 71 + 10) as u8,
+        (index * 13 + 30) as u8,
+        (index * 47 + 200) as u8,
+    )
+}
+
+/// The border color the focused patch of the node at `index` paints.
+fn focus_border_color(index: usize) -> Color {
+    Color::rgb(
+        (index * 23 + 200) as u8,
+        (index * 97 + 60) as u8,
+        (index * 31 + 5) as u8,
+    )
+}
+
+/// The background the disabled patch of the node at `index` paints.
+fn disabled_background(index: usize) -> Color {
+    Color::rgb(
+        (index * 19 + 90) as u8,
+        (index * 43 + 90) as u8,
+        (index * 67 + 90) as u8,
+    )
 }
 
 /// Writes one property of a reactive scene.
@@ -527,8 +689,9 @@ enum Values<'a> {
     /// scene reads.
     Signals,
     /// The values another scene holds now, which is what a fresh mount of it
-    /// reads.
-    Current(&'a Scene),
+    /// reads, except for the disabled bits. Those are signals at the values
+    /// the slice holds, because the mount replays the toggles that followed.
+    Current(&'a Scene, &'a [bool]),
 }
 
 /// One node of a built scene.
@@ -547,6 +710,8 @@ struct SceneNode {
     hidden: Option<Getter<bool>>,
     /// The visibility the node is mounted with, when a property supplies it.
     show: Option<Getter<bool>>,
+    /// The disabled state of the node, when a property supplies it.
+    disabled: Option<Getter<bool>>,
     /// The text the node paints, when a property supplies it.
     text: Option<Getter<String>>,
     /// The color the node's glyphs paint with, when a property supplies it.
@@ -565,6 +730,7 @@ struct Scene {
     radii: Vec<Tracked<f32>>,
     shows: Vec<Tracked<bool>>,
     hiddens: Vec<Tracked<bool>>,
+    disableds: Vec<Tracked<bool>>,
     texts: Vec<TextTracked>,
     glyph_colors: Vec<Tracked<Color>>,
     /// The viewport the scene is laid out in, which a viewport edit changes.
@@ -583,18 +749,29 @@ impl Scene {
         Scene::build(data, Values::Signals, VIEWPORT, scale)
     }
 
-    /// Creates the static scene that shows what `from` shows now: every bound
+    /// Creates the scene that shows what `from` shows now: every bound
     /// property holds the value `from`'s property has at this moment, and the
     /// viewport and scale are copied from it.
     ///
-    /// Its mount is a fresh app in the state the reactive scene reached.
-    fn fresh(data: &SceneData, from: &Scene) -> Scene {
+    /// The disabled bits are the exception. They are signals at `disabled`,
+    /// the values `from` held when its first event ran, so that replaying the
+    /// events and toggles since then brings the mount to the state the
+    /// reactive scene reached.
+    fn fresh(data: &SceneData, from: &Scene, disabled: &[bool]) -> Scene {
         Scene::build(
             data,
-            Values::Current(from),
+            Values::Current(from, disabled),
             from.viewport.get(),
             from.scale.get(),
         )
+    }
+
+    /// Returns the disabled bits the scene shows now.
+    fn disabled_values(&self) -> Vec<bool> {
+        self.disableds
+            .iter()
+            .map(|disabled| disabled.value.get())
+            .collect()
     }
 
     /// Creates a scene whose bound properties come from `values`.
@@ -606,20 +783,33 @@ impl Scene {
             radii: Vec::new(),
             shows: Vec::new(),
             hiddens: Vec::new(),
+            disableds: Vec::new(),
             texts: Vec::new(),
             glyph_colors: Vec::new(),
             viewport: Cell::new(viewport),
             scale: Cell::new(scale),
         };
-        let (mut color, mut width, mut radius, mut hidden, mut show, mut text, mut glyph_color) =
-            (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+        let (
+            mut color,
+            mut width,
+            mut radius,
+            mut hidden,
+            mut show,
+            mut text,
+            mut glyph_color,
+            mut disabled,
+        ) = (
+            0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+        );
         for (index, spec) in data.nodes.iter().enumerate() {
             let color = if spec.bind_background {
                 let value = match values {
                     Values::Signals => {
                         Tracked::reactive(spec.background.unwrap_or(Color::TRANSPARENT))
                     }
-                    Values::Current(from) => Tracked::static_value(from.colors[color].value.get()),
+                    Values::Current(from, _) => {
+                        Tracked::static_value(from.colors[color].value.get())
+                    }
                 };
                 color += 1;
                 let get = value.get.clone();
@@ -631,7 +821,9 @@ impl Scene {
             let width = if spec.bind_width {
                 let value = match values {
                     Values::Signals => Tracked::reactive(spec.width),
-                    Values::Current(from) => Tracked::static_value(from.widths[width].value.get()),
+                    Values::Current(from, _) => {
+                        Tracked::static_value(from.widths[width].value.get())
+                    }
                 };
                 width += 1;
                 let get = value.get.clone();
@@ -643,7 +835,9 @@ impl Scene {
             let radius = if spec.bind_radius {
                 let value = match values {
                     Values::Signals => Tracked::reactive(spec.radius),
-                    Values::Current(from) => Tracked::static_value(from.radii[radius].value.get()),
+                    Values::Current(from, _) => {
+                        Tracked::static_value(from.radii[radius].value.get())
+                    }
                 };
                 radius += 1;
                 let get = value.get.clone();
@@ -655,7 +849,7 @@ impl Scene {
             let hidden = if spec.bind_hidden {
                 let value = match values {
                     Values::Signals => Tracked::reactive(false),
-                    Values::Current(from) => {
+                    Values::Current(from, _) => {
                         Tracked::static_value(from.hiddens[hidden].value.get())
                     }
                 };
@@ -669,7 +863,7 @@ impl Scene {
             let show = if spec.show {
                 let value = match values {
                     Values::Signals => Tracked::reactive(true),
-                    Values::Current(from) => Tracked::static_value(from.shows[show].value.get()),
+                    Values::Current(from, _) => Tracked::static_value(from.shows[show].value.get()),
                 };
                 show += 1;
                 let get = value.get.clone();
@@ -678,10 +872,22 @@ impl Scene {
             } else {
                 None
             };
+            let disabled = if spec.bind_disabled {
+                let value = match values {
+                    Values::Signals => Tracked::reactive(false),
+                    Values::Current(_, start) => Tracked::reactive(start[disabled]),
+                };
+                disabled += 1;
+                let get = value.get.clone();
+                scene.disableds.push(value);
+                Some(get)
+            } else {
+                None
+            };
             let text = if spec.text && spec.bind_text {
                 let value = match values {
                     Values::Signals => TextTracked::reactive(initial_text(index)),
-                    Values::Current(from) => {
+                    Values::Current(from, _) => {
                         let current = from.texts[text].value.borrow().clone();
                         TextTracked::static_value(current)
                     }
@@ -696,7 +902,7 @@ impl Scene {
             let glyph_color = if spec.text && spec.bind_glyph_color {
                 let value = match values {
                     Values::Signals => Tracked::reactive(initial_glyph_color(index)),
-                    Values::Current(from) => {
+                    Values::Current(from, _) => {
                         Tracked::static_value(from.glyph_colors[glyph_color].value.get())
                     }
                 };
@@ -715,6 +921,7 @@ impl Scene {
                 radius,
                 hidden,
                 show,
+                disabled,
                 text,
                 glyph_color,
             });
@@ -781,6 +988,34 @@ fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
         .clip(spec.clip);
     if spec.absolute {
         element = element.absolute().inset(spec.inset);
+    }
+    if spec.hover_variant {
+        element = if spec.hover_layout {
+            let width = hover_width(index);
+            let background = hover_background(index);
+            element.hover(move |p| p.width(Length::px(width)).background(background))
+        } else {
+            let background = hover_background(index);
+            element.hover(move |p| p.background(background))
+        };
+    }
+    if spec.pressed_variant {
+        let background = pressed_background(index);
+        element = element.pressed(move |p| p.background(background));
+    }
+    if spec.focused_variant {
+        let border_color = focus_border_color(index);
+        element = element
+            .focusable()
+            .focused(move |p| p.border(1.0).border_color(border_color));
+    }
+    if spec.disabled_variant {
+        let background = disabled_background(index);
+        element = element.disabled_style(move |p| p.background(background));
+    }
+    if let Some(disabled) = &node.disabled {
+        let disabled = Rc::clone(disabled);
+        element = element.disabled(move || disabled());
     }
     element = match &node.width {
         Some(width) => {
@@ -853,6 +1088,17 @@ enum Edit {
     GlyphColor(usize, Color),
     /// Moves the viewport the scene is laid out in, or changes its scale.
     Viewport(Size, f32),
+    /// Flips the disabled property at this index, which takes the node out of
+    /// hit testing or puts it back.
+    Disabled(usize),
+    /// Moves the pointer to this position, in logical pixels.
+    Move(Point),
+    /// Presses the primary button at this position.
+    DownAt(Point),
+    /// Releases the primary button at this position.
+    UpAt(Point),
+    /// Presses and releases Tab, or Shift+Tab when the flag is set.
+    Tab(bool),
 }
 
 impl Edit {
@@ -860,7 +1106,8 @@ impl Edit {
     ///
     /// Every edit but a viewport one writes a property of the scene. A
     /// viewport edit changes the window the harness lays the scene out in,
-    /// which is why it needs the harness.
+    /// which is why it needs the harness. An event goes through the same
+    /// [`App::handle_event`] a window delivers events with.
     fn apply(&self, scene: &Scene, harness: &mut Harness) {
         match *self {
             Edit::Color(index, color) => scene.colors[index].write(color),
@@ -881,6 +1128,60 @@ impl Edit {
                 scene.scale.set(scale);
                 harness.app().set_viewport(viewport, scale);
             }
+            Edit::Disabled(index) => {
+                let disabled = &scene.disableds[index];
+                disabled.write(!disabled.value.get());
+            }
+            Edit::Move(position) => harness.move_to(position),
+            Edit::DownAt(position) => harness.event(InputEvent::PointerDown {
+                position,
+                button: PointerButton::Primary,
+            }),
+            Edit::UpAt(position) => harness.event(InputEvent::PointerUp {
+                position,
+                button: PointerButton::Primary,
+            }),
+            Edit::Tab(shift) => {
+                let modifiers = Modifiers {
+                    shift,
+                    control: false,
+                    alt: false,
+                    meta: false,
+                };
+                for pressed in [true, false] {
+                    harness.event(InputEvent::Key(KeyEvent {
+                        key: Key::Tab,
+                        pressed,
+                        repeat: false,
+                        modifiers,
+                        text: None,
+                    }));
+                }
+            }
+        }
+    }
+
+    /// Replays the edit on the fresh mount of `scene`, when it is an event or
+    /// a disabled toggle.
+    ///
+    /// The mount was built from the final value of every other property, so
+    /// those edits have nothing left to change there. Its interaction state
+    /// comes from the events and the disabled toggles, which it receives in
+    /// the same order and in the same frame groups the reactive scene
+    /// received them.
+    fn replay(&self, scene: &Scene, harness: &mut Harness) {
+        match self {
+            Edit::Move(_) | Edit::DownAt(_) | Edit::UpAt(_) | Edit::Tab(_) | Edit::Disabled(_) => {
+                self.apply(scene, harness)
+            }
+            Edit::Color(..)
+            | Edit::Width(..)
+            | Edit::Radius(..)
+            | Edit::Show(_)
+            | Edit::Hidden(_)
+            | Edit::Text(..)
+            | Edit::GlyphColor(..)
+            | Edit::Viewport(..) => {}
         }
     }
 }
@@ -904,6 +1205,8 @@ enum EditKind {
     GlyphColor,
     /// A viewport or scale change.
     Viewport,
+    /// A disabled flip.
+    Disabled,
 }
 
 /// Any edit kind, and every scene has a target for each of them.
@@ -917,6 +1220,7 @@ fn any_edit_kind() -> impl Strategy<Value = EditKind> {
         Just(EditKind::Text),
         Just(EditKind::GlyphColor),
         Just(EditKind::Viewport),
+        Just(EditKind::Disabled),
     ]
 }
 
@@ -948,6 +1252,7 @@ fn any_edit(counts: SignalCounts) -> impl Strategy<Value = Edit> {
         EditKind::Viewport => (any_viewport(), any_scale())
             .prop_map(|(viewport, scale)| Edit::Viewport(viewport, scale))
             .boxed(),
+        EditKind::Disabled => (0..counts.disableds).prop_map(Edit::Disabled).boxed(),
     })
 }
 
@@ -957,30 +1262,148 @@ fn any_edit_group(counts: SignalCounts) -> impl Strategy<Value = Vec<Edit>> {
     prop::collection::vec(any_edit(counts), 1..=MAX_EDITS_PER_FRAME)
 }
 
-/// A generated case: a scene and the edits applied to it after it is built,
-/// one group per frame.
-fn any_case() -> impl Strategy<Value = (SceneData, Vec<Vec<Edit>>)> {
+/// One item of the event segment, before the walk gives the moves their
+/// absolute positions.
+///
+/// A move is a relative step, so a sequence of moves wanders around the scene
+/// and rides the node boundaries instead of jumping between unrelated points.
+#[derive(Clone, Debug)]
+enum RawEdit {
+    /// A property edit that changes no geometry.
+    Property(Edit),
+    /// Moves the pointer by this offset from its current position.
+    MoveBy(f32, f32),
+    /// Presses the primary button where the pointer is.
+    Press,
+    /// Releases the primary button where the pointer is.
+    Release,
+    /// Presses and releases Tab, or Shift+Tab when the flag is set.
+    Tab(bool),
+}
+
+/// One item of the event segment.
+///
+/// Events are the most common items, and moves the most common events, so the
+/// pointer keeps meeting the variants. The remaining items are the edits that
+/// change no geometry, which a frame can carry next to events: the ones that
+/// only repaint, and disabled toggles, which can land on a node that is
+/// hovered, pressed or focused.
+fn any_raw_event(counts: SignalCounts) -> impl Strategy<Value = RawEdit> {
+    prop_oneof![
+        3 => (-48.0f32..=48.0, -48.0f32..=48.0)
+            .prop_map(|(dx, dy)| RawEdit::MoveBy(dx, dy)),
+        1 => Just(RawEdit::Press),
+        1 => Just(RawEdit::Release),
+        1 => any::<bool>().prop_map(RawEdit::Tab),
+        1 => (0..counts.disableds).prop_map(|index| RawEdit::Property(Edit::Disabled(index))),
+        2 => (0..counts.colors, any_color())
+            .prop_map(|(index, color)| RawEdit::Property(Edit::Color(index, color))),
+        1 => (0..counts.radii, 0.0f32..=12.0)
+            .prop_map(|(index, radius)| RawEdit::Property(Edit::Radius(index, radius))),
+        1 => (0..counts.texts, any_string())
+            .prop_map(|(index, text)| RawEdit::Property(Edit::Text(index, text))),
+        1 => (0..counts.glyph_colors, any_color())
+            .prop_map(|(index, color)| RawEdit::Property(Edit::GlyphColor(index, color))),
+    ]
+}
+
+/// One frame of the event segment.
+fn any_raw_group(counts: SignalCounts) -> impl Strategy<Value = Vec<RawEdit>> {
+    prop::collection::vec(any_raw_event(counts), 1..=MAX_EDITS_PER_FRAME)
+}
+
+/// Turns relative moves into absolute positions by following them in order.
+///
+/// The walk starts near the middle of the default viewport and strays a little
+/// past the edges, so a move can also land where no node is. Press and release
+/// happen where the pointer stands, which is where a real pointer is.
+fn absolute_edits(groups: Vec<Vec<RawEdit>>) -> Vec<Vec<Edit>> {
+    let mut at = Point {
+        x: VIEWPORT.width / 2.0,
+        y: VIEWPORT.height / 2.0,
+    };
+    groups
+        .into_iter()
+        .map(|group| {
+            group
+                .into_iter()
+                .map(|raw| match raw {
+                    RawEdit::Property(edit) => edit,
+                    RawEdit::MoveBy(dx, dy) => {
+                        at.x = (at.x + dx).clamp(-12.0, VIEWPORT.width + 12.0);
+                        at.y = (at.y + dy).clamp(-12.0, VIEWPORT.height + 12.0);
+                        Edit::Move(at)
+                    }
+                    RawEdit::Press => Edit::DownAt(at),
+                    RawEdit::Release => Edit::UpAt(at),
+                    RawEdit::Tab(shift) => Edit::Tab(shift),
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The frames of the event segment: one to four, each carrying events,
+/// disabled toggles and the edits that only repaint.
+fn any_event_frames(counts: SignalCounts) -> impl Strategy<Value = Vec<Vec<Edit>>> {
+    prop::collection::vec(any_raw_group(counts), 1..=MAX_EVENT_FRAMES).prop_map(absolute_edits)
+}
+
+/// A generated case: a scene, the edits of its geometry segment, and the edits
+/// and events of its event segment, one group per frame.
+fn any_case() -> impl Strategy<Value = (SceneData, Vec<Vec<Edit>>, Vec<Vec<Edit>>)> {
     prop::collection::vec(any_spec(), 2..=40)
         .prop_map(SceneData::new)
         .prop_flat_map(|data| {
             let counts = data.signal_counts();
             (
                 Just(data),
-                prop::collection::vec(any_edit_group(counts), 1..=MAX_FRAMES),
+                prop::collection::vec(any_edit_group(counts), 1..=MAX_GEOMETRY_FRAMES),
+                any_event_frames(counts),
             )
         })
+}
+
+/// Panics when the app still holds work that only a frame can finish.
+///
+/// A frame runs the layout pass, the hover recompute that follows it and the
+/// second layout pass the recompute can ask for, then paints everything that
+/// was marked. When the function reports pending work after a frame, the frame
+/// left the tree half settled and the screen would only catch up on the next
+/// one, which is the failure a missing second layout pass causes.
+fn assert_settled(harness: &mut Harness) {
+    assert!(
+        !harness.app().needs_frame(),
+        "the frame left work pending, so the screen would not be settled \
+         until another frame ran"
+    );
 }
 
 /// Requires the surface of `harness` to match a fresh mount of the final state
 /// of `data`, byte for byte.
 ///
-/// The fresh mount reads no signal: every bound property is the value the
-/// reactive scene holds right now, which is what [`Tracked`] and
-/// [`TextTracked`] keep. A difference means the incremental frames left the
-/// screen stale, which the full-repaint comparison cannot see because it
-/// repaints the same stale list.
-fn assert_matches_fresh_mount(harness: &Harness, scene: &Scene, data: &SceneData) {
-    let fresh = Rc::new(Scene::fresh(data, scene));
+/// The fresh mount reads no signal but its disabled bits: every other bound
+/// property is the value the reactive scene holds right now, which is what
+/// [`Tracked`] and [`TextTracked`] keep. The disabled bits start at
+/// `disabled`, the values they held before the first event. `applied_events`
+/// are the event groups the reactive scene has run so far, and the mount
+/// receives their events and disabled toggles in the same order, one frame per
+/// group, after a first frame that lays the final values out. A difference
+/// means the incremental frames left the screen stale, which the full-repaint
+/// comparison cannot see because it repaints the same stale list.
+///
+/// The mount runs the same core through the same events, so a restyle that
+/// never happens is missed in both scenes alike. What the comparison catches
+/// is a restyle or a geometry edit whose invalidation the incremental frames
+/// lost.
+fn assert_matches_fresh_mount(
+    harness: &Harness,
+    scene: &Scene,
+    data: &SceneData,
+    disabled: &[bool],
+    applied_events: &[Vec<Edit>],
+) {
+    let fresh = Rc::new(Scene::fresh(data, scene, disabled));
     let built = Rc::clone(&fresh);
     let viewport = scene.viewport.get();
     let scale = scene.scale.get();
@@ -988,15 +1411,29 @@ fn assert_matches_fresh_mount(harness: &Harness, scene: &Scene, data: &SceneData
         build_node(&built, 0)
     });
     mount.frame();
+    assert_settled(&mut mount);
+    for edits in applied_events {
+        for edit in edits {
+            edit.replay(&fresh, &mut mount);
+        }
+        mount.frame();
+        assert_settled(&mut mount);
+    }
     harness.assert_matches(&mount);
 }
 
 /// Builds `data` at `scale`, applies the edits of each frame, and checks the
 /// surface after every frame.
 ///
+/// The geometry segment runs first. All of its edits land before the first
+/// event, and none of them moves the pointer, so they reach the fresh mount
+/// through the final values alone. The event segment runs second, and the fresh mount
+/// replays its events and disabled toggles on the final tree, which meets the
+/// same nodes the reactive scene's events met.
+///
 /// The first frame repaints the whole surface, so the comparison only starts
 /// to depend on the damage after the first edit.
-fn check_scene(scale: f32, data: &SceneData, frames: &[Vec<Edit>]) {
+fn check_scene(scale: f32, data: &SceneData, geometry: &[Vec<Edit>], events: &[Vec<Edit>]) {
     TextSystem::bundled_only().install();
     let scene = Rc::new(Scene::reactive(data, scale));
     let built = Rc::clone(&scene);
@@ -1005,16 +1442,29 @@ fn check_scene(scale: f32, data: &SceneData, frames: &[Vec<Edit>]) {
     });
 
     harness.frame();
+    assert_settled(&mut harness);
     harness.assert_matches_full_repaint();
-    assert_matches_fresh_mount(&harness, &scene, data);
+    assert_matches_fresh_mount(&harness, &scene, data, &scene.disabled_values(), &[]);
 
-    for edits in frames {
+    for edits in geometry {
         for edit in edits {
             edit.apply(&scene, &mut harness);
         }
         harness.frame();
+        assert_settled(&mut harness);
         harness.assert_matches_full_repaint();
-        assert_matches_fresh_mount(&harness, &scene, data);
+        assert_matches_fresh_mount(&harness, &scene, data, &scene.disabled_values(), &[]);
+    }
+
+    let disabled = scene.disabled_values();
+    for (index, edits) in events.iter().enumerate() {
+        for edit in edits {
+            edit.apply(&scene, &mut harness);
+        }
+        harness.frame();
+        assert_settled(&mut harness);
+        harness.assert_matches_full_repaint();
+        assert_matches_fresh_mount(&harness, &scene, data, &disabled, &events[..=index]);
     }
 }
 
@@ -1025,8 +1475,8 @@ macro_rules! damage_equivalence_tests {
             #![proptest_config(config())]
             $(
                 #[test]
-                fn $name((data, frames) in any_case()) {
-                    check_scene($scale, &data, &frames);
+                fn $name((data, geometry, events) in any_case()) {
+                    check_scene($scale, &data, &geometry, &events);
                 }
             )*
         }
