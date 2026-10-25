@@ -167,7 +167,7 @@ fn removing_a_painted_node_damages_its_painted_bounds() {
     tree.remove(child);
 
     assert_eq!(
-        tree.removed_damage,
+        tree.pending_damage,
         vec![PaintedBounds { bounds, clip }],
         "the area the node painted last frame needs a repaint"
     );

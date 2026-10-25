@@ -213,7 +213,7 @@ impl WidgetTree {
     /// Returns whether the tree holds work only a frame can finish: a node to
     /// lay out or paint, or the pixels of a removed node to clear.
     pub(crate) fn has_pending_work(&self) -> bool {
-        self.layout_dirty || !self.paint_queue.is_empty() || !self.removed_damage.is_empty()
+        self.layout_dirty || !self.paint_queue.is_empty() || !self.pending_damage.is_empty()
     }
 
     /// Installs the handlers a node was mounted with.

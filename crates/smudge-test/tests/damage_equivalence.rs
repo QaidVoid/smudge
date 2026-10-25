@@ -23,13 +23,21 @@
 //! mount replays it on, which is what lets the mount reproduce the
 //! interaction state by replaying the same events and disabled toggles on the
 //! final tree, and the comparison to stay exact.
+//!
+//! The root also mounts a keyed list through `for_each`, whose rows show one
+//! color and size per key, and whose rows with an even key overlap out of the
+//! flow. List edits append a key, remove one, or reverse the list, so mounts,
+//! removals, moves and restacks reach the oracle like any other geometry
+//! edit. A row is built once per key and reads nothing but its key,
+//! which is what lets a fresh mount rebuild the same rows from the final
+//! list.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
-use smudge_core::element::{AnyElement, Element, IntoElement, show};
+use smudge_core::element::{AnyElement, Element, IntoElement, for_each, show};
 use smudge_core::geometry::{Color, Point, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::paint::PaintOp;
@@ -682,6 +690,54 @@ fn set_glyph_color(widget: &mut TextBlock, color: Color) -> smudge_core::tree::D
     smudge_core::tree::Dirty::Paint
 }
 
+/// One keyed list of a scene: the keys it mounts, and how a scene reads them.
+///
+/// It mirrors [`TextTracked`] for a list of keys: the current keys are kept in
+/// a refcell, the reactive scene reads a signal, and a static scene reads the
+/// refcell alone.
+struct ListTracked {
+    /// Reads the keys the scene mounts now.
+    get: Getter<Vec<u64>>,
+    /// Writes the reactive scene's signal. A static scene has no signal, so
+    /// its writer does nothing.
+    set: Box<dyn Fn(Vec<u64>)>,
+    /// The keys the scene mounts now.
+    value: Rc<RefCell<Vec<u64>>>,
+}
+
+impl ListTracked {
+    /// Creates a list that edits change through a signal.
+    fn reactive(value: Vec<u64>) -> ListTracked {
+        let initial = value.clone();
+        let (read, write) = signal_local(value);
+        ListTracked {
+            get: Rc::new(move || read.get()),
+            set: Box::new(move |value| write.set(value)),
+            value: Rc::new(RefCell::new(initial)),
+        }
+    }
+
+    /// Creates a list that holds one set of keys for the scene's whole life.
+    fn static_value(value: Vec<u64>) -> ListTracked {
+        let value = Rc::new(RefCell::new(value));
+        ListTracked {
+            get: Rc::new({
+                let value = Rc::clone(&value);
+                move || value.borrow().clone()
+            }),
+            set: Box::new(|_| ()),
+            value,
+        }
+    }
+
+    /// Writes a new list of keys through the refcell and the signal, so the
+    /// reactive scene and a fresh mount of it mount the same rows.
+    fn write(&self, value: Vec<u64>) {
+        *self.value.borrow_mut() = value.clone();
+        (self.set)(value);
+    }
+}
+
 /// Where a scene's bound property values come from.
 #[derive(Clone, Copy)]
 enum Values<'a> {
@@ -733,6 +789,8 @@ struct Scene {
     disableds: Vec<Tracked<bool>>,
     texts: Vec<TextTracked>,
     glyph_colors: Vec<Tracked<Color>>,
+    /// The keys of the keyed list the root mounts, which a list edit changes.
+    list: ListTracked,
     /// The viewport the scene is laid out in, which a viewport edit changes.
     viewport: Cell<Size>,
     /// The scale the scene renders at, which a viewport edit changes.
@@ -786,6 +844,12 @@ impl Scene {
             disableds: Vec::new(),
             texts: Vec::new(),
             glyph_colors: Vec::new(),
+            list: match values {
+                Values::Signals => ListTracked::reactive(vec![1, 2, 3]),
+                Values::Current(from, _) => {
+                    ListTracked::static_value(from.list.value.borrow().clone())
+                }
+            },
             viewport: Cell::new(viewport),
             scale: Cell::new(scale),
         };
@@ -1044,7 +1108,40 @@ fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
         element = element.hidden(move || hidden());
     }
 
-    append_children(scene, index, element)
+    let element = append_children(scene, index, element);
+    if index == 0 {
+        let list = Rc::clone(&scene.list.get);
+        element.child(for_each(move || list(), |item| *item, list_row).direction(Direction::Column))
+    } else {
+        element
+    }
+}
+
+/// The row the keyed list mounts for its key.
+///
+/// The row reads nothing but its key, so a fresh mount of the scene builds the
+/// same rows the reactive scene has mounted. A row with an even key leaves the
+/// flow at an offset its key picks, so it overlaps its neighbors, and a
+/// reorder restacks it without moving any rectangle.
+fn list_row(key: u64) -> Element<Panel> {
+    let row = panel()
+        .width(px(24.0 + (key % 4) as f32 * 8.0))
+        .height(px(12.0))
+        .background(Color::rgb(
+            (key * 53 % 200 + 40) as u8,
+            (key * 97 % 200 + 30) as u8,
+            (key * 31 % 200 + 50) as u8,
+        ));
+    if key.is_multiple_of(2) {
+        row.absolute().inset(Edges {
+            top: Length::px((key % 3) as f32 * 4.0),
+            right: Length::Auto,
+            bottom: Length::Auto,
+            left: Length::px((key % 4) as f32 * 6.0),
+        })
+    } else {
+        row
+    }
 }
 
 /// Appends the children of the node at `index` to `element`, each built the
@@ -1091,6 +1188,12 @@ enum Edit {
     /// Flips the disabled property at this index, which takes the node out of
     /// hit testing or puts it back.
     Disabled(usize),
+    /// Appends a key to the keyed list, unless the list has it already.
+    ListAppend(u64),
+    /// Removes the keyed list item nearest to this index.
+    ListRemove(usize),
+    /// Reverses the keyed list.
+    ListReverse,
     /// Moves the pointer to this position, in logical pixels.
     Move(Point),
     /// Presses the primary button at this position.
@@ -1131,6 +1234,25 @@ impl Edit {
             Edit::Disabled(index) => {
                 let disabled = &scene.disableds[index];
                 disabled.write(!disabled.value.get());
+            }
+            Edit::ListAppend(key) => {
+                let mut keys = scene.list.value.borrow().clone();
+                if !keys.contains(&key) {
+                    keys.push(key);
+                    scene.list.write(keys);
+                }
+            }
+            Edit::ListRemove(index) => {
+                let mut keys = scene.list.value.borrow().clone();
+                if !keys.is_empty() {
+                    keys.remove(index % keys.len());
+                    scene.list.write(keys);
+                }
+            }
+            Edit::ListReverse => {
+                let mut keys = scene.list.value.borrow().clone();
+                keys.reverse();
+                scene.list.write(keys);
             }
             Edit::Move(position) => harness.move_to(position),
             Edit::DownAt(position) => harness.event(InputEvent::PointerDown {
@@ -1181,7 +1303,10 @@ impl Edit {
             | Edit::Hidden(_)
             | Edit::Text(..)
             | Edit::GlyphColor(..)
-            | Edit::Viewport(..) => {}
+            | Edit::Viewport(..)
+            | Edit::ListAppend(_)
+            | Edit::ListRemove(_)
+            | Edit::ListReverse => {}
         }
     }
 }
@@ -1207,6 +1332,12 @@ enum EditKind {
     Viewport,
     /// A disabled flip.
     Disabled,
+    /// A keyed list append.
+    ListAppend,
+    /// A keyed list removal.
+    ListRemove,
+    /// A keyed list reversal.
+    ListReverse,
 }
 
 /// Any edit kind, and every scene has a target for each of them.
@@ -1221,6 +1352,9 @@ fn any_edit_kind() -> impl Strategy<Value = EditKind> {
         Just(EditKind::GlyphColor),
         Just(EditKind::Viewport),
         Just(EditKind::Disabled),
+        Just(EditKind::ListAppend),
+        Just(EditKind::ListRemove),
+        Just(EditKind::ListReverse),
     ]
 }
 
@@ -1253,6 +1387,9 @@ fn any_edit(counts: SignalCounts) -> impl Strategy<Value = Edit> {
             .prop_map(|(viewport, scale)| Edit::Viewport(viewport, scale))
             .boxed(),
         EditKind::Disabled => (0..counts.disableds).prop_map(Edit::Disabled).boxed(),
+        EditKind::ListAppend => (0u64..8).prop_map(Edit::ListAppend).boxed(),
+        EditKind::ListRemove => (0..4usize).prop_map(Edit::ListRemove).boxed(),
+        EditKind::ListReverse => Just(Edit::ListReverse).boxed(),
     })
 }
 

@@ -40,7 +40,8 @@ impl WidgetTree {
     /// their own paint.
     ///
     /// Every painted node ends [`Dirty::Clean`]. The bounds of nodes removed
-    /// since the last frame are added to `damage` as well.
+    /// since the last frame, and of the subtrees a reorder restacked, are
+    /// added to `damage` as well.
     ///
     /// The pass reuses the queue and every node's operation buffer, so it
     /// allocates nothing once those buffers have grown to the size they need.
@@ -97,7 +98,7 @@ impl WidgetTree {
             painted += 1;
         }
 
-        for bounds in self.removed_damage.drain(..) {
+        for bounds in self.pending_damage.drain(..) {
             damage.add_clipped(bounds.bounds, bounds.clip);
         }
 

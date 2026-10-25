@@ -10,6 +10,7 @@
 //! queue, so every mutation of the tree happens in one place and in one order.
 
 use std::any::Any;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use slotmap::{SlotMap, new_key_type};
@@ -116,6 +117,29 @@ struct Node {
     painted: Option<PaintedBounds>,
 }
 
+/// Returns whether two child lists that hold the same nodes in a different
+/// relative order restack any pair of them.
+///
+/// Children one list gained or lost are skipped: a mount and a removal move
+/// nothing that stayed, so their damage comes from the nodes themselves. Two
+/// survivors that traded places can overlap, and no rectangle or dirty flag
+/// announces the pixels they now share in the other order.
+fn children_differ_in_order(before: &[WidgetId], after: &[WidgetId]) -> bool {
+    let kept_after: HashSet<WidgetId> = after.iter().copied().collect();
+    let kept_before: HashSet<WidgetId> = before.iter().copied().collect();
+    let survivors_of_before: Vec<WidgetId> = before
+        .iter()
+        .filter(|id| kept_after.contains(id))
+        .copied()
+        .collect();
+    let survivors_of_after: Vec<WidgetId> = after
+        .iter()
+        .filter(|id| kept_before.contains(id))
+        .copied()
+        .collect();
+    survivors_of_before != survivors_of_after
+}
+
 /// The retained tree of widgets.
 ///
 /// A tree has at most one root. Removing the root leaves the tree empty.
@@ -130,10 +154,9 @@ pub(crate) struct WidgetTree {
     paint_queue: Vec<WidgetId>,
     /// Whether any node needs a new layout pass.
     layout_dirty: bool,
-    /// The painted bounds of nodes removed since the last frame.
-    /// The painted bounds of nodes removed since the last frame, damage the
-    /// next frame must repaint.
-    removed_damage: Vec<PaintedBounds>,
+    /// The painted bounds the next frame must repaint: the nodes removed
+    /// since the last frame, and the subtrees a child reorder restacked.
+    pending_damage: Vec<PaintedBounds>,
     /// The viewport the last layout pass ran for, or `None` before the first.
     viewport: Option<Size>,
     /// How many times the layout engine has run for this tree.
@@ -175,7 +198,7 @@ impl WidgetTree {
             root: None,
             paint_queue: Vec::new(),
             layout_dirty: false,
-            removed_damage: Vec::new(),
+            pending_damage: Vec::new(),
             viewport: None,
             layout_runs: 0,
             hovered: None,
@@ -316,7 +339,7 @@ impl WidgetTree {
             let taffy = node.taffy;
             owner.cleanup();
             if let Some(painted) = painted {
-                self.removed_damage.push(painted);
+                self.pending_damage.push(painted);
             }
             self.taffy
                 .remove(taffy)
@@ -419,26 +442,30 @@ impl WidgetTree {
     /// Reorders the children of `id` to `children` and marks the node for
     /// layout.
     ///
+    /// A reorder that changes the order also queues the painted bounds of the
+    /// whole subtree for a repaint, because the reorder restacks the pixels
+    /// the children share without changing any rectangle that would announce
+    /// it. The next frame repaints those bounds from the display list in the
+    /// new order, which puts the new stacking on the screen even when nothing
+    /// below `id` repaints on its own.
+    ///
     /// # Panics
     ///
     /// Panics unless `children` is a permutation of the node's current children.
     /// Callers reorder children the node already has.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "keyed child lists reorder children")
-    )]
     pub(crate) fn set_children(&mut self, id: WidgetId, children: Vec<WidgetId>) {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
         let taffy = node.taffy;
+        let restacked = children_differ_in_order(&node.children, &children);
 
-        let mut reordered = children.clone();
-        reordered.sort_unstable();
+        let mut reordered_ids = children.clone();
+        reordered_ids.sort_unstable();
         let mut current = node.children.clone();
         current.sort_unstable();
         assert_eq!(
-            reordered, current,
+            reordered_ids, current,
             "set_children reorders the children the node already has"
         );
         for child in &children {
@@ -457,7 +484,30 @@ impl WidgetTree {
             .set_children(taffy, &taffy_children)
             .expect("the children are live layout nodes of this parent");
         self.nodes[id].children = children;
+        if restacked {
+            self.queue_subtree_damage(id);
+        }
         self.mark(id, Dirty::Layout);
+    }
+
+    /// Adds the painted bounds of every node below `id`, `id` included, to the
+    /// pending damage.
+    ///
+    /// A child reorder restacks the pixels the reordered subtrees share
+    /// without moving or repainting any node, so no node is marked and no
+    /// rectangle changes. Repainting these bounds from the display list in the
+    /// new child order draws the new stacking.
+    fn queue_subtree_damage(&mut self, id: WidgetId) {
+        let mut stack = vec![id];
+        while let Some(current) = stack.pop() {
+            let Some(node) = self.nodes.get(current) else {
+                continue;
+            };
+            if let Some(painted) = node.painted {
+                self.pending_damage.push(painted);
+            }
+            stack.extend_from_slice(&node.children);
+        }
     }
 
     /// Raises the node's dirty flag to `dirty` and queues it for painting the
@@ -750,7 +800,7 @@ impl WidgetTree {
         }
         self.paint_queue.clear();
         self.layout_dirty = false;
-        self.removed_damage.clear();
+        self.pending_damage.clear();
     }
 }
 

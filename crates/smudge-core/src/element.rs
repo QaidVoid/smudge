@@ -38,7 +38,8 @@
 //! ```
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::hash::Hash;
 use std::rc::Rc;
 
 use crate::geometry::{Color, Point, Size};
@@ -1063,13 +1064,43 @@ pub(crate) fn mount(
     id
 }
 
-/// A node that paints nothing and holds at most one child.
+/// A node that paints nothing and leaves its children to a binding.
 ///
-/// [`show`] returns an element for a slot and mounts its child under it.
+/// [`show`] mounts its child under a slot, and [`for_each`] keeps one child
+/// per key of a list under one.
 pub struct Slot;
 
 impl Widget for Slot {
     fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+}
+
+/// Mounts the element that `build` returns as a child of `slot`, inside an
+/// owner of its own.
+///
+/// The owner keeps the values the build creates alive for as long as the
+/// child stays mounted, and [`unmount_child`] disposes them. Returns `None`
+/// when `slot` is a stale id, which happens when the slot was removed while
+/// an update that mounts into it was still queued.
+fn mount_under_slot(
+    slot: WidgetId,
+    tree: &mut WidgetTree,
+    queue: &UpdateQueue,
+    build: impl FnOnce() -> AnyElement,
+) -> Option<(WidgetId, Owner)> {
+    let owner = tree.owner(slot)?.child();
+    let element = owner.with(build);
+    let child = mount(element, tree, queue, Some(slot));
+    Some((child, owner))
+}
+
+/// Removes a child that [`mount_under_slot`] mounted and disposes the owner
+/// its build ran in.
+///
+/// The tree removal runs first, so the child's bindings stop before the
+/// values the build created are disposed.
+fn unmount_child(child: WidgetId, owner: &Owner, tree: &mut WidgetTree) {
+    tree.remove(child);
+    owner.cleanup();
 }
 
 /// Mounts the element `build` returns while `when` is true, and removes it
@@ -1109,18 +1140,138 @@ pub fn show<E: IntoElement>(
                     let mut mounted = mounted.borrow_mut();
                     match (visible, mounted.take()) {
                         (true, None) => {
-                            let Some(owner) = tree.owner(id).map(Owner::child) else {
-                                return;
-                            };
-                            let element = owner.with(|| build());
-                            let child = mount(element, tree, &child_queue, Some(id));
-                            *mounted = Some((child, owner));
+                            if let Some(child) =
+                                mount_under_slot(id, tree, &child_queue, || build())
+                            {
+                                *mounted = Some(child);
+                            }
                         }
-                        (false, Some((child, owner))) => {
-                            tree.remove(child);
-                            owner.cleanup();
-                        }
+                        (false, Some((child, owner))) => unmount_child(child, &owner, tree),
                         (_, unchanged) => *mounted = unchanged,
+                    }
+                }));
+            })
+        }),
+    });
+    element
+}
+
+/// Mounts one child per key of the list that `items` returns, keeping the
+/// children that survive a change mounted and in place.
+///
+/// The returned element is a slot whose children follow the list. A key the
+/// list gains mounts a new child, a key it loses removes that child's whole
+/// tree, and a key that moves keeps its child, which is reordered rather than
+/// rebuilt. A child keeps its reactive state across a reorder, and the frame
+/// repaints only what changed position or stacking.
+///
+/// A row is built once per key, by `row`, the first time the key appears in
+/// the list. Content that changes while a row stays mounted must come from
+/// the signals that row reads: a new value for a key the list already had
+/// reaches no mounted child.
+///
+/// The keys of a list must be unique. In a debug build a duplicate key trips
+/// a debug assertion. In a release build the last duplicate wins: the row
+/// mounted for that key takes the position of its last occurrence, and the
+/// earlier occurrences contribute nothing.
+///
+/// `items` runs inside a binding, so only the signals it reads make the slot
+/// diff the list again. `key` should depend on its item alone, because a key
+/// that changes makes the slot remove one child and mount another. `row` runs
+/// once per new key inside an owner of its own, so the signals a row creates
+/// live exactly as long as the row.
+///
+/// The slot manages its own children; do not add children to the returned
+/// element beside it.
+///
+/// ```
+/// use smudge_core::element::for_each;
+/// use smudge_core::reactive::{self, prelude::*};
+/// use smudge_core::style::px;
+/// use smudge_core::widget::panel;
+///
+/// let (items, _set_items) = reactive::signal_local(vec![1u32, 2, 3]);
+/// let list = for_each(
+///     move || items.get(),
+///     |item| *item,
+///     |item| panel().width(px(40.0)).height(px(10.0)),
+/// );
+/// ```
+pub fn for_each<T, K, E>(
+    items: impl Fn() -> Vec<T> + 'static,
+    key: impl Fn(&T) -> K + 'static,
+    row: impl Fn(T) -> E + 'static,
+) -> Element<Slot>
+where
+    T: 'static,
+    K: Eq + Hash + Clone + 'static,
+    E: IntoElement,
+{
+    let items = Rc::new(items);
+    let key = Rc::new(key);
+    let row: Rc<dyn Fn(T) -> AnyElement> = Rc::new(move |item| row(item).into_any());
+    let mut element = Element::new(Slot);
+    element.bindings.push(Binding {
+        install: Box::new(move |slot, queue| {
+            let queue = queue.clone();
+            let mounted: Rc<RefCell<HashMap<K, (WidgetId, Owner)>>> =
+                Rc::new(RefCell::new(HashMap::new()));
+            let order: Rc<RefCell<Vec<K>>> = Rc::new(RefCell::new(Vec::new()));
+            RenderEffect::new(move || {
+                let items = items();
+                let keys: Vec<K> = items.iter().map(|item| key(item)).collect();
+                // The last occurrence of a key decides where its row goes, so
+                // a duplicate keeps one row and the earlier ones are skipped.
+                let mut last: HashMap<K, usize> = HashMap::with_capacity(keys.len());
+                for (at, item_key) in keys.iter().enumerate() {
+                    last.insert(item_key.clone(), at);
+                }
+                debug_assert!(
+                    last.len() == keys.len(),
+                    "for_each found a duplicate key, but the keys of a list must be unique"
+                );
+                let child_queue = queue.clone();
+                let mounted = Rc::clone(&mounted);
+                let order = Rc::clone(&order);
+                let row = Rc::clone(&row);
+                queue.push(Box::new(move |tree| {
+                    let mut mounted = mounted.borrow_mut();
+                    let mut order = order.borrow_mut();
+
+                    mounted.retain(|key, (child, owner)| {
+                        let kept = last.contains_key(key);
+                        if !kept {
+                            unmount_child(*child, owner, tree);
+                        }
+                        kept
+                    });
+
+                    let mut new_order = Vec::with_capacity(last.len());
+                    let mut children = Vec::with_capacity(last.len());
+                    for (at, (item, item_key)) in items.into_iter().zip(keys).enumerate() {
+                        if last[&item_key] != at {
+                            continue;
+                        }
+                        let child = match mounted.get(&item_key) {
+                            Some((child, _)) => *child,
+                            None => {
+                                let row = Rc::clone(&row);
+                                let Some((child, owner)) =
+                                    mount_under_slot(slot, tree, &child_queue, move || row(item))
+                                else {
+                                    continue;
+                                };
+                                mounted.insert(item_key.clone(), (child, owner));
+                                child
+                            }
+                        };
+                        children.push(child);
+                        new_order.push(item_key);
+                    }
+
+                    if *order != new_order {
+                        tree.set_children(slot, children);
+                        *order = new_order;
                     }
                 }));
             })
