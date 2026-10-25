@@ -95,18 +95,25 @@ fn logical_point(position: PhysicalPosition<f64>, scale: f32) -> Point {
     }
 }
 
-/// Converts a wheel delta to logical pixels for `scale`.
+/// Converts a wheel delta to logical pixels for `scale`, positive for
+/// scrolling right and down.
 ///
-/// A line delta is a number of text lines, which scrolls at a fixed height of
+/// The window system's sign is the opposite: a positive delta moves the
+/// content right and down, which scrolls towards its left and top. A line
+/// delta is a number of text lines, which scrolls at a fixed height of
 /// [`LINE_HEIGHT`] logical pixels per line. A pixel delta is already in
 /// physical pixels and only loses the scale.
 fn wheel_delta(delta: MouseScrollDelta, scale: f32) -> Point {
-    match delta {
+    let moved = match delta {
         MouseScrollDelta::LineDelta(x, y) => Point {
             x: x * LINE_HEIGHT,
             y: y * LINE_HEIGHT,
         },
         MouseScrollDelta::PixelDelta(position) => logical_point(position, scale),
+    };
+    Point {
+        x: -moved.x,
+        y: -moved.y,
     }
 }
 

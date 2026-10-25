@@ -33,7 +33,7 @@ fn cursor_position_at_scale_two_is_logical() {
 }
 
 #[test]
-fn a_line_wheel_delta_becomes_logical_pixels() {
+fn a_line_wheel_delta_becomes_logical_pixels_positive_for_scrolling_down() {
     let mut translator = EventTranslator::new();
     let event = WindowEvent::MouseWheel {
         device_id: DeviceId::dummy(),
@@ -46,13 +46,13 @@ fn a_line_wheel_delta_becomes_logical_pixels() {
     assert_eq!(
         translated,
         Some(InputEvent::Wheel {
-            delta: Point { x: 0.0, y: 120.0 },
+            delta: Point { x: 0.0, y: -120.0 },
         })
     );
 }
 
 #[test]
-fn a_pixel_wheel_delta_loses_the_scale() {
+fn a_pixel_wheel_delta_loses_the_scale_and_is_positive_for_scrolling_down() {
     let mut translator = EventTranslator::new();
     let event = WindowEvent::MouseWheel {
         device_id: DeviceId::dummy(),
@@ -65,7 +65,7 @@ fn a_pixel_wheel_delta_loses_the_scale() {
     assert_eq!(
         translated,
         Some(InputEvent::Wheel {
-            delta: Point { x: 20.0, y: -10.0 },
+            delta: Point { x: -20.0, y: 10.0 },
         })
     );
 }
