@@ -10,7 +10,7 @@ use std::time::Duration;
 use web_time::Instant;
 
 use crate::damage::DamageAccumulator;
-use crate::element::{IntoElement, UpdateQueue, binding_effect, mount};
+use crate::element::{IntoElement, UpdateQueue, mount};
 use crate::geometry::{Color, PixelRect, Point, Rect, Size};
 use crate::input::{InputEvent, Modifiers};
 use crate::paint::DisplayList;
@@ -148,15 +148,11 @@ pub struct App {
     tick: Option<Box<dyn FnMut(Instant)>>,
     /// Whether the next frame repaints the whole surface.
     force_full: bool,
-    /// The handles to the effects that keep the theme current.
+    /// The owner that the build closure, the signals it created, every
+    /// node's owner and the theme bindings live under.
     ///
-    /// Dropping a handle stops its effect, so the app holds them for as long
-    /// as it lives.
-    theme_bindings: Vec<RenderEffect<()>>,
-    /// The owner that the build closure, the signals it created and every
-    /// node's owner live under.
-    ///
-    /// Held so those signals stay alive for as long as the app does.
+    /// Held so those stay alive for as long as the app does, and so the
+    /// cleanup at the end stops the theme bindings.
     _root: Owner,
 }
 
@@ -168,11 +164,6 @@ impl App {
     /// every binding sees the context that `build` provides. The mounted tree
     /// is laid out and painted by the first call to [`App::frame`], which
     /// repaints the whole surface.
-    ///
-    /// # Panics
-    ///
-    /// Panics when another async executor was installed in this process
-    /// before, because the reactive runtime installs a process-wide one.
     pub fn new<E: IntoElement>(config: AppConfig, build: impl FnOnce() -> E) -> App {
         reactive::init();
         let root = Owner::new();
@@ -191,7 +182,6 @@ impl App {
             stats: FrameStats::default(),
             tick: None,
             force_full: true,
-            theme_bindings: Vec::new(),
             _root: root,
         }
     }
@@ -290,14 +280,33 @@ impl App {
     /// app.frame();
     /// assert_eq!(app.stats().nodes_painted, 1);
     /// ```
+    ///
+    /// The binding runs under the app's root owner, so it reports its wakes
+    /// to the callback set with [`App::set_wake_callback`] and stops when the
+    /// app is dropped.
     pub fn bind_theme(&mut self, get: impl Fn() -> Theme + 'static) {
         let queue = self.queue.clone();
-        let effect = binding_effect(move || {
-            let theme = get();
-            let queue = queue.clone();
-            queue.push(Box::new(move |tree| tree.set_theme(theme)));
+        self._root.with(|| {
+            RenderEffect::new(move || {
+                let theme = get();
+                let queue = queue.clone();
+                queue.push(Box::new(move |tree| tree.set_theme(theme)));
+            });
         });
-        self.theme_bindings.push(effect);
+    }
+
+    /// Sets the callback that a wake in this app's tree runs to request a
+    /// redraw.
+    ///
+    /// A write that queues this app's first effect since the last flush runs
+    /// the callback once, so the platform learns that the next frame has work
+    /// to do. Every binding of this app reports its wake here, and an app on
+    /// another part of the thread neither sees this app's wakes nor hides
+    /// them. See
+    /// [`set_wake_callback`](crate::reactive::set_wake_callback) for the
+    /// exact rules.
+    pub fn set_wake_callback(&self, callback: impl Fn() + 'static) {
+        self._root.set_wake_callback(callback);
     }
 
     /// Sets a callback that runs once at the start of every frame with the

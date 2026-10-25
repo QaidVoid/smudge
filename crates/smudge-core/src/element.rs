@@ -37,14 +37,14 @@
 //!     .child(panel().width(px(20.0)).height(px(20.0)).background(Color::WHITE));
 //! ```
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::geometry::{Color, Point, Size};
 use crate::input::{Handled, KeyEvent};
 use crate::paint::PaintOp;
-use crate::reactive::{self, Owner, RenderEffect};
+use crate::reactive::{Owner, RenderEffect};
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
 };
@@ -171,38 +171,8 @@ impl<F: Fn() -> T + 'static, T: 'static> From<F> for Value<T> {
     }
 }
 
-/// How many times one binding may run in one flush before debug builds report
-/// a cycle.
-const MAX_RUNS_PER_FLUSH: u32 = 16;
-
-/// Creates the render effect of a binding, which runs `run` once now and again
-/// whenever a signal it reads changes.
-///
-/// # Panics
-///
-/// Panics in debug builds when the effect runs more than
-/// [`MAX_RUNS_PER_FLUSH`] times in one flush. That happens when the binding is
-/// part of a cycle: it writes a signal that wakes it again, either directly or
-/// through another binding that writes a signal it reads. A release build
-/// keeps running it and the flush never returns.
-pub(crate) fn binding_effect(run: impl Fn() + 'static) -> RenderEffect<()> {
-    let runs = Cell::new((reactive::flush_generation(), 0u32));
-    RenderEffect::new(move |_| {
-        let generation = reactive::flush_generation();
-        let (last, count) = runs.get();
-        let count = if last == generation { count + 1 } else { 1 };
-        runs.set((generation, count));
-        debug_assert!(
-            count <= MAX_RUNS_PER_FLUSH,
-            "a binding ran {count} times in one flush, so it is part of a cycle: \
-             it writes a signal that wakes it again, directly or through another binding"
-        );
-        run();
-    })
-}
-
 /// Installs a binding's effect inside a node's owner and returns its handle.
-type Install = Box<dyn FnOnce(WidgetId, &UpdateQueue) -> RenderEffect<()>>;
+type Install = Box<dyn FnOnce(WidgetId, &UpdateQueue) -> RenderEffect>;
 
 /// One property of one node that a render effect keeps up to date.
 struct Binding {
@@ -219,7 +189,7 @@ impl Binding {
         Binding {
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                binding_effect(move || {
+                RenderEffect::new(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -235,7 +205,7 @@ impl Binding {
         Binding {
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                binding_effect(move || {
+                RenderEffect::new(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -251,7 +221,7 @@ impl Binding {
         Binding {
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                binding_effect(move || {
+                RenderEffect::new(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -275,7 +245,7 @@ impl Binding {
         Binding {
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                binding_effect(move || {
+                RenderEffect::new(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -1019,8 +989,7 @@ pub(crate) fn mount(
     tree.set_handlers(id, handlers);
     let owner = tree.owner(id).expect("the node was just inserted").clone();
     for binding in bindings {
-        let effect = owner.with(|| (binding.install)(id, queue));
-        tree.add_effect(id, effect);
+        owner.with(|| (binding.install)(id, queue));
     }
     for child in children {
         mount(child, tree, queue, Some(id));
@@ -1065,7 +1034,7 @@ pub fn show<E: IntoElement>(
         install: Box::new(move |id, queue| {
             let queue = queue.clone();
             let mounted: Rc<RefCell<Option<(WidgetId, Owner)>>> = Rc::new(RefCell::new(None));
-            binding_effect(move || {
+            RenderEffect::new(move || {
                 let visible = when();
                 let child_queue = queue.clone();
                 let mounted = Rc::clone(&mounted);

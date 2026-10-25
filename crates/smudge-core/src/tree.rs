@@ -16,7 +16,7 @@ use slotmap::{SlotMap, new_key_type};
 
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
-use crate::reactive::{Owner, RenderEffect};
+use crate::reactive::Owner;
 use crate::style::{LayoutProps, PaintProps, Style};
 use crate::theme::Theme;
 use crate::variants::{Variants, resolve};
@@ -96,12 +96,10 @@ struct Node {
     /// The node's id in the layout engine's tree.
     taffy: taffy::NodeId,
     /// The reactive owner that every binding of this node runs under.
-    owner: Owner,
-    /// The only strong handles to the node's bindings.
     ///
-    /// Dropping a handle stops its binding, and owner cleanup does not, so
-    /// removal drops these before it cleans the owner up.
-    effects: Vec<RenderEffect<()>>,
+    /// Cleaning the owner up stops the node's bindings, so removal cleans it
+    /// up and nothing else has to track binding handles.
+    owner: Owner,
     /// How much of the node is out of date.
     dirty: Dirty,
     /// The node's absolute rectangle, set by the layout pass.
@@ -133,6 +131,8 @@ pub(crate) struct WidgetTree {
     /// Whether any node needs a new layout pass.
     layout_dirty: bool,
     /// The painted bounds of nodes removed since the last frame.
+    /// The painted bounds of nodes removed since the last frame, damage the
+    /// next frame must repaint.
     removed_damage: Vec<PaintedBounds>,
     /// The viewport the last layout pass ran for, or `None` before the first.
     viewport: Option<Size>,
@@ -239,7 +239,6 @@ impl WidgetTree {
             uses_tokens: false,
             taffy,
             owner,
-            effects: Vec::new(),
             dirty: Dirty::Clean,
             rect: Rect::default(),
             clip: Rect::default(),
@@ -271,10 +270,10 @@ impl WidgetTree {
 
     /// Removes the node `id` and every node below it.
     ///
-    /// Each removed node drops its bindings, cleans its reactive owner up and
-    /// contributes its last painted bounds to the removed damage. The node is
-    /// detached from its parent, which is marked for layout. A stale id does
-    /// nothing.
+    /// Each removed node cleans its reactive owner up, which stops its
+    /// bindings, and contributes its last painted bounds to the removed
+    /// damage. The node is detached from its parent, which is marked for
+    /// layout. A stale id does nothing.
     pub(crate) fn remove(&mut self, id: WidgetId) {
         let Some(node) = self.nodes.get(id) else {
             return;
@@ -305,19 +304,16 @@ impl WidgetTree {
         }
 
         // Deepest node first, so every taffy node is still attached to a live
-        // parent when it is removed.
+        // parent when it is removed, and so an owner's bindings stop before
+        // the owners above it dispose the signals they read.
         let mut removed_taffy = Vec::new();
         for current in order.into_iter().rev() {
             let Some(node) = self.nodes.get_mut(current) else {
                 continue;
             };
-            let effects = std::mem::take(&mut node.effects);
             let owner = node.owner.clone();
             let painted = node.painted.take();
             let taffy = node.taffy;
-            // Bindings must stop before the owner disposes the signals they
-            // read.
-            drop(effects);
             owner.cleanup();
             if let Some(painted) = painted {
                 self.removed_damage.push(painted);
@@ -490,18 +486,6 @@ impl WidgetTree {
             self.taffy
                 .mark_dirty(taffy)
                 .expect("every widget node has a live layout node");
-        }
-    }
-
-    /// Stores the handle of one of the node's bindings.
-    ///
-    /// The handle is the only strong reference to the binding's effect, so
-    /// dropping it stops the effect. Removal drops every handle before it
-    /// cleans the owner up. A stale id drops the handle, which stops a binding
-    /// whose node is already gone.
-    pub(crate) fn add_effect(&mut self, id: WidgetId, effect: RenderEffect<()>) {
-        if let Some(node) = self.nodes.get_mut(id) {
-            node.effects.push(effect);
         }
     }
 

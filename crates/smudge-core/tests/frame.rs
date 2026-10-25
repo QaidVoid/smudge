@@ -114,19 +114,22 @@ impl Widget for Writer {
 /// flips the flag the other one reads, so the queue never settles.
 fn cycling_app() -> App {
     let (flag, set_flag) = signal_local(true);
+    let first_read = flag.clone();
+    let first_write = set_flag.clone();
+    let second_write = set_flag.clone();
     App::new(config(RepaintMode::Damage), move || {
         panel()
             .child(show(
-                move || flag.get(),
+                move || first_read.get(),
                 move || {
-                    set_flag.set(false);
+                    first_write.set(false);
                     panel()
                 },
             ))
             .child(show(
                 move || !flag.get(),
                 move || {
-                    set_flag.set(true);
+                    second_write.set(true);
                     panel()
                 },
             ))
@@ -340,11 +343,12 @@ fn two_bindings_that_write_each_others_signals_panic_in_debug_builds() {
 #[test]
 fn a_binding_that_corrects_what_it_reads_settles() {
     let (shade, set_shade) = signal_local(0u8);
+    let set_in_binding = set_shade.clone();
     let mut app = App::new(config(RepaintMode::Damage), move || {
         panel().background(move || {
             let value = shade.get();
             if value > 100 {
-                set_shade.set(100);
+                set_in_binding.set(100);
             }
             Color::rgb(value, 0, 0).into()
         })

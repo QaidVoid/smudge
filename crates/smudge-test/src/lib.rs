@@ -89,11 +89,6 @@ impl Harness {
     /// `build` runs once, exactly as it does in [`App::new`], and the first
     /// call to [`Harness::frame`] lays the tree out and repaints the whole
     /// surface.
-    ///
-    /// # Panics
-    ///
-    /// Panics when another async executor was installed in this process before,
-    /// because the reactive runtime installs a process-wide one.
     pub fn new<E: IntoElement>(
         width: f32,
         height: f32,

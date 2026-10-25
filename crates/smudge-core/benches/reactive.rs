@@ -2,17 +2,12 @@
 //!
 //! Both variants write a value, record which entry changed, and later push the
 //! changed entries into one shared vector. The reactive variant pays for
-//! waking and polling tasks. The baseline pays only for the writes and the
-//! drain loop, so the difference is the cost of the runtime.
+//! marking subscribers and running the flush queue. The baseline pays only
+//! for the writes and the drain loop, so the difference is the cost of the
+//! runtime.
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use reactive_graph::{
-    effect::RenderEffect,
-    owner::Owner,
-    signal::signal_local,
-    traits::{Get, Update},
-};
-use smudge_core::reactive;
+use smudge_core::reactive::{self, Owner, RenderEffect, prelude::*};
 use std::cell::{Cell, RefCell};
 use std::hint::black_box;
 use std::rc::Rc;
@@ -34,7 +29,7 @@ fn reactive_updates(c: &mut Criterion) {
             let (read, write) = signal_local(0u32);
             writes.push(write);
             let log = Rc::clone(&log);
-            RenderEffect::new(move |_| log.borrow_mut().push((index, read.get())))
+            RenderEffect::new(move || log.borrow_mut().push((index, read.get())))
         })
         .collect();
     reactive::flush();

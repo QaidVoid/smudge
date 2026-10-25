@@ -128,13 +128,12 @@ fn removing_a_node_stops_its_effects() {
     let (value, set_value) = signal_local(0u32);
     let runs = Rc::new(Cell::new(0u32));
     let counter = Rc::clone(&runs);
-    let effect = tree.owner(id).expect("the node is live").with(|| {
-        RenderEffect::new(move |_| {
+    tree.owner(id).expect("the node is live").with(|| {
+        RenderEffect::new(move || {
             value.get();
             counter.set(counter.get() + 1);
-        })
+        });
     });
-    tree.nodes[id].effects.push(effect);
     assert_eq!(runs.get(), 1, "a render effect runs when it is created");
 
     set_value.set(1);
@@ -151,7 +150,7 @@ fn removing_a_node_stops_its_effects() {
     assert_eq!(
         runs.get(),
         2,
-        "the node dropped the effect handle when it was removed"
+        "removal cleans the owner up, which stops the effect"
     );
 }
 

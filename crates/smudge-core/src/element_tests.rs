@@ -3,8 +3,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use reactive_graph::owner::LocalStorage;
-
 use crate::element::{Element, IntoElement, UpdateQueue, mount, show};
 use crate::geometry::Color;
 use crate::paint::PaintOp;
@@ -210,6 +208,7 @@ fn show_mounts_its_child_while_the_signal_is_true() {
         move || on.get(),
         move || {
             let counter = Rc::clone(&counter);
+            let color = color.clone();
             panel().background(move || {
                 counter.set(counter.get() + 1);
                 color.get().into()
@@ -258,8 +257,7 @@ fn show_keeps_the_signals_its_child_created_while_the_child_stays_mounted() {
     let (visible, _set_visible) = signal_local(true);
     let (unrelated, set_unrelated) = signal_local(0u32);
     let builds = Rc::new(Cell::new(0u32));
-    let first_writer: Rc<RefCell<Option<WriteSignal<Color, LocalStorage>>>> =
-        Rc::new(RefCell::new(None));
+    let first_writer: Rc<RefCell<Option<WriteSignal<Color>>>> = Rc::new(RefCell::new(None));
     let counter = Rc::clone(&builds);
     let stash = Rc::clone(&first_writer);
 
@@ -291,7 +289,11 @@ fn show_keeps_the_signals_its_child_created_while_the_child_stays_mounted() {
         "the child is built once while it stays mounted"
     );
 
-    let set_color = first_writer.borrow().expect("the child was built");
+    let set_color = first_writer
+        .borrow()
+        .as_ref()
+        .expect("the child was built")
+        .clone();
     set_color.set(Color::WHITE);
     settle(&mut tree, &queue);
     assert_eq!(

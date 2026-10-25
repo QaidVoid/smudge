@@ -7,7 +7,6 @@ use std::time::Duration;
 use smudge_core::app::{App, AppConfig, FrameStats, RepaintMode};
 use smudge_core::element::IntoElement;
 use smudge_core::geometry::{Color, PixelRect, Size};
-use smudge_core::reactive;
 use smudge_cpu::CpuRenderer;
 use softbuffer::{Context, Surface};
 use web_time::Instant;
@@ -114,11 +113,6 @@ impl std::fmt::Debug for WindowOptions {
 /// created, and [`PlatformError::Surface`] when the presentation surface
 /// cannot be created, resized or presented.
 ///
-/// # Panics
-///
-/// Panics when another async executor was installed in this process before,
-/// because the reactive runtime installs a process-wide one.
-///
 /// # Examples
 ///
 /// ```no_run
@@ -166,11 +160,6 @@ pub fn run<E: IntoElement + 'static>(
 /// Returns [`PlatformError::ClearColor`] when [`WindowOptions::clear_color`]
 /// is not opaque, checked before the event loop is created, and otherwise the
 /// same errors as [`run`].
-///
-/// # Panics
-///
-/// Panics when another async executor was installed in this process before,
-/// because the reactive runtime installs a process-wide one.
 ///
 /// # Examples
 ///
@@ -355,7 +344,7 @@ where
         let renderer = CpuRenderer::new(width, height);
 
         let weak = Rc::downgrade(&window);
-        reactive::set_wake_callback(move || {
+        app.set_wake_callback(move || {
             if let Some(window) = weak.upgrade() {
                 window.request_redraw();
             }
