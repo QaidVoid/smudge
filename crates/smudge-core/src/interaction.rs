@@ -87,6 +87,8 @@ pub(crate) struct Handlers {
     /// Runs when a key event reaches the node while it or a descendant holds
     /// the focus. Returning [`Handled::Yes`] stops the event from bubbling.
     pub(crate) on_key: Option<KeyHandler>,
+    /// Runs when the wheel scrolls while the node is in the hovered chain.
+    pub(crate) on_wheel: Option<Box<dyn FnMut(Point)>>,
     /// Runs when the node gains or loses the keyboard focus.
     pub(crate) on_focus: Option<Box<dyn FnMut(bool)>>,
     /// Whether a fresh press of Enter or Space runs the node's
@@ -109,6 +111,7 @@ impl Handlers {
             || self.on_pointer_down.is_some()
             || self.on_press_outside.is_some()
             || self.on_key.is_some()
+            || self.on_wheel.is_some()
     }
 }
 
@@ -208,6 +211,45 @@ impl WidgetTree {
     pub(crate) fn pointer_left(&mut self) {
         self.pointer_inside = false;
         self.set_hover_target(None);
+    }
+
+    /// Routes a wheel scroll to the deepest node in the hovered chain that
+    /// scrolls.
+    ///
+    /// The hovered chain is the chain of the node under the pointer that can
+    /// respond, deepest first, so content inside a scroll view is walked
+    /// before the view itself. The first handler that runs takes the whole
+    /// event, so of two nested scroll views the one under the pointer scrolls
+    /// and the one around it does not. A disabled or hidden node's handler
+    /// never runs, and the event keeps bubbling past it, as key routing does.
+    pub(crate) fn wheel(&mut self, delta: Point) {
+        let Some(target) = self.hover_target(self.pointer) else {
+            return;
+        };
+        for id in self.chain(Some(target)) {
+            if self.nodes.get(id).is_some_and(|node| {
+                node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
+            }) {
+                continue;
+            }
+            let Some(owner) = self.owner(id).cloned() else {
+                continue;
+            };
+            let mut ran = false;
+            owner.with(|| {
+                if let Some(on_wheel) = self
+                    .nodes
+                    .get_mut(id)
+                    .and_then(|node| node.handlers.on_wheel.as_mut())
+                {
+                    on_wheel(delta);
+                    ran = true;
+                }
+            });
+            if ran {
+                return;
+            }
+        }
     }
 
     /// Returns whether the tree holds work only a frame can finish: a node to

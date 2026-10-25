@@ -105,8 +105,19 @@ struct Node {
     dirty: Dirty,
     /// The node's absolute rectangle, set by the layout pass.
     rect: Rect,
+    /// The node's content box: its rectangle inside the border and the
+    /// padding, set by the layout pass.
+    content: Rect,
     /// The rectangle the node's subtree is clipped to, set by the layout pass.
     clip: Rect,
+    /// The translation applied to the node's flowing children after layout,
+    /// outside the layout engine. It is how a scroll view moves its content:
+    /// the walk that computes absolute rectangles subtracts it from the
+    /// origin of every child that stays in the flow, and
+    /// [`WidgetTree::set_scroll_offset`] re-runs that walk for the subtree
+    /// alone. An absolutely positioned child is left where its insets place
+    /// it.
+    scroll_offset: Point,
     /// The node's interaction state: hovered, pressed, disabled and focus.
     interaction: Interaction,
     /// The input handlers the node owns, set by its element's builders.
@@ -264,7 +275,9 @@ impl WidgetTree {
             owner,
             dirty: Dirty::Clean,
             rect: Rect::default(),
+            content: Rect::default(),
             clip: Rect::default(),
+            scroll_offset: Point::default(),
             interaction: Interaction::default(),
             handlers: Handlers::default(),
             ops: Vec::new(),

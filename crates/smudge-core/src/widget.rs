@@ -119,6 +119,9 @@ pub struct PaintCx<'a> {
     /// The node's absolute rectangle in logical pixels, as the last layout pass
     /// left it.
     pub rect: Rect,
+    /// The node's content box in logical pixels: its rectangle inside the
+    /// border and the padding, as the last layout pass left it.
+    pub content: Rect,
     /// The node's resolved style.
     pub style: &'a Style,
     /// The theme that style values which name a token resolve against.

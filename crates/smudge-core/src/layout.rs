@@ -9,7 +9,7 @@
 use taffy::{AvailableSpace as TaffySpace, LayoutInput, LayoutOutput, Size as TaffySize};
 
 use crate::geometry::{Point, Rect, Size};
-use crate::style::{Length, Overflow};
+use crate::style::{Length, Overflow, Position};
 use crate::widget::{AvailableSpace, MeasureInput};
 
 use super::{Dirty, WidgetId, WidgetTree};
@@ -41,8 +41,10 @@ impl WidgetTree {
     /// [`Dirty::Paint`], because a laid out node still has to be painted.
     ///
     /// The root's clip is the viewport. Every other node is clipped to its
-    /// parent's clip, intersected with the parent's rectangle when the parent
-    /// clips its children.
+    /// parent's clip, intersected with the area inside the parent's border
+    /// when the parent clips its children. A node scrolled with
+    /// [`WidgetTree::set_scroll_offset`] places its flowing children that much
+    /// further up and to the left.
     ///
     /// # Panics
     ///
@@ -57,8 +59,7 @@ impl WidgetTree {
         // is rebuilt from the last pointer position, unless a held press keeps
         // the hover on its capture.
         if rects_changed && self.pointer_inside && self.pressed.is_none() {
-            let target = self.hover_target(self.pointer);
-            self.set_hover_target(target);
+            self.refresh_hover();
             // A hover style can change the layout, and nothing would ask for
             // another frame to apply it. One more pass settles it in this
             // frame. Hover is not recomputed after it, so a style that moves
@@ -69,6 +70,63 @@ impl WidgetTree {
             }
         }
         true
+    }
+
+    /// Sets the scroll offset of `id` and moves its flowing descendants.
+    ///
+    /// The offset is a translation applied after layout, so this never runs
+    /// the layout engine: it re-runs the walk that computes absolute
+    /// rectangles for the subtree of `id` alone, from the origin and the clip
+    /// its parent gives it, which is what makes scrolling cheap next to a
+    /// layout pass. A node whose rectangle changed is marked for painting, so
+    /// its operations are regenerated at the moved position and its old and
+    /// new bounds reach the damage of the frame.
+    ///
+    /// The walk leaves the absolutely positioned children of `id` where their
+    /// insets place them. Before the first layout pass, and while `id` or an
+    /// ancestor is hidden, the offset is only stored, and the next walk that
+    /// reaches the subtree applies it. A stale id does nothing. An equal
+    /// offset does nothing.
+    pub(crate) fn set_scroll_offset(&mut self, id: WidgetId, offset: Point) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        if node.scroll_offset == offset {
+            return;
+        }
+        node.scroll_offset = offset;
+        let parent = node.parent;
+        let position = node.resolved.layout.position;
+        let Some(viewport) = self.viewport else {
+            return;
+        };
+        let mut ancestor = Some(id);
+        while let Some(current) = ancestor {
+            let node = &self.nodes[current];
+            if node.resolved.layout.hidden {
+                return;
+            }
+            ancestor = node.parent;
+        }
+        let (origin, clip) = match parent {
+            Some(parent) => {
+                let frame = self.child_frame(parent);
+                (frame.origin(position), frame.clip)
+            }
+            None => (
+                Point::default(),
+                Rect::new(0.0, 0.0, viewport.width, viewport.height),
+            ),
+        };
+        if self.update_subtree(id, origin, clip, false) {
+            // The subtree moved under a pointer that stays still, so the
+            // hovered chain is rebuilt from the last pointer position, as the
+            // layout pass does. A hover style can mark a node for layout,
+            // which the frame's layout pass applies after this.
+            if self.pointer_inside && self.pressed.is_none() {
+                self.refresh_hover();
+            }
+        }
     }
 
     /// Runs the layout engine once when anything needs it, and returns whether
@@ -178,24 +236,22 @@ impl WidgetTree {
             )
         };
 
+        let content = if hidden {
+            Rect::default()
+        } else {
+            inset(inset(rect, layout.border), layout.padding)
+        };
+
         let node = self.nodes.get_mut(id).expect("the id is a live node");
-        let changed = node.rect != rect || node.clip != clip;
+        let changed = node.rect != rect || node.content != content || node.clip != clip;
         node.rect = rect;
+        node.content = content;
         node.clip = clip;
+        let frame = ChildFrame::new(rect, clip, overflow, layout.border, node.scroll_offset);
 
         if changed {
             self.mark(id, Dirty::Paint);
         }
-
-        let child_clip = if overflow == Overflow::Clip {
-            clip.intersect(rect)
-        } else {
-            clip
-        };
-        let child_origin = Point {
-            x: rect.x0,
-            y: rect.y0,
-        };
 
         let mut subtree_changed = changed;
         let mut index = 0;
@@ -205,11 +261,120 @@ impl WidgetTree {
             .and_then(|node| node.children.get(index))
             .copied()
         {
-            subtree_changed |= self.update_subtree(child, child_origin, child_clip, hidden);
+            let origin = frame.origin(self.nodes[child].resolved.layout.position);
+            subtree_changed |= self.update_subtree(child, origin, frame.clip, hidden);
             index += 1;
         }
         subtree_changed
     }
+
+    /// Returns the area inside the border of `id`, which is what a node that
+    /// clips its children clips them to.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `id` is stale or has no live layout node, which are
+    /// internal invariants for an id the caller took from the tree.
+    pub(super) fn inside_border(&self, id: WidgetId) -> Rect {
+        let node = &self.nodes[id];
+        let layout = self
+            .taffy
+            .layout(node.taffy)
+            .expect("every node has a live layout node");
+        inset(node.rect, layout.border)
+    }
+
+    /// Returns the origins and the clip the walk gives the children of `id`,
+    /// from the rectangle and clip the last walk left on it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `id` is stale or has no live layout node, which are
+    /// internal invariants for an id taken from a live node's parent.
+    fn child_frame(&self, id: WidgetId) -> ChildFrame {
+        let node = &self.nodes[id];
+        let layout = self
+            .taffy
+            .layout(node.taffy)
+            .expect("every node has a live layout node");
+        ChildFrame::new(
+            node.rect,
+            node.clip,
+            node.resolved.layout.overflow,
+            layout.border,
+            node.scroll_offset,
+        )
+    }
+
+    /// Rebuilds the hovered chain from the last pointer position.
+    ///
+    /// The layout pass and a scroll offset change both move nodes under a
+    /// pointer that stays still, and no pointer event announces the move, so
+    /// both rebuild the chain the same way.
+    fn refresh_hover(&mut self) {
+        let target = self.hover_target(self.pointer);
+        self.set_hover_target(target);
+    }
+}
+
+/// Where the walk places the children of one node, and what it clips them to.
+struct ChildFrame {
+    /// The origin of a child in the flow, which the node's scroll offset
+    /// moves.
+    flow: Point,
+    /// The origin of an absolutely positioned child, which is placed by its
+    /// insets outside the flow, so a scroll offset does not move it.
+    absolute: Point,
+    /// The clip every child inherits.
+    clip: Rect,
+}
+
+impl ChildFrame {
+    /// Builds the frame of a node from its rectangle, its clip, its overflow,
+    /// its border widths and its scroll offset.
+    ///
+    /// A node that clips its children clips them to the area inside its
+    /// border, so content that scrolls or overflows never covers the border.
+    fn new(
+        rect: Rect,
+        clip: Rect,
+        overflow: Overflow,
+        border: taffy::Rect<f32>,
+        scroll: Point,
+    ) -> ChildFrame {
+        ChildFrame {
+            flow: Point {
+                x: rect.x0 - scroll.x,
+                y: rect.y0 - scroll.y,
+            },
+            absolute: rect.origin(),
+            clip: if overflow == Overflow::Clip {
+                clip.intersect(inset(rect, border))
+            } else {
+                clip
+            },
+        }
+    }
+
+    /// Returns the origin of a child with `position`.
+    fn origin(&self, position: Position) -> Point {
+        match position {
+            Position::Absolute => self.absolute,
+            Position::Relative => self.flow,
+        }
+    }
+}
+
+/// Shrinks `rect` by `edges` on each side, never past an empty rectangle.
+fn inset(rect: Rect, edges: taffy::Rect<f32>) -> Rect {
+    let x0 = rect.x0 + edges.left;
+    let y0 = rect.y0 + edges.top;
+    Rect::new(
+        x0,
+        y0,
+        (rect.x1 - edges.right).max(x0),
+        (rect.y1 - edges.bottom).max(y0),
+    )
 }
 
 #[cfg(test)]

@@ -1,9 +1,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::geometry::{Color, Rect, Size};
+use crate::geometry::{Color, Point, Rect, Size};
 use crate::paint::PaintOp;
-use crate::style::{Align, Direction, Edges, Length, Overflow, Style};
+use crate::style::{Align, Direction, Edges, Length, Overflow, Position, Style};
 use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::widget::{AvailableSpace, MeasureInput, PaintCx, Widget};
 
@@ -241,6 +241,118 @@ fn a_child_is_clipped_by_every_clipping_ancestor() {
         tree.clip(leaf),
         Some(inner_rect.intersect(inner_clip)),
         "the leaf is clipped by the outer rectangle and the inner one"
+    );
+}
+
+#[test]
+fn a_clipping_parent_clips_its_children_inside_its_border() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(200.0, 100.0));
+    let mut parent_style = fixed(80.0, 40.0);
+    parent_style.layout.overflow = Overflow::Clip;
+    parent_style.layout.border_width = Edges {
+        top: 1.0,
+        right: 2.0,
+        bottom: 3.0,
+        left: 4.0,
+    };
+    let parent = tree.insert(Some(root), Box::new(Empty), parent_style);
+    let child = tree.insert(Some(parent), Box::new(Empty), fixed(200.0, 200.0));
+
+    tree.layout(Size {
+        width: 200.0,
+        height: 100.0,
+    });
+
+    assert_eq!(
+        tree.clip(child),
+        Some(Rect::new(4.0, 1.0, 78.0, 37.0)),
+        "an overflowing child never covers the parent's border"
+    );
+}
+
+/// A tree whose scrolled node sits 30 pixels right and 10 pixels down from
+/// the root, with a flowing child and an absolutely positioned one, laid out
+/// once. Returns the tree, the root, the scrolled node and its two children.
+fn scrolled_tree() -> (WidgetTree, WidgetId, WidgetId, WidgetId, WidgetId) {
+    let mut tree = WidgetTree::new();
+    let mut root_style = fixed(200.0, 100.0);
+    root_style.layout.direction = Direction::Column;
+    let root = tree.insert(None, Box::new(Empty), root_style);
+    tree.insert(Some(root), Box::new(Empty), fixed(10.0, 10.0));
+    let mut scrolled_style = fixed(80.0, 40.0);
+    scrolled_style.layout.margin.left = Length::px(30.0);
+    scrolled_style.layout.overflow = Overflow::Clip;
+    let scrolled = tree.insert(Some(root), Box::new(Empty), scrolled_style);
+    let flowing = tree.insert(Some(scrolled), Box::new(Empty), fixed(80.0, 100.0));
+    let mut absolute_style = fixed(4.0, 10.0);
+    absolute_style.layout.position = Position::Absolute;
+    absolute_style.layout.inset.top = Length::px(0.0);
+    absolute_style.layout.inset.right = Length::px(0.0);
+    let absolute = tree.insert(Some(scrolled), Box::new(Empty), absolute_style);
+    tree.layout(Size {
+        width: 200.0,
+        height: 100.0,
+    });
+    tree.clear_dirty();
+    (tree, root, scrolled, flowing, absolute)
+}
+
+#[test]
+fn a_scroll_offset_moves_flowing_children_without_running_layout() {
+    let (mut tree, _, scrolled, flowing, absolute) = scrolled_tree();
+    let runs = tree.layout_runs();
+
+    tree.set_scroll_offset(scrolled, Point { x: 0.0, y: 25.0 });
+
+    assert_eq!(
+        tree.rect(scrolled),
+        Some(Rect::new(30.0, 10.0, 110.0, 50.0)),
+        "the scrolled node itself stays where the layout put it"
+    );
+    assert_eq!(
+        tree.rect(flowing),
+        Some(Rect::new(30.0, -15.0, 110.0, 85.0)),
+        "the flowing child moved up by the offset"
+    );
+    assert_eq!(
+        tree.rect(absolute),
+        Some(Rect::new(106.0, 10.0, 110.0, 20.0)),
+        "the absolutely positioned child stays where its insets put it"
+    );
+    assert_eq!(
+        tree.clip(flowing),
+        Some(Rect::new(30.0, 10.0, 110.0, 50.0)),
+        "the moved child is still clipped to the scrolled node"
+    );
+    assert_eq!(tree.layout_runs(), runs, "the engine did not run");
+}
+
+#[test]
+fn a_scroll_offset_set_under_a_hidden_ancestor_lands_when_it_shows() {
+    let (mut tree, root, scrolled, flowing, _) = scrolled_tree();
+    let viewport = Size {
+        width: 200.0,
+        height: 100.0,
+    };
+    tree.apply_layout(root, |layout| layout.hidden = true);
+    tree.layout(viewport);
+
+    tree.set_scroll_offset(scrolled, Point { x: 0.0, y: 25.0 });
+
+    assert_eq!(
+        tree.rect(flowing),
+        Some(Rect::default()),
+        "a hidden subtree keeps the rectangles the layout pass gave it"
+    );
+
+    tree.apply_layout(root, |layout| layout.hidden = false);
+    tree.layout(viewport);
+
+    assert_eq!(
+        tree.rect(flowing),
+        Some(Rect::new(30.0, -15.0, 110.0, 85.0)),
+        "the offset set while hidden applies once the node shows"
     );
 }
 

@@ -342,13 +342,14 @@ impl App {
     /// chain, a primary press captures the node under the pointer and focuses
     /// it when it can take the focus, and a release runs the captured node's
     /// `on_press` when it happens over it. A press elsewhere clears the focus,
-    /// and any press turns the keyboard navigation mode off. Key events are
-    /// routed to the focused node and bubble to its ancestors until a handler
-    /// takes them, and an unhandled Tab or Shift+Tab moves the focus. Handlers
-    /// run at once, inside their node's owner, and a handler that writes a
-    /// signal makes the change visible with the next call to [`App::frame`].
-    /// The app also records the pointer position from pointer events and the
-    /// keyboard modifiers from key and modifiers events.
+    /// and any press turns the keyboard navigation mode off. A wheel scroll
+    /// goes to the deepest node in the hovered chain that has a wheel handler.
+    /// Key events are routed to the focused node and bubble to its ancestors
+    /// until a handler takes them, and an unhandled Tab or Shift+Tab moves the
+    /// focus. Handlers run at once, inside their node's owner, and a handler
+    /// that writes a signal makes the change visible with the next call to
+    /// [`App::frame`]. The app also records the pointer position from pointer
+    /// events and the keyboard modifiers from key and modifiers events.
     pub fn handle_event(&mut self, event: InputEvent) {
         match event {
             InputEvent::PointerMoved { position } => {
@@ -364,13 +365,13 @@ impl App {
                 self.tree.pointer_up(position, button);
             }
             InputEvent::PointerLeft => self.tree.pointer_left(),
+            InputEvent::Wheel { delta } => self.tree.wheel(delta),
             InputEvent::Key(key) => {
                 self.tree.key(&key);
                 self.modifiers = key.modifiers;
             }
             InputEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
-            InputEvent::Wheel { .. }
-            | InputEvent::ImePreedit { .. }
+            InputEvent::ImePreedit { .. }
             | InputEvent::ImeCommit { .. }
             | InputEvent::WindowFocus(_) => {}
         }

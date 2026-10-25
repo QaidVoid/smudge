@@ -15,6 +15,7 @@ fn paint(style: &Style) -> Vec<PaintOp> {
     Panel.paint(
         &PaintCx {
             rect: rect(),
+            content: rect(),
             style,
             theme: &Theme::light(),
         },

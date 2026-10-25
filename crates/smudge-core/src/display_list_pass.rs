@@ -16,10 +16,11 @@ impl WidgetTree {
     ///
     /// A node contributes its cached operations, then its children in order.
     /// The children of a node that clips are wrapped in a
-    /// [`PushClip`](crate::paint::DisplayItem::PushClip) carrying the node's
-    /// rectangle and a matching [`PopClip`](crate::paint::DisplayItem::PopClip),
-    /// so a child that overflows its parent is cut off by the renderer. A
-    /// hidden node and its subtree contribute nothing.
+    /// [`PushClip`](crate::paint::DisplayItem::PushClip) carrying the area
+    /// inside the node's border and a matching
+    /// [`PopClip`](crate::paint::DisplayItem::PopClip), so a child that
+    /// overflows its parent is cut off by the renderer before it reaches the
+    /// border. A hidden node and its subtree contribute nothing.
     ///
     /// The list is cleared first, which keeps its allocated capacity, and
     /// [`DisplayList::finish`] runs at the end to check that the clips balance.
@@ -44,7 +45,7 @@ impl WidgetTree {
 
         list.extend_ops(&node.ops);
         if clips {
-            list.push_clip(node.rect);
+            list.push_clip(self.inside_border(id));
         }
         for &child in &node.children {
             self.emit(child, list);

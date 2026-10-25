@@ -67,6 +67,7 @@ impl WidgetTree {
                 self.theme.reset_consulted();
                 let cx = PaintCx {
                     rect: node.rect,
+                    content: node.content,
                     style: &node.resolved,
                     theme: &self.theme,
                 };

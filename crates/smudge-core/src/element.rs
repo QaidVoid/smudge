@@ -131,6 +131,7 @@ static_values!(
     Direction,
     Align,
     Justify,
+    Point,
 );
 
 impl From<String> for Value<String> {
@@ -236,6 +237,25 @@ impl Binding {
         }
     }
 
+    /// A binding that writes the node's scroll offset.
+    ///
+    /// The write moves the node's flowing descendants without running the
+    /// layout engine, which is what a scroll view does on every wheel tick.
+    fn scroll_offset(get: Rc<dyn Fn() -> Point>) -> Binding {
+        Binding {
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_scroll_offset(id, value);
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes one property of the node's widget.
     ///
     /// The apply function reports how much of the node its write invalidated,
@@ -290,6 +310,8 @@ pub struct Element<W: Widget> {
     disabled: bool,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
+    /// The scroll offset written to the node when it mounts.
+    scroll_offset: Point,
     /// Applied to the style of every child as it is added.
     child_styling: Option<ChildStyling>,
     /// The children, in paint order.
@@ -314,6 +336,7 @@ impl<W: Widget> Element<W> {
             handlers: Handlers::default(),
             disabled: false,
             focusable: false,
+            scroll_offset: Point::default(),
             child_styling: None,
             children: Vec::new(),
         }
@@ -567,6 +590,27 @@ impl<W: Widget> Element<W> {
         self.layout_value(hidden, |layout, hidden| layout.hidden = hidden)
     }
 
+    /// Translates the node's flowing children by this offset after layout,
+    /// outside the layout engine.
+    ///
+    /// This is what a scroll view changes when it scrolls: the walk that
+    /// computes absolute rectangles subtracts the offset from the origin of
+    /// every child that stays in the flow, without running the layout engine
+    /// again, and the moved nodes repaint. An absolutely positioned child is
+    /// left where its insets place it, so chrome drawn over the content does
+    /// not scroll away with it.
+    ///
+    /// The offset can be bound to a signal, like the style builders. It is a
+    /// position, not a style: it takes part in no layout comparison, and an
+    /// equal offset changes nothing.
+    pub fn scroll_offset(mut self, offset: impl Into<Value<Point>>) -> Self {
+        match offset.into() {
+            Value::Static(offset) => self.scroll_offset = offset,
+            Value::Dynamic(get) => self.bindings.push(Binding::scroll_offset(get)),
+        }
+        self
+    }
+
     /// Sets the fill painted behind the node. This repaints the node without
     /// laying it out again.
     ///
@@ -798,6 +842,21 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Runs `handler` when the wheel scrolls while the node is in the hovered
+    /// chain, which is the case when the pointer is over the node or over one
+    /// of its descendants.
+    ///
+    /// The delta is in logical pixels, positive for scrolling right and down.
+    /// The deepest node in the hovered chain that has a wheel handler takes
+    /// the whole event, so of two nested scroll views the one under the
+    /// pointer scrolls and the one around it does not. The handler runs inside
+    /// the node's owner, so it can write the signals the element's bindings
+    /// read.
+    pub fn on_wheel(mut self, handler: impl FnMut(Point) + 'static) -> Self {
+        self.handlers.on_wheel = Some(Box::new(handler));
+        self
+    }
+
     /// Disables the node, which takes it out of hit testing, or enables it
     /// again.
     ///
@@ -989,6 +1048,8 @@ pub struct AnyElement {
     disabled: bool,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
+    /// The scroll offset written to the node when it mounts.
+    scroll_offset: Point,
     /// The children, in paint order.
     children: Vec<AnyElement>,
 }
@@ -1004,6 +1065,7 @@ impl AnyElement {
             handlers: element.handlers,
             disabled: element.disabled,
             focusable: element.focusable,
+            scroll_offset: element.scroll_offset,
             children: element.children,
         }
     }
@@ -1047,6 +1109,7 @@ pub(crate) fn mount(
         handlers,
         disabled,
         focusable,
+        scroll_offset,
         children,
     } = element;
     let id = tree.insert(parent, widget, style);
@@ -1054,6 +1117,9 @@ pub(crate) fn mount(
     tree.set_disabled(id, disabled);
     tree.set_focusable(id, focusable);
     tree.set_handlers(id, handlers);
+    if scroll_offset != Point::default() {
+        tree.set_scroll_offset(id, scroll_offset);
+    }
     let owner = tree.owner(id).expect("the node was just inserted").clone();
     for binding in bindings {
         owner.with(|| (binding.install)(id, queue));
