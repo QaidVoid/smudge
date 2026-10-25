@@ -8,10 +8,6 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-any_spawner = "0.3.0"
-futures-executor = { version = "0.3.34", default-features = false, features = ["std"] }
-futures-task = "0.3.34"
-reactive_graph = { version = "0.2.16", features = ["effects"] }
 slotmap = "1.1.1"
 taffy = { version = "0.15.0", default-features = false, features = ["std", "flexbox", "block_layout", "taffy_tree"] }
 web-time = "1.1.0"
