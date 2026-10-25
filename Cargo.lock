@@ -2138,6 +2138,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "smudge-widgets"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "smudge-core",
+ "smudge-test",
+ "smudge-text",
+]
+
+[[package]]
 name = "softbuffer"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

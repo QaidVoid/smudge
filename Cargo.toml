@@ -7,6 +7,7 @@ members = [
   "crates/smudge-platform",
   "crates/smudge-test",
   "crates/smudge-text",
+  "crates/smudge-widgets",
 ]
 
 [workspace.package]

@@ -1,0 +1,12 @@
+---
+source: crates/smudge-widgets/tests/button.rs
+expression: harness.layout_dump()
+---
+Panel [0, 0, 320, 120]
+  Panel [0, 0, 59, 120]
+    Label [14, 8, 45, 112]
+  Panel [59, 0, 190, 120]
+  Panel [190, 0, 262, 120]
+    Label [204, 8, 248, 112]
+  Panel [262, 0, 320, 120]
+    Label [276, 8, 306, 112]
