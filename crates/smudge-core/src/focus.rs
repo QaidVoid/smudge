@@ -17,6 +17,15 @@ use super::{WidgetId, WidgetTree};
 #[path = "focus_tests.rs"]
 mod tests;
 
+/// Returns whether `event` is a fresh press of Enter or Space, the keys that
+/// activate a control.
+///
+/// Releases and key repeats activate nothing, so holding a key fires a button
+/// once.
+fn is_activation_key(event: &KeyEvent) -> bool {
+    event.pressed && !event.repeat && matches!(event.key, Key::Enter | Key::Space)
+}
+
 impl WidgetTree {
     /// Routes a key event from the focused node through its ancestors.
     ///
@@ -77,6 +86,18 @@ impl WidgetTree {
                 node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
             }) {
                 continue;
+            }
+            // A control that activates on Enter or Space fires its press
+            // handler before any key handler of its own hears the key, and a
+            // handler that ran takes the key.
+            if is_activation_key(event)
+                && self
+                    .nodes
+                    .get(id)
+                    .is_some_and(|node| node.handlers.activate_on_keys)
+                && self.run_press(id)
+            {
+                return Handled::Yes;
             }
             let Some(owner) = self.owner(id).cloned() else {
                 continue;

@@ -56,6 +56,10 @@ impl ColorToken {
     pub const TEXT_MUTED: ColorToken = ColorToken("text_muted");
     /// The color of interactive accents, such as a primary button.
     pub const ACCENT: ColorToken = ColorToken("accent");
+    /// The accent color while the pointer is over a control that uses it.
+    pub const ACCENT_HOVER: ColorToken = ColorToken("accent_hover");
+    /// The accent color while a press is held on a control that uses it.
+    pub const ACCENT_PRESSED: ColorToken = ColorToken("accent_pressed");
     /// The color of text painted over [`ColorToken::ACCENT`].
     pub const ACCENT_TEXT: ColorToken = ColorToken("accent_text");
     /// The color of borders around controls.
@@ -239,6 +243,8 @@ impl Theme {
                 (ColorToken::TEXT, Color::rgb(26, 26, 26)),
                 (ColorToken::TEXT_MUTED, Color::rgb(102, 102, 102)),
                 (ColorToken::ACCENT, Color::rgb(0, 95, 204)),
+                (ColorToken::ACCENT_HOVER, Color::rgb(0, 84, 181)),
+                (ColorToken::ACCENT_PRESSED, Color::rgb(0, 71, 153)),
                 (ColorToken::ACCENT_TEXT, Color::WHITE),
                 (ColorToken::BORDER, Color::rgb(204, 204, 204)),
                 (ColorToken::FOCUS_RING, Color::rgb(0, 120, 215)),
@@ -261,6 +267,8 @@ impl Theme {
                 (ColorToken::TEXT, Color::rgb(240, 240, 240)),
                 (ColorToken::TEXT_MUTED, Color::rgb(153, 153, 153)),
                 (ColorToken::ACCENT, Color::rgb(77, 163, 255)),
+                (ColorToken::ACCENT_HOVER, Color::rgb(110, 180, 255)),
+                (ColorToken::ACCENT_PRESSED, Color::rgb(140, 196, 255)),
                 (ColorToken::ACCENT_TEXT, Color::rgb(11, 11, 11)),
                 (ColorToken::BORDER, Color::rgb(68, 68, 68)),
                 (ColorToken::FOCUS_RING, Color::rgb(77, 163, 255)),

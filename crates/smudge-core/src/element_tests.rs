@@ -340,3 +340,65 @@ fn show_disposes_the_scope_its_child_was_built_in() {
         "removing the child disposes the scope it was built in"
     );
 }
+
+#[test]
+fn style_children_restyles_the_children_added_before_it() {
+    let element = panel()
+        .child(panel().background(Color::WHITE))
+        .child(panel().background(Color::BLACK))
+        .style_children(|style| style.paint.background = Some(Color::rgb(128, 128, 128).into()));
+
+    assert_eq!(
+        element.children.len(),
+        2,
+        "both children are still on the element"
+    );
+    for child in &element.children {
+        assert_eq!(
+            child.style.paint.background,
+            Some(Color::rgb(128, 128, 128).into()),
+            "the style reaches a child the element already had"
+        );
+    }
+}
+
+#[test]
+fn style_children_styles_the_children_added_after_it() {
+    let element = panel()
+        .style_children(|style| style.paint.background = Some(Color::rgb(128, 128, 128).into()))
+        .child(panel().child(panel().background(Color::WHITE)));
+
+    let [child, ..] = element.children.as_slice() else {
+        panic!("the element holds the child that was added");
+    };
+    assert_eq!(
+        child.style.paint.background,
+        Some(Color::rgb(128, 128, 128).into()),
+        "the style reaches a child added after it was set"
+    );
+    let [grandchild, ..] = child.children.as_slice() else {
+        panic!("the child holds its own child");
+    };
+    assert_eq!(
+        grandchild.style.paint.background,
+        Some(Color::WHITE.into()),
+        "the style stops at the direct children"
+    );
+}
+
+#[test]
+fn style_children_styles_the_children_added_through_children() {
+    let gray = Color::rgb(128, 128, 128);
+    let element = panel()
+        .style_children(move |style| style.paint.background = Some(gray.into()))
+        .children([panel(), panel()]);
+
+    assert_eq!(element.children.len(), 2);
+    for child in &element.children {
+        assert_eq!(
+            child.style.paint.background,
+            Some(gray.into()),
+            "the style reaches every child of the batch"
+        );
+    }
+}

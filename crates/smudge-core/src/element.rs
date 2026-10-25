@@ -57,6 +57,9 @@ use crate::widget::{PaintCx, Widget};
 /// One change to the widget tree, applied by the frame's apply step.
 pub(crate) type Update = Box<dyn FnOnce(&mut WidgetTree)>;
 
+/// The style that an element applies to every child as it is added.
+type ChildStyling = Rc<dyn Fn(&mut Style)>;
+
 /// The updates that are waiting to be applied.
 ///
 /// Every binding shares one queue, so a frame applies the effects of all of
@@ -286,6 +289,8 @@ pub struct Element<W: Widget> {
     disabled: bool,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
+    /// Applied to the style of every child as it is added.
+    child_styling: Option<ChildStyling>,
     /// The children, in paint order.
     children: Vec<AnyElement>,
 }
@@ -308,20 +313,65 @@ impl<W: Widget> Element<W> {
             handlers: Handlers::default(),
             disabled: false,
             focusable: false,
+            child_styling: None,
             children: Vec::new(),
         }
     }
 
     /// Appends `child` after the children the element already has.
+    ///
+    /// When [`Element::style_children`] set a style for the children, it is
+    /// applied to this one.
     pub fn child(mut self, child: impl IntoElement) -> Self {
-        self.children.push(child.into_any());
+        let mut child = child.into_any();
+        if let Some(style) = &self.child_styling {
+            style(&mut child.style);
+        }
+        self.children.push(child);
         self
     }
 
     /// Appends every child of `children`, in order.
+    ///
+    /// When [`Element::style_children`] set a style for the children, it is
+    /// applied to each one.
     pub fn children(mut self, children: impl IntoIterator<Item = impl IntoElement>) -> Self {
-        self.children
-            .extend(children.into_iter().map(IntoElement::into_any));
+        self.children.extend(children.into_iter().map(|child| {
+            let mut child = child.into_any();
+            if let Some(style) = &self.child_styling {
+                style(&mut child.style);
+            }
+            child
+        }));
+        self
+    }
+
+    /// Applies `style` to every direct child of this element: to the children
+    /// added so far, at once, and to every child added afterwards as it is
+    /// added.
+    ///
+    /// The children of a child keep their own style, and a child that mounts
+    /// later through [`show`] mounts under a slot, so it is styled only
+    /// through that slot. A binding on the same field of a child applies when
+    /// the child mounts, after this style, so the binding wins.
+    ///
+    /// This is how a container decides how its children sit: a stack applies
+    /// the absolute position that makes children overlap, for example.
+    ///
+    /// ```
+    /// use smudge_core::element::Element;
+    /// use smudge_core::widget::Panel;
+    ///
+    /// let layers = Element::new(Panel).style_children(|style| {
+    ///     style.paint.corner_radius = 4.0.into();
+    /// });
+    /// ```
+    pub fn style_children(mut self, style: impl Fn(&mut Style) + 'static) -> Self {
+        let style = Rc::new(style);
+        for child in &mut self.children {
+            style(&mut child.style);
+        }
+        self.child_styling = Some(style);
         self
     }
 
@@ -845,6 +895,22 @@ impl<W: Widget> Element<W> {
     /// ```
     pub fn on_key(mut self, handler: impl FnMut(&KeyEvent) -> Handled + 'static) -> Self {
         self.handlers.on_key = Some(Box::new(handler));
+        self.focusable = true;
+        self
+    }
+
+    /// Runs the handler set with [`Element::on_press`] when the node holds
+    /// the keyboard focus and a fresh press of Enter or Space arrives.
+    ///
+    /// This is how a button fires from the keyboard with the same handler its
+    /// pointer press uses. The activation runs before any
+    /// [`Element::on_key`] handler on the same node, and a key repeat fires
+    /// nothing. A press handler that ran takes the key, so it does not reach
+    /// an ancestor; without a press handler the key bubbles as usual.
+    ///
+    /// This makes the node focusable, like [`Element::on_key`] does.
+    pub fn activate_on_keys(mut self) -> Self {
+        self.handlers.activate_on_keys = true;
         self.focusable = true;
         self
     }

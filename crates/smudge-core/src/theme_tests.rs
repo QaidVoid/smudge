@@ -2,13 +2,15 @@ use crate::geometry::Color;
 use crate::theme::{ColorToken, ColorValue, RadiusToken, RadiusValue, Theme};
 
 /// Every built-in color token, for tests that walk them all.
-const COLOR_TOKENS: [ColorToken; 9] = [
+const COLOR_TOKENS: [ColorToken; 11] = [
     ColorToken::SURFACE,
     ColorToken::SURFACE_HOVER,
     ColorToken::SURFACE_PRESSED,
     ColorToken::TEXT,
     ColorToken::TEXT_MUTED,
     ColorToken::ACCENT,
+    ColorToken::ACCENT_HOVER,
+    ColorToken::ACCENT_PRESSED,
     ColorToken::ACCENT_TEXT,
     ColorToken::BORDER,
     ColorToken::FOCUS_RING,

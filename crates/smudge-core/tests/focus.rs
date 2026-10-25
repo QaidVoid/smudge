@@ -567,3 +567,87 @@ fn a_control_disabled_and_enabled_again_does_not_take_keys_without_focus() {
     assert!(harness.app().focused().is_none());
     assert_eq!(enters.get(), 0, "a control without the focus takes no key");
 }
+
+#[test]
+fn activate_on_keys_runs_the_press_handler_for_enter_and_space() {
+    let (presses, on_press) = counter();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(40.0))
+                .height(px(20.0))
+                .activate_on_keys()
+                .on_press(on_press),
+        )
+    });
+    harness.frame();
+    harness.press_key(Key::Tab);
+
+    harness.press_key(Key::Enter);
+    harness.press_key(Key::Space);
+
+    assert_eq!(
+        presses.get(),
+        2,
+        "Enter and Space each fire the press handler once"
+    );
+}
+
+#[test]
+fn activate_on_keys_fires_once_per_press_and_not_per_repeat() {
+    let (presses, on_press) = counter();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(40.0))
+                .height(px(20.0))
+                .activate_on_keys()
+                .on_press(on_press),
+        )
+    });
+    harness.frame();
+    harness.press_key(Key::Tab);
+
+    let repeat = KeyEvent {
+        key: Key::Enter,
+        pressed: true,
+        repeat: true,
+        modifiers: Modifiers::default(),
+        text: None,
+    };
+    harness.event(InputEvent::Key(repeat.clone()));
+    harness.event(InputEvent::Key(KeyEvent {
+        pressed: false,
+        ..repeat
+    }));
+    harness.press_key(Key::Enter);
+
+    assert_eq!(
+        presses.get(),
+        1,
+        "the repeat fires nothing and the fresh press fires once"
+    );
+}
+
+#[test]
+fn activate_on_keys_without_a_press_handler_lets_the_key_bubble() {
+    let (enters, on_key) = key_counter(|event| event.key == Key::Enter);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .on_key(on_key)
+                .child(panel().width(px(40.0)).height(px(20.0)).activate_on_keys()),
+        )
+    });
+    harness.frame();
+    // A press on the inner panel focuses it, because it can take the focus.
+    harness.click(Point { x: 20.0, y: 10.0 });
+
+    harness.press_key(Key::Enter);
+
+    assert_eq!(
+        enters.get(),
+        1,
+        "without a press handler the key is not taken and reaches the ancestor"
+    );
+}

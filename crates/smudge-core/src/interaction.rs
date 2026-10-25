@@ -89,6 +89,10 @@ pub(crate) struct Handlers {
     pub(crate) on_key: Option<KeyHandler>,
     /// Runs when the node gains or loses the keyboard focus.
     pub(crate) on_focus: Option<Box<dyn FnMut(bool)>>,
+    /// Whether a fresh press of Enter or Space runs the node's
+    /// [`on_press`](Self::on_press) handler, which is how a button fires from
+    /// the keyboard.
+    pub(crate) activate_on_keys: bool,
 }
 
 impl Handlers {
@@ -440,19 +444,22 @@ impl WidgetTree {
         });
     }
 
-    /// Runs `on_press` of `id` inside the node's owner.
+    /// Runs `on_press` of `id` inside the node's owner, and returns whether
+    /// the handler ran.
     ///
     /// A node that became disabled or hidden while its press was held does not
-    /// run it, because a disabled node's handlers never run.
-    fn run_press(&mut self, id: WidgetId) {
+    /// run it, because a disabled node's handlers never run. Key activation
+    /// shares this path, so a button fires the same handler from either input.
+    pub(super) fn run_press(&mut self, id: WidgetId) -> bool {
         if self.nodes.get(id).is_none_or(|node| {
             node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
         }) {
-            return;
+            return false;
         }
         let Some(owner) = self.owner(id).cloned() else {
-            return;
+            return false;
         };
+        let mut ran = false;
         owner.with(|| {
             if let Some(on_press) = self
                 .nodes
@@ -460,8 +467,10 @@ impl WidgetTree {
                 .and_then(|node| node.handlers.on_press.as_mut())
             {
                 on_press();
+                ran = true;
             }
         });
+        ran
     }
 
     /// Runs `on_pointer_down` of `id` inside the node's owner.
