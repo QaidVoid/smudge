@@ -2123,6 +2123,7 @@ dependencies = [
  "smudge-core",
  "smudge-cpu",
  "smudge-text",
+ "smudge-widgets",
 ]
 
 [[package]]

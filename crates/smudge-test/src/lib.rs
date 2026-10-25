@@ -6,8 +6,10 @@
 
 #![forbid(unsafe_code)]
 
+use std::cell::Cell;
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use smudge_core::app::{App, AppConfig, FrameOutput, RepaintMode};
 use smudge_core::element::IntoElement;
@@ -18,6 +20,10 @@ use smudge_cpu::CpuRenderer;
 
 /// The color the harness clears the surface with before it replays a frame.
 const CLEAR_COLOR: Color = Color::WHITE;
+
+/// The most frames [`Harness::settle`] runs before it gives up on the app
+/// settling.
+const SETTLE_FRAMES: u32 = 8;
 
 /// What one frame did, copied out of the app so the harness stays usable.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +86,8 @@ pub struct Harness {
     scale: f32,
     /// The clear color of the last frame.
     clear_color: Color,
+    /// Whether a signal write woke the app since the last frame began.
+    woken: Rc<Cell<bool>>,
 }
 
 impl Harness {
@@ -104,6 +112,11 @@ impl Harness {
             },
             build,
         );
+        let woken = Rc::new(Cell::new(false));
+        app.set_wake_callback({
+            let woken = Rc::clone(&woken);
+            move || woken.set(true)
+        });
         let (surface_width, surface_height) = app.surface_size();
         Harness {
             renderer: CpuRenderer::new(surface_width, surface_height),
@@ -113,6 +126,7 @@ impl Harness {
             damage: Vec::new(),
             scale,
             clear_color: CLEAR_COLOR,
+            woken,
         }
     }
 
@@ -136,7 +150,9 @@ impl Harness {
             damage,
             scale,
             clear_color,
+            woken,
         } = self;
+        woken.set(false);
         let (width, height) = app.surface_size();
         if (renderer.width(), renderer.height()) != (width, height) {
             renderer.resize(width, height);
@@ -159,6 +175,42 @@ impl Harness {
             nodes_painted: stats.nodes_painted,
             layout_ran: stats.layout_ran,
         }
+    }
+
+    /// Returns whether a signal write woke the app since the last frame
+    /// began, which is how a window learns that it needs another frame.
+    ///
+    /// A write between frames wakes the app, and so does a write made during
+    /// a frame, for example a size a widget reports while it paints, which
+    /// the next frame applies. The harness installs the app's wake callback
+    /// itself, so a test that replaces it through [`Harness::app`] turns this
+    /// off.
+    pub fn woken(&self) -> bool {
+        self.woken.get()
+    }
+
+    /// Runs frames until the app asks for no more, as a window would, and
+    /// returns how many ran.
+    ///
+    /// The app asks for a frame when a signal write woke it, see
+    /// [`Harness::woken`], or when [`App::needs_frame`] reports work.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the app still asks for a frame after eight frames, which
+    /// means something wakes it on every frame.
+    pub fn settle(&mut self) -> u32 {
+        let mut frames = 0;
+        while self.woken() || self.app.needs_frame() {
+            assert!(
+                frames < SETTLE_FRAMES,
+                "the app still asked for a frame after {SETTLE_FRAMES} frames, \
+                 so something wakes it on every frame"
+            );
+            self.frame();
+            frames += 1;
+        }
+        frames
     }
 
     /// Returns the app, so a test can change the viewport, the repaint mode or

@@ -31,6 +31,13 @@
 //! edit. A row is built once per key and reads nothing but its key,
 //! which is what lets a fresh mount rebuild the same rows from the final
 //! list.
+//!
+//! The root also mounts a scroll view. A scroll edit moves the view's
+//! content and its thumb without a layout, and an offset past either end
+//! checks the clamp. The view measures its heights when it paints and applies
+//! them on the next frame, so after every frame the case runs the frames
+//! those measurements ask for, checking each one the same way, before it
+//! compares with a fresh mount.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -41,11 +48,12 @@ use smudge_core::element::{AnyElement, Element, IntoElement, for_each, show};
 use smudge_core::geometry::{Color, Point, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::paint::PaintOp;
-use smudge_core::reactive::{prelude::*, signal_local};
+use smudge_core::reactive::{RwSignal, prelude::*, signal_local};
 use smudge_core::style::{Direction, Edges, Length, px};
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 use smudge_test::Harness;
 use smudge_text::{TextLayout, TextStyle, TextSystem};
+use smudge_widgets::{ScrollExt, ScrollView, column, scroll};
 
 /// The viewport a scene starts in, in logical pixels.
 const VIEWPORT: Size = Size {
@@ -55,6 +63,15 @@ const VIEWPORT: Size = Size {
 
 /// The number of cases each property test runs when `PROPTEST_CASES` is unset.
 const DEFAULT_CASES: u32 = 64;
+
+/// The height of the scroll view the root mounts, in logical pixels.
+const SCROLL_VIEW_HEIGHT: f32 = 96.0;
+
+/// The height of one row of the scroll view's content, in logical pixels.
+const SCROLL_ROW_HEIGHT: f32 = 30.0;
+
+/// How many rows of content the scroll view holds.
+const SCROLL_ROW_COUNT: usize = 5;
 
 /// The deepest level a generated node may sit at, counting the root as one.
 const MAX_DEPTH: u32 = 4;
@@ -738,6 +755,37 @@ impl ListTracked {
     }
 }
 
+/// The offset signal of a scene's scroll view.
+///
+/// The view writes the offset it clamped back to the signal, so once a scene
+/// has settled the signal holds the position on screen, and a fresh mount
+/// starts from that value. A clamp is not undone by a later resize that
+/// widens the range, so the value the edits wrote is not enough to rebuild
+/// the scene.
+struct ScrollTracked {
+    /// The offset signal the scroll view's element is bound to.
+    signal: RwSignal<f32>,
+}
+
+impl ScrollTracked {
+    /// Creates an offset signal at `value`.
+    fn new(value: f32) -> ScrollTracked {
+        ScrollTracked {
+            signal: RwSignal::new(value),
+        }
+    }
+
+    /// Returns the offset the signal holds now, without tracking it.
+    fn value(&self) -> f32 {
+        self.signal.read(|offset| *offset)
+    }
+
+    /// Scrolls the scene's view to `offset`, which the view clamps.
+    fn write(&self, offset: f32) {
+        self.signal.set(offset);
+    }
+}
+
 /// Where a scene's bound property values come from.
 #[derive(Clone, Copy)]
 enum Values<'a> {
@@ -791,6 +839,9 @@ struct Scene {
     glyph_colors: Vec<Tracked<Color>>,
     /// The keys of the keyed list the root mounts, which a list edit changes.
     list: ListTracked,
+    /// The offset of the scroll view the root mounts, which a scroll edit
+    /// changes.
+    scroll: ScrollTracked,
     /// The viewport the scene is laid out in, which a viewport edit changes.
     viewport: Cell<Size>,
     /// The scale the scene renders at, which a viewport edit changes.
@@ -849,6 +900,10 @@ impl Scene {
                 Values::Current(from, _) => {
                     ListTracked::static_value(from.list.value.borrow().clone())
                 }
+            },
+            scroll: match values {
+                Values::Signals => ScrollTracked::new(0.0),
+                Values::Current(from, _) => ScrollTracked::new(from.scroll.value()),
             },
             viewport: Cell::new(viewport),
             scale: Cell::new(scale),
@@ -1111,10 +1166,42 @@ fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
     let element = append_children(scene, index, element);
     if index == 0 {
         let list = Rc::clone(&scene.list.get);
-        element.child(for_each(move || list(), |item| *item, list_row).direction(Direction::Column))
+        element
+            .child(for_each(move || list(), |item| *item, list_row).direction(Direction::Column))
+            .child(scroll_view(&scene.scroll))
     } else {
         element
     }
+}
+
+/// The scroll view the root mounts.
+///
+/// The view asks for [`SCROLL_VIEW_HEIGHT`] and its content is
+/// [`SCROLL_ROW_COUNT`] rows of [`SCROLL_ROW_HEIGHT`]. The root's column can
+/// shrink the view, so a viewport edit changes the range the offset clamps
+/// to and the thumb's length. The view has a border and padding, so the clip
+/// inside the border and the content box reach the comparisons, and the rows
+/// paint distinct colors, so a scroll moves pixels they can tell apart.
+fn scroll_view(tracked: &ScrollTracked) -> Element<ScrollView> {
+    let mut content = column();
+    for index in 0..SCROLL_ROW_COUNT {
+        content = content.child(
+            panel()
+                .width(px(120.0))
+                .height(px(SCROLL_ROW_HEIGHT))
+                .background(Color::rgb(
+                    (index * 61 + 30) as u8,
+                    (index * 83 + 70) as u8,
+                    (index * 47 + 120) as u8,
+                )),
+        );
+    }
+    scroll(content)
+        .offset(tracked.signal.clone())
+        .height(px(SCROLL_VIEW_HEIGHT))
+        .border(2.0)
+        .border_color(Color::rgb(40, 40, 40))
+        .padding(px(3.0))
 }
 
 /// The row the keyed list mounts for its key.
@@ -1194,6 +1281,8 @@ enum Edit {
     ListRemove(usize),
     /// Reverses the keyed list.
     ListReverse,
+    /// Scrolls the scene's scroll view to this offset, in logical pixels.
+    Scroll(f32),
     /// Moves the pointer to this position, in logical pixels.
     Move(Point),
     /// Presses the primary button at this position.
@@ -1254,6 +1343,7 @@ impl Edit {
                 keys.reverse();
                 scene.list.write(keys);
             }
+            Edit::Scroll(offset) => scene.scroll.write(offset),
             Edit::Move(position) => harness.move_to(position),
             Edit::DownAt(position) => harness.event(InputEvent::PointerDown {
                 position,
@@ -1306,7 +1396,8 @@ impl Edit {
             | Edit::Viewport(..)
             | Edit::ListAppend(_)
             | Edit::ListRemove(_)
-            | Edit::ListReverse => {}
+            | Edit::ListReverse
+            | Edit::Scroll(_) => {}
         }
     }
 }
@@ -1338,6 +1429,8 @@ enum EditKind {
     ListRemove,
     /// A keyed list reversal.
     ListReverse,
+    /// A scroll offset change.
+    Scroll,
 }
 
 /// Any edit kind, and every scene has a target for each of them.
@@ -1355,6 +1448,7 @@ fn any_edit_kind() -> impl Strategy<Value = EditKind> {
         Just(EditKind::ListAppend),
         Just(EditKind::ListRemove),
         Just(EditKind::ListReverse),
+        Just(EditKind::Scroll),
     ]
 }
 
@@ -1390,6 +1484,9 @@ fn any_edit(counts: SignalCounts) -> impl Strategy<Value = Edit> {
         EditKind::ListAppend => (0u64..8).prop_map(Edit::ListAppend).boxed(),
         EditKind::ListRemove => (0..4usize).prop_map(Edit::ListRemove).boxed(),
         EditKind::ListReverse => Just(Edit::ListReverse).boxed(),
+        // The view's range is at least 0 to 64, and offsets past either end
+        // check the clamp and the write-back.
+        EditKind::Scroll => (-20.0f32..=200.0).prop_map(Edit::Scroll).boxed(),
     })
 }
 
@@ -1516,6 +1613,26 @@ fn assert_settled(harness: &mut Harness) {
     );
 }
 
+/// Runs the frames that writes made during a frame ask for, and checks each
+/// one like the frame before it.
+///
+/// The scroll view measures its heights when it paints, so a geometry change
+/// reaches its clamp and its thumb one frame later. The measurement wakes the
+/// app, which is how a window learns to run that frame, and the harness
+/// records the wake. The frames run until no write wakes the app, which is
+/// the state a window shows once it stops drawing.
+fn settle(harness: &mut Harness) {
+    for _ in 0..4 {
+        if !harness.woken() {
+            return;
+        }
+        harness.frame();
+        assert_settled(harness);
+        harness.assert_matches_full_repaint();
+    }
+    panic!("the scene still woke the app after four frames, so it never settles");
+}
+
 /// Requires the surface of `harness` to match a fresh mount of the final state
 /// of `data`, byte for byte.
 ///
@@ -1549,12 +1666,14 @@ fn assert_matches_fresh_mount(
     });
     mount.frame();
     assert_settled(&mut mount);
+    settle(&mut mount);
     for edits in applied_events {
         for edit in edits {
             edit.replay(&fresh, &mut mount);
         }
         mount.frame();
         assert_settled(&mut mount);
+        settle(&mut mount);
     }
     harness.assert_matches(&mount);
 }
@@ -1581,6 +1700,7 @@ fn check_scene(scale: f32, data: &SceneData, geometry: &[Vec<Edit>], events: &[V
     harness.frame();
     assert_settled(&mut harness);
     harness.assert_matches_full_repaint();
+    settle(&mut harness);
     assert_matches_fresh_mount(&harness, &scene, data, &scene.disabled_values(), &[]);
 
     for edits in geometry {
@@ -1590,6 +1710,7 @@ fn check_scene(scale: f32, data: &SceneData, geometry: &[Vec<Edit>], events: &[V
         harness.frame();
         assert_settled(&mut harness);
         harness.assert_matches_full_repaint();
+        settle(&mut harness);
         assert_matches_fresh_mount(&harness, &scene, data, &scene.disabled_values(), &[]);
     }
 
@@ -1601,6 +1722,7 @@ fn check_scene(scale: f32, data: &SceneData, geometry: &[Vec<Edit>], events: &[V
         harness.frame();
         assert_settled(&mut harness);
         harness.assert_matches_full_repaint();
+        settle(&mut harness);
         assert_matches_fresh_mount(&harness, &scene, data, &disabled, &events[..=index]);
     }
 }

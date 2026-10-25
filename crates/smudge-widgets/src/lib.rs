@@ -1,4 +1,4 @@
-//! The core widget set: layout containers and the button.
+//! The core widget set: layout containers, the button and the scroll view.
 //!
 //! Every widget here is built from the [`Panel`](smudge_core::widget::Panel)
 //! the core provides and the [`Label`](smudge_text::Label) the text crate
@@ -8,8 +8,7 @@
 //! ```
 //! use smudge_core::geometry::Size;
 //! use smudge_core::style::px;
-//! use smudge_widgets::ButtonExt;
-//! use smudge_widgets::{button, column, spacer};
+//! use smudge_widgets::{ButtonExt, button, column, scroll, spacer};
 //!
 //! let toolbar = column()
 //!     .width(px(200.0))
@@ -19,11 +18,14 @@
 //!     })
 //!     .child(button("Save"))
 //!     .child(button("Cancel").primary())
-//!     .child(spacer());
+//!     .child(spacer())
+//!     .child(scroll(column()).height(px(120.0)));
 //! ```
 
 mod button;
 mod containers;
+mod scroll;
 
 pub use button::{ButtonExt, button};
 pub use containers::{column, row, spacer, stack};
+pub use scroll::{ScrollExt, ScrollView, scroll};
