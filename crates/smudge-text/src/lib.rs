@@ -21,12 +21,16 @@
 
 mod fonts;
 mod glyphs;
+mod input;
 mod label;
 mod layout;
 mod style;
 mod system;
+mod text_input;
 
+pub use input::Editor;
 pub use label::{Label, LabelExt, label};
 pub use layout::TextLayout;
 pub use style::{TextStyle, current_text_style, provide_text_style};
 pub use system::TextSystem;
+pub use text_input::{TextInput, TextInputExt, text_input};

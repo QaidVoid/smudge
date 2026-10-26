@@ -10,13 +10,15 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::layout::TextLayout;
 use parley::FontData;
+use parley::PositionedLayoutItem;
 use skrifa::GlyphId;
 use skrifa::MetadataProvider;
 use skrifa::instance::{LocationRef, Size};
 use smudge_core::geometry::{Color, Point, Rect};
 use smudge_core::paint::{FontBlob, GlyphRun, PositionedGlyph};
+
+use crate::layout::TextLayout;
 
 thread_local! {
     /// The font blobs already mapped out of parley's font data, keyed by the
@@ -46,50 +48,69 @@ impl TextLayout {
     /// particular when called from inside another `with` call on the same
     /// thread.
     pub fn glyph_runs_at(&self, origin: Point, color: Color) -> Vec<GlyphRun> {
-        self.glyph_runs()
-            .map(|run| {
-                let parley_run = run.run();
-                let font = font_blob(parley_run.font());
-                let size = parley_run.font_size();
-                // skrifa reads the font once per run, not once per glyph.
-                let metrics = skrifa::FontRef::from_index(
-                    parley_run.font().data.as_ref(),
-                    parley_run.font().index,
-                )
-                .ok()
-                .map(|font| font.glyph_metrics(Size::new(size), LocationRef::default()));
-                let mut glyphs = Vec::new();
-                let mut ink = Rect::default();
-                for glyph in run.positioned_glyphs() {
-                    let position = PositionedGlyph {
-                        id: glyph.id,
-                        x: origin.x + glyph.x,
-                        y: origin.y + glyph.y,
-                    };
-                    if let Some(bounds) = metrics
-                        .as_ref()
-                        .and_then(|metrics| metrics.bounds(GlyphId::new(glyph.id)))
-                    {
-                        // Font coordinates grow up, window coordinates down.
-                        ink = ink.union(Rect::new(
-                            position.x + bounds.x_min,
-                            position.y - bounds.y_max,
-                            position.x + bounds.x_max,
-                            position.y - bounds.y_min,
-                        ));
-                    }
-                    glyphs.push(position);
-                }
-                GlyphRun {
-                    font,
-                    size,
-                    color,
-                    glyphs,
-                    ink_bounds: expand(ink, 1.0),
-                }
-            })
-            .collect()
+        glyph_runs(&self.layout, origin, color)
     }
+}
+
+/// Converts the glyph runs of any laid out text into paint operations' runs.
+///
+/// The conversion is shared with the text input, which paints a parley
+/// [`Layout`](parley::Layout) it drives through the editor rather than a
+/// [`TextLayout`] it laid out itself.
+pub(crate) fn glyph_runs<B: parley::Brush>(
+    layout: &parley::Layout<B>,
+    origin: Point,
+    color: Color,
+) -> Vec<GlyphRun> {
+    layout
+        .lines()
+        .flat_map(|line| line.items())
+        .filter_map(|item| match item {
+            PositionedLayoutItem::GlyphRun(run) => Some(run),
+            PositionedLayoutItem::InlineBox(_) => None,
+        })
+        .map(|run| {
+            let parley_run = run.run();
+            let font = font_blob(parley_run.font());
+            let size = parley_run.font_size();
+            // skrifa reads the font once per run, not once per glyph.
+            let metrics = skrifa::FontRef::from_index(
+                parley_run.font().data.as_ref(),
+                parley_run.font().index,
+            )
+            .ok()
+            .map(|font| font.glyph_metrics(Size::new(size), LocationRef::default()));
+            let mut glyphs = Vec::new();
+            let mut ink = Rect::default();
+            for glyph in run.positioned_glyphs() {
+                let position = PositionedGlyph {
+                    id: glyph.id,
+                    x: origin.x + glyph.x,
+                    y: origin.y + glyph.y,
+                };
+                if let Some(bounds) = metrics
+                    .as_ref()
+                    .and_then(|metrics| metrics.bounds(GlyphId::new(glyph.id)))
+                {
+                    // Font coordinates grow up, window coordinates down.
+                    ink = ink.union(Rect::new(
+                        position.x + bounds.x_min,
+                        position.y - bounds.y_max,
+                        position.x + bounds.x_max,
+                        position.y - bounds.y_min,
+                    ));
+                }
+                glyphs.push(position);
+            }
+            GlyphRun {
+                font,
+                size,
+                color,
+                glyphs,
+                ink_bounds: expand(ink, 1.0),
+            }
+        })
+        .collect()
 }
 
 /// Returns the [`FontBlob`] for parley's font data, reusing the blob the font

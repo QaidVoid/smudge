@@ -1,0 +1,22 @@
+[package]
+name = "smudge-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+smudge-core = { version = "0.1.0", path = "../crates/smudge-core" }
+
+[dependencies.smudge-text]
+path = "../crates/smudge-text"
+
+[[bin]]
+name = "text_input_edits"
+path = "fuzz_targets/text_input_edits.rs"
+test = false
+doc = false
+bench = false

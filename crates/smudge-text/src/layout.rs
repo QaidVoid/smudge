@@ -20,7 +20,7 @@ use smudge_core::geometry::Size;
 /// glyph runs in whatever color it resolves when it paints.
 pub struct TextLayout {
     /// The shaped and line-broken text.
-    layout: parley::Layout<()>,
+    pub(crate) layout: parley::Layout<()>,
 }
 
 impl TextLayout {

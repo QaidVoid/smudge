@@ -2134,9 +2134,11 @@ dependencies = [
  "fontique",
  "insta",
  "parley",
+ "proptest",
  "skrifa",
  "smudge-core",
  "smudge-test",
+ "web-time",
 ]
 
 [[package]]
