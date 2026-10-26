@@ -507,6 +507,10 @@ fn an_edit_moves_the_caret_in_the_frame_that_shows_the_text() {
 
     harness.type_text("ab");
     harness.frame();
+    assert!(
+        !harness.woken(),
+        "placing the caret in the apply step asks for no second frame"
+    );
     let next = harness.frame();
     assert!(
         next.nodes_painted == 0 && next.damage.is_empty(),

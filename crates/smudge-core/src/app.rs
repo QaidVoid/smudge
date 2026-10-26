@@ -16,6 +16,7 @@ use crate::element::{IntoElement, UpdateQueue, mount};
 use crate::geometry::{Color, PixelRect, Point, Rect, Size};
 use crate::input::{InputEvent, Modifiers};
 use crate::paint::DisplayList;
+use crate::reactive::runtime::Scope;
 use crate::reactive::{self, Owner, RenderEffect};
 use crate::theme::Theme;
 use crate::timer::{self, Clock, TimerBook};
@@ -327,7 +328,10 @@ impl App {
     /// the callback once, so the platform learns that the next frame has work
     /// to do. Every binding of this app reports its wake here, and an app on
     /// another part of the thread neither sees this app's wakes nor hides
-    /// them. See
+    /// them. A write made while [`App::frame`] runs its timers, its tick and
+    /// its updates runs no callback, because the frame runs the effects it
+    /// wakes before it lays out; a write made later in the frame, while a
+    /// widget paints, does. See
     /// [`set_wake_callback`](crate::reactive::set_wake_callback) for the
     /// exact rules.
     pub fn set_wake_callback(&self, callback: impl Fn() + 'static) {
@@ -510,6 +514,10 @@ impl App {
     /// flush, which means it writes a signal that wakes it again, directly or
     /// through another binding. A release build never returns from that frame.
     pub fn frame(&mut self) -> FrameOutput<'_> {
+        // The frame runs every effect its timers, its tick and its updates
+        // wake before it lays out, so reporting those wakes would only ask
+        // the platform for a second frame with nothing to do.
+        let quiet = QuietWakes::enter(&self._root);
         timer::fire_due(&self.timers);
 
         let now = self.now();
@@ -519,11 +527,13 @@ impl App {
 
         let flush_start = Instant::now();
         let mut rounds = 0u32;
+        let mut settled = false;
         loop {
             rounds += 1;
             let flushed = reactive::flush();
             let applied = self.queue.apply(&mut self.tree);
             if !flushed && !applied {
+                settled = true;
                 break;
             }
             debug_assert!(
@@ -538,6 +548,11 @@ impl App {
         }
         self.stats.flush = flush_start.elapsed();
         self.stats.flush_rounds = rounds;
+        drop(quiet);
+        if !settled {
+            // The capped loop left work queued that no frame has run yet.
+            self._root.wake();
+        }
 
         let layout_start = Instant::now();
         self.stats.layout_ran = self.tree.layout(self.config.viewport);
@@ -622,5 +637,25 @@ impl App {
     /// ```
     pub fn visit_nodes(&self, mut visit: impl FnMut(usize, &'static str, Rect)) {
         self.tree.visit_nodes(&mut visit);
+    }
+}
+
+/// Keeps the wakes of one app's owner tree unreported while its frame runs
+/// them itself, and reports them again when dropped, even when the frame
+/// unwinds.
+struct QuietWakes(Rc<Scope>);
+
+impl QuietWakes {
+    /// Silences the wakes of the tree `root` belongs to.
+    fn enter(root: &Owner) -> QuietWakes {
+        let scope = Rc::clone(&root.data().scope);
+        scope.quiet.set(true);
+        QuietWakes(scope)
+    }
+}
+
+impl Drop for QuietWakes {
+    fn drop(&mut self) {
+        self.0.quiet.set(false);
     }
 }

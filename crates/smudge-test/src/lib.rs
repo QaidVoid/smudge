@@ -192,9 +192,12 @@ impl Harness {
     /// Returns whether a signal write woke the app since the last frame
     /// began, which is how a window learns that it needs another frame.
     ///
-    /// A write between frames wakes the app, and so does a write made during
-    /// a frame, for example a size a widget reports while it paints, which
-    /// the next frame applies. The harness installs the app's wake callback
+    /// A write between frames wakes the app, and so does a write made while
+    /// a frame paints, for example a size a widget reports, which the next
+    /// frame applies. A write the frame applies itself, from a timer, the
+    /// tick or a bind function, wakes nothing, as
+    /// [`App::set_wake_callback`] describes. The harness installs the app's
+    /// wake callback
     /// itself, so a test that replaces it through [`Harness::app`] turns this
     /// off.
     pub fn woken(&self) -> bool {

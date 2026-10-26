@@ -42,6 +42,9 @@ pub(crate) struct Scope {
     /// Kept per scope, so one app's pending redraw never hides another app's
     /// wake.
     woken: Cell<bool>,
+    /// Whether wakes go unreported, because the app this scope belongs to is
+    /// running a frame that flushes until no effect is left.
+    pub(crate) quiet: Cell<bool>,
 }
 
 impl Scope {
@@ -50,6 +53,7 @@ impl Scope {
         Scope {
             wake: RefCell::new(None),
             woken: Cell::new(false),
+            quiet: Cell::new(false),
         }
     }
 }
@@ -533,7 +537,10 @@ impl Runtime {
         };
         // An effect that an unwound flush left queued has a scope whose wake
         // was cleared, so the wake is checked even when the effect is queued.
-        let first_wake = (!scope.woken.replace(true)).then(|| Rc::clone(scope));
+        // A quiet scope leaves its wake state alone, so the first write after
+        // its frame still asks for a redraw.
+        let first_wake =
+            (!scope.quiet.get() && !scope.woken.replace(true)).then(|| Rc::clone(scope));
         if !*queued {
             *queued = true;
             self.queue.push_back(id);

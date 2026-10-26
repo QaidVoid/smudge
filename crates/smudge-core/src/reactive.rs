@@ -17,7 +17,9 @@
 //! get their own redraw requests. It runs on the first wake of its tree after
 //! a flush and not again until the next flush ends. A write inside a flush
 //! that wakes a tree the flush already serves asks for nothing, and one that
-//! wakes another tree asks that tree for a redraw. A wake is reported on the
+//! wakes another tree asks that tree for a redraw. While an app runs the
+//! part of its frame that flushes until no effect is left, its tree asks for
+//! nothing either, because the frame runs what the write woke. A wake is reported on the
 //! thread that writes the signal, so write signals only on the thread that
 //! runs their effects.
 //!
@@ -618,6 +620,16 @@ impl Owner {
     /// Returns the current owner, when one is set and still alive.
     fn current() -> Option<Rc<OwnerData>> {
         runtime::with_runtime(|runtime| runtime.current_owner())
+    }
+
+    /// Runs the wake callback of this owner's tree, when one is set.
+    ///
+    /// The callback runs outside the runtime, so it may write signals.
+    pub(crate) fn wake(&self) {
+        let callback = self.inner.scope.wake.borrow().clone();
+        if let Some(callback) = callback {
+            callback();
+        }
     }
 
     /// Returns the owner's data, for the crate's own wiring such as the

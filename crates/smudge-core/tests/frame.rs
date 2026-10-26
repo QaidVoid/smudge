@@ -544,3 +544,54 @@ fn a_scaled_viewport_reports_physical_pixels() {
         "damage leaves the app in physical pixels"
     );
 }
+
+#[test]
+fn a_write_the_frame_applies_asks_for_no_further_frame() {
+    let clock = smudge_core::timer::VirtualClock::new(web_time::Instant::now());
+    let (dark, set_dark) = signal_local(false);
+    let set_from_timer = set_dark.clone();
+    let mut app = App::with_clock(
+        config(RepaintMode::Damage),
+        clock.clone().into(),
+        move || {
+            smudge_core::timer::after(std::time::Duration::from_millis(10), move || {
+                set_from_timer.set(true)
+            });
+            panel().child(
+                panel()
+                    .width(px(20.0))
+                    .height(px(20.0))
+                    .background(move || {
+                        if dark.get() {
+                            Color::BLACK
+                        } else {
+                            Color::WHITE
+                        }
+                        .into()
+                    }),
+            )
+        },
+    );
+    let wakes = Rc::new(Cell::new(0u32));
+    app.set_wake_callback({
+        let wakes = Rc::clone(&wakes);
+        move || wakes.set(wakes.get() + 1)
+    });
+    app.frame();
+
+    clock.advance(std::time::Duration::from_millis(10));
+    app.frame();
+    assert_eq!(
+        app.stats().nodes_painted,
+        1,
+        "the timer's write was painted"
+    );
+    assert_eq!(
+        wakes.get(),
+        0,
+        "the frame ran what the timer woke, so it asks for no other frame"
+    );
+
+    set_dark.set(false);
+    assert_eq!(wakes.get(), 1, "a write between frames still asks for one");
+}
