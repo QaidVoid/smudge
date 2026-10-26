@@ -170,3 +170,37 @@ fn a_timer_with_no_app_is_inert() {
     drop(handle);
     timer::after(Duration::from_millis(1), || panic!("never runs"));
 }
+
+#[test]
+fn due_timers_run_between_frames_and_wake_only_when_they_write() {
+    let start = Instant::now();
+    let (fired, set_fired) = signal_local(false);
+    let (mut app, clock) = timed(start, move || {
+        timer::after(Duration::from_millis(10), || {});
+        timer::after(Duration::from_millis(20), move || set_fired.set(true));
+    });
+    let watched = fired.clone();
+    let _watch = app
+        .root()
+        .with(|| crate::reactive::RenderEffect::new(move || watched.get()));
+    let wakes = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    app.set_wake_callback({
+        let wakes = std::rc::Rc::clone(&wakes);
+        move || wakes.set(wakes.get() + 1)
+    });
+    app.frame();
+
+    clock.advance(Duration::from_millis(10));
+    app.run_due_timers();
+    assert_eq!(
+        wakes.get(),
+        0,
+        "a timer that writes nothing asks for no frame"
+    );
+    assert_eq!(app.next_deadline(), Some(start + Duration::from_millis(20)));
+
+    clock.advance(Duration::from_millis(10));
+    app.run_due_timers();
+    assert!(fired.get(), "the timer ran without a frame");
+    assert_eq!(wakes.get(), 1, "its write asks for the frame that shows it");
+}

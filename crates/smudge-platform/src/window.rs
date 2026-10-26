@@ -444,20 +444,28 @@ where
         Ok(())
     }
 
-    /// Puts the event loop to sleep until the next timer comes due.
+    /// Runs the timers that are due and puts the event loop to sleep until
+    /// the next one.
     ///
     /// An app with a tick keeps itself awake and needs nothing here. Any
-    /// other app waits until its soonest timer fires, which wakes the window
-    /// for the frame that runs it, or without a timer waits for events the
-    /// ordinary way. A timer that is already due asks for the frame at once,
-    /// because the timeout of a sleeping loop would otherwise be checked
-    /// only after the next event.
+    /// other app runs its due timers between frames: one that writes a
+    /// signal wakes the window through the app's wake callback, and one that
+    /// changes nothing draws no frame, so it never costs a present. The loop
+    /// then waits until the soonest timer, or for events when none is left.
+    /// A timer that is due again at once, such as one a callback just
+    /// scheduled with no delay, asks for a frame, which runs it.
     fn wait_for_timers(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(state) = self.state.as_ref() else {
+        let Some(state) = self.state.as_mut() else {
             return;
         };
         if state.app.has_tick() {
             return;
+        }
+        if wait_decision(state.app.next_deadline(), Instant::now()) == WaitDecision::Now {
+            state.app.run_due_timers();
+            if state.app.needs_frame() {
+                state.window.request_redraw();
+            }
         }
         match wait_decision(state.app.next_deadline(), Instant::now()) {
             WaitDecision::Now => state.window.request_redraw(),

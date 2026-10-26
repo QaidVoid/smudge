@@ -362,6 +362,18 @@ impl App {
         self.timers.borrow().next_deadline()
     }
 
+    /// Runs the timers that are due on the app's clock, outside a frame.
+    ///
+    /// A timer that writes a signal wakes the app through the callback set
+    /// with [`App::set_wake_callback`], like any write between frames, and a
+    /// timer that changes nothing asks for nothing. A platform calls this
+    /// when [`App::next_deadline`] passes, so a due timer costs a frame only
+    /// when it has something to show. [`App::frame`] runs due timers itself
+    /// as well, so a caller that draws every frame needs no call.
+    pub fn run_due_timers(&mut self) {
+        timer::fire_due(&self.timers);
+    }
+
     /// Returns whether a frame tick callback is set.
     pub fn has_tick(&self) -> bool {
         self.tick.is_some()
