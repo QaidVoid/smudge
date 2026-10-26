@@ -3,6 +3,7 @@
 
 use smudge_core::app::FrameOutput;
 use smudge_core::geometry::PixelRect;
+use smudge_core::renderer::Renderer;
 use tiny_skia::Pixmap;
 
 use crate::draw::Canvas;
@@ -172,6 +173,12 @@ fn inside_surface(rect: PixelRect, width: u32, height: u32) -> bool {
     let right = u64::from(rect.x) + u64::from(rect.width);
     let bottom = u64::from(rect.y) + u64::from(rect.height);
     right <= u64::from(width) && bottom <= u64::from(height)
+}
+
+impl Renderer for CpuRenderer {
+    fn render(&mut self, frame: &FrameOutput<'_>) {
+        CpuRenderer::render(self, frame);
+    }
 }
 
 #[cfg(test)]

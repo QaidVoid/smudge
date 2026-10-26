@@ -14,6 +14,7 @@ pub mod geometry;
 pub mod input;
 pub mod paint;
 pub mod reactive;
+pub mod renderer;
 pub mod style;
 pub mod theme;
 pub mod timer;

@@ -1,0 +1,21 @@
+[package]
+name = "smudge-gpu"
+description = "Vello-based GPU renderer for the Smudge GUI library"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+futures-executor = "0.3.34"
+skrifa = "0.44.0"
+smudge-core = { version = "0.1.0", path = "../smudge-core" }
+vello = { version = "0.11.0", default-features = false, features = ["wgpu", "wgpu_default"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+smudge-cpu = { path = "../smudge-cpu" }
+smudge-text = { path = "../smudge-text" }
