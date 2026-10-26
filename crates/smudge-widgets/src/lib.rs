@@ -1,4 +1,5 @@
-//! The core widget set: layout containers, the button and the scroll view.
+//! The core widget set: layout containers, the button, the scroll view and
+//! the virtual list.
 //!
 //! Every widget here is built from the [`Panel`](smudge_core::widget::Panel)
 //! the core provides and the [`Label`](smudge_text::Label) the text crate
@@ -25,7 +26,9 @@
 mod button;
 mod containers;
 mod scroll;
+mod virtual_list;
 
 pub use button::{ButtonExt, button};
 pub use containers::{column, row, spacer, stack};
 pub use scroll::{ScrollExt, ScrollView, scroll};
+pub use virtual_list::virtual_list;

@@ -55,6 +55,9 @@ struct ScrollChrome {
     content_height: RwSignal<Option<f32>>,
     /// The heights of the view, once the view has painted.
     viewport: RwSignal<Option<Viewport>>,
+    /// The visible height of the view, once the view has painted, reported to
+    /// a virtual list that computes its rows from it.
+    visible_height: RwSignal<Option<f32>>,
 }
 
 impl ScrollChrome {
@@ -87,13 +90,15 @@ pub struct ScrollView {
 impl Widget for ScrollView {
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
         let border = cx.style.layout.border_width;
+        let visible = finite(cx.content.height());
         report(
             &self.chrome.viewport,
             Viewport {
-                visible: finite(cx.content.height()),
+                visible,
                 track: finite(cx.rect.height() - border.top - border.bottom).max(0.0),
             },
         );
+        report(&self.chrome.visible_height, visible);
         Panel.paint(cx, out);
     }
 }
@@ -174,10 +179,25 @@ fn clamp_offset(desired: f32, max: f32) -> f32 {
 /// Before that, it applies any offset that is not negative as it is, which
 /// lets a view mount at a remembered position.
 pub fn scroll(content: impl IntoElement) -> Element<ScrollView> {
+    scroll_with_visible_height(content, RwSignal::new(None))
+}
+
+/// Creates a view like [`scroll`] that reports the visible height of its
+/// content box to `visible_height` once it has painted, and again whenever
+/// that height changes.
+///
+/// The height is a measurement only the view has, because it follows the
+/// style and the layout around it, so the virtual list reads it from this
+/// signal instead of asking for a fixed viewport.
+pub(crate) fn scroll_with_visible_height(
+    content: impl IntoElement,
+    visible_height: RwSignal<Option<f32>>,
+) -> Element<ScrollView> {
     let chrome = Rc::new(ScrollChrome {
         offset: RefCell::new(RwSignal::new(0.0)),
         content_height: RwSignal::new(None),
         viewport: RwSignal::new(None),
+        visible_height,
     });
 
     let wheel_chrome = Rc::clone(&chrome);

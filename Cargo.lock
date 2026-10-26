@@ -2282,6 +2282,7 @@ name = "smudge-widgets"
 version = "0.1.0"
 dependencies = [
  "insta",
+ "proptest",
  "smudge-core",
  "smudge-test",
  "smudge-text",
