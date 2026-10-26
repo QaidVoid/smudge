@@ -12,6 +12,7 @@ use std::ops::Range;
 use parley::StyleProperty;
 use parley::editing::PlainEditor;
 use parley::editing::PlainEditorDriver;
+use parley::editing::Selection;
 use parley::style::LineHeight;
 
 use parley::Generation;
@@ -25,6 +26,9 @@ use crate::system::TextSystem;
 
 /// The font size an editor starts with, before a style is applied.
 const DEFAULT_FONT_SIZE: f32 = 14.0;
+
+/// How many steps an editor can undo. Older steps are forgotten.
+const HISTORY_LIMIT: usize = 100;
 
 /// One single-line text buffer bound to a signal.
 ///
@@ -49,6 +53,49 @@ pub struct Editor {
     inner: RefCell<PlainEditor<()>>,
     /// The signal the text is bound to.
     value: RwSignal<String>,
+    /// The steps undo and redo walk through.
+    history: RefCell<History>,
+}
+
+/// The text and selection of an editor at one moment.
+struct Snapshot {
+    /// The text, without any composing preedit.
+    text: String,
+    /// The selection, as parley keeps it.
+    selection: Selection,
+}
+
+/// What kind of change an edit made, which decides the edits it groups with.
+#[derive(Clone, Copy, PartialEq)]
+enum EditKind {
+    /// Text was typed or inserted.
+    Insert,
+    /// Text was deleted.
+    Delete,
+}
+
+/// How one edit groups with the edits around it in the undo history.
+#[derive(Clone, Copy, PartialEq)]
+enum Grouping {
+    /// Extends the open step of the same kind, and stays open.
+    Joins,
+    /// Starts a step that the next edit of the same kind can join, as a
+    /// typed space starts the step of the word after it.
+    Starts,
+    /// Is a step of its own, which nothing joins.
+    Alone,
+}
+
+/// The undo and redo steps of one editor.
+#[derive(Default)]
+struct History {
+    /// The states before each step, oldest first.
+    undo: Vec<Snapshot>,
+    /// The states undo left, most recently undone last.
+    redo: Vec<Snapshot>,
+    /// The kind of the last edit and the selection it left, which the next
+    /// edit of the same kind joins when it starts where that one ended.
+    open: Option<(EditKind, Range<usize>)>,
 }
 
 impl Editor {
@@ -65,6 +112,7 @@ impl Editor {
         Editor {
             inner: RefCell::new(inner),
             value,
+            history: RefCell::new(History::default()),
         }
     }
 
@@ -146,40 +194,100 @@ impl Editor {
     /// This is how an outside write to the bound signal reaches the editor:
     /// the user typed somewhere else, or the application replaced the value.
     /// The selection collapses at the end, because a selection into text the
-    /// editor no longer has means nothing.
+    /// editor no longer has means nothing. The undo history is cleared, so
+    /// undo never brings back text the application replaced.
     pub fn set_text(&self, text: &str) {
         self.inner.borrow_mut().set_text(text);
         self.drive(|driver| driver.move_to_text_end());
+        *self.history.borrow_mut() = History::default();
     }
 
     /// Inserts `text` at the caret, replacing the selection.
+    ///
+    /// Typed characters group into one undo step until the caret moves, a
+    /// different edit runs, or a whitespace character starts the next step,
+    /// so undo removes text a word at a time. Inserting more than one
+    /// character at once, as a paste does, is a step of its own.
     pub fn insert(&self, text: &str) {
-        self.drive(|driver| driver.insert_or_replace_selection(text));
-        self.sync_text();
+        let mut chars = text.chars();
+        let grouping = match (chars.next(), chars.next()) {
+            (Some(single), None) if single.is_whitespace() => Grouping::Starts,
+            (Some(_), None) => Grouping::Joins,
+            _ => Grouping::Alone,
+        };
+        self.edit(EditKind::Insert, grouping, |driver| {
+            driver.insert_or_replace_selection(text);
+        });
     }
 
     /// Deletes one grapheme before the caret, or the selection.
+    ///
+    /// Repeated deletes group into one undo step until the caret moves or a
+    /// different edit runs.
     pub fn backspace(&self) {
-        self.drive(|driver| driver.backdelete());
-        self.sync_text();
+        self.edit(EditKind::Delete, Grouping::Joins, |driver| {
+            driver.backdelete();
+        });
     }
 
-    /// Deletes one word before the caret, or the selection.
+    /// Deletes one word before the caret, or the selection, as one undo step.
     pub fn backspace_word(&self) {
-        self.drive(|driver| driver.backdelete_word());
-        self.sync_text();
+        self.edit(EditKind::Delete, Grouping::Alone, |driver| {
+            driver.backdelete_word();
+        });
     }
 
     /// Deletes one grapheme after the caret, or the selection.
+    ///
+    /// Repeated deletes group into one undo step until the caret moves or a
+    /// different edit runs.
     pub fn delete(&self) {
-        self.drive(|driver| driver.delete());
-        self.sync_text();
+        self.edit(EditKind::Delete, Grouping::Joins, |driver| driver.delete());
     }
 
-    /// Deletes one word after the caret, or the selection.
+    /// Deletes one word after the caret, or the selection, as one undo step.
     pub fn delete_word(&self) {
-        self.drive(|driver| driver.delete_word());
-        self.sync_text();
+        self.edit(EditKind::Delete, Grouping::Alone, |driver| {
+            driver.delete_word();
+        });
+    }
+
+    /// Undoes the last undo step, restoring the text and the selection from
+    /// before it, or does nothing when there is none.
+    ///
+    /// Nothing is undone while an input method is composing, because the
+    /// composition owns the text around the caret until it commits.
+    pub fn undo(&self) {
+        if self.is_composing() {
+            return;
+        }
+        let Some(previous) = self.history.borrow_mut().undo.pop() else {
+            return;
+        };
+        let current = self.snapshot();
+        let mut history = self.history.borrow_mut();
+        history.redo.push(current);
+        history.open = None;
+        drop(history);
+        self.restore(previous);
+    }
+
+    /// Redoes the last undone step, or does nothing when there is none.
+    ///
+    /// Any edit after an undo discards the steps it could have redone.
+    pub fn redo(&self) {
+        if self.is_composing() {
+            return;
+        }
+        let Some(next) = self.history.borrow_mut().redo.pop() else {
+            return;
+        };
+        let current = self.snapshot();
+        let mut history = self.history.borrow_mut();
+        history.undo.push(current);
+        history.open = None;
+        drop(history);
+        self.restore(next);
     }
 
     /// Moves the caret one grapheme to the left, in visual order.
@@ -339,6 +447,61 @@ impl Editor {
         if !self.value.read(|current| self.has_text(current)) {
             self.value.set(self.text());
         }
+    }
+
+    /// Runs one edit of `kind` and records it in the undo history.
+    ///
+    /// An edit that changes no text records nothing. One that
+    /// [`Grouping::Joins`] extends the open step when the last edit was of
+    /// the same kind and left the selection where this one starts, and
+    /// otherwise starts a step of its own. Any edit discards the steps redo
+    /// could have taken, and one that is [`Grouping::Alone`] leaves no step
+    /// open behind it.
+    fn edit(
+        &self,
+        kind: EditKind,
+        grouping: Grouping,
+        f: impl FnOnce(&mut PlainEditorDriver<'_, ()>),
+    ) {
+        let before = self.snapshot();
+        self.drive(f);
+        if self.has_text(&before.text) {
+            return;
+        }
+        let mut history = self.history.borrow_mut();
+        let starts = before.selection.text_range();
+        let continues = grouping == Grouping::Joins
+            && history
+                .open
+                .as_ref()
+                .is_some_and(|(open, ended)| *open == kind && *ended == starts);
+        if !continues {
+            if history.undo.len() == HISTORY_LIMIT {
+                history.undo.remove(0);
+            }
+            history.undo.push(before);
+        }
+        history.redo.clear();
+        history.open = (grouping != Grouping::Alone).then(|| (kind, self.selection()));
+        drop(history);
+        self.sync_text();
+    }
+
+    /// Returns the text and the selection as they are now.
+    fn snapshot(&self) -> Snapshot {
+        let editor = self.inner.borrow();
+        Snapshot {
+            text: editor.text().to_string(),
+            selection: *editor.raw_selection(),
+        }
+    }
+
+    /// Puts the text and the selection of `snapshot` back, and writes the
+    /// text to the bound signal.
+    fn restore(&self, snapshot: Snapshot) {
+        self.inner.borrow_mut().set_text(&snapshot.text);
+        self.drive(|driver| driver.set_selection(snapshot.selection));
+        self.sync_text();
     }
 
     /// Runs `f` with parley's driver, which refreshes the layout around the

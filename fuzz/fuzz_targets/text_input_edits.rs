@@ -57,6 +57,10 @@ enum Op {
     SelectWordAt(f32),
     /// Replaces the text from outside, as a write to the bound signal does.
     Write(String),
+    /// Undoes the last step.
+    Undo,
+    /// Redoes the last undone step.
+    Redo,
 }
 
 /// Decodes the input bytes into a sequence of edits.
@@ -68,7 +72,7 @@ fn decode(bytes: &[u8]) -> Vec<Op> {
     let mut rest = bytes;
     while let Some((&command, tail)) = rest.split_first() {
         rest = tail;
-        let op = match command % 20 {
+        let op = match command % 22 {
             0 => Op::Insert(take_text(&mut rest)),
             1 => Op::Backspace,
             2 => Op::BackspaceWord,
@@ -88,7 +92,9 @@ fn decode(bytes: &[u8]) -> Vec<Op> {
             16 => Op::MoveToPoint(take_x(&mut rest)),
             17 => Op::ExtendToPoint(take_x(&mut rest)),
             18 => Op::SelectWordAt(take_x(&mut rest)),
-            _ => Op::Write(take_text(&mut rest)),
+            19 => Op::Write(take_text(&mut rest)),
+            20 => Op::Undo,
+            _ => Op::Redo,
         };
         ops.push(op);
     }
@@ -141,6 +147,8 @@ fn apply(editor: &Editor, value: &RwSignal<String>, op: &Op) {
             value.set(text.clone());
             editor.set_text(text);
         }
+        Op::Undo => editor.undo(),
+        Op::Redo => editor.redo(),
     }
 }
 

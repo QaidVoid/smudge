@@ -9,7 +9,8 @@
 //! builder methods. Editing is by grapheme, and with control or alt by word;
 //! a mouse press places the caret, a drag selects and a double click selects
 //! a word. Every edit writes the bound signal, and an outside write to the
-//! signal replaces the text and moves the caret to its end.
+//! signal replaces the text and moves the caret to its end. Undo and redo
+//! walk back and forth through the edits, a typed word at a time.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -666,8 +667,10 @@ fn layout_position(chrome: &InputChrome, position: Point) -> (f32, f32) {
 /// Printable text inserts; Backspace and Delete remove by grapheme, or by
 /// word with control or alt held; Left and Right move by grapheme, or by
 /// word; Home and End jump to the ends; Shift extends instead of moving; and
-/// the platform's command modifier with A selects everything. Keys the input
-/// does not take, among them Enter and Tab, bubble to the ancestors.
+/// the platform's command modifier with A selects everything, with Z undoes,
+/// and with Shift and Z redoes, as Control and Y also does off macOS. Keys
+/// the input does not take, among them Enter and Tab, bubble to the
+/// ancestors.
 fn handle_key(chrome: &InputChrome, event: &KeyEvent) -> Handled {
     if !event.pressed {
         return Handled::No;
@@ -675,10 +678,26 @@ fn handle_key(chrome: &InputChrome, event: &KeyEvent) -> Handled {
     let modifiers = event.modifiers;
     let by_word = modifiers.control || modifiers.alt;
     match &event.key {
-        Key::Character(text)
-            if modifiers.command() && !types_text(modifiers) && text.eq_ignore_ascii_case("a") =>
-        {
+        Key::Character(text) if is_shortcut(modifiers) && text.eq_ignore_ascii_case("a") => {
             chrome.editor.select_all();
+            chrome.touched();
+            Handled::Yes
+        }
+        Key::Character(text) if is_shortcut(modifiers) && text.eq_ignore_ascii_case("z") => {
+            if modifiers.shift {
+                chrome.editor.redo();
+            } else {
+                chrome.editor.undo();
+            }
+            chrome.touched();
+            Handled::Yes
+        }
+        Key::Character(text)
+            if cfg!(not(target_os = "macos"))
+                && is_shortcut(modifiers)
+                && text.eq_ignore_ascii_case("y") =>
+        {
+            chrome.editor.redo();
             chrome.touched();
             Handled::Yes
         }
@@ -744,6 +763,12 @@ fn handle_key(chrome: &InputChrome, event: &KeyEvent) -> Handled {
         }
         _ => Handled::No,
     }
+}
+
+/// Returns whether `modifiers` hold the platform's command key as a
+/// shortcut, which excludes AltGr typing a character.
+fn is_shortcut(modifiers: Modifiers) -> bool {
+    modifiers.command() && !types_text(modifiers)
 }
 
 /// Returns whether a character key pressed with `modifiers` types its

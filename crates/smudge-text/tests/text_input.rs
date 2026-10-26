@@ -104,6 +104,108 @@ fn command_a_selects_all_and_typing_replaces() {
     assert_eq!(value.get(), "X");
 }
 
+#[test]
+fn undo_removes_typed_text_a_word_at_a_time_and_redo_brings_it_back() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+    let z = || Key::Character(String::from("z"));
+    let redo = Modifiers {
+        shift: true,
+        ..command()
+    };
+
+    harness.type_text("hello world");
+    harness.press_key_with(z(), command());
+    assert_eq!(value.get(), "hello", "the last word goes first");
+    harness.press_key_with(z(), command());
+    assert_eq!(value.get(), "");
+    harness.press_key_with(z(), command());
+    assert_eq!(value.get(), "", "undo past the first step does nothing");
+
+    harness.press_key_with(z(), redo);
+    assert_eq!(value.get(), "hello");
+    harness.press_key_with(z(), redo);
+    assert_eq!(value.get(), "hello world");
+
+    harness.press_key_with(z(), command());
+    harness.type_text("!");
+    harness.press_key_with(z(), redo);
+    assert_eq!(value.get(), "hello!", "an edit after an undo ends redo");
+}
+
+#[test]
+fn a_word_delete_is_an_undo_step_of_its_own() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+    let z = || Key::Character(String::from("z"));
+
+    harness.type_text("hello world");
+    harness.press_key_with(
+        Key::Backspace,
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        },
+    );
+    harness.press_key(Key::Backspace);
+    assert_eq!(value.get(), "hello");
+    harness.press_key_with(z(), command());
+    assert_eq!(value.get(), "hello ", "the grapheme delete undoes alone");
+    harness.press_key_with(z(), command());
+    assert_eq!(value.get(), "hello world", "then the word delete");
+}
+
+#[test]
+fn committed_text_is_an_undo_step_of_its_own() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+
+    harness.event(InputEvent::ImeCommit {
+        text: String::from("世界"),
+    });
+    harness.type_text("x");
+    harness.press_key_with(Key::Character(String::from("z")), command());
+    assert_eq!(value.get(), "世界", "the typed character undoes alone");
+}
+
+#[test]
+fn undo_puts_the_selection_back() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+
+    harness.type_text("hello");
+    harness.press_key_with(Key::Character(String::from("a")), command());
+    harness.type_text("X");
+    harness.press_key_with(Key::Character(String::from("z")), command());
+    assert_eq!(value.get(), "hello");
+    harness.type_text("Y");
+    assert_eq!(value.get(), "Y", "the whole text was selected again");
+}
+
+#[test]
+fn an_outside_write_ends_the_undo_history() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+
+    harness.type_text("draft");
+    value.set(String::from("saved"));
+    harness.settle();
+    harness.press_key_with(Key::Character(String::from("z")), command());
+    assert_eq!(value.get(), "saved", "undo never brings back replaced text");
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn control_y_redoes() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+
+    harness.type_text("word");
+    harness.press_key_with(Key::Character(String::from("z")), command());
+    harness.press_key_with(Key::Character(String::from("y")), command());
+    assert_eq!(value.get(), "word");
+}
+
 /// Returns the modifiers of the platform's command key.
 fn command() -> Modifiers {
     #[cfg(target_os = "macos")]
@@ -616,6 +718,10 @@ enum Op {
     SelectAll,
     /// Writes the bound signal from outside.
     Write(String),
+    /// Undoes with the command key.
+    Undo,
+    /// Redoes with the command key and Shift.
+    Redo,
 }
 
 /// A short piece of text, mixed scripts and whitespace included.
@@ -646,6 +752,8 @@ fn any_op() -> impl Strategy<Value = Op> {
         1 => Just(Op::AltBackspace),
         1 => Just(Op::SelectAll),
         1 => any_text().prop_map(Op::Write),
+        1 => Just(Op::Undo),
+        1 => Just(Op::Redo),
     ]
 }
 
@@ -682,7 +790,11 @@ fn apply_to_reference(editor: &Editor, op: &Op) {
         },
         Op::AltBackspace => editor.backspace_word(),
         Op::SelectAll => editor.select_all(),
-        Op::Write(text) => editor.set_text(text),
+        // The input applies an outside write only when it changes the text.
+        Op::Write(text) if !editor.has_text(text) => editor.set_text(text),
+        Op::Write(_) => {}
+        Op::Undo => editor.undo(),
+        Op::Redo => editor.redo(),
     }
 }
 
@@ -717,6 +829,14 @@ fn apply_to_input(harness: &mut Harness, value: &RwSignal<String>, op: &Op) {
         ),
         Op::SelectAll => harness.press_key_with(Key::Character(String::from("a")), command()),
         Op::Write(text) => value.set(text.clone()),
+        Op::Undo => harness.press_key_with(Key::Character(String::from("z")), command()),
+        Op::Redo => harness.press_key_with(
+            Key::Character(String::from("z")),
+            Modifiers {
+                shift: true,
+                ..command()
+            },
+        ),
     }
 }
 
@@ -745,5 +865,48 @@ proptest! {
             prop_assert!(raw.is_char_boundary(selection.start));
             prop_assert!(raw.is_char_boundary(selection.end));
         }
+    }
+}
+
+/// An upper bound on the undo steps one operation can make: a typed string
+/// has fewer than four characters, and each may start a step.
+const STEPS_PER_OP: usize = 4;
+
+/// The most operations the undo property applies, so that even when every
+/// one makes [`STEPS_PER_OP`] steps they fit the editor's history of 100.
+const MAX_UNDO_OPS: usize = 100 / STEPS_PER_OP;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn undoing_every_step_returns_to_the_last_outside_write_and_redo_returns(
+        ops in proptest::collection::vec(any_op(), 0..=MAX_UNDO_OPS)
+    ) {
+        let reference = Editor::new(RwSignal::new(String::new()));
+        reference.set_style(&TextStyle::default());
+        let ops: Vec<Op> = ops
+            .into_iter()
+            .filter(|op| !matches!(op, Op::Undo | Op::Redo))
+            .collect();
+        let mut baseline = String::new();
+        for op in &ops {
+            if let Op::Write(text) = op
+                && !reference.has_text(text)
+            {
+                baseline = text.clone();
+            }
+            apply_to_reference(&reference, op);
+        }
+        let end = reference.text();
+
+        for _ in 0..=STEPS_PER_OP * ops.len() {
+            reference.undo();
+        }
+        prop_assert_eq!(reference.text(), baseline, "undo walks back to the last outside write");
+        for _ in 0..=STEPS_PER_OP * ops.len() {
+            reference.redo();
+        }
+        prop_assert_eq!(reference.text(), end, "redo walks forward to where the edits ended");
     }
 }
