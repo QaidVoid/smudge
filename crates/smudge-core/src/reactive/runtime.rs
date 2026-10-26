@@ -17,6 +17,8 @@ use std::rc::{Rc, Weak};
 
 use slotmap::{SlotMap, new_key_type};
 
+use crate::reactive::Owner;
+
 new_key_type! {
     /// Identifies one node of the arena: a signal, a memo or an effect.
     ///
@@ -65,7 +67,7 @@ pub(crate) struct OwnerState {
     pub(crate) contexts: Vec<(TypeId, Rc<dyn Any>)>,
 }
 
-/// The data of one owner: its parent, its scope and everything it owns.
+/// The data of one owner: its parent, its scope and everything it holds.
 pub(crate) struct OwnerData {
     /// The owner this one was created under, if any.
     pub(crate) parent: Option<Weak<OwnerData>>,
@@ -75,6 +77,10 @@ pub(crate) struct OwnerData {
     pub(crate) cleaned: Cell<bool>,
     /// What the owner holds, taken out while cleanup runs user code.
     pub(crate) state: RefCell<OwnerState>,
+    /// The timer book of the app this owner tree belongs to, set on the root
+    /// owner when the app is created. A timer registers into the book of the
+    /// root its owner chain leads to.
+    pub(crate) timer_book: RefCell<Option<Weak<RefCell<crate::timer::TimerBook>>>>,
 }
 
 impl OwnerData {
@@ -110,6 +116,22 @@ impl OwnerData {
         for node in state.nodes {
             dispose(node);
         }
+    }
+
+    /// Creates an owner under this one and returns it as a handle.
+    ///
+    /// The child inherits this owner's root scope, so its effects wake the
+    /// same redraw requests.
+    pub(crate) fn child(self: &Rc<Self>) -> Owner {
+        let inner = Rc::new(OwnerData {
+            parent: Some(Rc::downgrade(self)),
+            scope: Rc::clone(&self.scope),
+            cleaned: Cell::new(false),
+            state: RefCell::new(OwnerState::default()),
+            timer_book: RefCell::new(None),
+        });
+        self.adopt(&inner);
+        Owner { inner }
     }
 }
 

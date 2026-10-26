@@ -2124,6 +2124,7 @@ dependencies = [
  "smudge-cpu",
  "smudge-text",
  "smudge-widgets",
+ "web-time",
 ]
 
 [[package]]

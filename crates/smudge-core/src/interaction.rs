@@ -66,6 +66,9 @@ impl Interaction {
 /// A key handler: it decides whether the event stops bubbling to ancestors.
 pub(crate) type KeyHandler = Box<dyn FnMut(&KeyEvent) -> Handled>;
 
+/// A commit handler: it inserts the text an input method committed.
+pub(crate) type CommitHandler = Box<dyn FnMut(&str)>;
+
 /// The input handlers one node owns.
 ///
 /// The builder methods on [`Element`](crate::element::Element) set them, and
@@ -89,6 +92,17 @@ pub(crate) struct Handlers {
     pub(crate) on_key: Option<KeyHandler>,
     /// Runs when the wheel scrolls while the node is in the hovered chain.
     pub(crate) on_wheel: Option<Box<dyn FnMut(Point)>>,
+    /// Runs when a pointer move happens while a press on the node is held,
+    /// or, with no press held, when the node is the hover target.
+    pub(crate) on_pointer_move: Option<Box<dyn FnMut(Point)>>,
+    /// Runs when the primary button is released after a press on the node,
+    /// whether or not the release happened over the node, or, with no press
+    /// held, when it happens over the node as the hover target.
+    pub(crate) on_pointer_up: Option<Box<dyn FnMut(Point)>>,
+    /// Runs when the input method commits text while the node or a
+    /// descendant holds the focus. Routed like a key event, not a pointer
+    /// event, so it takes no part in hit testing.
+    pub(crate) on_ime_commit: Option<CommitHandler>,
     /// Runs when the node gains or loses the keyboard focus.
     pub(crate) on_focus: Option<Box<dyn FnMut(bool)>>,
     /// Whether a fresh press of Enter or Space runs the node's
@@ -104,7 +118,8 @@ impl Handlers {
     /// Hit testing makes the deepest node under the pointer that can respond
     /// the target, so a node without any lets a press pass to its ancestors. A
     /// node can also respond by being focusable, which
-    /// [`Interaction::FOCUSABLE`] tracks.
+    /// [`Interaction::FOCUSABLE`] tracks. A commit handler is left out,
+    /// because a commit never comes from the pointer.
     pub(crate) fn has_any(&self) -> bool {
         self.on_press.is_some()
             || self.on_hover.is_some()
@@ -112,24 +127,32 @@ impl Handlers {
             || self.on_press_outside.is_some()
             || self.on_key.is_some()
             || self.on_wheel.is_some()
+            || self.on_pointer_move.is_some()
+            || self.on_pointer_up.is_some()
     }
 }
 
 impl WidgetTree {
     /// Routes a pointer move to the node under `position`.
     ///
-    /// The hovered chain becomes the new target and its ancestors. While a
-    /// press is held, the captured node keeps the pointer and hover does not
-    /// change, because a drag needs the moves to stay with the node the press
-    /// started on.
+    /// While a press is held, the captured node keeps the pointer and hears
+    /// its `on_pointer_move`, so a drag stays with the node the press started
+    /// on; hover does not change and does not come back while the drag lasts,
+    /// even when the pointer returns over the captured node. Without a press,
+    /// the hovered chain becomes the new target and its ancestors, and the
+    /// node under the pointer hears its `on_pointer_move`.
     pub(crate) fn pointer_move(&mut self, position: Point) {
         self.pointer = position;
         self.pointer_inside = true;
-        if self.pressed.is_some() {
+        if let Some(captured) = self.pressed {
+            self.run_pointer_move(captured, position);
             return;
         }
         let target = self.hover_target(position);
         self.set_hover_target(target);
+        if let Some(target) = target {
+            self.run_pointer_move(target, position);
+        }
     }
 
     /// Routes a pointer down at `position`.
@@ -178,10 +201,12 @@ impl WidgetTree {
     /// Routes a pointer up at `position`.
     ///
     /// Releasing the primary button clears the captured node's pressed bit,
-    /// and runs its `on_press` when the release happens over the captured
-    /// node, which is the case when the node under the pointer is the captured
-    /// node or one of its descendants. Hover follows the pointer again either
-    /// way.
+    /// runs its `on_press` when the release happens over the captured node,
+    /// which is the case when the node under the pointer is the captured node
+    /// or one of its descendants, and runs its `on_pointer_up` whether or not
+    /// the release happened over it, so a drag that ends elsewhere still
+    /// hears the button come up. With no press held, the hover target hears
+    /// `on_pointer_up`. Hover follows the pointer again either way.
     pub(crate) fn pointer_up(&mut self, position: Point, button: PointerButton) {
         if button != PointerButton::Primary {
             return;
@@ -191,6 +216,9 @@ impl WidgetTree {
         let hovered = self.hover_target(position);
         let Some(captured) = self.pressed.take() else {
             self.set_hover_target(hovered);
+            if let Some(hovered) = hovered {
+                self.run_pointer_up(hovered, position);
+            }
             return;
         };
         self.set_bit(captured, Interaction::PRESSED, false);
@@ -201,6 +229,7 @@ impl WidgetTree {
         if hovered.is_some_and(|hovered| self.chain(Some(hovered)).contains(&captured)) {
             self.run_press(captured);
         }
+        self.run_pointer_up(captured, position);
     }
 
     /// Clears the hover of the whole tree, as when the pointer leaves the
@@ -527,6 +556,54 @@ impl WidgetTree {
                 .and_then(|node| node.handlers.on_pointer_down.as_mut())
             {
                 on_pointer_down(position);
+            }
+        });
+    }
+
+    /// Runs `on_pointer_move` of `id` inside the node's owner.
+    ///
+    /// A node that became disabled or hidden hears nothing, like every other
+    /// pointer handler.
+    fn run_pointer_move(&mut self, id: WidgetId, position: Point) {
+        if self.nodes.get(id).is_none_or(|node| {
+            node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
+        }) {
+            return;
+        }
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        owner.with(|| {
+            if let Some(on_pointer_move) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.on_pointer_move.as_mut())
+            {
+                on_pointer_move(position);
+            }
+        });
+    }
+
+    /// Runs `on_pointer_up` of `id` inside the node's owner.
+    ///
+    /// A node that became disabled or hidden hears nothing, like every other
+    /// pointer handler.
+    fn run_pointer_up(&mut self, id: WidgetId, position: Point) {
+        if self.nodes.get(id).is_none_or(|node| {
+            node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
+        }) {
+            return;
+        }
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        owner.with(|| {
+            if let Some(on_pointer_up) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.on_pointer_up.as_mut())
+            {
+                on_pointer_up(position);
             }
         });
     }

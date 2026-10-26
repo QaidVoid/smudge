@@ -10,12 +10,16 @@ use std::cell::Cell;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
+
+use web_time::Instant;
 
 use smudge_core::app::{App, AppConfig, FrameOutput, RepaintMode};
 use smudge_core::element::IntoElement;
 use smudge_core::geometry::{Color, PixelRect, Point, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::paint::DisplayList;
+use smudge_core::timer::VirtualClock;
 use smudge_cpu::CpuRenderer;
 
 /// The color the harness clears the surface with before it replays a frame.
@@ -88,6 +92,9 @@ pub struct Harness {
     clear_color: Color,
     /// Whether a signal write woke the app since the last frame began.
     woken: Rc<Cell<bool>>,
+    /// The clock the app's timers read, which only
+    /// [`Harness::advance`] moves.
+    clock: VirtualClock,
 }
 
 impl Harness {
@@ -96,20 +103,23 @@ impl Harness {
     ///
     /// `build` runs once, exactly as it does in [`App::new`], and the first
     /// call to [`Harness::frame`] lays the tree out and repaints the whole
-    /// surface.
+    /// surface. The app runs on a virtual clock that only
+    /// [`Harness::advance`] moves, including for timers `build` creates.
     pub fn new<E: IntoElement>(
         width: f32,
         height: f32,
         scale: f32,
         build: impl FnOnce() -> E,
     ) -> Harness {
-        let app = App::new(
+        let clock = VirtualClock::new(Instant::now());
+        let app = App::with_clock(
             AppConfig {
                 viewport: Size { width, height },
                 scale,
                 clear_color: CLEAR_COLOR,
                 repaint: RepaintMode::Damage,
             },
+            clock.clone().into(),
             build,
         );
         let woken = Rc::new(Cell::new(false));
@@ -127,6 +137,7 @@ impl Harness {
             scale,
             clear_color: CLEAR_COLOR,
             woken,
+            clock,
         }
     }
 
@@ -151,6 +162,7 @@ impl Harness {
             scale,
             clear_color,
             woken,
+            ..
         } = self;
         woken.set(false);
         let (width, height) = app.surface_size();
@@ -251,18 +263,24 @@ impl Harness {
 
     /// Injects a press and release of `key`, without modifiers or repeat.
     pub fn press_key(&mut self, key: Key) {
+        self.press_key_with(key, Modifiers::default());
+    }
+
+    /// Injects a press and release of `key` with `modifiers` held, without
+    /// repeat.
+    pub fn press_key_with(&mut self, key: Key, modifiers: Modifiers) {
         self.event(InputEvent::Key(KeyEvent {
             key: key.clone(),
             pressed: true,
             repeat: false,
-            modifiers: Modifiers::default(),
+            modifiers,
             text: None,
         }));
         self.event(InputEvent::Key(KeyEvent {
             key,
             pressed: false,
             repeat: false,
-            modifiers: Modifiers::default(),
+            modifiers,
             text: None,
         }));
     }
@@ -289,6 +307,43 @@ impl Harness {
                 text: None,
             }));
         }
+    }
+
+    /// Injects a primary-button press at `position`, in logical pixels.
+    ///
+    /// The pointer moves there first. Pair with
+    /// [`Harness::button_up`](Self::button_up) and
+    /// [`Harness::move_to`](Self::move_to) to drag.
+    pub fn button_down(&mut self, position: Point) {
+        self.move_to(position);
+        self.event(InputEvent::PointerDown {
+            position,
+            button: PointerButton::Primary,
+        });
+    }
+
+    /// Injects the release of a primary-button press at `position`, in
+    /// logical pixels.
+    pub fn button_up(&mut self, position: Point) {
+        self.event(InputEvent::PointerUp {
+            position,
+            button: PointerButton::Primary,
+        });
+    }
+
+    /// Moves the app's clock forward by `by` and runs one frame, which is
+    /// when timers due in that time run.
+    ///
+    /// The harness keeps the app on a virtual clock, so timers, caret
+    /// blinking and other timing behave exactly as their durations say,
+    /// without the test sleeping.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the conditions of [`App::frame`].
+    pub fn advance(&mut self, by: Duration) -> FrameReport {
+        self.clock.advance(by);
+        self.frame()
     }
 
     /// Encodes the current surface as a PNG image.

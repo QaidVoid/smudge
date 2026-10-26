@@ -820,11 +820,10 @@ impl<W: Widget> Element<W> {
         self
     }
 
-    /// Runs `handler` when a pointer button is pressed on the node.
+    /// Runs `handler` when the primary pointer button is pressed on the node.
     ///
     /// The position is in logical pixels, relative to the top left of the
-    /// window. Every button runs the handler; only the primary button also
-    /// starts a press that [`Element::on_press`] hears.
+    /// window. Other buttons do not run it.
     pub fn on_pointer_down(mut self, handler: impl FnMut(Point) + 'static) -> Self {
         self.handlers.on_pointer_down = Some(Box::new(handler));
         self
@@ -854,6 +853,49 @@ impl<W: Widget> Element<W> {
     /// read.
     pub fn on_wheel(mut self, handler: impl FnMut(Point) + 'static) -> Self {
         self.handlers.on_wheel = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when the pointer moves while a press that started on
+    /// the node is held, which is how a drag reaches the node it started on.
+    ///
+    /// With no press held, the handler runs when the node is the hover target
+    /// and the pointer moves, so a node can follow the pointer without being
+    /// pressed. While a press is held, hover does not change, and the moves
+    /// go to the captured node alone. The position is in logical pixels,
+    /// relative to the top left of the window. The handler runs inside the
+    /// node's owner, so it can write the signals the element's bindings
+    /// read.
+    pub fn on_pointer_move(mut self, handler: impl FnMut(Point) + 'static) -> Self {
+        self.handlers.on_pointer_move = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when the primary button is released.
+    ///
+    /// After a press on the node, the handler runs when the button comes up
+    /// wherever that happens, which is how a drag ends even when the pointer
+    /// is no longer over the node. With no press held, the handler runs when
+    /// the release happens over the node as the hover target. The position is
+    /// in logical pixels, relative to the top left of the window. The handler
+    /// runs inside the node's owner, so it can write the signals the
+    /// element's bindings read.
+    pub fn on_pointer_up(mut self, handler: impl FnMut(Point) + 'static) -> Self {
+        self.handlers.on_pointer_up = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when the input method commits text while the node or
+    /// one of its descendants holds the keyboard focus.
+    ///
+    /// A commit can arrive with no key event at all, because composing text
+    /// with an input method ends in a commit rather than a key press, so an
+    /// editor that takes text needs this handler. The commit goes to the
+    /// deepest handler in the focused chain and does not bubble past it. The
+    /// handler runs inside the node's owner, so it can write the signals the
+    /// element's bindings read.
+    pub fn on_ime_commit(mut self, handler: impl FnMut(&str) + 'static) -> Self {
+        self.handlers.on_ime_commit = Some(Box::new(handler));
         self
     }
 

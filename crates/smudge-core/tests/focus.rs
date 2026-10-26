@@ -651,3 +651,69 @@ fn activate_on_keys_without_a_press_handler_lets_the_key_bubble() {
         "without a press handler the key is not taken and reaches the ancestor"
     );
 }
+
+/// A log of committed texts with a handler closure that appends to it.
+fn commit_log(name: &'static str) -> (Rc<RefCell<Vec<String>>>, impl FnMut(&str)) {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let handler = {
+        let log = Rc::clone(&log);
+        move |text: &str| log.borrow_mut().push(format!("{name}:{text}"))
+    };
+    (log, handler)
+}
+
+#[test]
+fn an_ime_commit_goes_to_the_deepest_handler_in_the_focused_chain() {
+    let (outer_log, on_outer) = commit_log("outer");
+    let (inner_log, on_inner) = commit_log("inner");
+    let (plain_log, on_plain) = commit_log("plain");
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .on_ime_commit(on_outer)
+                .child(
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .focusable()
+                        .on_ime_commit(on_inner),
+                )
+                .child(
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .focusable()
+                        .child(panel().on_ime_commit(on_plain)),
+                ),
+        )
+    });
+    harness.frame();
+
+    let commit = |harness: &mut Harness, text: &str| {
+        harness.event(InputEvent::ImeCommit {
+            text: text.to_owned(),
+        });
+    };
+    commit(&mut harness, "none");
+    harness.click(Point { x: 10.0, y: 5.0 });
+    commit(&mut harness, "a");
+    harness.click(Point { x: 10.0, y: 25.0 });
+    commit(&mut harness, "b");
+
+    assert_eq!(
+        *inner_log.borrow(),
+        ["inner:a"],
+        "the focused node takes the commit and stops it"
+    );
+    assert_eq!(
+        *outer_log.borrow(),
+        ["outer:b"],
+        "a focused node without a handler passes the commit to its parent"
+    );
+    assert!(
+        plain_log.borrow().is_empty(),
+        "a commit never goes down to a child, and nothing hears it while \
+         nothing is focused"
+    );
+}

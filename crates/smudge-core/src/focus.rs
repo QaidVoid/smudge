@@ -119,6 +119,52 @@ impl WidgetTree {
         Handled::No
     }
 
+    /// Delivers committed input method text to the focused node.
+    ///
+    /// The commit walks up from the focused node, like a key event, and the
+    /// first `on_ime_commit` handler that runs takes it. A committed string
+    /// can arrive with no key event at all: a commit is how an input method
+    /// delivers the text the user composed, so an editor that reads keys
+    /// alone would lose it. A focused node that lost the focus by becoming
+    /// disabled or hidden does not hear the commit, but its ancestors still
+    /// can.
+    pub(crate) fn ime_commit(&mut self, text: &str) {
+        let start = match self.focused {
+            Some(focused) => Some(focused),
+            None => self
+                .stale_focus
+                .take()
+                .and_then(|anchor| self.nodes.get(anchor)?.parent),
+        };
+        self.drop_invalid_focus();
+        let mut next = start;
+        while let Some(id) = next {
+            next = self.nodes.get(id).and_then(|node| node.parent);
+            if self.nodes.get(id).is_some_and(|node| {
+                node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
+            }) {
+                continue;
+            }
+            let Some(owner) = self.owner(id).cloned() else {
+                continue;
+            };
+            let mut ran = false;
+            owner.with(|| {
+                if let Some(on_ime_commit) = self
+                    .nodes
+                    .get_mut(id)
+                    .and_then(|node| node.handlers.on_ime_commit.as_mut())
+                {
+                    on_ime_commit(text);
+                    ran = true;
+                }
+            });
+            if ran {
+                return;
+            }
+        }
+    }
+
     /// Moves the focus to the next focusable node in tree order, or to the
     /// previous one when `backwards` is set, wrapping at both ends.
     fn move_focus(&mut self, backwards: bool) {

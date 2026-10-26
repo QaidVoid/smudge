@@ -6,7 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use smudge_core::element::IntoElement;
+use smudge_core::element::{IntoElement, show};
 use smudge_core::geometry::{Color, Point};
 use smudge_core::input::{InputEvent, PointerButton};
 use smudge_core::reactive::{self, prelude::*};
@@ -544,5 +544,123 @@ fn a_hidden_or_disabled_node_hears_no_press_outside() {
         disabled_presses.get(),
         0,
         "a disabled node's handlers never run"
+    );
+}
+
+/// A log of pointer positions, shared between a test and its handler.
+type PointLog = Rc<RefCell<Vec<Point>>>;
+
+/// A log of positions with a handler closure that appends to it.
+fn point_log() -> (PointLog, impl FnMut(Point)) {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let handler = {
+        let log = Rc::clone(&log);
+        move |position: Point| log.borrow_mut().push(position)
+    };
+    (log, handler)
+}
+
+#[test]
+fn a_drag_sends_every_move_and_the_release_to_the_pressed_node() {
+    let (moves, on_move) = point_log();
+    let (ups, on_up) = point_log();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .row()
+                .child(
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .on_pointer_move(on_move)
+                        .on_pointer_up(on_up),
+                )
+                .child(panel().width(px(40.0)).height(px(20.0)).on_press(|| {})),
+        )
+    });
+    harness.frame();
+
+    let inside = Point { x: 10.0, y: 5.0 };
+    let beside = Point { x: 60.0, y: 5.0 };
+    let outside = Point { x: 90.0, y: 50.0 };
+    harness.button_down(inside);
+    harness.move_to(beside);
+    harness.event(InputEvent::PointerLeft);
+    harness.move_to(outside);
+    harness.button_up(outside);
+    assert_eq!(
+        *moves.borrow(),
+        [inside, beside, outside],
+        "the pressed node hears every move of the drag, over a sibling and \
+         after the pointer left and came back"
+    );
+    assert_eq!(
+        *ups.borrow(),
+        [outside],
+        "the release reaches the pressed node away from it"
+    );
+
+    moves.borrow_mut().clear();
+    harness.move_to(beside);
+    harness.move_to(inside);
+    assert_eq!(
+        *moves.borrow(),
+        [inside],
+        "with no press held, only the node under the pointer hears a move"
+    );
+}
+
+#[test]
+fn a_disabled_node_hears_no_moves_or_release() {
+    let (moves, on_move) = point_log();
+    let (ups, on_up) = point_log();
+    let (disabled, set_disabled) = reactive::signal_local(false);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(40.0))
+                .height(px(20.0))
+                .disabled(move || disabled.get())
+                .on_pointer_move(on_move)
+                .on_pointer_up(on_up),
+        )
+    });
+    harness.frame();
+
+    let inside = Point { x: 10.0, y: 5.0 };
+    harness.button_down(inside);
+    set_disabled.set(true);
+    harness.frame();
+    harness.move_to(Point { x: 20.0, y: 5.0 });
+    harness.button_up(inside);
+    assert_eq!(*moves.borrow(), [inside], "only the move before disabling");
+    assert!(ups.borrow().is_empty(), "a disabled node hears no release");
+}
+
+#[test]
+fn removing_the_pressed_node_lets_hover_follow_the_pointer_again() {
+    let (shown, set_shown) = reactive::signal_local(true);
+    let (log, on_hover) = hover_log("sibling");
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .row()
+                .child(show(
+                    move || shown.get(),
+                    || panel().width(px(40.0)).height(px(20.0)).on_press(|| {}),
+                ))
+                .child(panel().width(px(40.0)).height(px(20.0)).on_hover(on_hover)),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 5.0 });
+    set_shown.set(false);
+    harness.frame();
+    harness.move_to(Point { x: 10.0, y: 5.0 });
+    assert_eq!(
+        *log.borrow(),
+        [("sibling", true)],
+        "the sibling took the place of the removed node and is hovered"
     );
 }

@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 smudge-core = { version = "0.1.0", path = "../smudge-core" }
 smudge-cpu = { version = "0.1.0", path = "../smudge-cpu" }
+web-time = "1.1.0"
 
 [lints]
 workspace = true

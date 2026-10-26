@@ -70,7 +70,7 @@ use std::any::TypeId;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-mod runtime;
+pub(crate) mod runtime;
 
 use runtime::{CurrentOwnerGuard, EffectCell, MemoData, NodeId, OwnerData, OwnerState, SignalData};
 
@@ -557,6 +557,7 @@ impl Owner {
             scope,
             cleaned: Cell::new(false),
             state: RefCell::new(OwnerState::default()),
+            timer_book: RefCell::new(None),
         });
         if let Some(parent) = parent {
             parent.adopt(&inner);
@@ -569,14 +570,7 @@ impl Owner {
     /// The child inherits this owner's root scope, so its effects wake the
     /// same redraw requests.
     pub fn child(&self) -> Owner {
-        let inner = Rc::new(OwnerData {
-            parent: Some(Rc::downgrade(&self.inner)),
-            scope: Rc::clone(&self.inner.scope),
-            cleaned: Cell::new(false),
-            state: RefCell::new(OwnerState::default()),
-        });
-        self.inner.adopt(&inner);
-        Owner { inner }
+        self.inner.child()
     }
 
     /// Makes this owner current until another one is set or a `with` block
@@ -624,6 +618,12 @@ impl Owner {
     /// Returns the current owner, when one is set and still alive.
     fn current() -> Option<Rc<OwnerData>> {
         runtime::with_runtime(|runtime| runtime.current_owner())
+    }
+
+    /// Returns the owner's data, for the crate's own wiring such as the
+    /// timer book an app installs on its root owner.
+    pub(crate) fn data(&self) -> &Rc<OwnerData> {
+        &self.inner
     }
 }
 

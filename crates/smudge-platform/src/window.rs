@@ -13,7 +13,7 @@ use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
@@ -444,6 +444,30 @@ where
         Ok(())
     }
 
+    /// Puts the event loop to sleep until the next timer comes due.
+    ///
+    /// An app with a tick keeps itself awake and needs nothing here. Any
+    /// other app waits until its soonest timer fires, which wakes the window
+    /// for the frame that runs it, or without a timer waits for events the
+    /// ordinary way. A timer that is already due asks for the frame at once,
+    /// because the timeout of a sleeping loop would otherwise be checked
+    /// only after the next event.
+    fn wait_for_timers(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        if state.app.has_tick() {
+            return;
+        }
+        match wait_decision(state.app.next_deadline(), Instant::now()) {
+            WaitDecision::Now => state.window.request_redraw(),
+            WaitDecision::Until(deadline) => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            }
+            WaitDecision::Wait => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+
     /// Records `error` and stops the event loop.
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: PlatformError) {
         if self.error.is_none() {
@@ -515,6 +539,10 @@ where
         if let Err(error) = result {
             self.fail(event_loop, error);
         }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.wait_for_timers(event_loop);
     }
 }
 
@@ -636,6 +664,26 @@ fn logical_size(physical: PhysicalSize<u32>, scale: f32) -> Size {
     Size {
         width: physical.width as f32 / scale,
         height: physical.height as f32 / scale,
+    }
+}
+
+/// What the window does about the next timer.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum WaitDecision {
+    /// A timer is already due: run the frame that fires it now.
+    Now,
+    /// Sleep until the soonest timer fires.
+    Until(Instant),
+    /// No timer is scheduled: wait for events.
+    Wait,
+}
+
+/// Decides what the window does about the next timer due at `deadline`.
+fn wait_decision(deadline: Option<Instant>, now: Instant) -> WaitDecision {
+    match deadline {
+        Some(deadline) if deadline <= now => WaitDecision::Now,
+        Some(deadline) => WaitDecision::Until(deadline),
+        None => WaitDecision::Wait,
     }
 }
 

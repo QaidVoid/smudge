@@ -5,6 +5,8 @@
 //! the damage for one window. [`App::frame`] runs the whole pipeline in order,
 //! so a window, a headless test and a benchmark all drive the same code.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use web_time::Instant;
@@ -16,6 +18,7 @@ use crate::input::{InputEvent, Modifiers};
 use crate::paint::DisplayList;
 use crate::reactive::{self, Owner, RenderEffect};
 use crate::theme::Theme;
+use crate::timer::{self, Clock, TimerBook};
 use crate::tree::{WidgetId, WidgetTree};
 
 /// How many flush and apply rounds a frame runs before it reports a cycle.
@@ -146,6 +149,8 @@ pub struct App {
     stats: FrameStats,
     /// The callback that runs at the start of every frame.
     tick: Option<Box<dyn FnMut(Instant)>>,
+    /// The timers of the app and the clock they read.
+    timers: Rc<RefCell<TimerBook>>,
     /// Whether the next frame repaints the whole surface.
     force_full: bool,
     /// The owner that the build closure, the signals it created, every
@@ -164,9 +169,28 @@ impl App {
     /// every binding sees the context that `build` provides. The mounted tree
     /// is laid out and painted by the first call to [`App::frame`], which
     /// repaints the whole surface.
+    ///
+    /// Timers read the operating system's clock. Use [`App::with_clock`] to
+    /// run them on another one.
     pub fn new<E: IntoElement>(config: AppConfig, build: impl FnOnce() -> E) -> App {
+        App::with_clock(config, Clock::system(), build)
+    }
+
+    /// Creates an app like [`App::new`] whose timers and tick callback read
+    /// `clock`.
+    ///
+    /// The clock is in place before `build` runs, so a timer that `build`
+    /// creates is scheduled on it too. A test passes a
+    /// [`VirtualClock`](crate::timer::VirtualClock) and advances it by hand.
+    pub fn with_clock<E: IntoElement>(
+        config: AppConfig,
+        clock: Clock,
+        build: impl FnOnce() -> E,
+    ) -> App {
         reactive::init();
         let root = Owner::new();
+        let timers = Rc::new(RefCell::new(TimerBook::new(clock)));
+        root.data().timer_book.replace(Some(Rc::downgrade(&timers)));
         let mut tree = WidgetTree::new();
         let queue = UpdateQueue::default();
         root.with(|| mount(build().into_any(), &mut tree, &queue, None));
@@ -181,6 +205,7 @@ impl App {
             modifiers: Modifiers::default(),
             stats: FrameStats::default(),
             tick: None,
+            timers,
             force_full: true,
             _root: root,
         }
@@ -312,11 +337,25 @@ impl App {
     /// Sets a callback that runs once at the start of every frame with the
     /// current time.
     ///
-    /// The clock is [`web_time::Instant`], which is [`std::time::Instant`] on
-    /// every target that has one and reads the browser's clock on the web,
-    /// where `std::time::Instant::now` panics.
+    /// The time comes from the app's [`Clock`], the same one its timers
+    /// read, so a test that runs the app on a virtual clock drives both.
     pub fn set_tick(&mut self, tick: impl FnMut(Instant) + 'static) {
         self.tick = Some(Box::new(tick));
+    }
+
+    /// Returns the current time of the app's clock.
+    pub fn now(&self) -> Instant {
+        self.timers.borrow().clock.now()
+    }
+
+    /// Returns the earliest time a timer fires at, or `None` when none is
+    /// scheduled.
+    ///
+    /// A platform that has no tick callback waits until this deadline, so a
+    /// pending timer wakes the window when it comes due instead of the
+    /// window polling.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.timers.borrow().next_deadline()
     }
 
     /// Returns whether a frame tick callback is set.
@@ -371,9 +410,8 @@ impl App {
                 self.modifiers = key.modifiers;
             }
             InputEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
-            InputEvent::ImePreedit { .. }
-            | InputEvent::ImeCommit { .. }
-            | InputEvent::WindowFocus(_) => {}
+            InputEvent::ImeCommit { text } => self.tree.ime_commit(&text),
+            InputEvent::ImePreedit { .. } | InputEvent::WindowFocus(_) => {}
         }
     }
 
@@ -393,6 +431,12 @@ impl App {
     /// They start at none and change only when one of those events arrives.
     pub fn modifiers(&self) -> Modifiers {
         self.modifiers
+    }
+
+    /// Returns the root owner, for the crate's own tests.
+    #[cfg(test)]
+    pub(crate) fn root(&self) -> &Owner {
+        &self._root
     }
 
     /// Returns the node that holds the keyboard focus, when one does.
@@ -439,9 +483,11 @@ impl App {
     ///
     /// The frame runs these steps in order:
     ///
-    /// 1. The tick callback, when one is set.
+    /// 1. The timers that are due on the app's clock, then the tick callback,
+    ///    when one is set.
     /// 2. Reactive effects and the updates they queue, until neither has work
-    ///    left. A signal write therefore lands before layout.
+    ///    left. A signal write therefore lands before layout, including one a
+    ///    timer made at the start of the frame.
     /// 3. The layout pass, which runs the layout engine only when a node needs
     ///    it.
     /// 4. The paint pass, which regenerates the operations of the nodes that
@@ -464,8 +510,11 @@ impl App {
     /// flush, which means it writes a signal that wakes it again, directly or
     /// through another binding. A release build never returns from that frame.
     pub fn frame(&mut self) -> FrameOutput<'_> {
+        timer::fire_due(&self.timers);
+
+        let now = self.now();
         if let Some(tick) = &mut self.tick {
-            tick(Instant::now());
+            tick(now);
         }
 
         let flush_start = Instant::now();

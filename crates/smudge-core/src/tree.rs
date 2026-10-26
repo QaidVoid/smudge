@@ -309,7 +309,8 @@ impl WidgetTree {
     /// Each removed node cleans its reactive owner up, which stops its
     /// bindings, and contributes its last painted bounds to the removed
     /// damage. The node is detached from its parent, which is marked for
-    /// layout. A stale id does nothing.
+    /// layout. A removed node loses the focus and the press capture. A stale
+    /// id does nothing.
     pub(crate) fn remove(&mut self, id: WidgetId) {
         let Some(node) = self.nodes.get(id) else {
             return;
@@ -337,6 +338,11 @@ impl WidgetTree {
         }
         if self.stale_focus.is_some_and(|stale| order.contains(&stale)) {
             self.stale_focus = None;
+        }
+        // A drag whose node is gone has nothing left to capture, and hover
+        // only follows the pointer again once no press is held.
+        if self.pressed.is_some_and(|pressed| order.contains(&pressed)) {
+            self.pressed = None;
         }
 
         // Deepest node first, so every taffy node is still attached to a live
