@@ -16,6 +16,7 @@ use smudge_text::Editor;
 use smudge_text::TextStyle;
 
 /// One edit the target applies, decoded from the input bytes.
+#[derive(Clone, Debug)]
 enum Op {
     /// Inserts a short string at the caret.
     Insert(String),
@@ -57,6 +58,14 @@ enum Op {
     SelectWordAt(f32),
     /// Replaces the text from outside, as a write to the bound signal does.
     Write(String),
+    /// Shows or updates the text an input method composes, with its cursor.
+    Compose(String, Option<(usize, usize)>),
+    /// Cancels the composing text, as an empty preedit does.
+    CancelCompose,
+    /// Commits text from an input method.
+    Commit(String),
+    /// Pastes text from a clipboard, line breaks included.
+    Paste(String),
     /// Undoes the last step.
     Undo,
     /// Redoes the last undone step.
@@ -72,7 +81,7 @@ fn decode(bytes: &[u8]) -> Vec<Op> {
     let mut rest = bytes;
     while let Some((&command, tail)) = rest.split_first() {
         rest = tail;
-        let op = match command % 22 {
+        let op = match command % 26 {
             0 => Op::Insert(take_text(&mut rest)),
             1 => Op::Backspace,
             2 => Op::BackspaceWord,
@@ -94,7 +103,11 @@ fn decode(bytes: &[u8]) -> Vec<Op> {
             18 => Op::SelectWordAt(take_x(&mut rest)),
             19 => Op::Write(take_text(&mut rest)),
             20 => Op::Undo,
-            _ => Op::Redo,
+            21 => Op::Redo,
+            22 => Op::Compose(take_text(&mut rest), take_cursor(&mut rest)),
+            23 => Op::CancelCompose,
+            24 => Op::Commit(take_text(&mut rest)),
+            _ => Op::Paste(take_multiline(&mut rest)),
         };
         ops.push(op);
     }
@@ -119,6 +132,29 @@ fn take_x(rest: &mut &[u8]) -> f32 {
     };
     *rest = tail;
     f32::from(byte) * 2.0 - 40.0
+}
+
+/// Takes two bytes as the offsets of an input method cursor, which may sit
+/// outside the preedit, or none, as a platform reports no cursor.
+fn take_cursor(rest: &mut &[u8]) -> Option<(usize, usize)> {
+    let (&anchor, tail) = rest.split_first()?;
+    let Some((&focus, tail)) = tail.split_first() else {
+        *rest = tail;
+        return None;
+    };
+    *rest = tail;
+    (anchor != 0 || focus != 0).then_some((usize::from(anchor), usize::from(focus)))
+}
+
+/// Takes up to eight bytes as text, line breaks included, as a clipboard
+/// paste carries them.
+fn take_multiline(rest: &mut &[u8]) -> String {
+    let (chunk, tail) = rest.split_at(rest.len().min(8));
+    *rest = tail;
+    String::from_utf8_lossy(chunk)
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\n' || *character == '\r')
+        .collect()
 }
 
 /// Applies one edit, as the text input's handlers and its binding would.
@@ -147,6 +183,10 @@ fn apply(editor: &Editor, value: &RwSignal<String>, op: &Op) {
             value.set(text.clone());
             editor.set_text(text);
         }
+        Op::Compose(text, cursor) => editor.compose(text, *cursor),
+        Op::CancelCompose => editor.compose("", None),
+        Op::Commit(text) => editor.commit(text),
+        Op::Paste(text) => editor.paste(text),
         Op::Undo => editor.undo(),
         Op::Redo => editor.redo(),
     }
@@ -158,10 +198,30 @@ fuzz_target!(|data: &[u8]| {
     editor.set_style(&TextStyle::default());
 
     for op in &decode(data) {
+        let value_before = value.get();
+        let was_composing = editor.is_composing();
         apply(&editor, &value, op);
 
-        let text = editor.text();
-        assert_eq!(text, value.get(), "the editor and the signal drifted apart");
+        // The preedit is not committed text, so only the selection a new
+        // composition deletes can change the value while composing.
+        let keeps_value = match op {
+            Op::Compose(..) => was_composing,
+            Op::CancelCompose => true,
+            _ => false,
+        };
+        if keeps_value {
+            assert_eq!(
+                value.get(),
+                value_before,
+                "composing changed the signal, after {op:?}"
+            );
+        }
+
+        assert_eq!(
+            editor.text(),
+            value.get(),
+            "the editor and the signal drifted apart, after {op:?}"
+        );
 
         let raw = editor.raw_text();
         let Range { start, end } = editor.selection();

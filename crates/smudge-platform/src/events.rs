@@ -80,6 +80,11 @@ impl EventTranslator {
             WindowEvent::Ime(Ime::Commit(text)) => {
                 Some(InputEvent::ImeCommit { text: text.clone() })
             }
+            // Enabled and disabled carry nothing to act on: an enabled input
+            // method with no preedit changes nothing, and a disabled one has
+            // already lost the composition, which the focused editor drops
+            // when it loses the focus and the app drops when the window
+            // loses the input focus.
             WindowEvent::Ime(Ime::Enabled | Ime::Disabled) => None,
             WindowEvent::Focused(focused) => Some(InputEvent::WindowFocus(*focused)),
             _ => None,

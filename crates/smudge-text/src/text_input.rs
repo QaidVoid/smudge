@@ -10,13 +10,17 @@
 //! a mouse press places the caret, a drag selects and a double click selects
 //! a word. Every edit writes the bound signal, and an outside write to the
 //! signal replaces the text and moves the caret to its end. Undo and redo
-//! walk back and forth through the edits, a typed word at a time.
+//! walk back and forth through the edits, a typed word at a time. While an
+//! input method composes, the preedit is drawn underlined and reaches the
+//! value only when it is committed, and the platform's command modifier
+//! with C, X and V copies, cuts and pastes.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
 use parley::Generation;
+use smudge_core::clipboard;
 use smudge_core::element::{Element, Value};
 use smudge_core::geometry::{Color, Corners, Point, Rect, Size};
 use smudge_core::input::{Handled, Key, KeyEvent, Modifiers};
@@ -343,14 +347,16 @@ impl Widget for TextInput {
         })
     }
 
-    /// Appends the selection, the text or the placeholder, in that order.
+    /// Appends the selection, the underline under a composing preedit, the
+    /// text or the placeholder, in that order.
     ///
     /// The caret is a child node of the input and paints itself after this,
-    /// so the paint order is selection, then glyphs, then caret. Painting
-    /// also records the content box, which the pointer handlers and the next
-    /// edit read, and places the caret against it. An edit has placed the
-    /// caret already, so this only moves it when the box itself changed,
-    /// which lands one frame later like every size-driven change.
+    /// so the paint order is selection, then preedit underline, then glyphs,
+    /// then caret. Painting also records the content box, which the pointer
+    /// handlers and the next edit read, and places the caret against it. An
+    /// edit has placed the caret already, so this only moves it when the box
+    /// itself changed, which lands one frame later like every size-driven
+    /// change.
     ///
     /// # Panics
     ///
@@ -383,7 +389,25 @@ impl Widget for TextInput {
             });
         }
 
-        if self.chrome.editor.is_empty() && !self.placeholder.is_empty() {
+        // The composing text is underlined so the user can tell it apart
+        // from text that is in the field for good.
+        for area in self.chrome.editor.compose_geometry() {
+            out.push(PaintOp::FillRect {
+                rect: Rect::new(
+                    text_origin.x + area.x0,
+                    text_origin.y + area.y0,
+                    text_origin.x + area.x1,
+                    text_origin.y + area.y1,
+                ),
+                radius: Corners::ZERO,
+                color,
+            });
+        }
+
+        if self.chrome.editor.is_empty()
+            && !self.chrome.editor.is_composing()
+            && !self.placeholder.is_empty()
+        {
             let muted = cx.theme.color(ColorToken::TEXT_MUTED);
             self.paint_placeholder(text_origin, muted, out);
         } else {
@@ -519,6 +543,7 @@ pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
     let up_chrome = Rc::clone(&chrome);
     let focus_chrome = Rc::clone(&chrome);
     let commit_chrome = Rc::clone(&chrome);
+    let preedit_chrome = Rc::clone(&chrome);
     let edits_chrome = Rc::clone(&chrome);
     let caret_chrome = Rc::clone(&chrome);
 
@@ -533,6 +558,7 @@ pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
         .on_pointer_up(move |position| handle_release(&up_chrome, position))
         .on_focus(move |focused| handle_focus(&focus_chrome, focused))
         .on_ime_commit(move |text| handle_commit(&commit_chrome, text))
+        .on_ime_preedit(move |text, cursor| handle_preedit(&preedit_chrome, text, cursor))
         .child(caret_node(&caret_chrome))
 }
 
@@ -668,9 +694,9 @@ fn layout_position(chrome: &InputChrome, position: Point) -> (f32, f32) {
 /// word with control or alt held; Left and Right move by grapheme, or by
 /// word; Home and End jump to the ends; Shift extends instead of moving; and
 /// the platform's command modifier with A selects everything, with Z undoes,
-/// and with Shift and Z redoes, as Control and Y also does off macOS. Keys
-/// the input does not take, among them Enter and Tab, bubble to the
-/// ancestors.
+/// with Shift and Z redoes, as Control and Y also does off macOS, and with
+/// C, X and V copies, cuts and pastes. Keys the input does not take, among
+/// them Enter and Tab, bubble to the ancestors.
 fn handle_key(chrome: &InputChrome, event: &KeyEvent) -> Handled {
     if !event.pressed {
         return Handled::No;
@@ -681,6 +707,20 @@ fn handle_key(chrome: &InputChrome, event: &KeyEvent) -> Handled {
         Key::Character(text) if is_shortcut(modifiers) && text.eq_ignore_ascii_case("a") => {
             chrome.editor.select_all();
             chrome.touched();
+            Handled::Yes
+        }
+        Key::Character(text) if is_shortcut(modifiers) && text.eq_ignore_ascii_case("c") => {
+            copy_selection(chrome);
+            Handled::Yes
+        }
+        Key::Character(text) if is_shortcut(modifiers) && text.eq_ignore_ascii_case("x") => {
+            if cut_selection(chrome) {
+                chrome.touched();
+            }
+            Handled::Yes
+        }
+        Key::Character(text) if is_shortcut(modifiers) && text.eq_ignore_ascii_case("v") => {
+            paste_from_clipboard(chrome);
             Handled::Yes
         }
         Key::Character(text) if is_shortcut(modifiers) && text.eq_ignore_ascii_case("z") => {
@@ -814,8 +854,53 @@ fn apply_move(chrome: &InputChrome, extend: bool, by_word: bool, direction: Dire
     chrome.touched();
 }
 
+/// Copies the selected text to the clipboard of the running app.
+///
+/// An app without a clipboard, or an input with a collapsed caret, copies
+/// nothing.
+fn copy_selection(chrome: &InputChrome) {
+    if let Some(text) = chrome.editor.selected_text() {
+        clipboard::with(|slot| slot.set(text));
+    }
+}
+
+/// Copies the selected text to the clipboard and deletes it from the editor.
+///
+/// The deletion happens only when the copy found a clipboard to land on, so
+/// an app without one keeps the text it could not hand off. Returns whether
+/// anything was cut.
+fn cut_selection(chrome: &InputChrome) -> bool {
+    let Some(text) = chrome.editor.selected_text() else {
+        return false;
+    };
+    let mut copied = false;
+    clipboard::with(|slot| {
+        slot.set(text);
+        copied = true;
+    });
+    if copied {
+        chrome.editor.delete_selection();
+    }
+    copied
+}
+
+/// Inserts the text on the clipboard of the running app.
+///
+/// An app without a clipboard pastes nothing.
+fn paste_from_clipboard(chrome: &InputChrome) {
+    if let Some(text) = clipboard::with(|slot| slot.get()).flatten() {
+        chrome.editor.paste(&text);
+        chrome.touched();
+    }
+}
+
 /// Starts or stops the blink and the caret as the focus moves.
 fn handle_focus(chrome: &InputChrome, focused: bool) {
+    if !focused {
+        // The platform drops its input context when the field loses the
+        // focus, so the composition dies with it instead of outliving it.
+        chrome.editor.compose("", None);
+    }
     chrome.caret_shown.set(focused);
     if focused {
         chrome.caret_on.set(true);
@@ -829,12 +914,24 @@ fn handle_focus(chrome: &InputChrome, focused: bool) {
 /// Inserts the text an input method committed.
 ///
 /// A commit can arrive with no key event, so this is the only path some
-/// input methods ever take.
+/// input methods ever take. It can also arrive while the preedit is still
+/// showing, and then it takes the preedit's place.
 fn handle_commit(chrome: &InputChrome, text: &str) {
     if text.is_empty() {
         return;
     }
-    chrome.editor.insert(text);
+    chrome.editor.commit(text);
+    chrome.touched();
+}
+
+/// Shows, updates or clears the text an input method is composing.
+///
+/// The preedit is drawn but never written to the bound signal, so a
+/// canceled composition leaves the value as it was. An empty text is the
+/// cancel, and it arrives when the composition is canceled, committed by a
+/// route that sent its own commit, or dropped with the focus.
+fn handle_preedit(chrome: &InputChrome, text: &str, cursor: Option<(usize, usize)>) {
+    chrome.editor.compose(text, cursor);
     chrome.touched();
 }
 

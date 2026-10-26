@@ -9,6 +9,7 @@
 use std::cell::RefCell;
 use std::ops::Range;
 
+use parley::Cluster;
 use parley::StyleProperty;
 use parley::editing::PlainEditor;
 use parley::editing::PlainEditorDriver;
@@ -30,12 +31,18 @@ const DEFAULT_FONT_SIZE: f32 = 14.0;
 /// How many steps an editor can undo. Older steps are forgotten.
 const HISTORY_LIMIT: usize = 100;
 
+/// How far below the baseline the composing text is underlined, in logical
+/// pixels.
+const UNDERLINE_OFFSET: f32 = 1.0;
+
+/// How thick the underline under the composing text is, in logical pixels.
+const UNDERLINE_THICKNESS: f32 = 1.0;
+
 /// One single-line text buffer bound to a signal.
 ///
 /// The editor holds the text and the selection; the signal mirrors the text.
-/// Every mutating method writes the signal, so
-/// [`Editor::text`] and the signal always agree. A write to the signal from
-/// outside is applied with [`Editor::set_text`], which replaces the text and
+/// Every mutating method writes the signal, so [`Editor::text`] and the
+/// signal always agree. A write to the signal from outside is applied with [`Editor::set_text`], which replaces the text and
 /// moves the caret to the end.
 ///
 /// The editor lays out lazily: parley marks its layout stale on every edit,
@@ -189,6 +196,44 @@ impl Editor {
         rect(self.inner.borrow().ime_cursor_area())
     }
 
+    /// Returns one rectangle per piece of the composing preedit, in the
+    /// editor's own coordinates, for the underline drawn beneath it.
+    ///
+    /// The rectangles sit just below the baseline of each piece, in visual
+    /// order, and the list is empty while no input method is composing.
+    pub fn compose_geometry(&self) -> Vec<Rect> {
+        self.refresh();
+        let editor = self.inner.borrow();
+        let Some(range) = editor.raw_compose().clone() else {
+            return Vec::new();
+        };
+        let Some(layout) = editor.try_layout() else {
+            return Vec::new();
+        };
+        let mut rects = Vec::new();
+        let mut index = range.start;
+        while index < range.end {
+            let Some(cluster) = Cluster::from_byte_index(layout, index) else {
+                break;
+            };
+            // A cluster can hold more than the byte the loop advanced to, so
+            // the next index is always at least one past the current one.
+            index = cluster.text_range().end.max(index + 1);
+            let Some(offset) = cluster.visual_offset() else {
+                continue;
+            };
+            let baseline = cluster.line().metrics().baseline;
+            let top = baseline + UNDERLINE_OFFSET;
+            rects.push(Rect::new(
+                offset,
+                top,
+                offset + cluster.advance(),
+                top + UNDERLINE_THICKNESS,
+            ));
+        }
+        rects
+    }
+
     /// Replaces the whole text and moves the caret to the end.
     ///
     /// This is how an outside write to the bound signal reaches the editor:
@@ -218,6 +263,96 @@ impl Editor {
         self.edit(EditKind::Insert, grouping, |driver| {
             driver.insert_or_replace_selection(text);
         });
+    }
+
+    /// Inserts `text` from a clipboard, replacing the selection, as one undo
+    /// step.
+    ///
+    /// Line breaks go, because the editor holds one line: a paste from a
+    /// multi-line source pastes its text in one line. An empty paste, or one
+    /// that was nothing but line breaks, inserts nothing.
+    pub fn paste(&self, text: &str) {
+        let single_line: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+        if single_line.is_empty() {
+            return;
+        }
+        self.edit(EditKind::Insert, Grouping::Alone, |driver| {
+            driver.insert_or_replace_selection(&single_line);
+        });
+    }
+
+    /// Deletes the selected text, or nothing when the caret is collapsed.
+    ///
+    /// This is the deletion a cut pairs with the copy, and it is an undo
+    /// step of its own.
+    pub fn delete_selection(&self) {
+        self.edit(EditKind::Delete, Grouping::Alone, |driver| {
+            driver.delete_selection();
+        });
+    }
+
+    /// Returns the selected text, or `None` when the selection is collapsed.
+    pub fn selected_text(&self) -> Option<String> {
+        self.refresh();
+        self.inner.borrow().selected_text().map(str::to_owned)
+    }
+
+    /// Shows, updates or clears the text an input method is composing.
+    ///
+    /// Non-empty `text` becomes the preedit, which replaces the previous
+    /// preedit, and `cursor`, the byte range of the input method's cursor
+    /// inside `text`, moves the caret into the preedit, or hides it when
+    /// `None`. A composition that starts over a selection deletes the
+    /// selection first, the way typing over it would, and that deletion is an
+    /// undo step of its own. Empty `text` removes the preedit and leaves the
+    /// caret where the preedit started.
+    ///
+    /// The preedit is not the editor's text: [`Editor::text`] leaves it out
+    /// and the bound signal is not written, so a canceled or lost
+    /// composition leaves the value as it was. Only [`Editor::commit`] makes
+    /// composing text stick.
+    ///
+    /// Cursor offsets past the end of `text`, which a broken input method
+    /// could report, are clamped to it.
+    pub fn compose(&self, text: &str, cursor: Option<(usize, usize)>) {
+        if text.is_empty() {
+            self.cancel_compose();
+            return;
+        }
+        if !self.is_composing() {
+            // The platform clears the preedit with an empty text right before
+            // it commits, so the selection has to go when the composition
+            // starts: a selection kept for a cancel to restore would come
+            // back right before the commit and stay next to the committed
+            // text.
+            self.delete_selection();
+        }
+        let end = text.len();
+        let cursor = cursor.map(|(anchor, focus)| (anchor.min(end), focus.min(end)));
+        self.drive(|driver| driver.set_compose(text, cursor));
+    }
+
+    /// Removes the preedit of the running composition, if there is one.
+    fn cancel_compose(&self) {
+        if self.is_composing() {
+            self.drive(|driver| driver.clear_compose());
+        }
+    }
+
+    /// Commits `text` from an input method, replacing any preedit with it.
+    ///
+    /// A commit can arrive while the preedit is still showing, in which case
+    /// the committed text takes its place, or after the platform already
+    /// cleared it, in which case it is inserted at the caret. The committed
+    /// text groups for undo like typed text: one character joins the word
+    /// around it, and longer text is a step of its own. An empty commit only
+    /// removes the preedit.
+    pub fn commit(&self, text: &str) {
+        if text.is_empty() {
+            self.cancel_compose();
+            return;
+        }
+        self.insert(text);
     }
 
     /// Deletes one grapheme before the caret, or the selection.
@@ -463,6 +598,11 @@ impl Editor {
         grouping: Grouping,
         f: impl FnOnce(&mut PlainEditorDriver<'_, ()>),
     ) {
+        // An edit while composing ends the composition first, so the edit
+        // acts on the committed text and parley never shifts a preedit range
+        // across an edit, which its byte arithmetic can leave inside a
+        // character.
+        self.cancel_compose();
         let before = self.snapshot();
         self.drive(f);
         if self.has_text(&before.text) {

@@ -1,7 +1,8 @@
 //! Text input editing, through the headless harness and the editor directly.
 //!
-//! The harness tests cover what a user does: typing, deleting, selecting and
-//! the pixels a blink damages, and a property test drives random keys and
+//! The harness tests cover what a user does: typing, deleting, selecting,
+//! composing with an input method, and copying, cutting and pasting, plus
+//! the pixels a blink damages. A property test drives random keys and
 //! outside writes against an editor that applies the same edits directly.
 //! The editor-level tests cover the caret in right-to-left text, which is
 //! only meaningful in parley's own geometry.
@@ -10,6 +11,7 @@ use std::time::Duration;
 
 use proptest::prelude::*;
 
+use smudge_core::clipboard::{Clipboard, MemoryClipboard};
 use smudge_core::geometry::{Color, PixelRect, Point, Rect};
 use smudge_core::input::{InputEvent, Key, Modifiers};
 use smudge_core::paint::{DisplayItem, PaintOp};
@@ -17,6 +19,7 @@ use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
 use smudge_core::style::px;
 use smudge_core::theme::{ColorToken, Theme};
+use smudge_core::widget::panel;
 use smudge_test::Harness;
 use smudge_text::{Editor, TextInputExt, TextStyle, text_input};
 
@@ -249,6 +252,363 @@ fn an_ime_commit_inserts_without_a_key_event() {
         text: String::from("世界"),
     });
     assert_eq!(value.get(), "世界", "the committed text is in the signal");
+}
+
+/// A fill the height of an underline but wider than a caret, which is what
+/// a composing preedit paints beneath its text.
+fn is_underline(rect: &Rect) -> bool {
+    rect.height() <= 2.0 && rect.width() > 4.0
+}
+
+/// Commits `text` in the order the platform sends a commit: an empty
+/// preedit clears the composition first, then the commit arrives.
+fn ime_commit(harness: &mut Harness, text: &str) {
+    harness.event(InputEvent::ImePreedit {
+        text: String::new(),
+        cursor: None,
+    });
+    harness.event(InputEvent::ImeCommit {
+        text: String::from(text),
+    });
+}
+
+#[test]
+fn a_preedit_draws_underlined_text_and_never_touches_the_signal() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+
+    harness.event(InputEvent::ImePreedit {
+        text: String::from("こんに"),
+        cursor: Some((9, 9)),
+    });
+    harness.settle();
+
+    let (fills, runs) = painted(&mut harness);
+    assert!(
+        !runs.is_empty(),
+        "the composing text is drawn before it is committed"
+    );
+    assert!(
+        fills.iter().any(is_underline),
+        "the composing text is underlined: {fills:?}"
+    );
+    assert_eq!(
+        value.get(),
+        "",
+        "the preedit is not committed text, so the signal waits"
+    );
+
+    ime_commit(&mut harness, "今日は");
+    harness.settle();
+
+    assert_eq!(value.get(), "今日は", "the commit writes the signal");
+    let (fills, _) = painted(&mut harness);
+    assert!(
+        !fills.iter().any(is_underline),
+        "the underline goes once the text is committed: {fills:?}"
+    );
+}
+
+#[test]
+fn a_commit_while_composing_takes_the_preedit_place() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+
+    harness.event(InputEvent::ImePreedit {
+        text: String::from("こんにちは"),
+        cursor: Some((15, 15)),
+    });
+    harness.event(InputEvent::ImeCommit {
+        text: String::from("今日は"),
+    });
+    harness.settle();
+
+    assert_eq!(
+        value.get(),
+        "今日は",
+        "the committed text replaced the preedit, it did not follow it"
+    );
+    harness.type_text("x");
+    harness.settle();
+    assert_eq!(
+        value.get(),
+        "今日はx",
+        "the caret sits after the committed text"
+    );
+}
+
+#[test]
+fn a_canceled_preedit_leaves_the_text_as_it_was() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+    harness.type_text("ab");
+
+    harness.event(InputEvent::ImePreedit {
+        text: String::from("かんじ"),
+        cursor: Some((9, 9)),
+    });
+    harness.settle();
+    harness.event(InputEvent::ImePreedit {
+        text: String::new(),
+        cursor: None,
+    });
+    harness.settle();
+
+    assert_eq!(value.get(), "ab", "the cancel is not an edit of the value");
+    harness.type_text("c");
+    harness.settle();
+    assert_eq!(
+        value.get(),
+        "abc",
+        "the caret sits where the preedit was, and typing goes on"
+    );
+}
+
+#[test]
+fn composing_over_a_selection_replaces_it_like_typing() {
+    let (mut harness, value) = mounted("hello world");
+    focus(&mut harness);
+    harness.press_key(Key::Home);
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    for _ in 0..5 {
+        harness.press_key_with(Key::ArrowRight, shift);
+    }
+
+    harness.event(InputEvent::ImePreedit {
+        text: String::from("こん"),
+        cursor: Some((6, 6)),
+    });
+    harness.settle();
+    assert_eq!(
+        value.get(),
+        " world",
+        "the composition takes the selection's place as soon as it starts"
+    );
+
+    ime_commit(&mut harness, "今度");
+    harness.settle();
+    assert_eq!(
+        value.get(),
+        "今度 world",
+        "the committed text stands where the selection was"
+    );
+
+    harness.press_key_with(Key::Character(String::from("z")), command());
+    assert_eq!(value.get(), " world", "undo removes the commit");
+    harness.press_key_with(Key::Character(String::from("z")), command());
+    assert_eq!(
+        value.get(),
+        "hello world",
+        "a second undo brings the selection back"
+    );
+}
+
+#[test]
+fn a_paste_while_composing_ends_the_composition() {
+    let (mut harness, value, mut clipboard) = mounted_with_clipboard("");
+    focus(&mut harness);
+
+    // The input method puts a preedit of two multi-byte characters in and
+    // places the caret inside it.
+    harness.event(InputEvent::ImePreedit {
+        text: String::from("ãé"),
+        cursor: Some((4, 1)),
+    });
+    harness.settle();
+
+    // Pasting over the selected tail of the preedit, with as many bytes as
+    // it replaces, would leave a range shifted by bytes ending inside the
+    // pasted character if the composition outlived the paste.
+    clipboard.set(String::from("xé"));
+    harness.press_key_with(Key::Character(String::from("v")), command());
+    harness.settle();
+    assert_eq!(
+        value.get(),
+        "xé",
+        "the paste drops the preedit and inserts at its start"
+    );
+
+    harness.event(InputEvent::ImeCommit {
+        text: String::from("あ"),
+    });
+    harness.settle();
+    assert_eq!(
+        value.get(),
+        "xéあ",
+        "the paste cancelled the composition, so the commit lands at the caret"
+    );
+}
+
+#[test]
+fn losing_the_focus_cancels_the_composition() {
+    let value = RwSignal::new(String::new());
+    let bound = value.clone();
+    let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        panel()
+            .column()
+            .child(
+                text_input(bound.clone())
+                    .width(px(VIEWPORT.0))
+                    .height(px(30.0)),
+            )
+            .child(panel().width(px(40.0)).height(px(20.0)).focusable())
+    });
+    harness.frame();
+    let input = Point { x: 60.0, y: 15.0 };
+    let other = Point { x: 20.0, y: 45.0 };
+    harness.click(input);
+    harness.settle();
+    harness.type_text("ab");
+
+    harness.event(InputEvent::ImePreedit {
+        text: String::from("かんじ"),
+        cursor: Some((9, 9)),
+    });
+    harness.settle();
+    let (fills, _) = painted(&mut harness);
+    assert!(
+        fills.iter().any(is_underline),
+        "the composition is showing: {fills:?}"
+    );
+
+    harness.click(other);
+    harness.settle();
+    let (fills, _) = painted(&mut harness);
+    assert!(
+        !fills.iter().any(is_underline),
+        "the preedit goes with the focus: {fills:?}"
+    );
+    assert_eq!(
+        value.get(),
+        "ab",
+        "a composition that dies with the focus commits nothing"
+    );
+
+    // Real clicks take longer than the double click window, which the
+    // virtual clock of the harness only crosses when the test advances it.
+    harness.advance(Duration::from_secs(1));
+    harness.click(input);
+    harness.settle();
+    harness.type_text("c");
+    harness.settle();
+    assert_eq!(
+        value.get(),
+        "abc",
+        "typing after the lost composition edits the field, not a stale \
+         preedit"
+    );
+}
+
+/// Mounts an input bound to a fresh signal with a memory clipboard
+/// installed, and returns the harness, the signal and a shared handle on
+/// the clipboard.
+fn mounted_with_clipboard(initial: &str) -> (Harness, RwSignal<String>, MemoryClipboard) {
+    let (mut harness, value) = mounted(initial);
+    let clipboard = MemoryClipboard::default();
+    harness.app().set_clipboard(Box::new(clipboard.clone()));
+    (harness, value, clipboard)
+}
+
+#[test]
+fn copy_then_paste_duplicates_the_selection() {
+    let (mut harness, value, mut clipboard) = mounted_with_clipboard("");
+    focus(&mut harness);
+
+    harness.type_text("hello world");
+    harness.press_key_with(Key::Character(String::from("a")), command());
+    harness.press_key_with(Key::Character(String::from("c")), command());
+    assert_eq!(
+        clipboard.get().as_deref(),
+        Some("hello world"),
+        "copy puts the selected text on the clipboard"
+    );
+
+    harness.press_key(Key::ArrowRight);
+    harness.press_key_with(Key::Character(String::from("v")), command());
+    assert_eq!(
+        value.get(),
+        "hello worldhello world",
+        "paste inserts the copied text at the caret"
+    );
+}
+
+#[test]
+fn cut_moves_the_selection_to_the_clipboard() {
+    let (mut harness, value, mut clipboard) = mounted_with_clipboard("");
+    focus(&mut harness);
+
+    harness.type_text("hello world");
+    harness.press_key_with(Key::Character(String::from("a")), command());
+    harness.press_key_with(Key::Character(String::from("x")), command());
+    assert_eq!(value.get(), "", "cut removes the selected text");
+    assert_eq!(
+        clipboard.get().as_deref(),
+        Some("hello world"),
+        "cut puts the selected text on the clipboard"
+    );
+
+    harness.press_key_with(Key::Character(String::from("v")), command());
+    assert_eq!(value.get(), "hello world", "paste brings it back");
+}
+
+#[test]
+fn a_paste_flattens_line_breaks_into_one_line() {
+    let (mut harness, value, mut clipboard) = mounted_with_clipboard("");
+    focus(&mut harness);
+
+    clipboard.set(String::from("one\ntwo\r\nthree"));
+    harness.press_key_with(Key::Character(String::from("v")), command());
+    assert_eq!(
+        value.get(),
+        "onetwothree",
+        "a single line takes a multi-line paste as one line"
+    );
+
+    harness.press_key_with(Key::Character(String::from("a")), command());
+    clipboard.set(String::from("\r\n"));
+    harness.press_key_with(Key::Character(String::from("v")), command());
+    assert_eq!(
+        value.get(),
+        "onetwothree",
+        "a paste of nothing but line breaks keeps the selection"
+    );
+}
+
+#[test]
+fn a_paste_is_an_undo_step_of_its_own() {
+    let (mut harness, value, mut clipboard) = mounted_with_clipboard("");
+    focus(&mut harness);
+
+    harness.type_text("ab");
+    clipboard.set(String::from("c"));
+    harness.press_key_with(Key::Character(String::from("v")), command());
+    assert_eq!(value.get(), "abc");
+
+    harness.press_key_with(Key::Character(String::from("z")), command());
+    assert_eq!(
+        value.get(),
+        "ab",
+        "undo takes back the paste and not the word typed before it"
+    );
+}
+
+#[test]
+fn without_a_clipboard_the_clipboard_keys_do_nothing() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+
+    harness.type_text("kept");
+    harness.press_key_with(Key::Character(String::from("a")), command());
+    harness.press_key_with(Key::Character(String::from("x")), command());
+    harness.press_key_with(Key::Character(String::from("v")), command());
+    assert_eq!(
+        value.get(),
+        "kept",
+        "cut and paste without a clipboard change nothing and do not panic"
+    );
 }
 
 #[test]
@@ -562,6 +922,28 @@ fn the_caret_moves_visually_in_right_to_left_text_as_parley_reports() {
         "the caret lands on the boundaries parley reported before: {} vs {}",
         after_left.x0,
         end.x0
+    );
+}
+
+#[test]
+fn an_empty_commit_removes_the_preedit_and_keeps_the_selection() {
+    let value = RwSignal::new(String::from("abc"));
+    let editor = Editor::new(value.clone());
+    editor.set_style(&TextStyle::default());
+    editor.set_text("abc");
+    editor.select_all();
+
+    editor.commit("");
+    assert_eq!(value.get(), "abc", "committing nothing deletes nothing");
+    assert_eq!(editor.selection(), 0..3, "the selection stays");
+
+    editor.compose("か", None);
+    editor.commit("");
+    assert!(!editor.is_composing(), "the preedit is gone");
+    assert_eq!(
+        value.get(),
+        "",
+        "the composition took the selection's place"
     );
 }
 

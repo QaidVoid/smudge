@@ -5,13 +5,14 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use smudge_core::app::{App, AppConfig, FrameStats, RepaintMode};
+use smudge_core::clipboard::MemoryClipboard;
 use smudge_core::element::IntoElement;
-use smudge_core::geometry::{Color, PixelRect, Size};
+use smudge_core::geometry::{Color, PixelRect, Rect, Size};
 use smudge_cpu::CpuRenderer;
 use softbuffer::{Context, Surface};
 use web_time::Instant;
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalSize};
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::raw_window_handle::{
@@ -19,6 +20,7 @@ use winit::raw_window_handle::{
 };
 use winit::window::{Window, WindowId};
 
+use crate::clipboard::SystemClipboard;
 use crate::error::PlatformError;
 use crate::events::EventTranslator;
 use crate::present::{
@@ -281,6 +283,15 @@ struct WindowState {
     scale: f32,
     /// The window's size in physical pixels when the app last used it.
     physical: (u32, u32),
+    /// The IME area the window last reported, in logical pixels, or `None`
+    /// while no widget reports one.
+    ime_area: Option<Rect>,
+    /// The scale the IME area was last reported under. The window system
+    /// turns the area into physical pixels with the scale of the moment, so
+    /// an unchanged logical area is reported again after a scale change.
+    ime_scale: f32,
+    /// Whether the window currently accepts input method input.
+    ime_allowed: bool,
 }
 
 /// The frame that was rendered and waits to be presented.
@@ -351,6 +362,14 @@ where
         });
         window.request_redraw();
 
+        // The app gets the system clipboard when it can be opened, and an
+        // in-memory one when it cannot, so cut, copy and paste keep working
+        // inside the app either way.
+        app.set_clipboard(match SystemClipboard::new() {
+            Ok(clipboard) => Box::new(clipboard),
+            Err(_) => Box::new(MemoryClipboard::default()),
+        });
+
         Ok(WindowState {
             window,
             surface,
@@ -369,6 +388,9 @@ where
             frames_presented: 0,
             scale,
             physical: (physical.width, physical.height),
+            ime_area: None,
+            ime_scale: scale,
+            ime_allowed: false,
         })
     }
 
@@ -438,6 +460,7 @@ where
                 on_frame(state.app.stats().clone(), state.stats);
             }
         }
+        state.update_ime();
         if tick {
             state.window.request_redraw();
         }
@@ -540,6 +563,7 @@ where
                             state.window.request_redraw();
                         }
                     }
+                    state.update_ime();
                 }
                 Ok(())
             }
@@ -555,6 +579,43 @@ where
 }
 
 impl WindowState {
+    /// Reports the area the focused widget offers the input method to the
+    /// window system.
+    ///
+    /// This runs after every window event and after every presented frame,
+    /// because the area can move without a pixel changing anywhere: the
+    /// window asks for a frame only when the tree has work that changes
+    /// pixels, so a caret move inside composed text would otherwise leave
+    /// the input method's candidate window where it was. A widget that
+    /// reports no area turns the input method off, which is what a window
+    /// does while no text field holds the focus.
+    fn update_ime(&mut self) {
+        let area = self.app.ime_area();
+        if area == self.ime_area && self.scale == self.ime_scale {
+            return;
+        }
+        self.ime_area = area;
+        self.ime_scale = self.scale;
+        match area {
+            Some(area) => {
+                if !self.ime_allowed {
+                    self.ime_allowed = true;
+                    self.window.set_ime_allowed(true);
+                }
+                self.window.set_ime_cursor_area(
+                    LogicalPosition::new(f64::from(area.x0), f64::from(area.y0)),
+                    LogicalSize::new(f64::from(area.width()), f64::from(area.height())),
+                );
+            }
+            None => {
+                if self.ime_allowed {
+                    self.ime_allowed = false;
+                    self.window.set_ime_allowed(false);
+                }
+            }
+        }
+    }
+
     /// Returns whether the window has presented the number of frames its frame
     /// limit sets, or `false` when no limit is set.
     fn finished(&self) -> bool {

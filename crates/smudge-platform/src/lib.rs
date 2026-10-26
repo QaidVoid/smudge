@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod clipboard;
 mod error;
 mod events;
 mod present;
