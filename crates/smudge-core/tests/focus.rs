@@ -717,3 +717,100 @@ fn an_ime_commit_goes_to_the_deepest_handler_in_the_focused_chain() {
          nothing is focused"
     );
 }
+
+/// A log of composing texts and the handler that appends to it.
+type PreeditLog = (
+    Rc<RefCell<Vec<String>>>,
+    Box<dyn FnMut(&str, Option<(usize, usize)>)>,
+);
+
+/// A log of composing texts with a handler closure that appends to it.
+fn preedit_log(name: &'static str) -> PreeditLog {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let handler = {
+        let log = Rc::clone(&log);
+        move |text: &str, cursor: Option<(usize, usize)>| {
+            log.borrow_mut().push(format!("{name}:{text}:{cursor:?}"))
+        }
+    };
+    (log, Box::new(handler))
+}
+
+#[test]
+fn an_ime_preedit_goes_to_the_deepest_handler_in_the_focused_chain() {
+    let (outer_log, on_outer) = preedit_log("outer");
+    let (inner_log, on_inner) = preedit_log("inner");
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .on_ime_preedit(on_outer)
+                .child(
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .focusable()
+                        .on_ime_preedit(on_inner),
+                )
+                .child(panel().width(px(40.0)).height(px(20.0)).focusable()),
+        )
+    });
+    harness.frame();
+
+    harness.click(Point { x: 10.0, y: 5.0 });
+    harness.event(InputEvent::ImePreedit {
+        text: String::from("か"),
+        cursor: Some((3, 3)),
+    });
+    harness.event(InputEvent::ImePreedit {
+        text: String::new(),
+        cursor: None,
+    });
+
+    assert_eq!(
+        *inner_log.borrow(),
+        ["inner:か:Some((3, 3))", "inner::None"],
+        "the focused input hears the composing text and the clear"
+    );
+    assert!(
+        outer_log.borrow().is_empty(),
+        "a preedit stops at the deepest handler, like a commit"
+    );
+}
+
+#[test]
+fn losing_the_window_focus_clears_the_composition() {
+    let (log, on_preedit) = preedit_log("input");
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(40.0))
+                .height(px(20.0))
+                .focusable()
+                .on_ime_preedit(on_preedit),
+        )
+    });
+    harness.frame();
+
+    harness.click(Point { x: 10.0, y: 5.0 });
+    harness.event(InputEvent::ImePreedit {
+        text: String::from("にほん"),
+        cursor: Some((9, 9)),
+    });
+    harness.event(InputEvent::WindowFocus(false));
+
+    let last = log.borrow().last().cloned();
+    assert_eq!(
+        last,
+        Some(String::from("input::None")),
+        "a window that lost its focus clears the preedit, so a composition \
+         never outlives the focus"
+    );
+
+    harness.event(InputEvent::WindowFocus(true));
+    assert_eq!(
+        log.borrow().len(),
+        2,
+        "gaining the window focus sends nothing"
+    );
+}

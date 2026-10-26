@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod clipboard;
 mod damage;
 pub mod element;
 pub mod geometry;

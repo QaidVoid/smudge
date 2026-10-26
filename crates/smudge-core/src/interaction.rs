@@ -69,6 +69,9 @@ pub(crate) type KeyHandler = Box<dyn FnMut(&KeyEvent) -> Handled>;
 /// A commit handler: it inserts the text an input method committed.
 pub(crate) type CommitHandler = Box<dyn FnMut(&str)>;
 
+/// A preedit handler: it shows or clears the text an input method composes.
+pub(crate) type PreeditHandler = Box<dyn FnMut(&str, Option<(usize, usize)>)>;
+
 /// The input handlers one node owns.
 ///
 /// The builder methods on [`Element`](crate::element::Element) set them, and
@@ -103,6 +106,10 @@ pub(crate) struct Handlers {
     /// descendant holds the focus. Routed like a key event, not a pointer
     /// event, so it takes no part in hit testing.
     pub(crate) on_ime_commit: Option<CommitHandler>,
+    /// Runs when the input method changes its composing text while the node
+    /// or a descendant holds the focus. An empty text clears the
+    /// composition. Routed like a commit.
+    pub(crate) on_ime_preedit: Option<PreeditHandler>,
     /// Runs when the node gains or loses the keyboard focus.
     pub(crate) on_focus: Option<Box<dyn FnMut(bool)>>,
     /// Whether a fresh press of Enter or Space runs the node's

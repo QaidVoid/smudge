@@ -160,6 +160,9 @@ pub struct App {
     /// Held so those stay alive for as long as the app does, and so the
     /// cleanup at the end stops the theme bindings.
     _root: Owner,
+    /// The clipboard the app's handlers copy and paste through, when one is
+    /// installed.
+    clipboard: Option<crate::clipboard::Slot>,
 }
 
 impl App {
@@ -209,6 +212,7 @@ impl App {
             timers,
             force_full: true,
             _root: root,
+            clipboard: None,
         }
     }
 
@@ -321,6 +325,18 @@ impl App {
         });
     }
 
+    /// Installs the clipboard the app's widgets copy and paste through.
+    ///
+    /// Until one is installed, a clipboard read or write finds nothing, so
+    /// cut, copy and paste keys do nothing. The windowing layer installs one
+    /// that reaches the system clipboard; a test installs a
+    /// [`MemoryClipboard`](crate::clipboard::MemoryClipboard) and keeps a
+    /// clone to seed or read the text. Installing again replaces the
+    /// previous clipboard.
+    pub fn set_clipboard(&mut self, clipboard: Box<dyn crate::clipboard::Clipboard>) {
+        self.clipboard = Some(crate::clipboard::install(self._root.data(), clipboard));
+    }
+
     /// Sets the callback that a wake in this app's tree runs to request a
     /// redraw.
     ///
@@ -427,7 +443,15 @@ impl App {
             }
             InputEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
             InputEvent::ImeCommit { text } => self.tree.ime_commit(&text),
-            InputEvent::ImePreedit { .. } | InputEvent::WindowFocus(_) => {}
+            InputEvent::ImePreedit { text, cursor } => self.tree.ime_preedit(&text, cursor),
+            InputEvent::WindowFocus(focused) => {
+                // A window that loses the input focus drops its input method
+                // context, so a composition must not outlive the focus. The
+                // empty preedit is the clear.
+                if !focused {
+                    self.tree.ime_preedit("", None);
+                }
+            }
         }
     }
 

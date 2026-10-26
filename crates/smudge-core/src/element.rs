@@ -899,6 +899,25 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Runs `handler` when the input method changes its composing text while
+    /// the node or one of its descendants holds the keyboard focus.
+    ///
+    /// The handler receives the composing text and the byte range of the
+    /// cursor inside it, or `None` when the input method shows no cursor. An
+    /// empty text means the composition was canceled or committed, and the
+    /// preedit must go. An editor draws the composing text itself, usually
+    /// underlined, and does not write it into its value until the commit
+    /// arrives. Like [`Element::on_ime_commit`], the event goes to the
+    /// deepest handler in the focused chain and does not bubble past it, and
+    /// the handler runs inside the node's owner.
+    pub fn on_ime_preedit(
+        mut self,
+        handler: impl FnMut(&str, Option<(usize, usize)>) + 'static,
+    ) -> Self {
+        self.handlers.on_ime_preedit = Some(Box::new(handler));
+        self
+    }
+
     /// Disables the node, which takes it out of hit testing, or enables it
     /// again.
     ///

@@ -85,6 +85,10 @@ pub(crate) struct OwnerData {
     /// owner when the app is created. A timer registers into the book of the
     /// root its owner chain leads to.
     pub(crate) timer_book: RefCell<Option<Weak<RefCell<crate::timer::TimerBook>>>>,
+    /// The clipboard of the app this owner tree belongs to, set on the root
+    /// owner when the app installs one. A handler reaches the clipboard of
+    /// the root its owner chain leads to.
+    pub(crate) clipboard: RefCell<Option<crate::clipboard::WeakSlot>>,
 }
 
 impl OwnerData {
@@ -133,6 +137,7 @@ impl OwnerData {
             cleaned: Cell::new(false),
             state: RefCell::new(OwnerState::default()),
             timer_book: RefCell::new(None),
+            clipboard: RefCell::new(None),
         });
         self.adopt(&inner);
         Owner { inner }

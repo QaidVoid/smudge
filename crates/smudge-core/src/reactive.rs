@@ -560,6 +560,7 @@ impl Owner {
             cleaned: Cell::new(false),
             state: RefCell::new(OwnerState::default()),
             timer_book: RefCell::new(None),
+            clipboard: RefCell::new(None),
         });
         if let Some(parent) = parent {
             parent.adopt(&inner);

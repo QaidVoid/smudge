@@ -129,6 +129,47 @@ impl WidgetTree {
     /// disabled or hidden does not hear the commit, but its ancestors still
     /// can.
     pub(crate) fn ime_commit(&mut self, text: &str) {
+        self.route_from_focus(|tree, id| {
+            let Some(on_ime_commit) = tree
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.on_ime_commit.as_mut())
+            else {
+                return false;
+            };
+            on_ime_commit(text);
+            true
+        });
+    }
+
+    /// Delivers a change of the composing text to the focused node.
+    ///
+    /// Non-empty text shows or updates the preedit, empty text clears it,
+    /// which is how a canceled composition arrives. The routing is the
+    /// commit's: the deepest `on_ime_preedit` handler in the focused chain
+    /// takes it, and a node that can no longer hold the focus does not hear
+    /// it while its ancestors still can.
+    pub(crate) fn ime_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
+        self.route_from_focus(|tree, id| {
+            let Some(on_ime_preedit) = tree
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.on_ime_preedit.as_mut())
+            else {
+                return false;
+            };
+            on_ime_preedit(text, cursor);
+            true
+        });
+    }
+
+    /// Runs `deliver` on the focused node and its ancestors, deepest first,
+    /// and stops at the first handler that runs.
+    ///
+    /// The event starts at the node that held the focus when it arrived. A
+    /// focused node that became disabled or hidden delivers nothing, but the
+    /// event keeps bubbling past it, like a key does.
+    fn route_from_focus(&mut self, mut deliver: impl FnMut(&mut Self, WidgetId) -> bool) {
         let start = match self.focused {
             Some(focused) => Some(focused),
             None => self
@@ -150,14 +191,7 @@ impl WidgetTree {
             };
             let mut ran = false;
             owner.with(|| {
-                if let Some(on_ime_commit) = self
-                    .nodes
-                    .get_mut(id)
-                    .and_then(|node| node.handlers.on_ime_commit.as_mut())
-                {
-                    on_ime_commit(text);
-                    ran = true;
-                }
+                ran = deliver(self, id);
             });
             if ran {
                 return;
