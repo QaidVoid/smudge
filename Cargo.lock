@@ -3038,6 +3038,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "smudge"
+version = "0.1.0"
+dependencies = [
+ "smudge-core",
+ "smudge-gpu",
+ "smudge-platform",
+ "smudge-text",
+ "smudge-widgets",
+]
+
+[[package]]
 name = "smudge-a11y"
 version = "0.1.0"
 dependencies = [

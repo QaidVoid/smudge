@@ -89,10 +89,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ! grep -q 'source = "git+' Cargo.lock
 ```
 
-When a change touches `smudge-core`, `smudge-cpu`, `smudge-platform`, `smudge-text` or `smudge-widgets`, also run:
+When a change touches `smudge-core`, `smudge-cpu`, `smudge-platform`, `smudge-text`, `smudge-widgets` or `smudge`, also run:
 
 ```sh
-cargo check --target wasm32-unknown-unknown -p smudge-core -p smudge-cpu -p smudge-platform -p smudge-text -p smudge-widgets
+cargo check --target wasm32-unknown-unknown -p smudge-core -p smudge-cpu -p smudge-platform -p smudge-text -p smudge-widgets -p smudge
 ```
 
 Add each crate to that list once it is expected to build for wasm.

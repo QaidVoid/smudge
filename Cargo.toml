@@ -2,6 +2,7 @@
 resolver = "3"
 exclude = ["fuzz"]
 members = [
+  "crates/smudge",
   "crates/smudge-a11y",
   "crates/smudge-bench",
   "crates/smudge-core",

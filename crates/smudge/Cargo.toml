@@ -1,0 +1,29 @@
+[package]
+name = "smudge"
+description = "A native Rust GUI library with a retained widget tree, reactive signals and damage-tracked repainting"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+smudge-core = { version = "0.1.0", path = "../smudge-core" }
+smudge-gpu = { version = "0.1.0", path = "../smudge-gpu", optional = true }
+smudge-platform = { version = "0.1.0", path = "../smudge-platform", optional = true }
+smudge-text = { version = "0.1.0", path = "../smudge-text" }
+smudge-widgets = { version = "0.1.0", path = "../smudge-widgets" }
+
+[features]
+default = ["window"]
+# Windowing, input and presentation through the platform crate.
+window = ["dep:smudge-platform"]
+# The vello-based GPU renderer, with the window's GPU presentation path, so a
+# window can choose or auto-detect it.
+gpu = ["window", "dep:smudge-gpu", "smudge-platform/gpu"]
+
+[package.metadata.docs.rs]
+all-features = true
