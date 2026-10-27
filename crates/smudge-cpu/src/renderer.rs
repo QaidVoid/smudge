@@ -3,10 +3,11 @@
 
 use smudge_core::app::FrameOutput;
 use smudge_core::geometry::PixelRect;
+use smudge_core::paint::DisplayItem;
 use smudge_core::renderer::Renderer;
 use tiny_skia::Pixmap;
 
-use crate::draw::Canvas;
+use crate::draw::{Canvas, PlannedOp, RasterPlan, for_each_op};
 use crate::glyph_cache::GlyphCache;
 
 /// A renderer that keeps a premultiplied RGBA surface between frames and
@@ -22,8 +23,9 @@ use crate::glyph_cache::GlyphCache;
 /// with the surface, so a glyph is rasterized once no matter how often it is
 /// repainted.
 ///
-/// Drawing needs no buffer of its own, so a frame whose glyphs are all in the
-/// cache allocates nothing. A glyph seen for the first time allocates its mask.
+/// A frame allocates nothing once the surface has seen a frame like it: the
+/// per frame plan of drawable operations reuses its buffers, and a glyph seen
+/// before comes from the cache.
 ///
 /// # Examples
 ///
@@ -59,6 +61,9 @@ pub struct CpuRenderer {
     pixmap: Option<Pixmap>,
     /// The glyph masks that survive between frames.
     glyphs: GlyphCache,
+    /// The display list's drawable operations of the frame being repainted,
+    /// with their buffers reused between frames.
+    plan: RasterPlan,
 }
 
 impl CpuRenderer {
@@ -72,6 +77,7 @@ impl CpuRenderer {
         CpuRenderer {
             pixmap: Pixmap::new(width, height),
             glyphs: GlyphCache::new(),
+            plan: RasterPlan::new(),
         }
     }
 
@@ -115,17 +121,28 @@ impl CpuRenderer {
         let Some(pixmap) = self.pixmap.as_mut() else {
             return;
         };
-
+        if frame.damage.is_empty() {
+            return;
+        }
         let mut canvas = Canvas {
             pixels: pixmap.data_mut(),
             width,
-            height,
             scale: frame.scale,
             glyphs: &mut self.glyphs,
         };
-        for &rect in frame.damage {
-            canvas.clear(rect, frame.clear_color);
-            canvas.replay(frame.list.items(), rect);
+        match frame.damage {
+            [rect] => {
+                // One rectangle repaints in a single walk, without collecting
+                // the operations first.
+                paint_single(&mut canvas, &mut self.plan.clips, frame, *rect, height);
+            }
+            damage => {
+                self.plan
+                    .build(frame.list.items(), frame.scale, width, height);
+                for &rect in damage {
+                    paint_rect(&mut canvas, frame, self.plan.ops(), rect);
+                }
+            }
         }
     }
 
@@ -173,6 +190,49 @@ fn inside_surface(rect: PixelRect, width: u32, height: u32) -> bool {
     let right = u64::from(rect.x) + u64::from(rect.width);
     let bottom = u64::from(rect.y) + u64::from(rect.height);
     right <= u64::from(width) && bottom <= u64::from(height)
+}
+
+/// Clears `rect` and repaints every planned operation that reaches into it.
+fn paint_rect(
+    canvas: &mut Canvas<'_>,
+    frame: &FrameOutput<'_>,
+    plan: &[PlannedOp],
+    rect: PixelRect,
+) {
+    canvas.clear(rect, frame.clear_color);
+    let items = frame.list.items();
+    for planned in plan {
+        if let Some(part) = planned.area.intersect(rect) {
+            let DisplayItem::Op(op) = &items[planned.index] else {
+                unreachable!("a planned index is an operation item");
+            };
+            canvas.draw(op, part);
+        }
+    }
+}
+
+/// Clears `rect` and repaints every operation that reaches into it, walking
+/// the display list once with `rect` as the clip it repaints.
+fn paint_single(
+    canvas: &mut Canvas<'_>,
+    clips: &mut Vec<Option<PixelRect>>,
+    frame: &FrameOutput<'_>,
+    rect: PixelRect,
+    height: u32,
+) {
+    canvas.clear(rect, frame.clear_color);
+    let width = canvas.width;
+    let scale = frame.scale;
+    let items = frame.list.items();
+    for_each_op(
+        |_, op, area| canvas.draw(op, area),
+        clips,
+        items,
+        scale,
+        width,
+        height,
+        rect,
+    );
 }
 
 impl Renderer for CpuRenderer {
