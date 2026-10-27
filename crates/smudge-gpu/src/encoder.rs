@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use smudge_core::app::FrameOutput;
 use smudge_core::geometry::{Color, Corners, Rect};
 use smudge_core::paint::{DisplayItem, FontBlob, PaintOp};
-use vello::kurbo::{Affine, Rect as KurboRect, RoundedRect, RoundedRectRadii, Stroke};
+use vello::kurbo::{Affine, BezPath, Rect as KurboRect, RoundedRect, RoundedRectRadii, Shape};
 use vello::peniko::{Blob, Color as PenikoColor, Fill, FontData};
 use vello::{Glyph, Scene};
 
@@ -21,6 +21,8 @@ pub(crate) struct Encoder {
     /// The font data handed to vello, keyed by the paint operation's font id
     /// and face index, or `None` for a face that does not parse.
     fonts: HashMap<(u64, u32), Option<FontData>>,
+    /// Scratch for the outline of a border ring, reused across operations.
+    ring: BezPath,
 }
 
 impl Encoder {
@@ -29,6 +31,7 @@ impl Encoder {
         Encoder {
             scene: Scene::new(),
             fonts: HashMap::new(),
+            ring: BezPath::new(),
         }
     }
 
@@ -43,7 +46,13 @@ impl Encoder {
         let mut depth = 0usize;
         for item in frame.list.items() {
             match item {
-                DisplayItem::Op(op) => encode_op(&mut self.scene, &mut self.fonts, transform, op),
+                DisplayItem::Op(op) => encode_op(
+                    &mut self.scene,
+                    &mut self.fonts,
+                    &mut self.ring,
+                    transform,
+                    op,
+                ),
                 DisplayItem::PushClip(rect) => {
                     depth += 1;
                     self.scene
@@ -70,11 +79,11 @@ impl Encoder {
 
 /// Encodes one paint operation.
 ///
-/// The transform scales logical coordinates to physical pixels; for strokes
-/// it also scales the width, which vello applies centered on the path.
+/// The transform scales logical coordinates to physical pixels.
 fn encode_op(
     scene: &mut Scene,
     fonts: &mut HashMap<(u64, u32), Option<FontData>>,
+    ring: &mut BezPath,
     transform: Affine,
     op: &PaintOp,
 ) {
@@ -93,19 +102,18 @@ fn encode_op(
             if !width.is_finite() || width <= 0.0 {
                 return;
             }
-            match inset(rect, radius, width / 2.0) {
-                Some((rect, radius)) => {
-                    let shape = RoundedRect::from_rect(kurbo_rect(rect), kurbo_radii(radius));
-                    scene.stroke(
-                        &Stroke::new(f64::from(width)),
-                        transform,
-                        peniko_color(color),
-                        None,
-                        &shape,
-                    );
+            // The border is the ring between the rectangle and the
+            // rectangle shrunk by the width, filled even-odd, which is the
+            // coverage the CPU renderer gives it: square corners stay square
+            // where a stroke would join them round. A border that leaves no
+            // inner rectangle covers the rectangle whole.
+            match inset(rect, radius, width) {
+                Some((inner, inner_radius)) => {
+                    ring.truncate(0);
+                    ring.extend(rounded(rect, radius).path_elements(PATH_TOLERANCE));
+                    ring.extend(rounded(inner, inner_radius).path_elements(PATH_TOLERANCE));
+                    scene.fill(Fill::EvenOdd, transform, peniko_color(color), None, &*ring);
                 }
-                // A border thicker than the rectangle covers it whole, which
-                // is what the CPU renderer draws in that case.
                 None => fill(scene, transform, color, rect, radius),
             }
         }
@@ -133,6 +141,15 @@ fn encode_op(
     }
 }
 
+/// How far a flattened corner arc may stray from the true arc, in logical
+/// pixels.
+const PATH_TOLERANCE: f64 = 0.01;
+
+/// Returns `rect` with `radius` as kurbo's rounded rectangle.
+fn rounded(rect: Rect, radius: Corners) -> RoundedRect {
+    RoundedRect::from_rect(kurbo_rect(rect), kurbo_radii(radius))
+}
+
 /// Fills a rectangle with optional rounded corners.
 fn fill(scene: &mut Scene, transform: Affine, color: Color, rect: Rect, radius: Corners) {
     let color = peniko_color(color);
@@ -147,8 +164,8 @@ fn fill(scene: &mut Scene, transform: Affine, color: Color, rect: Rect, radius: 
 /// Returns `rect` shrunk by `inset` on every side with the corner radii
 /// reduced to match, or `None` when nothing remains.
 ///
-/// A non-finite extent counts as nothing remaining, so a broken rectangle can
-/// never reach vello as a stroke.
+/// A non-finite extent counts as nothing remaining, so the border of a broken
+/// rectangle fills the rectangle whole instead of reaching vello as a ring.
 fn inset(rect: Rect, radius: Corners, inset: f32) -> Option<(Rect, Corners)> {
     let rect = Rect::new(
         rect.x0 + inset,

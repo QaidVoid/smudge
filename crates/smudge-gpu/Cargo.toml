@@ -17,5 +17,7 @@ vello = { version = "0.11.0", default-features = false, features = ["wgpu", "wgp
 workspace = true
 
 [dev-dependencies]
+parley = { version = "0.12.0", default-features = false, features = ["std"] }
 smudge-cpu = { path = "../smudge-cpu" }
 smudge-text = { path = "../smudge-text" }
+tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "png-format"] }

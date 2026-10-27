@@ -2596,10 +2596,12 @@ name = "smudge-gpu"
 version = "0.1.0"
 dependencies = [
  "futures-executor",
+ "parley",
  "skrifa",
  "smudge-core",
  "smudge-cpu",
  "smudge-text",
+ "tiny-skia",
  "vello",
 ]
 
