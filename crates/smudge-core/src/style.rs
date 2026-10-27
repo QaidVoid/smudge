@@ -51,6 +51,18 @@ pub const fn px(value: f32) -> Length {
     Length::px(value)
 }
 
+/// A length in percent of the containing block's size, for builders that take
+/// a [`Length`].
+///
+/// ```
+/// use smudge_core::style::{Length, pct};
+///
+/// assert_eq!(pct(50.0), Length::pct(50.0));
+/// ```
+pub const fn pct(percent: f32) -> Length {
+    Length::pct(percent)
+}
+
 /// Four edge values, one per side of a box.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Edges<T> {
