@@ -54,6 +54,15 @@ impl TextLayout {
         })
     }
 
+    /// Re-wraps the laid out text at `max_width` without shaping it again.
+    ///
+    /// Shaping runs once per text and style in [`TextLayout::new`]; the width
+    /// only decides where lines break, so a layout engine that asks for the
+    /// same text at several widths in one pass pays for the breaks alone.
+    pub(crate) fn rebreak(&mut self, max_width: Option<f32>) {
+        self.layout.break_all_lines(max_width);
+    }
+
     /// Returns the width and height of the laid out text in logical pixels.
     ///
     /// The width is the longest line, without hanging whitespace. The height
@@ -85,3 +94,7 @@ impl TextLayout {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "layout_tests.rs"]
+mod tests;

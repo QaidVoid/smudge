@@ -56,15 +56,19 @@ pub struct Label {
     explicit: ExplicitStyle,
     /// The layout of [`Label::text`], or `None` before the first measure and
     /// after every change that invalidates it.
+    ///
+    /// The layout holds the shaped text once; measuring at another offered
+    /// width re-breaks its lines instead of shaping the text again, which is
+    /// what keeps a layout engine's repeated measure calls for one node cheap.
     layout: Option<TextLayout>,
-    /// The maximum width the current layout was built with, which keys the
-    /// layout cache.
-    laid_out_width: Option<f32>,
+    /// The width the lines of [`Label::layout`] were last broken at, `None`
+    /// for max content, or `None` inside `None` when nothing is laid out.
+    broken_width: Option<Option<f32>>,
     /// The size of the text wrapped at every opportunity, which is its
     /// min-content size, or `None` until it is asked for.
     ///
-    /// It is cached apart from [`Label::layout`], so answering a min-content
-    /// request never replaces the layout the label paints.
+    /// It is cached apart from the line breaking, so answering a min-content
+    /// request never depends on the width other calls measured at.
     min_content: Option<Size>,
     /// The glyph runs of the current layout, with the origin and the resolved
     /// color they were built at. Paint operations share them through an `Rc`.
@@ -91,7 +95,7 @@ impl Label {
             style: TextStyle::default(),
             explicit: ExplicitStyle::default(),
             layout: None,
-            laid_out_width: None,
+            broken_width: None,
             min_content: None,
             runs: RefCell::new(None),
         }
@@ -101,7 +105,7 @@ impl Label {
     /// min-content size.
     fn invalidate_layout(&mut self) {
         self.layout = None;
-        self.laid_out_width = None;
+        self.broken_width = None;
         self.min_content = None;
         *self.runs.borrow_mut() = None;
     }
@@ -128,9 +132,17 @@ impl Widget for Label {
     /// [`AvailableSpace::MinContent`] request gets the text wrapped at every
     /// opportunity, whose width is its longest unbreakable word, so a label
     /// in a row too narrow for it can shrink and wrap instead of overflowing
-    /// and squeezing its siblings. The layout is reused while the text, the
-    /// style and the offered width are unchanged, and measure invalidates the
-    /// cached glyph runs whenever it builds a new layout.
+    /// and squeezing its siblings.
+    ///
+    /// The text is shaped once and kept; a call that offers another width
+    /// than the last one re-breaks the shaped text's lines, because the
+    /// layout engine measures one node at several widths within a pass. The
+    /// min-content answer breaks the same shaped text at every opportunity
+    /// and then breaks it back at the width the label was last measured at,
+    /// so once the label has been measured at one, the answer never changes
+    /// the lines paint draws. The glyph runs are dropped whenever the shaped text
+    /// or its line breaking changed, so paint rebuilds them from the lines the
+    /// last call left.
     ///
     /// # Panics
     ///
@@ -140,16 +152,24 @@ impl Widget for Label {
     fn measure(&mut self, input: MeasureInput) -> Option<Size> {
         if input.available_width == AvailableSpace::MinContent && input.known_width.is_none() {
             if self.min_content.is_none() {
-                let wrapped = TextLayout::new(&self.text, &self.style, Some(0.0));
-                self.min_content = Some(wrapped.size());
+                let painted = self.broken_width;
+                self.shape_and_break(Some(0.0));
+                let layout = self
+                    .layout
+                    .as_ref()
+                    .expect("the layout was just built or is cached");
+                self.min_content = Some(layout.size());
+                // Paint draws the lines the layout holds, so they go back to
+                // the width the label was last measured at.
+                if let Some(width) = painted {
+                    self.shape_and_break(width);
+                }
             }
             return self.min_content;
         }
         let max_width = wrap_width(input.available_width);
-        if self.layout.is_none() || self.laid_out_width != max_width {
-            self.layout = Some(TextLayout::new(&self.text, &self.style, max_width));
-            self.laid_out_width = max_width;
-            *self.runs.borrow_mut() = None;
+        if self.broken_width != Some(max_width) {
+            self.shape_and_break(max_width);
         }
         let layout = self
             .layout
@@ -205,6 +225,22 @@ impl Widget for Label {
 }
 
 impl Label {
+    /// Shapes [`Label::text`] with [`Label::style`] when no shaped layout is
+    /// kept, and breaks its lines at `max_width`.
+    ///
+    /// Both outcomes change the lines, so the cached glyph runs, which bake
+    /// the line positions in, are dropped here.
+    fn shape_and_break(&mut self, max_width: Option<f32>) {
+        match &mut self.layout {
+            Some(layout) => layout.rebreak(max_width),
+            None => {
+                self.layout = Some(TextLayout::new(&self.text, &self.style, max_width));
+            }
+        }
+        self.broken_width = Some(max_width);
+        *self.runs.borrow_mut() = None;
+    }
+
     /// Returns the color the glyphs paint with: the node's text color when it
     /// sets one, otherwise the label's style color. Both may name a theme
     /// token, so both resolve against the theme that is current at paint
@@ -379,3 +415,7 @@ fn wrap_width(space: AvailableSpace) -> Option<f32> {
         AvailableSpace::MinContent => Some(0.0),
     }
 }
+
+#[cfg(test)]
+#[path = "label_tests.rs"]
+mod tests;
