@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use smudge_core::app::{App, AppConfig, FrameOutput, FrameStats, RepaintMode};
-use smudge_core::clipboard::MemoryClipboard;
+use smudge_core::clipboard::{Clipboard, MemoryClipboard};
 use smudge_core::element::IntoElement;
 use smudge_core::geometry::{Color, PixelRect, Rect, Size};
 use smudge_cpu::CpuRenderer;
@@ -20,6 +20,7 @@ use winit::raw_window_handle::{
 };
 use winit::window::{Window, WindowId};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::clipboard::SystemClipboard;
 use crate::error::PlatformError;
 use crate::events::EventTranslator;
@@ -34,7 +35,7 @@ use crate::renderer::RendererChoice;
 ///
 /// With the `a11y` feature off the run loop carries `()` and nothing is ever
 /// sent.
-#[cfg(feature = "a11y")]
+#[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
 pub(crate) enum PlatformEvent {
     /// An event from the accessibility adapter: a request for the initial
     /// tree, an action a user ran in an assistive tool, or a notice that the
@@ -42,7 +43,7 @@ pub(crate) enum PlatformEvent {
     A11y(accesskit_winit::Event),
 }
 
-#[cfg(feature = "a11y")]
+#[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
 impl From<accesskit_winit::Event> for PlatformEvent {
     fn from(event: accesskit_winit::Event) -> PlatformEvent {
         PlatformEvent::A11y(event)
@@ -50,9 +51,9 @@ impl From<accesskit_winit::Event> for PlatformEvent {
 }
 
 /// The user event type the run loop is built with.
-#[cfg(feature = "a11y")]
+#[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
 type UserEvent = PlatformEvent;
-#[cfg(not(feature = "a11y"))]
+#[cfg(any(not(feature = "a11y"), target_arch = "wasm32"))]
 type UserEvent = ();
 
 /// The measurement hook that receives one pair of statistics per presented
@@ -152,6 +153,12 @@ impl std::fmt::Debug for WindowOptions {
 /// Call this from the main thread. The event loop takes over the calling
 /// thread until the window closes.
 ///
+/// Platform-specific:
+///
+/// - **Web:** the loop runs on the browser's own event loop, so this returns
+///   `Ok(())` as soon as the loop is started, before the window opens. See
+///   [`run_with`] for the details.
+///
 /// # Errors
 ///
 /// Returns [`PlatformError::ClearColor`] when [`WindowOptions::clear_color`]
@@ -204,6 +211,17 @@ pub fn run<E: IntoElement + 'static>(
 /// its element and before the first frame. Use it to install a per-frame
 /// driver with [`App::set_tick`], or to set up measurement that must run
 /// alongside the frames.
+///
+/// Platform-specific:
+///
+/// - **Web:** the window is a canvas appended to the page's body, at
+///   [`WindowOptions::size`] unless the page's style sheet sizes it with
+///   `!important`, and it follows the size the page gives it. The loop runs
+///   on the browser's own event loop, so this returns `Ok(())` as soon as
+///   the loop is started, before the window opens. Only
+///   failures before that point, such as a clear color that is not opaque,
+///   come back as an error; a failure later in the run stops the loop
+///   without a way to report it.
 ///
 /// # Errors
 ///
@@ -263,8 +281,10 @@ pub fn run_with<E: IntoElement + 'static>(
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .map_err(PlatformError::EventLoop)?;
-    #[cfg(feature = "a11y")]
+    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     let proxy = event_loop.create_proxy();
+    // The web loop takes the state by value, so nothing mutates it here.
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut platform = Platform {
         renderer,
         options,
@@ -272,15 +292,27 @@ pub fn run_with<E: IntoElement + 'static>(
         configure: Some(Box::new(configure)),
         state: None,
         error: None,
-        #[cfg(feature = "a11y")]
+        #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         proxy,
     };
-    event_loop
-        .run_app(&mut platform)
-        .map_err(PlatformError::EventLoop)?;
-    match platform.error.take() {
-        Some(error) => Err(error),
-        None => Ok(()),
+    // The web loop runs on the browser's own event loop and never runs to
+    // completion, so it is started and can no longer return an error. A
+    // failure after it started only stops the run.
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::EventLoopExtWebSys;
+        event_loop.spawn_app(platform);
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        event_loop
+            .run_app(&mut platform)
+            .map_err(PlatformError::EventLoop)?;
+        match platform.error.take() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
@@ -303,7 +335,7 @@ where
     /// The first error that stopped the run.
     error: Option<PlatformError>,
     /// The sender the accessibility adapter posts its events through.
-    #[cfg(feature = "a11y")]
+    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     proxy: winit::event_loop::EventLoopProxy<UserEvent>,
 }
 
@@ -349,18 +381,18 @@ struct WindowState {
     ime_allowed: bool,
     /// The bridge that maps the app's accessibility projection onto the
     /// platform's, when the platform builds with accessibility.
-    #[cfg(feature = "a11y")]
+    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     adapter: accesskit_winit::Adapter,
     /// The projection that builds the updates the adapter sends.
-    #[cfg(feature = "a11y")]
+    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     a11y: smudge_a11y::Projection,
     /// Whether the accessibility backend has asked for the tree and has not
     /// stopped reading it since. While it is false, no projection work runs.
-    #[cfg(feature = "a11y")]
+    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     a11y_active: bool,
     /// Whether the next update must carry the whole tree, because the
     /// backend asked for it or the scale moved every node's bounds.
-    #[cfg(feature = "a11y")]
+    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     a11y_full: bool,
 }
 
@@ -389,12 +421,19 @@ where
             // The accessibility adapter must be attached before the window is
             // shown, so the window starts hidden and is shown right after.
             .with_visible(false);
+        // A web window draws into a canvas, which the page shows only once it
+        // is part of the document.
+        #[cfg(target_arch = "wasm32")]
+        let attributes = {
+            use winit::platform::web::WindowAttributesExtWebSys;
+            attributes.with_append(true)
+        };
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
                 .map_err(PlatformError::Window)?,
         );
-        #[cfg(feature = "a11y")]
+        #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         let adapter = accesskit_winit::Adapter::with_event_loop_proxy(
             event_loop,
             &window,
@@ -440,11 +479,16 @@ where
 
         // The app gets the system clipboard when it can be opened, and an
         // in-memory one when it cannot, so cut, copy and paste keep working
-        // inside the app either way.
-        app.set_clipboard(match SystemClipboard::new() {
+        // inside the app either way. The web page has no system clipboard to
+        // open, so it always gets the in-memory one.
+        #[cfg(not(target_arch = "wasm32"))]
+        let clipboard: Box<dyn Clipboard> = match SystemClipboard::new() {
             Ok(clipboard) => Box::new(clipboard),
             Err(_) => Box::new(MemoryClipboard::default()),
-        });
+        };
+        #[cfg(target_arch = "wasm32")]
+        let clipboard: Box<dyn Clipboard> = Box::new(MemoryClipboard::default());
+        app.set_clipboard(clipboard);
 
         Ok(WindowState {
             window,
@@ -461,13 +505,13 @@ where
             ime_area: None,
             ime_scale: scale,
             ime_allowed: false,
-            #[cfg(feature = "a11y")]
+            #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
             adapter,
-            #[cfg(feature = "a11y")]
+            #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
             a11y: smudge_a11y::Projection::new(self.options.title.clone()),
-            #[cfg(feature = "a11y")]
+            #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
             a11y_active: false,
-            #[cfg(feature = "a11y")]
+            #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
             a11y_full: false,
         })
     }
@@ -500,7 +544,7 @@ where
         };
         state.presenter.resize(width, height)?;
         state.app.set_viewport(logical_size(physical, scale), scale);
-        #[cfg(feature = "a11y")]
+        #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         if state.scale != scale {
             state.a11y_full = true;
         }
@@ -534,7 +578,7 @@ where
             }
         }
         state.update_ime();
-        #[cfg(feature = "a11y")]
+        #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         state.update_a11y();
         if tick {
             state.window.request_redraw();
@@ -592,7 +636,7 @@ where
     /// the request names, through the same paths a pointer press and a
     /// keyboard focus change take. When the platform stops reading the tree,
     /// the projection goes quiet until the backend asks again.
-    #[cfg(feature = "a11y")]
+    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     fn handle_a11y_event(&mut self, event: accesskit_winit::Event) {
         let Some(state) = self.state.as_mut() else {
             return;
@@ -644,7 +688,7 @@ where
         }
     }
 
-    #[cfg(feature = "a11y")]
+    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         let UserEvent::A11y(event) = event;
         self.handle_a11y_event(event);
@@ -658,7 +702,7 @@ where
     ) {
         // The accessibility adapter sees every event before the app does,
         // because it reacts to moves, resizes and focus changes itself.
-        #[cfg(feature = "a11y")]
+        #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         if let Some(state) = self.state.as_mut() {
             state.adapter.process_event(&state.window, &event);
         }
@@ -758,7 +802,7 @@ impl WindowState {
     /// time. While the backend is not reading, or while nothing projected
     /// changed, this builds nothing, and the adapter calls the closure that
     /// builds an update only while an assistive technology listens.
-    #[cfg(feature = "a11y")]
+    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     fn update_a11y(&mut self) {
         if !self.a11y_active || !(self.a11y_full || self.app.has_a11y_changes()) {
             return;

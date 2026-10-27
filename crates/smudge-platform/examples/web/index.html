@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Smudge boxes</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #101115;
+      }
+      /* The window sets an inline size on its canvas; the page overrides it,
+         and the window follows the size the page gives the canvas. */
+      canvas {
+        display: block;
+        width: 100vw !important;
+        height: 100vh !important;
+      }
+      canvas:focus {
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      import init from "./pkg/web_boxes.js";
+      init();
+    </script>
+  </body>
+</html>

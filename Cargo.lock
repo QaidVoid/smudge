@@ -3110,6 +3110,7 @@ dependencies = [
  "smudge-text",
  "smudge-widgets",
  "softbuffer",
+ "wasm-bindgen",
  "web-time",
  "winit",
 ]

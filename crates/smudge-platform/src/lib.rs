@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(not(target_arch = "wasm32"))]
 mod clipboard;
 mod error;
 mod events;
