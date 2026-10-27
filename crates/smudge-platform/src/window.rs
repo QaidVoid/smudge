@@ -123,7 +123,13 @@ pub struct WindowOptions {
     /// Measurement hook: closes the window after this many presented frames.
     ///
     /// A run that must last a fixed number of frames sets this instead of
-    /// waiting for the user to close the window.
+    /// waiting for the user to close the window. Until the limit is reached,
+    /// every presented frame asks for the next one, as if the app ran a tick,
+    /// so a window whose app has nothing more to draw still closes: such a
+    /// frame presents the last picture again, paced by the display. A frame
+    /// that presents nothing, because the surface has no pixels to show, asks
+    /// for none, so the run waits for the window to change instead of
+    /// spinning.
     pub frame_limit: Option<u64>,
 }
 
@@ -580,7 +586,7 @@ where
         state.update_ime();
         #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         state.update_a11y();
-        if tick {
+        if tick || (presented.is_some() && state.below_frame_limit()) {
             state.window.request_redraw();
         }
         Ok(())
@@ -820,6 +826,12 @@ impl WindowState {
     fn finished(&self) -> bool {
         self.frame_limit
             .is_some_and(|limit| self.frames_presented >= limit)
+    }
+
+    /// Returns whether the window has a frame limit it has not reached yet.
+    fn below_frame_limit(&self) -> bool {
+        self.frame_limit
+            .is_some_and(|limit| self.frames_presented < limit)
     }
 }
 
