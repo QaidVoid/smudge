@@ -32,7 +32,8 @@ pub struct PresentStats {
     /// How many surface bytes the present copied from the renderer's pixmap.
     ///
     /// Four bytes per pixel, so a full present of a 100 by 100 surface copies
-    /// 40,000 bytes.
+    /// 40,000 bytes. The GPU path reports none: it draws straight onto the
+    /// window surface and copies no pixmap.
     pub bytes_copied: u64,
     /// The width of the presented surface in physical pixels.
     pub surface_width: u32,
@@ -40,6 +41,9 @@ pub struct PresentStats {
     pub surface_height: u32,
     /// How long the renderer took to paint this frame's damage into its
     /// surface.
+    ///
+    /// On the GPU path this is the whole draw, whose submission reaches the
+    /// GPU asynchronously.
     pub raster: Duration,
     /// How long the platform waited for a free window buffer before the
     /// present could start.
@@ -52,6 +56,10 @@ pub struct PresentStats {
     /// it back to the platform: the copy and the submission, without the wait
     /// that [`PresentStats::acquire`] holds.
     pub present: Duration,
+    /// Which renderer presented the frame, as its name: `cpu` or `gpu`.
+    ///
+    /// Empty until the first present.
+    pub renderer: &'static str,
 }
 
 /// A shared slot the platform writes the latest [`PresentStats`] into.

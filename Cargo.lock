@@ -2608,8 +2608,10 @@ name = "smudge-platform"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "futures-executor",
  "smudge-core",
  "smudge-cpu",
+ "smudge-gpu",
  "smudge-text",
  "softbuffer",
  "web-time",

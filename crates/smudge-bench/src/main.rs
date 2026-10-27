@@ -24,7 +24,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use smudge_core::app::{App, AppConfig, FrameStats, RepaintMode};
 use smudge_core::geometry::Color;
 use smudge_cpu::CpuRenderer;
-use smudge_platform::{FrameHook, PlatformError, PresentStats, WindowOptions, run_with};
+use smudge_platform::{
+    FrameHook, PlatformError, PresentStats, RendererChoice, WindowOptions, run_with,
+};
 
 use crate::process::Sample;
 use crate::scenes::Scene;
@@ -470,6 +472,9 @@ fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
             clear_color: CLEAR_COLOR,
             repaint: args.mode,
             show_damage: false,
+            // The benchmark measures the CPU renderer, whatever features
+            // the workspace build unifies onto the platform crate.
+            renderer: RendererChoice::Cpu,
             stats: None,
             on_frame: Some(on_frame),
             frame_limit: Some(per_repeat * repeats),

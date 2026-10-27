@@ -9,9 +9,13 @@
 mod clipboard;
 mod error;
 mod events;
+#[cfg(feature = "gpu")]
+mod gpu;
 mod present;
+mod renderer;
 mod window;
 
 pub use error::PlatformError;
 pub use present::{PresentStats, PresentStatsHandle};
+pub use renderer::{RENDERER_ENVIRONMENT, RendererChoice};
 pub use window::{FrameHook, WindowOptions, run, run_with};

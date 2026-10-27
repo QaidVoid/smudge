@@ -14,7 +14,7 @@ use smudge_core::geometry::{Color, Size};
 use smudge_core::reactive::RwSignal;
 use smudge_core::style::{Align, Length, px};
 use smudge_core::widget::panel;
-use smudge_platform::{WindowOptions, run};
+use smudge_platform::{RendererChoice, WindowOptions, run};
 use smudge_text::TextInputExt;
 use smudge_text::text_input;
 
@@ -63,6 +63,7 @@ fn main() -> ExitCode {
             clear_color: Color::rgb(16, 17, 21),
             repaint: Default::default(),
             show_damage: false,
+            renderer: RendererChoice::default(),
             stats: None,
             on_frame: None,
             frame_limit: None,

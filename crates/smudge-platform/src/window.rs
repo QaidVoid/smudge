@@ -2,9 +2,9 @@
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::time::Duration;
+use std::sync::Arc;
 
-use smudge_core::app::{App, AppConfig, FrameStats, RepaintMode};
+use smudge_core::app::{App, AppConfig, FrameOutput, FrameStats, RepaintMode};
 use smudge_core::clipboard::MemoryClipboard;
 use smudge_core::element::IntoElement;
 use smudge_core::geometry::{Color, PixelRect, Rect, Size};
@@ -27,6 +27,7 @@ use crate::present::{
     DamageHistory, PresentStats, PresentStatsHandle, copy_rect, damage_region, present_skipped,
     tint_rects,
 };
+use crate::renderer::RendererChoice;
 
 /// The measurement hook that receives one pair of statistics per presented
 /// frame.
@@ -59,7 +60,24 @@ pub struct WindowOptions {
     /// damage rectangles in the window buffer alone, so the window shows what
     /// each frame paid for. Damage presentation is off while the overlay is
     /// on, and neither the renderer's pixmap nor a later frame keeps a tint.
+    ///
+    /// The overlay exists on the CPU renderer only, so it makes
+    /// [`RendererChoice::Auto`] pick the CPU renderer, and it cannot be
+    /// combined with [`RendererChoice::Gpu`].
     pub show_damage: bool,
+    /// Which renderer presents the frames.
+    ///
+    /// [`RendererChoice::Auto`] uses the GPU renderer only when the window's
+    /// adapter is a real GPU, and falls back to the CPU renderer on a software
+    /// rasterizer, without one, or on a window the GPU cannot present to. It
+    /// is the default in builds with the `gpu` feature. [`RendererChoice::Gpu`]
+    /// never falls back: it fails the run when the `gpu` feature is off or no
+    /// usable adapter exists.
+    ///
+    /// The [`crate::renderer::RENDERER_ENVIRONMENT`] variable, set to `cpu`,
+    /// `gpu` or `auto`, overrides the value here when the window opens, so a
+    /// machine can switch renderer without a rebuild.
+    pub renderer: RendererChoice,
     /// Where the platform publishes presentation statistics, when given.
     ///
     /// Pass a [`PresentStatsHandle`] and keep the original to read the
@@ -90,6 +108,7 @@ impl std::fmt::Debug for WindowOptions {
             .field("clear_color", &self.clear_color)
             .field("repaint", &self.repaint)
             .field("show_damage", &self.show_damage)
+            .field("renderer", &self.renderer)
             .field("stats", &self.stats)
             .field("on_frame", &self.on_frame.is_some())
             .field("frame_limit", &self.frame_limit)
@@ -110,7 +129,9 @@ impl std::fmt::Debug for WindowOptions {
 /// # Errors
 ///
 /// Returns [`PlatformError::ClearColor`] when [`WindowOptions::clear_color`]
-/// is not opaque, [`PlatformError::EventLoop`] when the event loop cannot be
+/// is not opaque, [`PlatformError::Renderer`] when the
+/// [`WindowOptions::renderer`] choice or its environment override cannot be
+/// used, [`PlatformError::EventLoop`] when the event loop cannot be
 /// created or run, [`PlatformError::Window`] when the window cannot be
 /// created, and [`PlatformError::Surface`] when the presentation surface
 /// cannot be created, resized or presented.
@@ -122,7 +143,7 @@ impl std::fmt::Debug for WindowOptions {
 /// use smudge_core::geometry::{Color, Size};
 /// use smudge_core::style::px;
 /// use smudge_core::widget::panel;
-/// use smudge_platform::{WindowOptions, run};
+/// use smudge_platform::{RendererChoice, WindowOptions, run};
 ///
 /// run(
 ///     WindowOptions {
@@ -134,6 +155,7 @@ impl std::fmt::Debug for WindowOptions {
 ///         clear_color: Color::WHITE,
 ///         repaint: RepaintMode::Damage,
 ///         show_damage: false,
+///         renderer: RendererChoice::default(),
 ///         stats: None,
 ///         on_frame: None,
 ///         frame_limit: None,
@@ -160,8 +182,10 @@ pub fn run<E: IntoElement + 'static>(
 /// # Errors
 ///
 /// Returns [`PlatformError::ClearColor`] when [`WindowOptions::clear_color`]
-/// is not opaque, checked before the event loop is created, and otherwise the
-/// same errors as [`run`].
+/// is not opaque, checked before the event loop is created,
+/// [`PlatformError::Renderer`] when the [`WindowOptions::renderer`] choice
+/// or its environment override cannot be used, and otherwise the same errors
+/// as [`run`].
 ///
 /// # Examples
 ///
@@ -171,7 +195,7 @@ pub fn run<E: IntoElement + 'static>(
 /// use smudge_core::reactive::{self, prelude::*};
 /// use smudge_core::style::px;
 /// use smudge_core::widget::panel;
-/// use smudge_platform::{WindowOptions, run_with};
+/// use smudge_platform::{RendererChoice, WindowOptions, run_with};
 ///
 /// let (color, set_color) = reactive::signal_local(Color::BLACK);
 /// run_with(
@@ -184,6 +208,7 @@ pub fn run<E: IntoElement + 'static>(
 ///         clear_color: Color::WHITE,
 ///         repaint: RepaintMode::Damage,
 ///         show_damage: false,
+///         renderer: RendererChoice::default(),
 ///         stats: None,
 ///         on_frame: None,
 ///         frame_limit: None,
@@ -207,9 +232,11 @@ pub fn run_with<E: IntoElement + 'static>(
     if !options.clear_color.is_opaque() {
         return Err(PlatformError::ClearColor);
     }
+    let renderer = options.renderer.with_env_override()?;
 
     let event_loop = EventLoop::new().map_err(PlatformError::EventLoop)?;
     let mut platform = Platform {
+        renderer,
         options,
         build: Some(build),
         configure: Some(Box::new(configure)),
@@ -231,6 +258,8 @@ where
     E: IntoElement,
     B: FnOnce() -> E,
 {
+    /// The renderer the window presents with, after the environment override.
+    renderer: RendererChoice,
     /// The settings the window opens with.
     options: WindowOptions,
     /// The element to mount, until the window first appears.
@@ -250,25 +279,16 @@ type Configure = Box<dyn FnOnce(&mut App)>;
 /// One live window and everything it presents.
 struct WindowState {
     /// The window the surface presents to.
-    window: Rc<Window>,
-    /// The surface that holds the pixels the window shows.
-    surface: Surface<SharedWindow, SharedWindow>,
+    ///
+    /// The shared handle is an `Arc` because the wgpu surface target must be
+    /// sendable; everything else in the window stays on the main thread.
+    window: Arc<Window>,
     /// The app whose frames the window runs.
     app: App,
     /// The translator that turns window events into input events.
     translator: EventTranslator,
-    /// The renderer that paints the app's damage into a pixmap.
-    renderer: CpuRenderer,
-    /// Whether every present tints the frame's damage in the window buffer.
-    show_damage: bool,
-    /// The damage of the frames the window presented, most recent first.
-    history: DamageHistory,
-    /// The frame that was rendered and waits to be presented.
-    pending: PendingFrame,
-    /// Scratch for the region the next present copies.
-    region: Vec<PixelRect>,
-    /// Scratch for the damage rectangles the next present reports.
-    reported: Vec<softbuffer::Rect>,
+    /// The renderer and presentation path the frames go through.
+    presenter: Presenter,
     /// What the last present did.
     stats: PresentStats,
     /// Where to publish the statistics, when the caller asked for them.
@@ -308,7 +328,7 @@ where
     E: IntoElement + 'static,
     B: FnOnce() -> E + 'static,
 {
-    /// Creates the window, its app and its renderer.
+    /// Creates the window, its app and its presentation path.
     fn create(&mut self, event_loop: &ActiveEventLoop) -> Result<WindowState, PlatformError> {
         let attributes = Window::default_attributes()
             .with_title(self.options.title.clone())
@@ -316,16 +336,11 @@ where
                 f64::from(self.options.size.width),
                 f64::from(self.options.size.height),
             ));
-        let window = Rc::new(
+        let window = Arc::new(
             event_loop
                 .create_window(attributes)
                 .map_err(PlatformError::Window)?,
         );
-
-        let shared = SharedWindow(Rc::clone(&window));
-        let context = Context::new(shared.clone()).map_err(PlatformError::Surface)?;
-        let mut surface = Surface::new(&context, shared).map_err(PlatformError::Surface)?;
-        drop(context);
 
         let scale = window.scale_factor() as f32;
         let physical = window.inner_size();
@@ -347,14 +362,15 @@ where
         }
 
         let (width, height) = app.surface_size();
-        if let (Some(width), Some(height)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-            surface
-                .resize(width, height)
-                .map_err(PlatformError::Surface)?;
-        }
-        let renderer = CpuRenderer::new(width, height);
+        let presenter = create_presenter(
+            &window,
+            self.renderer,
+            width,
+            height,
+            self.options.show_damage,
+        )?;
 
-        let weak = Rc::downgrade(&window);
+        let weak = Arc::downgrade(&window);
         app.set_wake_callback(move || {
             if let Some(window) = weak.upgrade() {
                 window.request_redraw();
@@ -372,15 +388,9 @@ where
 
         Ok(WindowState {
             window,
-            surface,
             app,
             translator: EventTranslator::new(),
-            renderer,
-            show_damage: self.options.show_damage,
-            history: DamageHistory::default(),
-            pending: PendingFrame::default(),
-            region: Vec::new(),
-            reported: Vec::new(),
+            presenter,
             stats: PresentStats::default(),
             stats_handle: self.options.stats.clone(),
             on_frame: self.options.on_frame.take(),
@@ -410,21 +420,17 @@ where
             return Ok(());
         }
 
-        // The app learns the new viewport only after the surface and the
-        // renderer took it, so a failed resize leaves app, renderer and
-        // surface consistent at the old size instead of an app whose next
-        // frame reaches past the pixmap it renders onto.
+        // The app learns the new viewport only after the presenter took the
+        // new size, so a failed resize leaves the presenter and the app
+        // consistent at the old size instead of an app whose next frame
+        // reaches past the surface it renders onto.
         let (Some(width), Some(height)) = (
             NonZeroU32::new(physical.width),
             NonZeroU32::new(physical.height),
         ) else {
             return Ok(());
         };
-        state
-            .surface
-            .resize(width, height)
-            .map_err(PlatformError::Surface)?;
-        state.renderer.resize(width.get(), height.get());
+        state.presenter.resize(width, height)?;
         state.app.set_viewport(logical_size(physical, scale), scale);
         debug_assert_eq!(
             state.app.surface_size(),
@@ -443,21 +449,16 @@ where
             return Ok(());
         };
         let tick = state.app.has_tick();
-        let raster;
-        {
-            let output = state.app.frame();
-            let start = Instant::now();
-            state.renderer.render(&output);
-            raster = start.elapsed();
-            let pending = &mut state.pending;
-            pending.damage.clear();
-            pending.damage.extend_from_slice(output.damage);
-            pending.full = output.full;
-        }
-        if state.present(raster, tick)? {
+        let output = state.app.frame();
+        let presented = state.presenter.render_and_present(&output, tick)?;
+        if let Some(stats) = presented {
+            state.stats = stats;
+            if let Some(handle) = &state.stats_handle {
+                handle.store(stats);
+            }
             state.frames_presented += 1;
             if let Some(on_frame) = &state.on_frame {
-                on_frame(state.app.stats().clone(), state.stats);
+                on_frame(state.app.stats().clone(), stats);
             }
         }
         state.update_ime();
@@ -622,8 +623,176 @@ impl WindowState {
         self.frame_limit
             .is_some_and(|limit| self.frames_presented >= limit)
     }
+}
 
-    /// Presents the frame the last redraw rendered.
+/// Builds the presentation path the window opens with.
+///
+/// The GPU path asks the window system for an adapter when the choice can use
+/// one. An automatic choice falls back on the CPU renderer whenever that
+/// fails or finds only a software rasterizer; an explicit GPU request fails
+/// the run instead.
+fn create_presenter(
+    window: &Arc<Window>,
+    choice: RendererChoice,
+    width: u32,
+    height: u32,
+    show_damage: bool,
+) -> Result<Presenter, PlatformError> {
+    #[cfg(not(feature = "gpu"))]
+    {
+        match choice {
+            RendererChoice::Gpu => Err(PlatformError::Renderer(String::from(
+                "the GPU renderer needs a build with the gpu feature",
+            ))),
+            _ => Ok(Presenter::Cpu(Box::new(CpuPresenter::new(
+                window,
+                width,
+                height,
+                show_damage,
+            )?))),
+        }
+    }
+    #[cfg(feature = "gpu")]
+    match choice {
+        RendererChoice::Cpu => Ok(Presenter::Cpu(Box::new(CpuPresenter::new(
+            window,
+            width,
+            height,
+            show_damage,
+        )?))),
+        // The overlay tints the window buffer of the CPU path, so an
+        // automatic choice keeps the CPU renderer while it is on.
+        RendererChoice::Auto if show_damage => Ok(Presenter::Cpu(Box::new(CpuPresenter::new(
+            window,
+            width,
+            height,
+            show_damage,
+        )?))),
+        RendererChoice::Gpu | RendererChoice::Auto => {
+            let explicit = choice == RendererChoice::Gpu;
+            if explicit && show_damage {
+                return Err(PlatformError::Renderer(String::from(
+                    "the damage overlay tints the window buffer of the CPU \
+                     presentation path and cannot run on the GPU renderer",
+                )));
+            }
+            match crate::gpu::GpuPath::new(window, width, height, explicit)? {
+                Some(gpu) => Ok(Presenter::Gpu(Box::new(gpu))),
+                None => Ok(Presenter::Cpu(Box::new(CpuPresenter::new(
+                    window,
+                    width,
+                    height,
+                    show_damage,
+                )?))),
+            }
+        }
+    }
+}
+
+/// The renderer and presentation path a window presents with.
+///
+/// Both paths are boxed: the wgpu handles of the GPU path and the pixmap state
+/// of the CPU path dwarf a boxed pointer, and the enum only dispatches.
+enum Presenter {
+    /// The CPU renderer, presenting through the software surface.
+    Cpu(Box<CpuPresenter>),
+    /// The GPU renderer, presenting through a wgpu surface.
+    #[cfg(feature = "gpu")]
+    Gpu(Box<crate::gpu::GpuPath>),
+}
+
+impl Presenter {
+    /// Renders the frame and presents it, returning the statistics of a
+    /// presented frame.
+    ///
+    /// Returns `Ok(None)` when nothing was presented: a frame that changed
+    /// nothing while a tick runs, or a surface without a pixel or texture to
+    /// present, both of which the next redraw retries.
+    fn render_and_present(
+        &mut self,
+        frame: &FrameOutput<'_>,
+        has_tick: bool,
+    ) -> Result<Option<PresentStats>, PlatformError> {
+        match self {
+            Presenter::Cpu(cpu) => cpu.render_and_present(frame, has_tick),
+            #[cfg(feature = "gpu")]
+            Presenter::Gpu(gpu) => gpu.render_and_present(frame, has_tick),
+        }
+    }
+
+    /// Takes the window's new extent.
+    fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) -> Result<(), PlatformError> {
+        match self {
+            Presenter::Cpu(cpu) => cpu.resize(width, height),
+            #[cfg(feature = "gpu")]
+            Presenter::Gpu(gpu) => gpu.resize(width.get(), height.get()),
+        }
+    }
+}
+
+/// The CPU renderer and the software surface it presents through.
+struct CpuPresenter {
+    /// The surface that holds the pixels the window shows.
+    surface: Surface<SharedWindow, SharedWindow>,
+    /// The window whose frames are presented, notified before every present.
+    window: SharedWindow,
+    /// The renderer that paints the app's damage into a pixmap.
+    renderer: CpuRenderer,
+    /// Whether every present tints the frame's damage in the window buffer.
+    show_damage: bool,
+    /// The damage of the frames the window presented, most recent first.
+    history: DamageHistory,
+    /// The frame that was rendered and waits to be presented.
+    pending: PendingFrame,
+    /// Scratch for the region the next present copies.
+    region: Vec<PixelRect>,
+    /// Scratch for the damage rectangles the next present reports.
+    reported: Vec<softbuffer::Rect>,
+}
+
+impl CpuPresenter {
+    /// Creates the surface and the renderer for a window of `width` by
+    /// `height` physical pixels.
+    ///
+    /// A window without pixels gets a renderer without pixels, and nothing
+    /// presents until a resize gives the window an extent.
+    fn new(
+        window: &Arc<Window>,
+        width: u32,
+        height: u32,
+        show_damage: bool,
+    ) -> Result<CpuPresenter, PlatformError> {
+        let shared = SharedWindow(Arc::clone(window));
+        let context = Context::new(shared.clone()).map_err(PlatformError::Surface)?;
+        let mut surface = Surface::new(&context, shared).map_err(PlatformError::Surface)?;
+        drop(context);
+        if let (Some(width), Some(height)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+            surface
+                .resize(width, height)
+                .map_err(PlatformError::Surface)?;
+        }
+        Ok(CpuPresenter {
+            surface,
+            window: SharedWindow(Arc::clone(window)),
+            renderer: CpuRenderer::new(width, height),
+            show_damage,
+            history: DamageHistory::default(),
+            pending: PendingFrame::default(),
+            region: Vec::new(),
+            reported: Vec::new(),
+        })
+    }
+
+    /// Takes the window's new extent.
+    fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) -> Result<(), PlatformError> {
+        self.surface
+            .resize(width, height)
+            .map_err(PlatformError::Surface)?;
+        self.renderer.resize(width.get(), height.get());
+        Ok(())
+    }
+
+    /// Renders the frame into the pixmap and presents it.
     ///
     /// The frame's damage and the recorded damage of the frames still in a
     /// window buffer decide what has to be copied: when the buffer's age says
@@ -633,28 +802,43 @@ impl WindowState {
     /// copies the whole pixmap and blends the tint over the frame's damage in
     /// the window buffer, so no tint reaches the pixmap a later frame repaints
     /// from. It also presents a frame with no damage, so a tint never outlives
-    /// the frame that caused it. `raster` is the time the renderer took for the
-    /// frame and is recorded with the present's statistics. `has_tick` says
-    /// whether the app runs a per-frame tick. Returns `false` when nothing was
-    /// presented, which is the case for a surface without pixels and, while the
-    /// overlay is off, for a frame with no damage while a tick runs: such a
-    /// frame changed nothing, so the window still shows the last present and no
-    /// buffer is taken, no statistics are published, and the frame limit does
+    /// the frame that caused it.
+    ///
+    /// Before every present, the window is told that a frame is about to
+    /// show. That is the order winit needs on Wayland: it schedules a frame
+    /// callback that paces the next redraw, and presenting without it lets
+    /// frames outrun the compositor until a present waits forever for the
+    /// buffer it cannot get.
+    ///
+    /// Returns the statistics of a presented frame, or `Ok(None)` when nothing
+    /// was presented: a surface without pixels, or a frame with no damage
+    /// while a tick runs. Such a frame changed nothing, so the window still
+    /// shows the last present, no buffer is taken, and the frame limit does
     /// not count it. An empty frame without a tick is a redraw the window
     /// system asked for, such as an X11 window being shown again, and presents
     /// the whole pixmap to restore the window's contents.
-    fn present(&mut self, raster: Duration, has_tick: bool) -> Result<bool, PlatformError> {
+    fn render_and_present(
+        &mut self,
+        frame: &FrameOutput<'_>,
+        has_tick: bool,
+    ) -> Result<Option<PresentStats>, PlatformError> {
         let (width, height) = (self.renderer.width(), self.renderer.height());
         if width == 0 || height == 0 {
-            return Ok(false);
+            return Ok(None);
         }
+        let raster_start = Instant::now();
+        self.renderer.render(frame);
+        let raster = raster_start.elapsed();
+        self.pending.damage.clear();
+        self.pending.damage.extend_from_slice(frame.damage);
+        self.pending.full = frame.full;
         if present_skipped(&self.pending.damage, has_tick, self.show_damage) {
-            return Ok(false);
+            return Ok(None);
         }
         let acquire_start = Instant::now();
         let mut buffer = self.surface.buffer_mut().map_err(PlatformError::Surface)?;
         let acquire = acquire_start.elapsed();
-        let start = Instant::now();
+        let present_start = Instant::now();
         debug_assert_eq!(
             buffer.len(),
             self.renderer.pixels().len() / 4,
@@ -689,6 +873,7 @@ impl WindowState {
             for &rect in &self.region {
                 copy_rect(self.renderer.pixels(), width, &mut buffer, rect);
             }
+            self.window.0.pre_present_notify();
             buffer
                 .present_with_damage(&self.reported)
                 .map_err(PlatformError::Surface)?;
@@ -708,10 +893,11 @@ impl WindowState {
             if self.show_damage {
                 tint_rects(&mut buffer, width, &self.pending.damage);
             }
+            self.window.0.pre_present_notify();
             buffer.present().map_err(PlatformError::Surface)?;
         }
         self.history.push(&self.pending.damage, self.pending.full);
-        self.stats = PresentStats {
+        Ok(Some(PresentStats {
             buffer_age: age,
             with_damage,
             bytes_copied,
@@ -719,12 +905,9 @@ impl WindowState {
             surface_height: height,
             raster,
             acquire,
-            present: start.elapsed(),
-        };
-        if let Some(handle) = &self.stats_handle {
-            handle.store(self.stats);
-        }
-        Ok(true)
+            present: present_start.elapsed(),
+            renderer: "cpu",
+        }))
     }
 }
 
@@ -756,12 +939,13 @@ fn wait_decision(deadline: Option<Instant>, now: Instant) -> WaitDecision {
     }
 }
 
-/// A window handle that the presentation surface can own.
+/// A window handle that the presentation surfaces can own.
 ///
-/// The surface stores the window it presents to and the platform state keeps
-/// the window too, so both hold the same allocation.
+/// The surfaces store the window they present to and the platform state keeps
+/// the window too, so both hold the same allocation. The `Arc` makes the
+/// handle sendable, which the wgpu surface target requires.
 #[derive(Clone)]
-struct SharedWindow(Rc<Window>);
+pub(crate) struct SharedWindow(pub(crate) Arc<Window>);
 
 impl HasWindowHandle for SharedWindow {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {

@@ -17,6 +17,14 @@ pub enum PlatformError {
     /// The software presentation surface could not be created, resized or
     /// presented.
     Surface(SoftBufferError),
+    /// The renderer could not be set up for the window.
+    ///
+    /// This holds what went wrong: a value of the `SMUDGE_RENDERER`
+    /// environment variable that is not `cpu`, `gpu` or `auto`, a request
+    /// for the GPU renderer without the `gpu` feature, a request for the GPU
+    /// renderer with no usable adapter, or a window the GPU renderer cannot
+    /// present to.
+    Renderer(String),
     /// The window options gave a clear color that is not opaque.
     ///
     /// Presentation copies only the color channels of the surface into the
@@ -34,6 +42,9 @@ impl fmt::Display for PlatformError {
             PlatformError::Surface(error) => {
                 write!(formatter, "the presentation surface failed: {error}")
             }
+            PlatformError::Renderer(message) => {
+                write!(formatter, "the renderer could not be set up: {message}")
+            }
             PlatformError::ClearColor => write!(
                 formatter,
                 "the clear color must be opaque, because presentation drops \
@@ -49,6 +60,7 @@ impl Error for PlatformError {
             PlatformError::EventLoop(error) => Some(error),
             PlatformError::Window(error) => Some(error),
             PlatformError::Surface(error) => Some(error),
+            PlatformError::Renderer(_) => None,
             PlatformError::ClearColor => None,
         }
     }

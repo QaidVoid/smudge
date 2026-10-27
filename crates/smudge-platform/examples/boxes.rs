@@ -2,8 +2,9 @@
 //!
 //! Run with `cargo run --example boxes -p smudge-platform`. Pass `--full` to
 //! repaint the whole surface every frame instead of only the damage, `--stats`
-//! to print a presentation summary every 120 frames, and `--show-damage` to
-//! tint the pixels each frame repainted.
+//! to print a presentation summary every 120 frames, `--show-damage` to tint
+//! the pixels each frame repainted, `--renderer cpu|gpu|auto` to choose the
+//! renderer, and `--frames N` to close the window after N presented frames.
 
 // The summaries are the output the example exists to produce.
 #![allow(clippy::print_stdout)]
@@ -19,7 +20,7 @@ use smudge_core::geometry::{Color, Size};
 use smudge_core::reactive::{self, prelude::*};
 use smudge_core::style::{Align, Length, px};
 use smudge_core::widget::panel;
-use smudge_platform::{PresentStatsHandle, WindowOptions, run_with};
+use smudge_platform::{PresentStatsHandle, RendererChoice, WindowOptions, run_with};
 
 /// How many boxes the grid holds.
 const BOXES: usize = 600;
@@ -50,15 +51,39 @@ const PALETTE: [Color; 6] = [
 ];
 
 fn main() -> ExitCode {
-    let repaint = if env::args().skip(1).any(|argument| argument == "--full") {
-        RepaintMode::Full
-    } else {
-        RepaintMode::Damage
-    };
-    let report = env::args().skip(1).any(|argument| argument == "--stats");
-    let show_damage = env::args()
-        .skip(1)
-        .any(|argument| argument == "--show-damage");
+    let mut repaint = RepaintMode::Damage;
+    let mut report = false;
+    let mut show_damage = false;
+    let mut renderer = RendererChoice::default();
+    let mut frame_limit = None;
+    let mut arguments = env::args().skip(1);
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--full" => repaint = RepaintMode::Full,
+            "--stats" => report = true,
+            "--show-damage" => show_damage = true,
+            "--renderer" => match arguments.next().as_deref() {
+                Some("cpu") => renderer = RendererChoice::Cpu,
+                Some("gpu") => renderer = RendererChoice::Gpu,
+                Some("auto") => renderer = RendererChoice::Auto,
+                other => {
+                    eprintln!("smudge: --renderer needs cpu, gpu or auto, got {other:?}");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--frames" => match arguments.next().and_then(|value| value.parse::<u64>().ok()) {
+                Some(frames) => frame_limit = Some(frames),
+                None => {
+                    eprintln!("smudge: --frames needs a number of presented frames");
+                    return ExitCode::FAILURE;
+                }
+            },
+            other => {
+                eprintln!("smudge: unknown argument {other:?}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let stats = report.then(PresentStatsHandle::new);
 
     let setters: Rc<RefCell<Vec<SetColor>>> = Rc::new(RefCell::new(Vec::with_capacity(BOXES)));
@@ -104,9 +129,10 @@ fn main() -> ExitCode {
             clear_color: Color::rgb(16, 17, 21),
             repaint,
             show_damage,
+            renderer,
             stats: stats.clone(),
             on_frame: None,
-            frame_limit: None,
+            frame_limit,
         },
         build,
         move |app| {
@@ -133,9 +159,10 @@ fn main() -> ExitCode {
                     present_total += present.present;
                     if frames.is_multiple_of(STATS_EVERY) {
                         println!(
-                            "frame {frames}: mean buffer age {:.2}, damage presents \
+                            "frame {frames} [{}]: mean buffer age {:.2}, damage presents \
                              {damage_presents}/{frames} ({:.1}%), copied {:.1} MB, \
                              present {:.2} ms mean",
+                            present.renderer,
                             age_total as f64 / frames as f64,
                             100.0 * damage_presents as f64 / frames as f64,
                             copied as f64 / 1_048_576.0,

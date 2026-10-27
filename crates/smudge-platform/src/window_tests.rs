@@ -9,7 +9,7 @@ use smudge_core::geometry::{Color, Size};
 use smudge_core::widget::panel;
 
 use super::{WaitDecision, WindowOptions, run_with, wait_decision};
-use crate::PlatformError;
+use crate::{PlatformError, RendererChoice};
 
 /// Returns options with an opaque clear color, so a test only has to change
 /// the field it checks.
@@ -23,6 +23,7 @@ fn options(clear_color: Color) -> WindowOptions {
         clear_color,
         repaint: RepaintMode::Damage,
         show_damage: false,
+        renderer: RendererChoice::default(),
         stats: None,
         on_frame: None,
         frame_limit: None,
