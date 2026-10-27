@@ -11,7 +11,13 @@ publish = false
 [dependencies]
 smudge-core = { version = "0.1.0", path = "../smudge-core" }
 smudge-cpu = { version = "0.1.0", path = "../smudge-cpu" }
+smudge-gpu = { version = "0.1.0", path = "../smudge-gpu", optional = true }
 smudge-platform = { version = "0.1.0", path = "../smudge-platform" }
+smudge-text = { version = "0.1.0", path = "../smudge-text" }
+smudge-widgets = { version = "0.1.0", path = "../smudge-widgets" }
 
 [lints]
 workspace = true
+
+[features]
+gpu = ["dep:smudge-gpu", "smudge-platform/gpu"]

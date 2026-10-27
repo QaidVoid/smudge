@@ -154,6 +154,7 @@ fn run() -> Result<(), PlatformError> {
             renderer: RendererChoice::default(),
             stats: Some(stats.clone()),
             on_frame: None,
+            on_event: None,
             frame_limit: None,
         },
         build,

@@ -132,6 +132,7 @@ fn main() -> ExitCode {
             renderer,
             stats: stats.clone(),
             on_frame: None,
+            on_event: None,
             frame_limit,
         },
         build,

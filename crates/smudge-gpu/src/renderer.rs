@@ -125,6 +125,11 @@ impl GpuRenderer {
     /// Creates a renderer on a GPU adapter chosen without a window, so tests
     /// and offscreen uses need no surface.
     ///
+    /// The adapter comes from an instance whose options, among them the
+    /// `WGPU_BACKEND` variable, are read from the environment, exactly as the
+    /// window path does. That lets a machine pin the backend without a
+    /// rebuild, for example to measure a software rasterizer.
+    ///
     /// Returns `None` when no adapter can be created, or when the chosen
     /// adapter cannot provide a device, which is how a machine without a GPU
     /// reports itself.
@@ -134,7 +139,9 @@ impl GpuRenderer {
     /// Panics under the conditions of [`GpuRenderer::new`]. The device has
     /// the default limits, which allow 8192 pixels on each side.
     pub fn headless(width: u32, height: u32) -> Option<GpuRenderer> {
-        let instance = Instance::new(InstanceDescriptor::new_without_display_handle());
+        // The environment override matches the window path, so one set of
+        // variables picks the backend for both.
+        let instance = Instance::new(InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default())).ok()?;
         let (device, queue) =
             block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
@@ -209,6 +216,22 @@ impl GpuRenderer {
         drop(mapped);
         buffer.unmap();
         pixels
+    }
+
+    /// Blocks until the GPU has executed every render submitted so far.
+    ///
+    /// A render returns once its work is submitted, so a caller that times a
+    /// frame calls this to count the GPU's execution and not only the
+    /// submission.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the device is lost, which is a broken device state rather
+    /// than input a caller can provoke.
+    pub fn wait(&self) {
+        self.device
+            .poll(PollType::wait_indefinitely())
+            .expect("the device was lost while waiting for renders");
     }
 
     /// Returns the distance in bytes between the start of two consecutive

@@ -3065,7 +3065,10 @@ version = "0.1.0"
 dependencies = [
  "smudge-core",
  "smudge-cpu",
+ "smudge-gpu",
  "smudge-platform",
+ "smudge-text",
+ "smudge-widgets",
 ]
 
 [[package]]

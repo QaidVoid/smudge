@@ -26,6 +26,7 @@ fn options(clear_color: Color) -> WindowOptions {
         renderer: RendererChoice::default(),
         stats: None,
         on_frame: None,
+        on_event: None,
         frame_limit: None,
     }
 }

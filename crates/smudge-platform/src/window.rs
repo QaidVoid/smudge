@@ -64,6 +64,17 @@ type UserEvent = ();
 /// exists so a benchmark can record one entry per frame while the frames run.
 pub type FrameHook = Rc<dyn Fn(FrameStats, PresentStats)>;
 
+/// The measurement hook that injects scripted input before a frame runs.
+///
+/// The platform calls it with the app before every frame but the first, which
+/// mounts the app and lays it out, and the hook delivers input through [`App::handle_event`], which is the path every real
+/// event takes. Nothing in the library sets it: it exists so a benchmark can
+/// script input on the window backend, where nothing else can reach the app
+/// between frames. The time from a call to the end of that frame's present is
+/// the event's latency. Like [`FrameHook`], the hook is shared, so it keeps
+/// any counter it needs behind a `Cell` or an `Rc`.
+pub type EventHook = Rc<dyn Fn(&mut App)>;
+
 /// The settings a window opens with.
 #[derive(Clone)]
 pub struct WindowOptions {
@@ -120,6 +131,17 @@ pub struct WindowOptions {
     /// presented, so it neither calls the hook nor counts toward the frame
     /// limit.
     pub on_frame: Option<FrameHook>,
+    /// Measurement hook: injects input before every frame.
+    ///
+    /// The hook receives the app and may hand it input events through
+    /// [`App::handle_event`], which is the path every real event takes, so the
+    /// frame that follows shows the event and measures its latency. A run with
+    /// this hook draws frames back to back like a run with a tick. Like a
+    /// ticked frame, a frame whose input changed nothing presents nothing, so
+    /// it neither calls [`WindowOptions::on_frame`] nor counts toward the
+    /// frame limit. A hook that must reach its limit changes something in
+    /// every frame.
+    pub on_event: Option<EventHook>,
     /// Measurement hook: closes the window after this many presented frames.
     ///
     /// A run that must last a fixed number of frames sets this instead of
@@ -144,6 +166,7 @@ impl std::fmt::Debug for WindowOptions {
             .field("renderer", &self.renderer)
             .field("stats", &self.stats)
             .field("on_frame", &self.on_frame.is_some())
+            .field("on_event", &self.on_event.is_some())
             .field("frame_limit", &self.frame_limit)
             .finish()
     }
@@ -197,6 +220,7 @@ impl std::fmt::Debug for WindowOptions {
 ///         renderer: RendererChoice::default(),
 ///         stats: None,
 ///         on_frame: None,
+///         on_event: None,
 ///         frame_limit: None,
 ///     },
 ///     || panel().width(px(120.0)).height(px(40.0)).background(Color::BLACK),
@@ -261,6 +285,7 @@ pub fn run<E: IntoElement + 'static>(
 ///         renderer: RendererChoice::default(),
 ///         stats: None,
 ///         on_frame: None,
+///         on_event: None,
 ///         frame_limit: None,
 ///     },
 ///     move || panel().width(px(120.0)).background(move || color.get().into()),
@@ -368,6 +393,12 @@ struct WindowState {
     stats_handle: Option<PresentStatsHandle>,
     /// The measurement hook to call after every presented frame.
     on_frame: Option<FrameHook>,
+    /// The measurement hook to call before every frame.
+    on_event: Option<EventHook>,
+    /// Whether the app has run a frame. The event hook waits for that, since
+    /// a real event cannot arrive before the app has drawn once, and a hit
+    /// test before the first layout has no rectangles to hit.
+    rendered: bool,
     /// How many frames to present before the window closes.
     frame_limit: Option<u64>,
     /// How many frames the window has presented.
@@ -504,6 +535,8 @@ where
             stats: PresentStats::default(),
             stats_handle: self.options.stats.clone(),
             on_frame: self.options.on_frame.take(),
+            on_event: self.options.on_event.take(),
+            rendered: false,
             frame_limit: self.options.frame_limit,
             frames_presented: 0,
             scale,
@@ -566,13 +599,25 @@ where
     }
 
     /// Runs one frame and presents it.
+    ///
+    /// When an [`WindowOptions::on_event`] hook is set, it injects its input
+    /// first, so the frame shows it, and the run draws frames back to back
+    /// like a run whose app has a tick. The first frame gets no injection:
+    /// nothing real arrives before the app has drawn once, and a hit test
+    /// before the first layout has no rectangles to hit.
     fn redraw(&mut self) -> Result<(), PlatformError> {
         let Some(state) = self.state.as_mut() else {
             return Ok(());
         };
-        let tick = state.app.has_tick();
+        if state.rendered
+            && let Some(on_event) = &state.on_event
+        {
+            (on_event)(&mut state.app);
+        }
+        let driven = state.app.has_tick() || state.on_event.is_some();
         let output = state.app.frame();
-        let presented = state.presenter.render_and_present(&output, tick)?;
+        state.rendered = true;
+        let presented = state.presenter.render_and_present(&output, driven)?;
         if let Some(stats) = presented {
             state.stats = stats;
             if let Some(handle) = &state.stats_handle {
@@ -586,7 +631,7 @@ where
         state.update_ime();
         #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         state.update_a11y();
-        if tick || (presented.is_some() && state.below_frame_limit()) {
+        if driven || (presented.is_some() && state.below_frame_limit()) {
             state.window.request_redraw();
         }
         Ok(())
@@ -595,7 +640,8 @@ where
     /// Runs the timers that are due and puts the event loop to sleep until
     /// the next one.
     ///
-    /// An app with a tick keeps itself awake and needs nothing here. Any
+    /// An app with a tick or an event hook keeps itself awake and needs
+    /// nothing here. Any
     /// other app runs its due timers between frames: one that writes a
     /// signal wakes the window through the app's wake callback, and one that
     /// changes nothing draws no frame, so it never costs a present. The loop
@@ -606,7 +652,7 @@ where
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        if state.app.has_tick() {
+        if state.app.has_tick() || state.on_event.is_some() {
             return;
         }
         if wait_decision(state.app.next_deadline(), Instant::now()) == WaitDecision::Now {

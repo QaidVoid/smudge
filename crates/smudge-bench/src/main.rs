@@ -23,9 +23,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use smudge_core::app::{App, AppConfig, FrameStats, RepaintMode};
 use smudge_core::geometry::Color;
+use smudge_core::renderer::Renderer;
 use smudge_cpu::CpuRenderer;
 use smudge_platform::{
-    FrameHook, PlatformError, PresentStats, RendererChoice, WindowOptions, run_with,
+    EventHook, FrameHook, PlatformError, PresentStats, RendererChoice, WindowOptions, run_with,
 };
 
 use crate::process::Sample;
@@ -37,9 +38,10 @@ use crate::stats::Percentiles;
 const CLEAR_COLOR: Color = Color::rgb(16, 17, 21);
 
 /// The text of `--help`.
-const USAGE: &str = "usage: smudge-bench --scene s1|s2|s3 [--mode damage|full] \
-                      [--backend headless|window] [--warmup 30] [--frames 300] \
-                      [--repeats 3] [--scale 1.0] [--label <text>] [--out <path>]";
+const USAGE: &str = "usage: smudge-bench --scene s1|s2|s3|s4|s5|s6|s9 [--mode damage|full] \
+                      [--backend headless|window] [--renderer cpu|gpu] \
+                      [--warmup 30] [--frames 300] [--repeats 3] [--scale 1.0] \
+                      [--label <text>] [--out <path>]";
 
 /// What to measure and how.
 struct Args {
@@ -49,6 +51,8 @@ struct Args {
     mode: RepaintMode,
     /// Where the frames render.
     backend: Backend,
+    /// Which renderer draws the frames.
+    renderer: RendererArg,
     /// How many frames each repeat runs before the measured frames start.
     warmup: u32,
     /// How many frames each repeat records.
@@ -62,6 +66,35 @@ struct Args {
     label: String,
     /// Where the report is written.
     out: PathBuf,
+}
+
+/// Which renderer a run asks for.
+#[derive(Copy, Clone, PartialEq)]
+enum RendererArg {
+    /// The CPU renderer, the default.
+    Cpu,
+    /// The GPU renderer. Needs the bench's `gpu` build feature and, on the
+    /// headless backend, an adapter.
+    Gpu,
+}
+
+impl RendererArg {
+    /// Returns the name the report records for the chosen renderer, which is
+    /// also the default.
+    fn name(self) -> &'static str {
+        match self {
+            RendererArg::Cpu => "cpu",
+            RendererArg::Gpu => "gpu",
+        }
+    }
+
+    /// Returns the window's renderer choice for this argument.
+    fn choice(self) -> RendererChoice {
+        match self {
+            RendererArg::Cpu => RendererChoice::Cpu,
+            RendererArg::Gpu => RendererChoice::Gpu,
+        }
+    }
 }
 
 /// Where the frames render.
@@ -103,6 +136,10 @@ struct FrameRecord {
     raster_us: f64,
     /// What the present did, on the window backend.
     present: Option<PresentStats>,
+    /// How long the scripted event took from its injection to the end of the
+    /// frame, when the scene injected one: to the end of the raster on the
+    /// headless backend, and to the end of the present on the window backend.
+    latency_us: Option<f64>,
     /// The width and height of the rendered surface in physical pixels.
     surface: (u32, u32),
     /// How many allocations the frame made.
@@ -157,12 +194,17 @@ fn main() -> ExitCode {
             let mut runs = Vec::with_capacity(args.repeats as usize);
             for repeat in 0..args.repeats {
                 let start = process::sample();
-                let records = run_headless(&args, repeat);
-                runs.push(RepeatRun {
-                    records,
-                    start,
-                    end: process::sample(),
-                });
+                match run_headless(&args, repeat) {
+                    Ok(records) => runs.push(RepeatRun {
+                        records,
+                        start,
+                        end: process::sample(),
+                    }),
+                    Err(message) => {
+                        eprintln!("smudge-bench: {message}");
+                        return ExitCode::FAILURE;
+                    }
+                }
             }
             runs
         }
@@ -179,6 +221,14 @@ fn main() -> ExitCode {
         .iter()
         .find_map(|run| run.records.first())
         .map(|record| record.surface);
+    let renderer = repeat_runs
+        .iter()
+        .flat_map(|run| &run.records)
+        .find_map(|record| record.present.as_ref().map(|p| p.renderer))
+        .unwrap_or_else(|| match args.backend {
+            Backend::Headless => args.renderer.name(),
+            Backend::Window => "none",
+        });
     let resized = repeat_runs
         .iter()
         .flat_map(|run| &run.records)
@@ -188,7 +238,7 @@ fn main() -> ExitCode {
             "smudge-bench: the surface changed size during the run, so its frames are not comparable"
         );
     }
-    if let Err(error) = writeln!(out, "{}", env_line(&args, surface)) {
+    if let Err(error) = writeln!(out, "{}", env_line(&args, surface, renderer)) {
         eprintln!("smudge-bench: cannot write the header: {error}");
         return ExitCode::FAILURE;
     }
@@ -243,6 +293,7 @@ impl Args {
         let mut scene = None;
         let mut mode = RepaintMode::Damage;
         let mut backend = Backend::Headless;
+        let mut renderer = RendererArg::Cpu;
         let mut warmup = 30;
         let mut frames = 300;
         let mut repeats = 3;
@@ -261,10 +312,9 @@ impl Args {
             match flag.as_str() {
                 "--scene" => {
                     let key = value()?;
-                    scene = Some(
-                        Scene::by_key(&key)
-                            .ok_or_else(|| format!("unknown scene {key}, want s1, s2 or s3"))?,
-                    );
+                    scene = Some(Scene::by_key(&key).ok_or_else(|| {
+                        format!("unknown scene {key}, want s1, s2, s3, s4, s5, s6 or s9")
+                    })?);
                 }
                 "--mode" => {
                     mode = match value()?.as_str() {
@@ -281,6 +331,15 @@ impl Args {
                             return Err(format!(
                                 "unknown backend {other}, want headless or window"
                             ));
+                        }
+                    };
+                }
+                "--renderer" => {
+                    renderer = match value()?.as_str() {
+                        "cpu" => RendererArg::Cpu,
+                        "gpu" => RendererArg::Gpu,
+                        other => {
+                            return Err(format!("unknown renderer {other}, want cpu or gpu"));
                         }
                     };
                 }
@@ -337,6 +396,7 @@ impl Args {
             scene,
             mode,
             backend,
+            renderer,
             warmup,
             frames,
             repeats,
@@ -364,27 +424,34 @@ struct RepeatRun {
     end: Sample,
 }
 
-/// Runs one repeat of the headless backend: an [`App`] and a [`CpuRenderer`],
-/// stepped by hand.
-fn run_headless(args: &Args, repeat: u32) -> Vec<FrameRecord> {
+/// Runs one repeat of the headless backend: an [`App`] and a renderer, stepped
+/// by hand.
+///
+/// The scene's step runs before the frame and injects its scripted events
+/// through the app, exactly as the window backend does.
+fn run_headless(args: &Args, repeat: u32) -> Result<Vec<FrameRecord>, String> {
     let scene = args.scene;
     let (build, driver) = scene.mount();
     let mut app = App::new(app_config(args), build);
-    let mut frame_index = 0u64;
-    app.set_tick(move |_| {
-        scene.step(&driver, frame_index);
-        frame_index += 1;
-    });
-
     let (width, height) = app.surface_size();
-    let mut renderer = CpuRenderer::new(width, height);
+    let mut renderer = headless_renderer(args, width, height)?;
+    // The first frame mounts and lays the tree out, so the events the scene
+    // scripts land on laid out rectangles, as they do between the frames of a
+    // real window. Its full repaint also fills the renderer's pixmap.
+    let output = app.frame();
+    renderer.render(&output);
     let warmup = u64::from(args.warmup);
     let mut records = Vec::with_capacity(args.frames as usize);
     for index in 0..warmup + u64::from(args.frames) {
+        scene.step(&driver, &mut app, index);
         let allocations_before = allocations::count();
         let output = app.frame();
         let raster_start = Instant::now();
         renderer.render(&output);
+        let latency_us = driver
+            .borrow_mut()
+            .take_injection()
+            .map(|injected| us(injected.elapsed()));
         let raster_us = us(raster_start.elapsed());
         let stats = app.stats().clone();
         let allocations = allocations::count() - allocations_before;
@@ -395,21 +462,61 @@ fn run_headless(args: &Args, repeat: u32) -> Vec<FrameRecord> {
                 stats,
                 raster_us,
                 present: None,
-                surface: (renderer.width(), renderer.height()),
+                latency_us,
+                surface: (width, height),
                 allocations,
             });
         }
     }
-    records
+    Ok(records)
+}
+
+/// Builds the renderer the headless backend draws with.
+///
+/// A GPU renderer needs the bench's `gpu` build feature and an adapter to
+/// draw on. A headless GPU frame is a texture the machine never shows, so any
+/// adapter the environment resolves to will do, software ones included.
+fn headless_renderer(args: &Args, width: u32, height: u32) -> Result<Box<dyn Renderer>, String> {
+    match args.renderer {
+        RendererArg::Cpu => Ok(Box::new(CpuRenderer::new(width, height))),
+        #[cfg(not(feature = "gpu"))]
+        RendererArg::Gpu => Err(String::from(
+            "the renderer gpu needs a build with this crate's gpu feature",
+        )),
+        #[cfg(feature = "gpu")]
+        RendererArg::Gpu => match smudge_gpu::GpuRenderer::headless(width, height) {
+            Some(renderer) => Ok(Box::new(AwaitedGpu(renderer))),
+            None => Err(String::from(
+                "no GPU adapter is available for the headless renderer",
+            )),
+        },
+    }
+}
+
+/// A GPU renderer whose render returns once the GPU has executed the frame,
+/// so a headless frame's raster time and latency cover the GPU's work and not
+/// only its submission.
+#[cfg(feature = "gpu")]
+struct AwaitedGpu(smudge_gpu::GpuRenderer);
+
+#[cfg(feature = "gpu")]
+impl Renderer for AwaitedGpu {
+    fn render(&mut self, frame: &smudge_core::app::FrameOutput<'_>) {
+        self.0.render(frame);
+        self.0.wait();
+    }
 }
 
 /// Runs every repeat of the window backend in one window, because the window
 /// system's event loop cannot be recreated in one process.
 ///
 /// The bench installs its driver and frame limit through the platform's
-/// measurement hooks. The driver takes its frame index modulo one repeat's
-/// length, so every repeat drives the same sequence of colors, and the
-/// process samples are taken at the repeat boundaries the hook observes.
+/// measurement hooks. The event hook drives the scene before every frame, so
+/// a scripted event takes the same [`App::handle_event`] path a real one
+/// takes, and the frame hook records the frames the run presents. Both take
+/// their frame index modulo one repeat's length, so every repeat drives the
+/// same sequence, and the process samples are taken at the repeat boundaries
+/// the frame hook observes.
 fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
     let scene = args.scene;
     let per_repeat = u64::from(args.warmup) + u64::from(args.frames);
@@ -427,10 +534,15 @@ fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
         let records = Rc::clone(&records);
         let starts = Rc::clone(&starts);
         let ends = Rc::clone(&ends);
+        let driver = Rc::clone(&driver);
         let presented = Cell::new(0u64);
         let baseline = Cell::new(allocations::count());
         Rc::new(move |stats, present: PresentStats| {
             let frame_allocations = allocations::count() - baseline.get();
+            let latency_us = driver
+                .borrow_mut()
+                .take_injection()
+                .map(|injected| us(injected.elapsed()));
             let index = presented.get();
             presented.set(index + 1);
             let position = index % per_repeat;
@@ -452,11 +564,22 @@ fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
                     stats,
                     raster_us: us(present.raster),
                     present: Some(present),
+                    latency_us,
                     surface: (present.surface_width, present.surface_height),
                     allocations: frame_allocations,
                 });
             }
             baseline.set(allocations::count());
+        })
+    };
+
+    let on_event: EventHook = {
+        let driver = Rc::clone(&driver);
+        let position = Cell::new(0u64);
+        Rc::new(move |app| {
+            let frame = position.get();
+            position.set((frame + 1) % per_repeat);
+            scene.step(&driver, app, frame);
         })
     };
 
@@ -472,21 +595,14 @@ fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
             clear_color: CLEAR_COLOR,
             repaint: args.mode,
             show_damage: false,
-            // The benchmark measures the CPU renderer, whatever features
-            // the workspace build unifies onto the platform crate.
-            renderer: RendererChoice::Cpu,
+            renderer: args.renderer.choice(),
             stats: None,
             on_frame: Some(on_frame),
+            on_event: Some(on_event),
             frame_limit: Some(per_repeat * repeats),
         },
         build,
-        move |app| {
-            let mut frame_index = 0u64;
-            app.set_tick(move |_| {
-                scene.step(&driver, frame_index % per_repeat);
-                frame_index += 1;
-            });
-        },
+        |_| {},
     )?;
 
     let records = records.take();
@@ -532,15 +648,18 @@ fn app_config(args: &Args) -> AppConfig {
 ///
 /// `surface` is the size of the surface the first measured frame rendered,
 /// or `None` when no frame was measured. The scale is `null` on the window
-/// backend, because the window system chooses it.
-fn env_line(args: &Args, surface: Option<(u32, u32)>) -> String {
+/// backend, because the window system chooses it. `renderer` names the
+/// renderer that drew the frames: the choice asked for on the headless
+/// backend, and the presenter the window actually used on the window backend,
+/// which is how a GPU run proves it did not fall back to the CPU.
+fn env_line(args: &Args, surface: Option<(u32, u32)>, renderer: &str) -> String {
     let scale = match args.backend {
         Backend::Headless => format!("{:.3}", args.scale),
         Backend::Window => String::from("null"),
     };
     format!(
         concat!(
-            r#"{{"type":"env","label":{},"scene":{},"mode":{},"backend":{},"#,
+            r#"{{"type":"env","label":{},"scene":{},"mode":{},"backend":{},"renderer":{},"#,
             r#""scale":{},"surface_width":{},"surface_height":{},"#,
             r#""cpu_model":{},"kernel":{},"rustc":{},"#,
             r#""wayland_display":{},"display":{},"timestamp":{}}}"#
@@ -549,6 +668,7 @@ fn env_line(args: &Args, surface: Option<(u32, u32)>) -> String {
         json_string(args.scene.key),
         json_string(mode_name(args.mode)),
         json_string(args.backend.name()),
+        json_string(renderer),
         scale,
         json_opt_u64(surface.map(|(width, _)| u64::from(width))),
         json_opt_u64(surface.map(|(_, height)| u64::from(height))),
@@ -573,7 +693,7 @@ fn frame_line(record: &FrameRecord) -> String {
             r#"{{"type":"frame","repeat":{},"frame":{},"#,
             r#""flush_us":{:.3},"layout_us":{:.3},"paint_us":{:.3},"list_us":{:.3},"#,
             r#""damage_us":{:.3},"raster_us":{:.3},"acquire_us":{},"present_us":{},"frame_total_us":{:.3},"#,
-            r#""layout_ran":{},"nodes_painted":{},"flush_rounds":{},"#,
+            r#""latency_us":{},"layout_ran":{},"nodes_painted":{},"flush_rounds":{},"#,
             r#""damage_rects":{},"damage_pixels":{},"damage_pixels_before_merge":{},"#,
             r#""raster_pixels":{},"bytes_copied":{},"allocations":{},"buffer_age":{}}}"#
         ),
@@ -588,6 +708,7 @@ fn frame_line(record: &FrameRecord) -> String {
         json_opt_f64(acquire_us),
         json_opt_f64(present_us),
         record.total_us(),
+        json_opt_f64(record.latency_us),
         s.layout_ran,
         s.nodes_painted,
         s.flush_rounds,
@@ -656,6 +777,13 @@ fn percentile_columns(records: &[FrameRecord]) -> String {
         columns.push(("acquire_us", Vec::new()));
         columns.push(("present_us", Vec::new()));
     }
+    columns.push((
+        "latency_us",
+        records
+            .iter()
+            .filter_map(|record| record.latency_us)
+            .collect(),
+    ));
 
     columns
         .iter()
