@@ -18,6 +18,7 @@ use crate::input::{InputEvent, Modifiers};
 use crate::paint::DisplayList;
 use crate::reactive::runtime::Scope;
 use crate::reactive::{self, Owner, RenderEffect};
+use crate::semantics::{A11yChanges, SemanticsNode};
 use crate::theme::Theme;
 use crate::timer::{self, Clock, TimerBook};
 use crate::tree::{WidgetId, WidgetTree};
@@ -673,6 +674,76 @@ impl App {
     /// ```
     pub fn visit_nodes(&self, mut visit: impl FnMut(usize, &'static str, Rect)) {
         self.tree.visit_nodes(&mut visit);
+    }
+
+    /// Projects every visible node that reports a role, in paint order.
+    ///
+    /// This is the tree an accessibility backend reads. A node is projected
+    /// when its element set a role or its widget reports one; the children
+    /// of a node without a role attach to the nearest projected ancestor.
+    /// A hidden node and its subtree are skipped, because they paint
+    /// nothing. The bounds are in logical pixels, as the last layout pass
+    /// left them.
+    pub fn semantics_nodes(&self) -> Vec<SemanticsNode> {
+        self.tree.semantics_nodes()
+    }
+
+    /// Returns the projected nodes that no projected ancestor holds, in paint
+    /// order.
+    ///
+    /// These are the nodes an accessibility backend attaches to the root it
+    /// adds for the window.
+    pub fn semantics_roots(&self) -> Vec<WidgetId> {
+        self.tree.semantics_roots()
+    }
+
+    /// Projects one node with the children the projection gives it.
+    ///
+    /// Returns [`None`] when the id is stale, when the node or an ancestor
+    /// is hidden, or when neither the element nor the widget reports a role
+    /// for it.
+    pub fn semantics_node(&self, id: WidgetId) -> Option<SemanticsNode> {
+        self.tree.semantics_node(id)
+    }
+
+    /// Returns whether the projection has unread changes.
+    ///
+    /// A backend that only rebuilds when this returns true skips frames that
+    /// changed nothing projected.
+    pub fn has_a11y_changes(&self) -> bool {
+        self.tree.has_a11y_changes()
+    }
+
+    /// Takes the projected nodes that changed since the last call.
+    ///
+    /// A change to a node the projection leaves out is reported as its
+    /// nearest projected ancestor, whose child list it changed, or as
+    /// [`A11yChanges::roots_changed`] when no ancestor projects. Stale and
+    /// hidden ids drop out, and a frame that changed too much sets
+    /// [`A11yChanges::reset`] instead of listing every node, so a backend can
+    /// rebuild from scratch. Take these only when no frame is pending: a
+    /// node that changes again while it waits for a frame is not queued
+    /// twice, so changes taken before that frame miss what it does.
+    pub fn take_a11y_changes(&mut self) -> A11yChanges {
+        self.tree.take_a11y_changes()
+    }
+
+    /// Runs the press handler of `id`, as an accessibility action would.
+    ///
+    /// This is the same path a press of Enter or Space takes, so a disabled
+    /// or hidden node runs nothing and `false` is returned. `true` means a
+    /// handler ran.
+    pub fn press(&mut self, id: WidgetId) -> bool {
+        self.tree.run_press(id)
+    }
+
+    /// Moves the keyboard focus to `id`, as an accessibility action would.
+    ///
+    /// A node that is not focusable, or that cannot hold the focus because
+    /// it is disabled or hidden, is left alone and `false` is returned. A
+    /// node that already holds the focus keeps it and `true` is returned.
+    pub fn request_focus(&mut self, id: WidgetId) -> bool {
+        self.tree.request_focus(id)
     }
 }
 

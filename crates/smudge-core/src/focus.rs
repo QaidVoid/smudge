@@ -219,6 +219,7 @@ impl WidgetTree {
         if self.focused == id {
             return;
         }
+        let old = self.focused;
         self.stale_focus = None;
         if let Some(old) = self.focused {
             self.set_bit(old, Interaction::FOCUSED, false);
@@ -231,6 +232,26 @@ impl WidgetTree {
                 self.set_bit(new, Interaction::KEYBOARD_FOCUS, true);
             }
         }
+        if let Some(old) = old {
+            self.push_a11y(old);
+        }
+        if let Some(new) = id {
+            self.push_a11y(new);
+        }
+    }
+
+    /// Focuses `id` on behalf of an accessibility action, and returns whether
+    /// it took the focus.
+    ///
+    /// A node that is not focusable, or that cannot hold the focus because it
+    /// is disabled or hidden, is left alone and `false` is returned. A node
+    /// that already holds the focus keeps it.
+    pub(crate) fn request_focus(&mut self, id: WidgetId) -> bool {
+        if !self.focusable(id) || !self.can_hold_focus(id) {
+            return false;
+        }
+        self.set_focus(Some(id));
+        true
     }
 
     /// Turns the keyboard navigation mode on or off.

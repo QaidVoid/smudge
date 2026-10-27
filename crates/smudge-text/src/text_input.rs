@@ -27,6 +27,7 @@ use smudge_core::input::{Handled, Key, KeyEvent, Modifiers};
 use smudge_core::paint::GlyphRun;
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
+use smudge_core::semantics::{Role, Semantics};
 use smudge_core::theme::ColorToken;
 use smudge_core::timer::{self, TimerHandle};
 use smudge_core::tree::Dirty;
@@ -329,6 +330,20 @@ impl TextInput {
 }
 
 impl Widget for TextInput {
+    /// Reports the field's placeholder as the accessible name and its text
+    /// as the accessible value.
+    ///
+    /// An input with no placeholder reports no name, which leaves the
+    /// announcement to the field's surroundings.
+    fn semantics(&self) -> Option<Semantics> {
+        let label = (!self.placeholder.is_empty()).then(|| self.placeholder.clone());
+        Some(Semantics {
+            role: Role::TextInput,
+            label,
+            value: Some(self.chrome.editor.text()),
+        })
+    }
+
     /// Returns the size of one line of text.
     ///
     /// Offered space is filled on the x axis, which is what an input field

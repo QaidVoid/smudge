@@ -402,3 +402,46 @@ fn style_children_styles_the_children_added_through_children() {
         );
     }
 }
+
+#[test]
+fn a_role_reaches_the_node_it_is_set_on() {
+    let (tree, _queue, root) = mount_root(panel().role(crate::semantics::Role::Group));
+
+    assert_eq!(tree.semantics_nodes().len(), 1);
+    let node = tree.semantics_node(root).expect("the root projects");
+    assert_eq!(node.role, crate::semantics::Role::Group);
+}
+
+#[test]
+fn a_static_accessible_label_is_written_when_the_node_mounts() {
+    let (tree, _queue, root) = mount_root(
+        panel()
+            .role(crate::semantics::Role::Group)
+            .accessible_label("Files"),
+    );
+
+    let node = tree.semantics_node(root).expect("the root projects");
+    assert_eq!(node.label.as_deref(), Some("Files"));
+}
+
+#[test]
+fn a_dynamic_accessible_label_follows_its_signal() {
+    let (name, set_name) = signal_local(String::from("before"));
+    let (mut tree, queue, root) = mount_root(
+        panel()
+            .role(crate::semantics::Role::Group)
+            .accessible_label(move || name.get()),
+    );
+    settle(&mut tree, &queue);
+    assert_eq!(
+        tree.semantics_node(root).and_then(|node| node.label),
+        Some(String::from("before")),
+    );
+
+    set_name.set(String::from("after"));
+    settle(&mut tree, &queue);
+    assert_eq!(
+        tree.semantics_node(root).and_then(|node| node.label),
+        Some(String::from("after")),
+    );
+}

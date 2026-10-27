@@ -18,6 +18,7 @@ use smudge_core::element::{Element, IntoElement, Value};
 use smudge_core::geometry::Point;
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
+use smudge_core::semantics::{Role, Semantics};
 use smudge_core::style::{Edges, Length, px};
 use smudge_core::theme::ColorToken;
 use smudge_core::tree::Dirty;
@@ -88,6 +89,11 @@ pub struct ScrollView {
 }
 
 impl Widget for ScrollView {
+    /// Reports the view as a scrollable region.
+    fn semantics(&self) -> Option<Semantics> {
+        Some(Semantics::new(Role::ScrollView))
+    }
+
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
         let border = cx.style.layout.border_width;
         let visible = finite(cx.content.height());

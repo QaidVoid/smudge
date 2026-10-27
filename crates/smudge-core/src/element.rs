@@ -46,6 +46,7 @@ use crate::geometry::{Color, Point, Size};
 use crate::input::{Handled, KeyEvent};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RenderEffect};
+use crate::semantics::Role;
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
 };
@@ -100,6 +101,7 @@ impl UpdateQueue {
 /// whenever a signal it reads changes.
 ///
 /// A value converts into this type, so a builder method can take either one.
+#[derive(Clone)]
 pub enum Value<T> {
     /// A value that never changes.
     Static(T),
@@ -237,6 +239,22 @@ impl Binding {
         }
     }
 
+    /// A binding that writes the node's accessible label.
+    fn a11y_label(get: Rc<dyn Fn() -> String>) -> Binding {
+        Binding {
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_label(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes the node's scroll offset.
     ///
     /// The write moves the node's flowing descendants without running the
@@ -310,6 +328,11 @@ pub struct Element<W: Widget> {
     disabled: bool,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
+    /// The role the accessibility projection reports, when an element set
+    /// one.
+    a11y_role: Option<Role>,
+    /// The accessible label an element set, when it set one.
+    a11y_label: Option<Value<String>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// Applied to the style of every child as it is added.
@@ -336,6 +359,8 @@ impl<W: Widget> Element<W> {
             handlers: Handlers::default(),
             disabled: false,
             focusable: false,
+            a11y_role: None,
+            a11y_label: None,
             scroll_offset: Point::default(),
             child_styling: None,
             children: Vec::new(),
@@ -933,6 +958,27 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Sets the role the accessibility projection reports for the node.
+    ///
+    /// A widget that reports no role of its own stays out of the projection
+    /// and its children attach to the nearest projected ancestor, so this
+    /// builder places a plain container on the accessibility tree. The role
+    /// is fixed for the node's lifetime, and it overrides the role the
+    /// widget itself reports.
+    pub fn role(mut self, role: Role) -> Self {
+        self.a11y_role = Some(role);
+        self
+    }
+
+    /// Sets the accessible name a screen reader announces for the node.
+    ///
+    /// This can be bound to a signal, like the style builders. It overrides
+    /// the name the widget itself reports.
+    pub fn accessible_label(mut self, label: impl Into<Value<String>>) -> Self {
+        self.a11y_label = Some(label.into());
+        self
+    }
+
     /// Makes the node able to take the keyboard focus, by a press on it or by
     /// Tab navigation.
     ///
@@ -1109,6 +1155,11 @@ pub struct AnyElement {
     disabled: bool,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
+    /// The role the accessibility projection reports, when an element set
+    /// one.
+    a11y_role: Option<Role>,
+    /// The accessible label an element set, when it set one.
+    a11y_label: Option<Value<String>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// The children, in paint order.
@@ -1126,6 +1177,8 @@ impl AnyElement {
             handlers: element.handlers,
             disabled: element.disabled,
             focusable: element.focusable,
+            a11y_role: element.a11y_role,
+            a11y_label: element.a11y_label,
             scroll_offset: element.scroll_offset,
             children: element.children,
         }
@@ -1165,11 +1218,13 @@ pub(crate) fn mount(
     let AnyElement {
         widget,
         style,
-        bindings,
+        mut bindings,
         variants,
         handlers,
         disabled,
         focusable,
+        a11y_role,
+        a11y_label,
         scroll_offset,
         children,
     } = element;
@@ -1177,7 +1232,19 @@ pub(crate) fn mount(
     tree.set_variants(id, variants.map(Rc::new));
     tree.set_disabled(id, disabled);
     tree.set_focusable(id, focusable);
+    tree.set_a11y_role(id, a11y_role);
     tree.set_handlers(id, handlers);
+    let bindings = match a11y_label {
+        Some(Value::Static(text)) => {
+            tree.set_a11y_label(id, Some(text));
+            bindings
+        }
+        Some(Value::Dynamic(get)) => {
+            bindings.push(Binding::a11y_label(get));
+            bindings
+        }
+        None => bindings,
+    };
     if scroll_offset != Point::default() {
         tree.set_scroll_offset(id, scroll_offset);
     }

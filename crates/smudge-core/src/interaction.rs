@@ -313,6 +313,7 @@ impl WidgetTree {
     /// over a disabled node. A stale id does nothing.
     pub(crate) fn set_disabled(&mut self, id: WidgetId, disabled: bool) {
         self.set_bit(id, Interaction::DISABLED, disabled);
+        self.push_a11y(id);
         if !disabled {
             return;
         }
@@ -388,7 +389,7 @@ impl WidgetTree {
     }
 
     /// Returns whether the node can take the keyboard focus.
-    fn focusable(&self, id: WidgetId) -> bool {
+    pub(super) fn focusable(&self, id: WidgetId) -> bool {
         self.nodes
             .get(id)
             .is_some_and(|node| node.interaction.has(Interaction::FOCUSABLE))
@@ -528,7 +529,7 @@ impl WidgetTree {
     /// A node that became disabled or hidden while its press was held does not
     /// run it, because a disabled node's handlers never run. Key activation
     /// shares this path, so a button fires the same handler from either input.
-    pub(super) fn run_press(&mut self, id: WidgetId) -> bool {
+    pub(crate) fn run_press(&mut self, id: WidgetId) -> bool {
         if self.nodes.get(id).is_none_or(|node| {
             node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
         }) {

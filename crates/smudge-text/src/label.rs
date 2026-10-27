@@ -28,6 +28,7 @@ use smudge_core::geometry::Point;
 use smudge_core::geometry::Size;
 use smudge_core::paint::GlyphRun;
 use smudge_core::paint::PaintOp;
+use smudge_core::semantics::{Role, Semantics};
 use smudge_core::tree::Dirty;
 use smudge_core::widget::AvailableSpace;
 use smudge_core::widget::MeasureInput;
@@ -107,6 +108,19 @@ impl Label {
 }
 
 impl Widget for Label {
+    /// Reports the text as the accessible value.
+    ///
+    /// The role is what an accessibility backend maps a static text to, and
+    /// such a node takes its name from its value there, so the text rides in
+    /// the value and the label stays empty.
+    fn semantics(&self) -> Option<Semantics> {
+        Some(Semantics {
+            role: Role::Label,
+            label: None,
+            value: Some(self.text.clone()),
+        })
+    }
+
     /// Lays the text out against the offered width and returns its size.
     ///
     /// A definite [`AvailableSpace::Definite`] wraps the text at that width,

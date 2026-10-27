@@ -10,14 +10,15 @@
 //! queue, so every mutation of the tree happens in one place and in one order.
 
 use std::any::Any;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use slotmap::{SlotMap, new_key_type};
+use slotmap::{Key, SlotMap, new_key_type};
 
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::Owner;
+use crate::semantics::{A11yChanges, Role, SemanticsNode};
 use crate::style::{LayoutProps, PaintProps, Style};
 use crate::theme::Theme;
 use crate::variants::{Variants, resolve};
@@ -44,6 +45,26 @@ new_key_type! {
     /// Every operation that takes one reports that rather than acting on
     /// another node.
     pub struct WidgetId;
+}
+
+impl WidgetId {
+    /// Returns the raw representation of the id.
+    ///
+    /// An accessibility backend identifies its nodes by `u64`, so the
+    /// projection maps ids through this conversion. The raw value of two
+    /// live ids is always different, and a value this tree never handed out
+    /// restores to an id that names no node.
+    pub fn as_u64(self) -> u64 {
+        self.data().as_ffi()
+    }
+
+    /// Restores the id that [`WidgetId::as_u64`] encoded.
+    ///
+    /// An id whose node was removed already, or one that names no node at
+    /// all, is a no-op everywhere the tree takes it.
+    pub fn from_u64(raw: u64) -> WidgetId {
+        WidgetId(slotmap::KeyData::from_ffi(raw))
+    }
 }
 
 /// How much of a node is out of date.
@@ -122,6 +143,12 @@ struct Node {
     interaction: Interaction,
     /// The input handlers the node owns, set by its element's builders.
     handlers: Handlers,
+    /// The role the element's builders set for the accessibility projection,
+    /// which overrides the role the widget reports.
+    a11y_role: Option<Role>,
+    /// The accessible label the element's builders set, which overrides the
+    /// label the widget reports.
+    a11y_label: Option<String>,
     /// The node's cached paint output, filled by the paint pass.
     ops: Vec<PaintOp>,
     /// The bounds the node painted last frame and the clip it painted under.
@@ -150,6 +177,10 @@ fn children_differ_in_order(before: &[WidgetId], after: &[WidgetId]) -> bool {
         .collect();
     survivors_of_before != survivors_of_after
 }
+
+/// How many pending accessibility changes the tree queues before the next
+/// projection rebuilds from scratch instead.
+const A11Y_DIRTY_CAP: usize = 4096;
 
 /// The retained tree of widgets.
 ///
@@ -198,6 +229,16 @@ pub(crate) struct WidgetTree {
     keyboard_nav: bool,
     /// The theme that paint-time token resolution reads.
     theme: Theme,
+    /// The nodes whose projected accessibility state may have changed, in the
+    /// order the changes arrived.
+    ///
+    /// Duplicates are allowed and removed when the changes are taken. When
+    /// the list outgrows [`A11Y_DIRTY_CAP`], it is cleared and
+    /// [`WidgetTree::a11y_reset`] is raised, which makes the next projection
+    /// rebuild from scratch instead.
+    a11y_dirty: Vec<WidgetId>,
+    /// Whether the next projection must be rebuilt from scratch.
+    a11y_reset: bool,
 }
 
 impl WidgetTree {
@@ -220,6 +261,8 @@ impl WidgetTree {
             stale_focus: None,
             keyboard_nav: false,
             theme: Theme::light(),
+            a11y_dirty: Vec::new(),
+            a11y_reset: false,
         }
     }
 
@@ -280,6 +323,8 @@ impl WidgetTree {
             scroll_offset: Point::default(),
             interaction: Interaction::default(),
             handlers: Handlers::default(),
+            a11y_role: None,
+            a11y_label: None,
             ops: Vec::new(),
             painted: None,
         };
@@ -301,6 +346,9 @@ impl WidgetTree {
         }
 
         self.mark(id, Dirty::Layout);
+        if let Some(parent) = parent {
+            self.push_a11y(parent);
+        }
         id
     }
 
@@ -369,6 +417,7 @@ impl WidgetTree {
 
         if let Some(parent) = parent {
             self.mark(parent, Dirty::Layout);
+            self.push_a11y(parent);
         }
         self.drop_stale_hoisted_children(parent, &removed_taffy);
     }
@@ -507,6 +556,7 @@ impl WidgetTree {
             self.queue_subtree_damage(id);
         }
         self.mark(id, Dirty::Layout);
+        self.push_a11y(id);
     }
 
     /// Adds the painted bounds of every node below `id`, `id` included, to the
@@ -549,6 +599,7 @@ impl WidgetTree {
         node.dirty = dirty;
         if was_clean {
             self.paint_queue.push(id);
+            self.push_a11y(id);
         }
         if dirty == Dirty::Layout {
             self.layout_dirty = true;
@@ -637,6 +688,7 @@ impl WidgetTree {
             return;
         }
         let became_hidden = resolved.layout.hidden && !node.resolved.layout.hidden;
+        let became_visible = !resolved.layout.hidden && node.resolved.layout.hidden;
         let layout_changed = resolved.layout != node.resolved.layout;
         let taffy_style = resolved.layout.to_taffy();
         let node = self.nodes.get_mut(id).expect("the node is live");
@@ -652,6 +704,14 @@ impl WidgetTree {
         }
         if became_hidden {
             self.drop_invalid_focus();
+        }
+        if (became_hidden || became_visible)
+            && let Some(parent) = self.nodes.get(id).and_then(|node| node.parent)
+        {
+            self.push_a11y(parent);
+        }
+        if became_visible {
+            self.push_a11y_visible_subtree(id);
         }
     }
 
@@ -720,6 +780,292 @@ impl WidgetTree {
         for &child in &node.children {
             self.visit_from(child, depth + 1, visit);
         }
+    }
+
+    /// Returns whether any projected accessibility state may have changed
+    /// since the last [`WidgetTree::take_a11y_changes`].
+    pub(crate) fn has_a11y_changes(&self) -> bool {
+        self.a11y_reset || !self.a11y_dirty.is_empty()
+    }
+
+    /// Takes the projected nodes that changed since the last call.
+    ///
+    /// A change to an unprojected node changes the child list of its nearest
+    /// projected ancestor, so it is reported as that ancestor, or as
+    /// [`A11yChanges::roots_changed`] when no ancestor projects. Stale ids,
+    /// ids that became hidden, and duplicates drop out. When the change queue
+    /// overflowed since the last call, `reset` is set and the changed list is
+    /// empty.
+    pub(crate) fn take_a11y_changes(&mut self) -> A11yChanges {
+        let mut changes = A11yChanges {
+            reset: std::mem::take(&mut self.a11y_reset),
+            ..A11yChanges::default()
+        };
+        let dirty = std::mem::take(&mut self.a11y_dirty);
+        if changes.reset {
+            return changes;
+        }
+        let mut seen = HashSet::new();
+        for id in dirty {
+            if !seen.insert(id) || !self.a11y_id_is_visible(id) {
+                continue;
+            }
+            let projected = if self.nodes.get(id).and_then(Self::effective_role).is_some() {
+                Some(id)
+            } else {
+                self.nearest_projected_ancestor(id)
+            };
+            match projected {
+                Some(projected) if projected == id || seen.insert(projected) => {
+                    changes.changed.push(projected);
+                }
+                Some(_) => {}
+                None => changes.roots_changed = true,
+            }
+        }
+        changes
+    }
+
+    /// Returns whether `id` is live and neither it nor an ancestor is hidden.
+    fn a11y_id_is_visible(&self, id: WidgetId) -> bool {
+        let mut next = Some(id);
+        while let Some(current) = next {
+            let Some(node) = self.nodes.get(current) else {
+                return false;
+            };
+            if node.resolved.layout.hidden {
+                return false;
+            }
+            next = node.parent;
+        }
+        true
+    }
+
+    /// Records that the projected state of `id` may have changed.
+    ///
+    /// Changes queue freely and are deduplicated when taken. A queue that
+    /// outgrows [`A11Y_DIRTY_CAP`] is dropped and the next projection
+    /// rebuilds from scratch, which is cheaper than replaying thousands of
+    /// one-node updates.
+    pub(crate) fn push_a11y(&mut self, id: WidgetId) {
+        if self.a11y_dirty.len() >= A11Y_DIRTY_CAP {
+            self.a11y_dirty.clear();
+            self.a11y_reset = true;
+            return;
+        }
+        self.a11y_dirty.push(id);
+    }
+
+    /// Records `id` and its visible subtree as changed.
+    ///
+    /// A node that becomes visible again reattaches in the projection, so
+    /// every descendant that is visible again has to be rebuilt too.
+    fn push_a11y_visible_subtree(&mut self, id: WidgetId) {
+        let mut stack = vec![id];
+        while let Some(current) = stack.pop() {
+            let Some(node) = self.nodes.get(current) else {
+                continue;
+            };
+            if node.resolved.layout.hidden {
+                continue;
+            }
+            let children = node.children.clone();
+            self.push_a11y(current);
+            stack.extend_from_slice(&children);
+        }
+    }
+
+    /// Sets the role the projection reports for `id`.
+    ///
+    /// Called once, while the node is being mounted. A stale id does nothing.
+    pub(crate) fn set_a11y_role(&mut self, id: WidgetId, role: Option<Role>) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.a11y_role = role;
+        }
+    }
+
+    /// Sets the accessible label of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_label`](crate::element::Element::accessible_label)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_label(&mut self, id: WidgetId, label: Option<String>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        if node.a11y_label == label {
+            return;
+        }
+        node.a11y_label = label;
+        self.push_a11y(id);
+    }
+
+    /// Projects every visible node in paint order, for an accessibility
+    /// backend.
+    ///
+    /// A node is projected when its element set a role or its widget reports
+    /// one; the children of an unprojected node attach to the nearest
+    /// projected ancestor. A hidden node and its subtree are skipped, like
+    /// in [`WidgetTree::visit_nodes`]. The tree itself stays private: this is
+    /// how a caller outside the crate reads the accessibility tree.
+    pub(crate) fn semantics_nodes(&self) -> Vec<SemanticsNode> {
+        let mut nodes = Vec::new();
+        let mut index_of = HashMap::new();
+        if let Some(root) = self.root {
+            self.project_from(root, None, &mut nodes, &mut index_of);
+        }
+        nodes
+    }
+
+    /// Returns the projected nodes that no projected ancestor holds, in paint
+    /// order.
+    pub(crate) fn semantics_roots(&self) -> Vec<WidgetId> {
+        let mut roots = Vec::new();
+        if let Some(root) = self.root
+            && let Some(node) = self.nodes.get(root)
+            && !node.resolved.layout.hidden
+        {
+            if Self::effective_role(node).is_some() {
+                roots.push(root);
+            } else {
+                self.collect_projected_children(root, &mut roots);
+            }
+        }
+        roots
+    }
+
+    /// Projects one node with the children the projection gives it, or
+    /// [`None`] when the id is stale, hidden above or at `id`, or reports no
+    /// role.
+    pub(crate) fn semantics_node(&self, id: WidgetId) -> Option<SemanticsNode> {
+        if !self.a11y_id_is_visible(id) {
+            return None;
+        }
+        let node = self.nodes.get(id)?;
+        let role = Self::effective_role(node)?;
+        let parent = self.nearest_projected_ancestor(id);
+        let mut out = Self::project_node(id, node, role, parent);
+        self.collect_projected_children(id, &mut out.children);
+        Some(out)
+    }
+
+    /// Returns the nearest ancestor of `id` that projects, or [`None`] when
+    /// every ancestor is unprojected.
+    fn nearest_projected_ancestor(&self, id: WidgetId) -> Option<WidgetId> {
+        let mut next = self.nodes.get(id).and_then(|node| node.parent);
+        while let Some(current) = next {
+            let node = self.nodes.get(current)?;
+            if !node.resolved.layout.hidden && Self::effective_role(node).is_some() {
+                return Some(current);
+            }
+            next = node.parent;
+        }
+        None
+    }
+
+    /// Walks `id`'s visible subtree in paint order and appends the projected
+    /// nodes to `nodes`.
+    fn project_from(
+        &self,
+        id: WidgetId,
+        projected_parent: Option<WidgetId>,
+        nodes: &mut Vec<SemanticsNode>,
+        index_of: &mut HashMap<WidgetId, usize>,
+    ) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if node.resolved.layout.hidden {
+            return;
+        }
+        let Some(role) = Self::effective_role(node) else {
+            for &child in &node.children {
+                self.project_from(child, projected_parent, nodes, index_of);
+            }
+            return;
+        };
+        let index = nodes.len();
+        nodes.push(Self::project_node(id, node, role, projected_parent));
+        index_of.insert(id, index);
+        if let Some(parent) = projected_parent
+            && let Some(&parent_index) = index_of.get(&parent)
+        {
+            nodes[parent_index].children.push(id);
+        }
+        for &child in &node.children {
+            self.project_from(child, Some(id), nodes, index_of);
+        }
+    }
+
+    /// Builds the projected form of one node.
+    fn project_node(
+        id: WidgetId,
+        node: &Node,
+        role: Role,
+        parent: Option<WidgetId>,
+    ) -> SemanticsNode {
+        SemanticsNode {
+            id,
+            parent,
+            children: Vec::new(),
+            role,
+            label: Self::effective_label(node),
+            value: Self::effective_value(node),
+            bounds: node.rect,
+            focusable: node.interaction.has(Interaction::FOCUSABLE),
+            disabled: node.interaction.has(Interaction::DISABLED),
+            focused: node.interaction.has(Interaction::FOCUSED),
+            pressable: node.handlers.on_press.is_some(),
+        }
+    }
+
+    /// Appends the ids of `id`'s projected descendants to `out`, walking
+    /// through unprojected children.
+    fn collect_projected_children(&self, id: WidgetId, out: &mut Vec<WidgetId>) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if node.resolved.layout.hidden {
+            return;
+        }
+        for &child in &node.children {
+            let Some(child_node) = self.nodes.get(child) else {
+                continue;
+            };
+            if child_node.resolved.layout.hidden {
+                continue;
+            }
+            if Self::effective_role(child_node).is_some() {
+                out.push(child);
+            } else {
+                self.collect_projected_children(child, out);
+            }
+        }
+    }
+
+    /// Returns the role the projection reports for the node: the one its
+    /// element set, else the one its widget reports.
+    fn effective_role(node: &Node) -> Option<Role> {
+        node.a11y_role.or_else(|| {
+            let widget: &dyn Widget = node.widget.as_ref();
+            widget.semantics().map(|semantics| semantics.role)
+        })
+    }
+
+    /// Returns the accessible name the projection reports for the node: the
+    /// one its element set, else the one its widget reports.
+    fn effective_label(node: &Node) -> Option<String> {
+        node.a11y_label.clone().or_else(|| {
+            let widget: &dyn Widget = node.widget.as_ref();
+            widget.semantics().and_then(|semantics| semantics.label)
+        })
+    }
+
+    /// Returns the current value the projection reports for the node, which
+    /// only a widget that reports semantics can provide.
+    fn effective_value(node: &Node) -> Option<String> {
+        let widget: &dyn Widget = node.widget.as_ref();
+        widget.semantics().and_then(|semantics| semantics.value)
     }
 
     /// Panics unless the layout engine's tree and the node store describe the

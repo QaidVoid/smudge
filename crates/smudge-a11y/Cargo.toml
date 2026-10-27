@@ -1,0 +1,20 @@
+[package]
+name = "smudge-a11y"
+description = "AccessKit-based accessibility projection for the Smudge GUI library"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+accesskit = { version = "0.25.2", default-features = false }
+smudge-core = { version = "0.1.0", path = "../smudge-core" }
+
+[dev-dependencies]
+accesskit_consumer = "0.39.2"
+insta = "1.49.0"
+proptest = "1.12.0"

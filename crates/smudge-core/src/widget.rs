@@ -9,6 +9,7 @@ use std::any::Any;
 use crate::element::Element;
 use crate::geometry::{Corners, Rect, Size};
 use crate::paint::PaintOp;
+use crate::semantics::Semantics;
 use crate::style::{Edges, Style};
 use crate::theme::Theme;
 
@@ -91,6 +92,17 @@ pub trait Widget: Any + type_name::TypeName {
     /// is focused or the widget has no area to report. The default reports
     /// [`None`], which suits a widget that takes no text.
     fn ime_area(&self) -> Option<Rect> {
+        None
+    }
+
+    /// Returns the accessibility description that places this widget in the
+    /// projection, or [`None`] to leave it out.
+    ///
+    /// The default reports [`None`], which suits a widget that paints for
+    /// sighted users alone. A widget that returns a description is projected
+    /// with the role it reports, and an element can still override the role
+    /// with [`Element::role`](crate::element::Element::role).
+    fn semantics(&self) -> Option<Semantics> {
         None
     }
 }

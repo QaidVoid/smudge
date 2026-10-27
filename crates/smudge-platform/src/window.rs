@@ -29,6 +29,32 @@ use crate::present::{
 };
 use crate::renderer::RendererChoice;
 
+/// The user event the run loop carries, of which the accessibility adapter
+/// sends the only kind.
+///
+/// With the `a11y` feature off the run loop carries `()` and nothing is ever
+/// sent.
+#[cfg(feature = "a11y")]
+pub(crate) enum PlatformEvent {
+    /// An event from the accessibility adapter: a request for the initial
+    /// tree, an action a user ran in an assistive tool, or a notice that the
+    /// platform stopped reading the tree.
+    A11y(accesskit_winit::Event),
+}
+
+#[cfg(feature = "a11y")]
+impl From<accesskit_winit::Event> for PlatformEvent {
+    fn from(event: accesskit_winit::Event) -> PlatformEvent {
+        PlatformEvent::A11y(event)
+    }
+}
+
+/// The user event type the run loop is built with.
+#[cfg(feature = "a11y")]
+type UserEvent = PlatformEvent;
+#[cfg(not(feature = "a11y"))]
+type UserEvent = ();
+
 /// The measurement hook that receives one pair of statistics per presented
 /// frame.
 ///
@@ -234,7 +260,11 @@ pub fn run_with<E: IntoElement + 'static>(
     }
     let renderer = options.renderer.with_env_override()?;
 
-    let event_loop = EventLoop::new().map_err(PlatformError::EventLoop)?;
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .map_err(PlatformError::EventLoop)?;
+    #[cfg(feature = "a11y")]
+    let proxy = event_loop.create_proxy();
     let mut platform = Platform {
         renderer,
         options,
@@ -242,6 +272,8 @@ pub fn run_with<E: IntoElement + 'static>(
         configure: Some(Box::new(configure)),
         state: None,
         error: None,
+        #[cfg(feature = "a11y")]
+        proxy,
     };
     event_loop
         .run_app(&mut platform)
@@ -270,6 +302,9 @@ where
     state: Option<WindowState>,
     /// The first error that stopped the run.
     error: Option<PlatformError>,
+    /// The sender the accessibility adapter posts its events through.
+    #[cfg(feature = "a11y")]
+    proxy: winit::event_loop::EventLoopProxy<UserEvent>,
 }
 
 /// The setup a caller hands to [`run_with`], boxed so the platform state does
@@ -312,6 +347,21 @@ struct WindowState {
     ime_scale: f32,
     /// Whether the window currently accepts input method input.
     ime_allowed: bool,
+    /// The bridge that maps the app's accessibility projection onto the
+    /// platform's, when the platform builds with accessibility.
+    #[cfg(feature = "a11y")]
+    adapter: accesskit_winit::Adapter,
+    /// The projection that builds the updates the adapter sends.
+    #[cfg(feature = "a11y")]
+    a11y: smudge_a11y::Projection,
+    /// Whether the accessibility backend has asked for the tree and has not
+    /// stopped reading it since. While it is false, no projection work runs.
+    #[cfg(feature = "a11y")]
+    a11y_active: bool,
+    /// Whether the next update must carry the whole tree, because the
+    /// backend asked for it or the scale moved every node's bounds.
+    #[cfg(feature = "a11y")]
+    a11y_full: bool,
 }
 
 /// The frame that was rendered and waits to be presented.
@@ -335,12 +385,22 @@ where
             .with_inner_size(LogicalSize::new(
                 f64::from(self.options.size.width),
                 f64::from(self.options.size.height),
-            ));
+            ))
+            // The accessibility adapter must be attached before the window is
+            // shown, so the window starts hidden and is shown right after.
+            .with_visible(false);
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
                 .map_err(PlatformError::Window)?,
         );
+        #[cfg(feature = "a11y")]
+        let adapter = accesskit_winit::Adapter::with_event_loop_proxy(
+            event_loop,
+            &window,
+            self.proxy.clone(),
+        );
+        window.set_visible(true);
 
         let scale = window.scale_factor() as f32;
         let physical = window.inner_size();
@@ -401,6 +461,14 @@ where
             ime_area: None,
             ime_scale: scale,
             ime_allowed: false,
+            #[cfg(feature = "a11y")]
+            adapter,
+            #[cfg(feature = "a11y")]
+            a11y: smudge_a11y::Projection::new(self.options.title.clone()),
+            #[cfg(feature = "a11y")]
+            a11y_active: false,
+            #[cfg(feature = "a11y")]
+            a11y_full: false,
         })
     }
 
@@ -432,6 +500,10 @@ where
         };
         state.presenter.resize(width, height)?;
         state.app.set_viewport(logical_size(physical, scale), scale);
+        #[cfg(feature = "a11y")]
+        if state.scale != scale {
+            state.a11y_full = true;
+        }
         debug_assert_eq!(
             state.app.surface_size(),
             (width.get(), height.get()),
@@ -462,6 +534,8 @@ where
             }
         }
         state.update_ime();
+        #[cfg(feature = "a11y")]
+        state.update_a11y();
         if tick {
             state.window.request_redraw();
         }
@@ -507,9 +581,55 @@ where
         }
         event_loop.exit();
     }
+
+    /// Answers an event the accessibility adapter posted.
+    ///
+    /// The first request for the tree is answered with a full update, which
+    /// is also what turns the projection on: until the backend asks, no
+    /// frame spends any work on it. A request that arrives while a frame is
+    /// pending waits for that frame, so the tree it gets has been laid out
+    /// and every later change is queued after it. An action presses or focuses the widget
+    /// the request names, through the same paths a pointer press and a
+    /// keyboard focus change take. When the platform stops reading the tree,
+    /// the projection goes quiet until the backend asks again.
+    #[cfg(feature = "a11y")]
+    fn handle_a11y_event(&mut self, event: accesskit_winit::Event) {
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        match event.window_event {
+            accesskit_winit::WindowEvent::InitialTreeRequested => {
+                state.a11y_active = true;
+                state.a11y_full = true;
+                if state.app.needs_frame() {
+                    state.window.request_redraw();
+                } else {
+                    state.update_a11y();
+                }
+            }
+            accesskit_winit::WindowEvent::ActionRequested(request) => {
+                let id = smudge_core::tree::WidgetId::from_u64(request.target_node.0);
+                match request.action {
+                    accesskit::Action::Click => {
+                        state.app.press(id);
+                    }
+                    accesskit::Action::Focus => {
+                        state.app.request_focus(id);
+                    }
+                    _ => {}
+                }
+                if state.app.needs_frame() {
+                    state.window.request_redraw();
+                }
+            }
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+                state.a11y_active = false;
+            }
+        }
+    }
 }
 
-impl<E, B> ApplicationHandler for Platform<E, B>
+impl<E, B> ApplicationHandler<UserEvent> for Platform<E, B>
 where
     E: IntoElement + 'static,
     B: FnOnce() -> E + 'static,
@@ -524,12 +644,24 @@ where
         }
     }
 
+    #[cfg(feature = "a11y")]
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        let UserEvent::A11y(event) = event;
+        self.handle_a11y_event(event);
+    }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        // The accessibility adapter sees every event before the app does,
+        // because it reacts to moves, resizes and focus changes itself.
+        #[cfg(feature = "a11y")]
+        if let Some(state) = self.state.as_mut() {
+            state.adapter.process_event(&state.window, &event);
+        }
         let result = match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -615,6 +747,28 @@ impl WindowState {
                 }
             }
         }
+    }
+
+    /// Sends the accessibility projection to the adapter when the backend is
+    /// reading the tree and something changed.
+    ///
+    /// This runs after every frame. The update is whole when the backend
+    /// asked for the tree or the scale changed, and it is also whole when
+    /// the changes say a frame changed too much to describe one node at a
+    /// time. While the backend is not reading, or while nothing projected
+    /// changed, this builds nothing, and the adapter calls the closure that
+    /// builds an update only while an assistive technology listens.
+    #[cfg(feature = "a11y")]
+    fn update_a11y(&mut self) {
+        if !self.a11y_active || !(self.a11y_full || self.app.has_a11y_changes()) {
+            return;
+        }
+        let full = std::mem::take(&mut self.a11y_full);
+        let (width, height) = self.physical;
+        let (projection, app, scale) = (&mut self.a11y, &mut self.app, self.scale);
+        self.adapter.update_if_active(|| {
+            projection.update(app, f64::from(width), f64::from(height), scale, full)
+        });
     }
 
     /// Returns whether the window has presented the number of frames its frame

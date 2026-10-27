@@ -1,0 +1,10 @@
+---
+source: crates/smudge-a11y/tests/projection.rs
+expression: outline
+---
+Window label="Smudge"
+  Button label="Save"
+    Label value="Save"
+  List
+    Label value="first"
+    Label value="second"

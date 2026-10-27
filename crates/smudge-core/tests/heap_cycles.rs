@@ -80,6 +80,10 @@ fn mount_and_unmount_cycles_do_not_grow_the_heap() {
     if !toggling {
         for cycle in 0..1000 {
             app.frame();
+            // A window hands these to its accessibility backend every frame;
+            // draining keeps the tree's pending-change buffer out of the
+            // measurement, like it is out of it in a real window.
+            app.take_a11y_changes();
             if (cycle + 1) % 200 == 0 {
                 eprintln!("static cycle {}: live = {}", cycle + 1, live_heap_bytes());
             }
@@ -97,8 +101,10 @@ fn mount_and_unmount_cycles_do_not_grow_the_heap() {
     for _ in 0..100 {
         set_visible.set(false);
         app.frame();
+        app.take_a11y_changes();
         set_visible.set(true);
         app.frame();
+        app.take_a11y_changes();
     }
     eprintln!("settling done: live = {}", live_heap_bytes());
     let settled = live_heap_bytes();
@@ -106,8 +112,10 @@ fn mount_and_unmount_cycles_do_not_grow_the_heap() {
     for _ in 0..1000 {
         set_visible.set(false);
         app.frame();
+        app.take_a11y_changes();
         set_visible.set(true);
         app.frame();
+        app.take_a11y_changes();
     }
     let after = live_heap_bytes();
 

@@ -3,6 +3,7 @@
 
 use smudge_core::element::{Element, Value};
 use smudge_core::geometry::Size;
+use smudge_core::semantics::Role;
 use smudge_core::theme::{ColorToken, RadiusToken};
 use smudge_core::widget::{Panel, panel};
 use smudge_text::label;
@@ -47,6 +48,7 @@ const FOCUS_BORDER: f32 = 2.0;
 /// });
 /// ```
 pub fn button(label_text: impl Into<Value<String>>) -> Element<Panel> {
+    let label_text = label_text.into();
     panel()
         .padding_xy(PADDING)
         .corner_radius(RadiusToken::MEDIUM)
@@ -57,6 +59,8 @@ pub fn button(label_text: impl Into<Value<String>>) -> Element<Panel> {
         .focused(|p| p.border_color(ColorToken::FOCUS_RING))
         .focusable()
         .activate_on_keys()
+        .role(Role::Button)
+        .accessible_label(label_text.clone())
         .child(label(label_text))
 }
 
