@@ -26,10 +26,11 @@ use smudge_core::geometry::Color;
 use smudge_core::renderer::Renderer;
 use smudge_cpu::CpuRenderer;
 use smudge_platform::{
-    EventHook, FrameHook, PlatformError, PresentStats, RendererChoice, WindowOptions, run_with,
+    EventHook, FrameHook, PlatformError, PresentStats, PresentStatsHandle, RendererChoice,
+    WindowOptions, run_with,
 };
 
-use crate::process::Sample;
+use crate::process::{MachineSample, Sample};
 use crate::scenes::Scene;
 use crate::stats::Percentiles;
 
@@ -124,6 +125,30 @@ fn mode_name(mode: RepaintMode) -> &'static str {
     }
 }
 
+/// The GPU adapter that drew a run's frames, as the header records it.
+///
+/// A run without a GPU renderer records none.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AdapterRecord {
+    /// The adapter's name, as its driver reports it.
+    name: String,
+    /// The graphics backend, in the backend's own lower case name.
+    backend: String,
+    /// The kind of device the adapter describes itself as.
+    device_type: String,
+}
+
+#[cfg(feature = "gpu")]
+impl From<smudge_platform::AdapterSummary> for AdapterRecord {
+    fn from(summary: smudge_platform::AdapterSummary) -> AdapterRecord {
+        AdapterRecord {
+            name: summary.name,
+            backend: String::from(summary.backend),
+            device_type: String::from(summary.device_type),
+        }
+    }
+}
+
 /// One measured frame.
 struct FrameRecord {
     /// The repeat the frame belongs to, from zero.
@@ -189,27 +214,42 @@ fn main() -> ExitCode {
     };
     let mut out = BufWriter::new(file);
 
+    // The adapter the frames were drawn on, when the run had a GPU renderer.
+    // Every repeat of a run draws on the same one, so the first is kept.
+    let adapter_record: Option<AdapterRecord>;
+
     let repeat_runs = match args.backend {
         Backend::Headless => {
             let mut runs = Vec::with_capacity(args.repeats as usize);
+            let mut adapter = None;
             for repeat in 0..args.repeats {
                 let start = process::sample();
+                let machine_start = process::machine_sample();
                 match run_headless(&args, repeat) {
-                    Ok(records) => runs.push(RepeatRun {
-                        records,
-                        start,
-                        end: process::sample(),
-                    }),
+                    Ok((records, run_adapter)) => {
+                        adapter = adapter.or(run_adapter);
+                        runs.push(RepeatRun {
+                            records,
+                            start,
+                            machine_start,
+                            end: process::sample(),
+                            machine_end: process::machine_sample(),
+                        });
+                    }
                     Err(message) => {
                         eprintln!("smudge-bench: {message}");
                         return ExitCode::FAILURE;
                     }
                 }
             }
+            adapter_record = adapter;
             runs
         }
         Backend::Window => match run_window(&args) {
-            Ok(runs) => runs,
+            Ok((runs, adapter)) => {
+                adapter_record = adapter;
+                runs
+            }
             Err(error) => {
                 eprintln!("smudge-bench: the run failed: {error}");
                 return ExitCode::FAILURE;
@@ -238,7 +278,11 @@ fn main() -> ExitCode {
             "smudge-bench: the surface changed size during the run, so its frames are not comparable"
         );
     }
-    if let Err(error) = writeln!(out, "{}", env_line(&args, surface, renderer)) {
+    if let Err(error) = writeln!(
+        out,
+        "{}",
+        env_line(&args, surface, renderer, adapter_record.as_ref())
+    ) {
         eprintln!("smudge-bench: cannot write the header: {error}");
         return ExitCode::FAILURE;
     }
@@ -259,7 +303,14 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
-        let line = repeat_summary_line(repeat, &run.records, run.start, run.end);
+        let line = repeat_summary_line(
+            repeat,
+            &run.records,
+            run.start,
+            run.end,
+            run.machine_start,
+            run.machine_end,
+        );
         if let Err(error) = writeln!(out, "{line}") {
             eprintln!("smudge-bench: cannot write a repeat summary: {error}");
             return ExitCode::FAILURE;
@@ -414,7 +465,7 @@ fn parse_count(flag: &str, value: &str) -> Result<u32, String> {
         .map_err(|_| format!("the flag {flag} needs a whole number, got {value:?}"))
 }
 
-/// One repeat's measured frames and the process metrics around it.
+/// One repeat's measured frames and the process and machine metrics around it.
 struct RepeatRun {
     /// The repeat's measured frames.
     records: Vec<FrameRecord>,
@@ -422,19 +473,28 @@ struct RepeatRun {
     start: Sample,
     /// The process metrics when the repeat ended.
     end: Sample,
+    /// The machine's load and processor counters when the repeat began.
+    machine_start: MachineSample,
+    /// The machine's load and processor counters when the repeat ended.
+    machine_end: MachineSample,
 }
 
 /// Runs one repeat of the headless backend: an [`App`] and a renderer, stepped
 /// by hand.
 ///
 /// The scene's step runs before the frame and injects its scripted events
-/// through the app, exactly as the window backend does.
-fn run_headless(args: &Args, repeat: u32) -> Result<Vec<FrameRecord>, String> {
+/// through the app, exactly as the window backend does. The adapter the
+/// renderer draws on is reported alongside the frames, since a run with a GPU
+/// renderer drew every repeat on the same one.
+fn run_headless(
+    args: &Args,
+    repeat: u32,
+) -> Result<(Vec<FrameRecord>, Option<AdapterRecord>), String> {
     let scene = args.scene;
     let (build, driver) = scene.mount();
     let mut app = App::new(app_config(args), build);
     let (width, height) = app.surface_size();
-    let mut renderer = headless_renderer(args, width, height)?;
+    let (mut renderer, adapter) = headless_renderer(args, width, height)?;
     // The first frame mounts and lays the tree out, so the events the scene
     // scripts land on laid out rectangles, as they do between the frames of a
     // real window. Its full repaint also fills the renderer's pixmap.
@@ -468,24 +528,32 @@ fn run_headless(args: &Args, repeat: u32) -> Result<Vec<FrameRecord>, String> {
             });
         }
     }
-    Ok(records)
+    Ok((records, adapter))
 }
 
-/// Builds the renderer the headless backend draws with.
+/// Builds the renderer the headless backend draws with, and the adapter it
+/// draws on when it has one.
 ///
 /// A GPU renderer needs the bench's `gpu` build feature and an adapter to
 /// draw on. A headless GPU frame is a texture the machine never shows, so any
 /// adapter the environment resolves to will do, software ones included.
-fn headless_renderer(args: &Args, width: u32, height: u32) -> Result<Box<dyn Renderer>, String> {
+fn headless_renderer(
+    args: &Args,
+    width: u32,
+    height: u32,
+) -> Result<(Box<dyn Renderer>, Option<AdapterRecord>), String> {
     match args.renderer {
-        RendererArg::Cpu => Ok(Box::new(CpuRenderer::new(width, height))),
+        RendererArg::Cpu => Ok((Box::new(CpuRenderer::new(width, height)), None)),
         #[cfg(not(feature = "gpu"))]
         RendererArg::Gpu => Err(String::from(
             "the renderer gpu needs a build with this crate's gpu feature",
         )),
         #[cfg(feature = "gpu")]
         RendererArg::Gpu => match smudge_gpu::GpuRenderer::headless(width, height) {
-            Some(renderer) => Ok(Box::new(AwaitedGpu(renderer))),
+            Some(renderer) => {
+                let adapter = AdapterRecord::from(renderer.adapter_summary());
+                Ok((Box::new(AwaitedGpu(renderer)), Some(adapter)))
+            }
             None => Err(String::from(
                 "no GPU adapter is available for the headless renderer",
             )),
@@ -517,7 +585,7 @@ impl Renderer for AwaitedGpu {
 /// their frame index modulo one repeat's length, so every repeat drives the
 /// same sequence, and the process samples are taken at the repeat boundaries
 /// the frame hook observes.
-fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
+fn run_window(args: &Args) -> Result<(Vec<RepeatRun>, Option<AdapterRecord>), PlatformError> {
     let scene = args.scene;
     let per_repeat = u64::from(args.warmup) + u64::from(args.frames);
     let repeats = u64::from(args.repeats);
@@ -550,12 +618,12 @@ fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
             if position == 0
                 && let Some(slot) = starts.borrow_mut().get_mut(repeat)
             {
-                *slot = Some(process::sample());
+                *slot = Some((process::sample(), process::machine_sample()));
             }
             if position == per_repeat - 1
                 && let Some(slot) = ends.borrow_mut().get_mut(repeat)
             {
-                *slot = Some(process::sample());
+                *slot = Some((process::sample(), process::machine_sample()));
             }
             if position >= u64::from(warmup) {
                 records.borrow_mut().push(FrameRecord {
@@ -583,6 +651,7 @@ fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
         })
     };
 
+    let stats = PresentStatsHandle::new();
     run_with(
         WindowOptions {
             title: format!(
@@ -596,7 +665,7 @@ fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
             repaint: args.mode,
             show_damage: false,
             renderer: args.renderer.choice(),
-            stats: None,
+            stats: Some(stats.clone()),
             on_frame: Some(on_frame),
             on_event: Some(on_event),
             frame_limit: Some(per_repeat * repeats),
@@ -614,7 +683,7 @@ fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
     for record in records {
         runs[record.repeat as usize].push(record);
     }
-    let sample = |slots: Vec<Option<Sample>>| {
+    let sample = |slots: Vec<Option<(Sample, MachineSample)>>| {
         slots
             .into_iter()
             .map(|slot| slot.unwrap_or_default())
@@ -622,16 +691,25 @@ fn run_window(args: &Args) -> Result<Vec<RepeatRun>, PlatformError> {
     };
     let starts = sample(starts);
     let ends = sample(ends);
-    Ok(runs
+    let runs = runs
         .into_iter()
         .zip(starts)
         .zip(ends)
         .map(|((records, start), end)| RepeatRun {
             records,
-            start,
-            end,
+            start: start.0,
+            machine_start: start.1,
+            end: end.0,
+            machine_end: end.1,
         })
-        .collect())
+        .collect();
+    // The GPU path reports its adapter once, at creation, and a CPU window
+    // reports none.
+    #[cfg(feature = "gpu")]
+    let adapter = stats.adapter().map(AdapterRecord::from);
+    #[cfg(not(feature = "gpu"))]
+    let adapter = None;
+    Ok((runs, adapter))
 }
 
 /// Builds the app settings of a run.
@@ -651,17 +729,28 @@ fn app_config(args: &Args) -> AppConfig {
 /// backend, because the window system chooses it. `renderer` names the
 /// renderer that drew the frames: the choice asked for on the headless
 /// backend, and the presenter the window actually used on the window backend,
-/// which is how a GPU run proves it did not fall back to the CPU.
-fn env_line(args: &Args, surface: Option<(u32, u32)>, renderer: &str) -> String {
+/// which is how a GPU run proves it did not fall back to the CPU. `adapter`
+/// names the GPU adapter the frames were drawn on, and is `None` for a run
+/// whose frames the CPU renderer drew.
+fn env_line(
+    args: &Args,
+    surface: Option<(u32, u32)>,
+    renderer: &str,
+    adapter: Option<&AdapterRecord>,
+) -> String {
     let scale = match args.backend {
         Backend::Headless => format!("{:.3}", args.scale),
         Backend::Window => String::from("null"),
     };
+    let name = adapter.map(|adapter| adapter.name.clone());
+    let backend = adapter.map(|adapter| adapter.backend.clone());
+    let device_type = adapter.map(|adapter| adapter.device_type.clone());
     format!(
         concat!(
             r#"{{"type":"env","label":{},"scene":{},"mode":{},"backend":{},"renderer":{},"#,
             r#""scale":{},"surface_width":{},"surface_height":{},"#,
             r#""cpu_model":{},"kernel":{},"rustc":{},"#,
+            r#""adapter_name":{},"adapter_backend":{},"adapter_type":{},"#,
             r#""wayland_display":{},"display":{},"timestamp":{}}}"#
         ),
         json_string(&args.label),
@@ -675,6 +764,9 @@ fn env_line(args: &Args, surface: Option<(u32, u32)>, renderer: &str) -> String 
         json_opt_string(&process::cpu_model()),
         json_opt_string(&process::kernel_release()),
         json_opt_string(&rustc_version()),
+        json_opt_string(&name),
+        json_opt_string(&backend),
+        json_opt_string(&device_type),
         env::var_os("WAYLAND_DISPLAY").is_some(),
         env::var_os("DISPLAY").is_some(),
         json_string(&utc_timestamp()),
@@ -723,12 +815,26 @@ fn frame_line(record: &FrameRecord) -> String {
 }
 
 /// Builds one repeat's summary line.
-fn repeat_summary_line(repeat: u32, records: &[FrameRecord], start: Sample, end: Sample) -> String {
+///
+/// Besides the process metrics, the line carries the one-minute load average
+/// at the repeat's boundaries, the share of the repeat the whole machine
+/// spent busy, and the share it spent busy on everything but this process.
+/// The last is what a contaminated repeat shows in: the bench's own threads,
+/// a software rasterizer's included, count only in the first share.
+fn repeat_summary_line(
+    repeat: u32,
+    records: &[FrameRecord],
+    start: Sample,
+    end: Sample,
+    machine_start: MachineSample,
+    machine_end: MachineSample,
+) -> String {
     format!(
         concat!(
             r#"{{"type":"repeat_summary","repeat":{},"frames":{},"#,
             r#""peak_rss_kb_start":{},"peak_rss_kb_end":{},"#,
-            r#""cpu_time_s_start":{},"cpu_time_s_end":{},{}}}"#
+            r#""cpu_time_s_start":{},"cpu_time_s_end":{},"#,
+            r#""load1_start":{},"load1_end":{},"busy_share":{},"other_busy_share":{},{}}}"#
         ),
         repeat,
         records.len(),
@@ -736,8 +842,34 @@ fn repeat_summary_line(repeat: u32, records: &[FrameRecord], start: Sample, end:
         json_opt_u64(end.peak_rss_kb),
         json_opt_f64(start.cpu_time_s),
         json_opt_f64(end.cpu_time_s),
+        json_opt_f64(machine_start.load1),
+        json_opt_f64(machine_end.load1),
+        json_opt_f64(busy_share(machine_start, machine_end, 0)),
+        json_opt_f64(process_ticks(start, end).and_then(|ticks| busy_share(
+            machine_start,
+            machine_end,
+            ticks
+        ))),
         percentile_columns(records),
     )
+}
+
+/// Returns the machine's busy share across one repeat, from the counters at
+/// its boundaries, less `excluded` busy ticks.
+fn busy_share(start: MachineSample, end: MachineSample, excluded: u64) -> Option<f64> {
+    let busy = end
+        .busy_ticks?
+        .checked_sub(start.busy_ticks?)?
+        .saturating_sub(excluded);
+    let total = end.total_ticks?.checked_sub(start.total_ticks?)?;
+    (total > 0).then(|| busy as f64 / total as f64)
+}
+
+/// Returns the processor ticks this process used between two samples, in the
+/// same unit as the machine's counters.
+fn process_ticks(start: Sample, end: Sample) -> Option<u64> {
+    let seconds = end.cpu_time_s? - start.cpu_time_s?;
+    Some((seconds * process::TICKS_PER_SECOND).round().max(0.0) as u64)
 }
 
 /// Builds the summary line across all repeats.
@@ -899,3 +1031,7 @@ fn utc_timestamp() -> String {
 fn us(duration: Duration) -> f64 {
     duration.as_nanos() as f64 / 1000.0
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

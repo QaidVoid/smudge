@@ -20,3 +20,10 @@ pub use error::PlatformError;
 pub use present::{PresentStats, PresentStatsHandle};
 pub use renderer::{RENDERER_ENVIRONMENT, RendererChoice};
 pub use window::{EventHook, FrameHook, WindowOptions, run, run_with};
+
+/// The GPU adapter a window presents through, as plain strings.
+///
+/// The platform reports one through [`PresentStatsHandle::adapter`] when it
+/// sets the GPU presentation path up.
+#[cfg(feature = "gpu")]
+pub use smudge_gpu::AdapterSummary;

@@ -34,6 +34,76 @@ pub(crate) fn kernel_release() -> Option<String> {
         .map(|release| release.trim().to_string())
 }
 
+/// The clock ticks per second of `/proc`'s processor counters, USER_HZ, which
+/// the Linux user space ABI fixes at 100.
+pub(crate) const TICKS_PER_SECOND: f64 = 100.0;
+
+/// The machine's load and processor counters at one moment.
+///
+/// Everything reads the operating system's own files, so a value this machine
+/// does not provide reads as `None`.
+#[derive(Copy, Clone, Debug, Default)]
+pub(crate) struct MachineSample {
+    /// The one-minute load average.
+    pub load1: Option<f64>,
+    /// The processor ticks spent busy since boot, from `/proc/stat`.
+    pub busy_ticks: Option<u64>,
+    /// The processor ticks spent on anything since boot, from `/proc/stat`.
+    pub total_ticks: Option<u64>,
+}
+
+/// Reads the machine's load and processor counters.
+pub(crate) fn machine_sample() -> MachineSample {
+    let ticks = cpu_ticks();
+    MachineSample {
+        load1: load1(),
+        busy_ticks: ticks.map(|(busy, _)| busy),
+        total_ticks: ticks.map(|(_, total)| total),
+    }
+}
+
+/// Returns the one-minute load average from `/proc/loadavg`.
+fn load1() -> Option<f64> {
+    parse_load1(&std::fs::read_to_string("/proc/loadavg").ok()?)
+}
+
+/// Parses the one-minute load average, the first number of the text.
+fn parse_load1(text: &str) -> Option<f64> {
+    text.split_whitespace().next()?.parse().ok()
+}
+
+/// Returns the busy and the total processor ticks since boot, from the first
+/// line of `/proc/stat`.
+///
+/// Busy is everything but idle and iowait, so a machine waiting on disks
+/// counts as busy, which is the reading a contaminated run must give. The
+/// guest columns are left out: the kernel already counts their time as user
+/// time, and summing them would count it twice.
+fn cpu_ticks() -> Option<(u64, u64)> {
+    parse_cpu_ticks(&std::fs::read_to_string("/proc/stat").ok()?)
+}
+
+/// Parses the busy and the total processor ticks out of a `/proc/stat` text.
+fn parse_cpu_ticks(text: &str) -> Option<(u64, u64)> {
+    let line = text.lines().next()?;
+    let columns: Vec<u64> = line
+        .split_whitespace()
+        .skip(1)
+        .take(8)
+        .map(|column| column.parse().ok())
+        .collect::<Option<_>>()?;
+    if columns.len() < 5 {
+        return None;
+    }
+    let idle = columns[3] + columns[4];
+    let total: u64 = columns.iter().sum();
+    Some((total - idle, total))
+}
+
+#[cfg(test)]
+#[path = "process_tests.rs"]
+mod tests;
+
 /// Returns the peak resident set size from `/proc/self/status`, in kB.
 fn peak_rss_kb() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -53,7 +123,7 @@ fn cpu_time_s() -> Option<f64> {
     let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
     let user_ticks: u64 = fields.get(11)?.parse().ok()?;
     let system_ticks: u64 = fields.get(12)?.parse().ok()?;
-    Some((user_ticks + system_ticks) as f64 / 100.0)
+    Some((user_ticks + system_ticks) as f64 / TICKS_PER_SECOND)
 }
 
 /// Returns the value of the first field named `name` in a `/proc` file.

@@ -29,6 +29,8 @@ use crate::present::{
     tint_rects,
 };
 use crate::renderer::RendererChoice;
+#[cfg(feature = "gpu")]
+use smudge_gpu::AdapterSummary;
 
 /// The user event the run loop carries, of which the accessibility adapter
 /// sends the only kind.
@@ -505,6 +507,12 @@ where
             height,
             self.options.show_damage,
         )?;
+        #[cfg(feature = "gpu")]
+        if let (Some(handle), Some(summary)) =
+            (self.options.stats.as_ref(), presenter.adapter_summary())
+        {
+            handle.set_adapter(summary);
+        }
 
         let weak = Arc::downgrade(&window);
         app.set_wake_callback(move || {
@@ -982,6 +990,15 @@ impl Presenter {
             Presenter::Cpu(cpu) => cpu.resize(width, height),
             #[cfg(feature = "gpu")]
             Presenter::Gpu(gpu) => gpu.resize(width.get(), height.get()),
+        }
+    }
+
+    /// Returns the GPU adapter this presenter draws on, when it has one.
+    #[cfg(feature = "gpu")]
+    fn adapter_summary(&self) -> Option<AdapterSummary> {
+        match self {
+            Presenter::Cpu(_) => None,
+            Presenter::Gpu(gpu) => Some(gpu.adapter_summary()),
         }
     }
 }

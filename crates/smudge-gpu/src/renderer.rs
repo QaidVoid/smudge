@@ -7,7 +7,7 @@ use smudge_core::renderer::Renderer;
 use vello::RenderParams;
 use vello::wgpu;
 use vello::wgpu::{
-    Device, Extent3d, Instance, InstanceDescriptor, MapMode, PollType, Queue,
+    Device, DeviceType, Extent3d, Instance, InstanceDescriptor, MapMode, PollType, Queue,
     RequestAdapterOptions, TexelCopyBufferInfo, Texture, TextureDescriptor, TextureDimension,
     TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
 };
@@ -88,6 +88,40 @@ pub struct GpuRenderer {
     encoder: Encoder,
 }
 
+/// The adapter a GPU renderer draws on, as plain strings a report can carry.
+///
+/// [`GpuRenderer::adapter_summary`] reads it from the adapter its device was
+/// created from. A caller that requests adapters itself builds one from
+/// wgpu's own adapter info with [`AdapterSummary::of`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdapterSummary {
+    /// The adapter's name, as its driver reports it.
+    pub name: String,
+    /// The graphics backend the device runs on, in the backend's own lower
+    /// case name: `vulkan`, `metal`, `dx12`, `gl`, `webgpu` or `noop`.
+    pub backend: &'static str,
+    /// The kind of device: `discrete-gpu`, `integrated-gpu`, `virtual-gpu`,
+    /// `cpu` or `other`.
+    pub device_type: &'static str,
+}
+
+impl AdapterSummary {
+    /// Reads the summary out of the info of an adapter.
+    pub fn of(info: &wgpu::AdapterInfo) -> AdapterSummary {
+        AdapterSummary {
+            name: info.name.clone(),
+            backend: info.backend.to_str(),
+            device_type: match info.device_type {
+                DeviceType::DiscreteGpu => "discrete-gpu",
+                DeviceType::IntegratedGpu => "integrated-gpu",
+                DeviceType::VirtualGpu => "virtual-gpu",
+                DeviceType::Cpu => "cpu",
+                DeviceType::Other => "other",
+            },
+        }
+    }
+}
+
 impl GpuRenderer {
     /// Creates a renderer for a device, drawing onto a texture of `width` by
     /// `height` physical pixels.
@@ -146,6 +180,14 @@ impl GpuRenderer {
         let (device, queue) =
             block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
         Some(GpuRenderer::new(device, queue, width, height))
+    }
+
+    /// Returns the adapter the renderer draws on, as plain strings.
+    ///
+    /// The renderer keeps no adapter of its own: wgpu reports the adapter its
+    /// device was created from, and that is the adapter every render runs on.
+    pub fn adapter_summary(&self) -> AdapterSummary {
+        AdapterSummary::of(&self.device.adapter_info())
     }
 
     /// Returns the rendered frame as straight-alpha RGBA8 pixels, row-major

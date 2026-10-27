@@ -62,9 +62,10 @@ Each line is one JSON object, and `type` says which:
   (`cpu`, or `gpu` for a GPU run: on the window backend the presenter the
   window actually used, which is how a GPU run proves it did not fall back),
   scale (`null` on the window backend), the rendered surface size, CPU model,
-  kernel, compiler version, display-server presence, timestamp. It is written
-  after the run, because the window backend only learns its surface size once
-  it presents.
+  kernel, compiler version, the GPU adapter the frames were drawn on as
+  `adapter_name`, `adapter_backend` and `adapter_type` (`null` for CPU
+  runs), display-server presence, timestamp. It is written after the run,
+  because the window backend only learns its surface size once it presents.
 - `frame`: repeat, frame, `flush_us`, `layout_us`, `paint_us`, `list_us`,
   `damage_us`, `raster_us`, `acquire_us` (the wait for a free window
   buffer), `present_us` (the copy and submission after it),
@@ -77,7 +78,13 @@ Each line is one JSON object, and `type` says which:
 - `repeat_summary`: percentile objects (`median`, `p95`, `p99`, nearest-rank)
   for the total, each phase, and the latency when the scene measures it,
   plus the peak RSS and process CPU time at the start and end of the repeat,
-  read from `/proc` on Linux and `null` elsewhere.
+  read from `/proc` on Linux and `null` elsewhere. The same boundaries carry
+  the machine's one-minute load average (`load1_start`, `load1_end`). Across
+  the repeat, `busy_share` is the share of processor time the whole machine
+  spent busy, and `other_busy_share` the share it spent busy on everything
+  but this process, which is the one that shows a contaminated run. Both
+  come from `/proc/stat` with busy counted as everything but idle and
+  iowait, and all of them are `null` where `/proc` is missing.
 - `summary`: the same percentiles pooled across all repeats.
 
 Allocations are counted by a global counting allocator in this binary only.

@@ -8,7 +8,7 @@ mod encoder;
 mod renderer;
 mod surface;
 
-pub use renderer::GpuRenderer;
+pub use renderer::{AdapterSummary, GpuRenderer};
 pub use surface::{GpuError, GpuSurface};
 
 /// The wgpu that vello renders through, re-exported so a caller can build its

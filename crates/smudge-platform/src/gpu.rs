@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use futures_executor::block_on;
 use smudge_core::app::FrameOutput;
+use smudge_gpu::AdapterSummary;
 use smudge_gpu::wgpu::{AdapterInfo, DeviceType};
 use smudge_gpu::{GpuSurface, wgpu};
 use web_time::Instant;
@@ -56,6 +57,8 @@ pub(crate) struct GpuPath {
     surface: GpuSurface,
     /// The window whose frames are presented, notified before every present.
     window: Arc<Window>,
+    /// The adapter the surface presents through, read once at creation.
+    summary: AdapterSummary,
 }
 
 impl GpuPath {
@@ -127,7 +130,13 @@ impl GpuPath {
         Ok(Some(GpuPath {
             surface,
             window: Arc::clone(window),
+            summary: AdapterSummary::of(&adapter.get_info()),
         }))
+    }
+
+    /// Returns the adapter the path presents through, read once at creation.
+    pub(crate) fn adapter_summary(&self) -> AdapterSummary {
+        self.summary.clone()
     }
 
     /// Renders `frame` onto the surface and presents it.

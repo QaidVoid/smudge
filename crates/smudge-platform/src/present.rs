@@ -81,6 +81,10 @@ pub struct PresentStats {
 pub struct PresentStatsHandle {
     /// The statistics of the most recent present.
     slot: Rc<RefCell<PresentStats>>,
+    /// The GPU adapter the window presents through, reported once when the
+    /// GPU path is created.
+    #[cfg(feature = "gpu")]
+    adapter: Rc<RefCell<Option<crate::AdapterSummary>>>,
 }
 
 impl PresentStatsHandle {
@@ -97,6 +101,24 @@ impl PresentStatsHandle {
     /// Publishes the statistics of the most recent present.
     pub(crate) fn store(&self, stats: PresentStats) {
         *self.slot.borrow_mut() = stats;
+    }
+
+    /// Returns the GPU adapter the window presents through, when it knows
+    /// one.
+    ///
+    /// The platform reports the adapter once, when it sets the GPU
+    /// presentation path up, and only when the window was opened with a
+    /// handle in its options. A window on the CPU renderer reports `None`,
+    /// which is how a reader tells a GPU window from a CPU one.
+    #[cfg(feature = "gpu")]
+    pub fn adapter(&self) -> Option<crate::AdapterSummary> {
+        self.adapter.borrow().clone()
+    }
+
+    /// Reports the adapter of the GPU presentation path.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn set_adapter(&self, adapter: crate::AdapterSummary) {
+        *self.adapter.borrow_mut() = Some(adapter);
     }
 }
 
