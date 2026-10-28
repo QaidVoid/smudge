@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Smudge">
+  <defs>
+    <linearGradient id="smudge-stroke" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#9fe000"/>
+      <stop offset="0.55" stop-color="#d4ff3f"/>
+      <stop offset="1" stop-color="#f1ffb0"/>
+    </linearGradient>
+    <pattern id="smudge-pixels" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect x="3" y="3" width="2" height="2" fill="#ffffff" fill-opacity="0.08"/>
+    </pattern>
+    <clipPath id="smudge-tile">
+      <rect width="128" height="128" rx="30"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#smudge-tile)">
+    <rect width="128" height="128" fill="#14161b"/>
+    <rect width="128" height="128" fill="url(#smudge-pixels)"/>
+    <rect x="24" y="30" width="80" height="68" rx="7" fill="#d4ff3f" fill-opacity="0.07"/>
+    <rect x="24" y="30" width="80" height="68" rx="7" fill="none" stroke="#d4ff3f"
+      stroke-opacity="0.6" stroke-width="3" stroke-dasharray="8 6"/>
+    <path d="M40 80 Q 56 50 70 64 T 90 46" fill="none" stroke="url(#smudge-stroke)"
+      stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M47 86 Q 60 66 72 76" fill="none" stroke="#d4ff3f" stroke-opacity="0.35"
+      stroke-width="5" stroke-linecap="round"/>
+  </g>
+  <rect x="1" y="1" width="126" height="126" rx="29" fill="none" stroke="#ffffff"
+    stroke-opacity="0.08" stroke-width="2"/>
+</svg>
