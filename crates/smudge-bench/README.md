@@ -77,8 +77,12 @@ Each line is one JSON object, and `type` says which:
   are `null`.
 - `repeat_summary`: percentile objects (`median`, `p95`, `p99`, nearest-rank)
   for the total, each phase, and the latency when the scene measures it,
-  plus the peak RSS and process CPU time at the start and end of the repeat,
-  read from `/proc` on Linux and `null` elsewhere. The same boundaries carry
+  plus the peak RSS and process CPU time just before the repeat's first
+  warmup frame and just after its last frame, read from `/proc` on Linux and
+  `null` elsewhere. A headless repeat creates its renderer before the first
+  sample, so a GPU renderer's pipeline compilation is not charged to the
+  frames. A window repeat's start sample follows its first warmup frame,
+  so it counts one frame less than a headless repeat. The same boundaries carry
   the machine's one-minute load average (`load1_start`, `load1_end`). Across
   the repeat, `busy_share` is the share of processor time the whole machine
   spent busy, and `other_busy_share` the share it spent busy on everything

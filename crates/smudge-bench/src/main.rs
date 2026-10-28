@@ -223,18 +223,10 @@ fn main() -> ExitCode {
             let mut runs = Vec::with_capacity(args.repeats as usize);
             let mut adapter = None;
             for repeat in 0..args.repeats {
-                let start = process::sample();
-                let machine_start = process::machine_sample();
                 match run_headless(&args, repeat) {
-                    Ok((records, run_adapter)) => {
+                    Ok((run, run_adapter)) => {
                         adapter = adapter.or(run_adapter);
-                        runs.push(RepeatRun {
-                            records,
-                            start,
-                            machine_start,
-                            end: process::sample(),
-                            machine_end: process::machine_sample(),
-                        });
+                        runs.push(run);
                     }
                     Err(message) => {
                         eprintln!("smudge-bench: {message}");
@@ -469,13 +461,13 @@ fn parse_count(flag: &str, value: &str) -> Result<u32, String> {
 struct RepeatRun {
     /// The repeat's measured frames.
     records: Vec<FrameRecord>,
-    /// The process metrics when the repeat began.
+    /// The process metrics just before the repeat's first warmup frame.
     start: Sample,
-    /// The process metrics when the repeat ended.
+    /// The process metrics just after the repeat's last frame.
     end: Sample,
-    /// The machine's load and processor counters when the repeat began.
+    /// The machine's load and processor counters next to [`RepeatRun::start`].
     machine_start: MachineSample,
-    /// The machine's load and processor counters when the repeat ended.
+    /// The machine's load and processor counters next to [`RepeatRun::end`].
     machine_end: MachineSample,
 }
 
@@ -486,10 +478,12 @@ struct RepeatRun {
 /// through the app, exactly as the window backend does. The adapter the
 /// renderer draws on is reported alongside the frames, since a run with a GPU
 /// renderer drew every repeat on the same one.
-fn run_headless(
-    args: &Args,
-    repeat: u32,
-) -> Result<(Vec<FrameRecord>, Option<AdapterRecord>), String> {
+///
+/// The process and machine samples bracket the warmup and measured frames
+/// only. Creating a GPU renderer compiles its pipelines, which cost a
+/// discrete GPU's driver about a second and a half of processor time per
+/// repeat, so samples taken around the setup would charge it to the frames.
+fn run_headless(args: &Args, repeat: u32) -> Result<(RepeatRun, Option<AdapterRecord>), String> {
     let scene = args.scene;
     let (build, driver) = scene.mount();
     let mut app = App::new(app_config(args), build);
@@ -502,6 +496,8 @@ fn run_headless(
     renderer.render(&output);
     let warmup = u64::from(args.warmup);
     let mut records = Vec::with_capacity(args.frames as usize);
+    let start = process::sample();
+    let machine_start = process::machine_sample();
     for index in 0..warmup + u64::from(args.frames) {
         scene.step(&driver, &mut app, index);
         let allocations_before = allocations::count();
@@ -528,7 +524,14 @@ fn run_headless(
             });
         }
     }
-    Ok((records, adapter))
+    let run = RepeatRun {
+        records,
+        start,
+        machine_start,
+        end: process::sample(),
+        machine_end: process::machine_sample(),
+    };
+    Ok((run, adapter))
 }
 
 /// Builds the renderer the headless backend draws with, and the adapter it
