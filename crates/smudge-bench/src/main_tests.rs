@@ -8,6 +8,8 @@ fn machine(busy: u64, total: u64) -> MachineSample {
         load1: None,
         busy_ticks: Some(busy),
         total_ticks: Some(total),
+        package_energy_uj: None,
+        package_energy_range_uj: None,
     }
 }
 

@@ -50,16 +50,84 @@ pub(crate) struct MachineSample {
     pub busy_ticks: Option<u64>,
     /// The processor ticks spent on anything since boot, from `/proc/stat`.
     pub total_ticks: Option<u64>,
+    /// The processor package's energy counter since boot, in microjoules,
+    /// from the kernel's RAPL powercap zone.
+    pub package_energy_uj: Option<u64>,
+    /// The counter value at which [`MachineSample::package_energy_uj`]
+    /// wraps back to zero, in microjoules.
+    pub package_energy_range_uj: Option<u64>,
 }
 
 /// Reads the machine's load and processor counters.
 pub(crate) fn machine_sample() -> MachineSample {
     let ticks = cpu_ticks();
+    let energy = package_energy();
     MachineSample {
         load1: load1(),
         busy_ticks: ticks.map(|(busy, _)| busy),
         total_ticks: ticks.map(|(_, total)| total),
+        package_energy_uj: energy.0,
+        package_energy_range_uj: energy.1,
     }
+}
+
+/// Returns the energy the package used between two readings, in microjoules.
+///
+/// The counter wraps at `range`, so an end below the start is one wrap and
+/// the reading spans the range's top. A repeat that crossed the range twice
+/// would underreport as one wrap, which repeats of a few seconds do not
+/// reach against a range of tens of kilojoules. A missing reading, a zero
+/// range or a start beyond the range gives `None`.
+pub(crate) fn package_energy_between(
+    start: Option<u64>,
+    end: Option<u64>,
+    range: Option<u64>,
+) -> Option<u64> {
+    let range = range?;
+    let start = start?;
+    let end = end?;
+    if range == 0 || start > range || end > range {
+        return None;
+    }
+    if end >= start {
+        return Some(end - start);
+    }
+    range.checked_sub(start)?.checked_add(end)
+}
+
+/// The powercap zone whose counter [`package_energy`] reads.
+///
+/// Zone 0 of the kernel's RAPL driver is the whole processor package, the
+/// integrated GPU of a package sharing one. On machines the driver does not
+/// cover, or where this user may not read the counter, the reading is
+/// `None`.
+const PACKAGE_ENERGY_ZONE: &str = "/sys/class/powercap/intel-rapl:0";
+
+/// Returns the package energy counter and its wrap range, in microjoules.
+///
+/// The counter covers the whole package, so other processes' draw is in it
+/// too, and wraps at the range the kernel reports beside it.
+fn package_energy() -> (Option<u64>, Option<u64>) {
+    // A top-level RAPL zone names itself `package-<n>`; its subzones count
+    // one domain only, such as the cores, and must not pass for the package.
+    if let Ok(name) = std::fs::read_to_string(format!("{PACKAGE_ENERGY_ZONE}/name"))
+        && !name.starts_with("package")
+    {
+        return (None, None);
+    }
+    (
+        read_zone_uj("energy_uj"),
+        read_zone_uj("max_energy_range_uj"),
+    )
+}
+
+/// Reads one microjoule counter out of [`PACKAGE_ENERGY_ZONE`].
+fn read_zone_uj(file: &str) -> Option<u64> {
+    std::fs::read_to_string(format!("{PACKAGE_ENERGY_ZONE}/{file}"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Returns the one-minute load average from `/proc/loadavg`.

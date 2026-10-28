@@ -1,6 +1,6 @@
-//! Tests for the `/proc` parsers behind the machine samples.
+//! Tests for the `/proc` and powercap parsers behind the machine samples.
 
-use super::{machine_sample, parse_cpu_ticks, parse_load1};
+use super::{machine_sample, package_energy_between, parse_cpu_ticks, parse_load1};
 
 #[test]
 fn load1_reads_the_first_number() {
@@ -56,4 +56,51 @@ fn machine_sample_reads_the_running_kernel() {
     assert!(sample.load1.unwrap_or_default() >= 0.0);
     assert!(sample.total_ticks.unwrap_or_default() > 0);
     assert!(sample.busy_ticks.unwrap_or_default() <= sample.total_ticks.unwrap_or_default());
+    // A counter that exists always reports the range it wraps at.
+    if sample.package_energy_uj.is_some() {
+        assert!(sample.package_energy_range_uj.unwrap_or_default() > 0);
+    }
+}
+
+#[test]
+fn package_energy_between_subtracts_without_a_wrap() {
+    assert_eq!(
+        package_energy_between(Some(100), Some(250), Some(1_000)),
+        Some(150)
+    );
+}
+
+#[test]
+fn package_energy_between_spans_the_range_on_one_wrap() {
+    // The counter ran from 900 past 1000, wrapped to 0 and ended at 100:
+    // 100 microjoules up to the top, 100 from the bottom.
+    assert_eq!(
+        package_energy_between(Some(900), Some(100), Some(1_000)),
+        Some(200)
+    );
+}
+
+#[test]
+fn package_energy_between_takes_an_unchanged_counter_as_no_energy() {
+    assert_eq!(
+        package_energy_between(Some(500), Some(500), Some(1_000)),
+        Some(0)
+    );
+}
+
+#[test]
+fn package_energy_between_needs_both_readings_and_a_range() {
+    assert_eq!(package_energy_between(None, Some(100), Some(1_000)), None);
+    assert_eq!(package_energy_between(Some(100), None, Some(1_000)), None);
+    assert_eq!(package_energy_between(Some(100), Some(200), None), None);
+}
+
+#[test]
+fn package_energy_between_rejects_a_useless_range() {
+    assert_eq!(package_energy_between(Some(100), Some(200), Some(0)), None);
+    // A start beyond the range is a counter this arithmetic cannot trust.
+    assert_eq!(
+        package_energy_between(Some(2_000), Some(2_100), Some(1_000)),
+        None
+    );
 }

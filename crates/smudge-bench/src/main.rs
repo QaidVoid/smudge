@@ -30,7 +30,7 @@ use smudge_platform::{
     WindowOptions, run_with,
 };
 
-use crate::process::{MachineSample, Sample};
+use crate::process::{MachineSample, Sample, package_energy_between};
 use crate::scenes::Scene;
 use crate::stats::Percentiles;
 
@@ -280,6 +280,14 @@ fn main() -> ExitCode {
     }
 
     let mut all_records = Vec::with_capacity(args.repeats as usize);
+    // The frames whose work lies between a repeat's two samples. The headless
+    // samples bracket the warmup and the measured frames; the window's start
+    // sample follows its first frame, as with the process samples, so its
+    // span holds one frame less.
+    let span_frames = match args.backend {
+        Backend::Headless => u64::from(args.warmup) + u64::from(args.frames),
+        Backend::Window => u64::from(args.warmup) + u64::from(args.frames) - 1,
+    };
     for (repeat, run) in repeat_runs.into_iter().enumerate() {
         let repeat = repeat as u32;
         if run.records.len() != args.frames as usize {
@@ -298,6 +306,7 @@ fn main() -> ExitCode {
         let line = repeat_summary_line(
             repeat,
             &run.records,
+            span_frames,
             run.start,
             run.end,
             run.machine_start,
@@ -823,21 +832,35 @@ fn frame_line(record: &FrameRecord) -> String {
 /// at the repeat's boundaries, the share of the repeat the whole machine
 /// spent busy, and the share it spent busy on everything but this process.
 /// The last is what a contaminated repeat shows in: the bench's own threads,
-/// a software rasterizer's included, count only in the first share.
+/// a software rasterizer's included, count only in the first share. The
+/// package energy read at the same two boundaries gives the energy of the
+/// span and, over the frames it covers, the energy per frame.
 fn repeat_summary_line(
     repeat: u32,
     records: &[FrameRecord],
+    span_frames: u64,
     start: Sample,
     end: Sample,
     machine_start: MachineSample,
     machine_end: MachineSample,
 ) -> String {
+    let energy = package_energy_between(
+        machine_start.package_energy_uj,
+        machine_end.package_energy_uj,
+        machine_start
+            .package_energy_range_uj
+            .or(machine_end.package_energy_range_uj),
+    );
+    let energy_per_frame = energy
+        .filter(|_| span_frames > 0)
+        .map(|energy| energy as f64 / span_frames as f64);
     format!(
         concat!(
             r#"{{"type":"repeat_summary","repeat":{},"frames":{},"#,
             r#""peak_rss_kb_start":{},"peak_rss_kb_end":{},"#,
             r#""cpu_time_s_start":{},"cpu_time_s_end":{},"#,
-            r#""load1_start":{},"load1_end":{},"busy_share":{},"other_busy_share":{},{}}}"#
+            r#""load1_start":{},"load1_end":{},"busy_share":{},"other_busy_share":{},"#,
+            r#""package_energy_uj":{},"energy_per_frame_uj":{},{}}}"#
         ),
         repeat,
         records.len(),
@@ -853,6 +876,8 @@ fn repeat_summary_line(
             machine_end,
             ticks
         ))),
+        json_opt_u64(energy),
+        json_opt_f64(energy_per_frame),
         percentile_columns(records),
     )
 }

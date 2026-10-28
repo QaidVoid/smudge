@@ -89,6 +89,20 @@ Each line is one JSON object, and `type` says which:
   but this process, which is the one that shows a contaminated run. Both
   come from `/proc/stat` with busy counted as everything but idle and
   iowait, and all of them are `null` where `/proc` is missing.
+- `package_energy_uj` and `energy_per_frame_uj` sit in the repeat summary
+  too, read from the kernel's RAPL powercap zone for the whole processor
+  package at the same two boundaries as the process samples. The energy is
+  the whole package over the span the samples cover: the integrated GPU of
+  the package and every other process included, so the machine's idle draw
+  is in the number. A discrete GPU and the monitor are not. Attributing energy to the frames
+  means subtracting the idle power times the span's wall time, and checking
+  `other_busy_share` first. `energy_per_frame_uj` divides the span's energy
+  by the frames it covers, warmup included, which is one frame less than a
+  headless repeat's frames plus warmup on the window backend. The counter
+  wraps at the range the kernel reports beside it, which the reader handles
+  once; a wrap that crosses the range twice cannot be detected and would
+  underreport. Both fields are `null` where the machine exposes no readable
+  package counter.
 - `summary`: the same percentiles pooled across all repeats.
 
 Allocations are counted by a global counting allocator in this binary only.
