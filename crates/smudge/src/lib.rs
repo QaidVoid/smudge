@@ -82,6 +82,9 @@
 //!   `crates/smudge-platform/examples/web` holds a buildable web example.
 //! - **Accessibility:** the AccessKit projection runs on desktop only. The
 //!   web target has no accessibility backend in this version.
+//! - **Text:** Chinese, Japanese, Thai, Lao, Khmer and Burmese break by word
+//!   only with the `complex-scripts` feature, which compiles in the break
+//!   dictionaries at about 3 MB per binary.
 
 pub mod prelude;
 

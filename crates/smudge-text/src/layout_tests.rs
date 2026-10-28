@@ -83,3 +83,19 @@ fn any_rebreak_sequence_matches_a_fresh_layout() {
         prop_assert_eq!(glyph_positions(&rebroken), glyph_positions(&fresh));
     });
 }
+
+/// Thai puts no spaces between words, so it can only wrap where the break
+/// dictionary finds a word boundary.
+#[cfg(feature = "complex-scripts")]
+#[test]
+fn thai_without_spaces_wraps_between_words() {
+    setup();
+    let style = TextStyle::default();
+    let text = "ภาษาไทยเป็นภาษาที่ไม่มีการเว้นวรรคระหว่างคำ";
+    let width = TextLayout::new(text, &style, None).size().width;
+
+    let wrapped = TextLayout::new(text, &style, Some(width / 3.0));
+
+    assert!(wrapped.line_count() > 1);
+    assert!(wrapped.size().width <= width / 3.0);
+}

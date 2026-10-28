@@ -9,6 +9,14 @@
 //! installed on the host. System font discovery is opt-in through the
 //! `system-fonts` feature and is unavailable on wasm.
 //!
+//! Without the `complex-scripts` feature, line and word breaks follow the
+//! Unicode rules alone. Chinese and Japanese still wrap between characters,
+//! but word selection treats each Han character as a word, and Thai, Lao,
+//! Khmer and Burmese, which put no spaces between words, wrap only at
+//! spaces. The feature compiles in the break dictionaries for those scripts,
+//! at about 3 MB per binary and about 5 percent more layout time for other
+//! text.
+//!
 //! ```
 //! use smudge_text::{TextLayout, TextSystem, TextStyle};
 //!

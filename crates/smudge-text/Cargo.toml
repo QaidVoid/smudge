@@ -15,6 +15,11 @@ bundled-fonts = []
 # wasm, which has no system fonts. Fontconfig is loaded at runtime through
 # dlopen, so building needs no fontconfig development files.
 system-fonts = ["parley/system", "fontique/fontconfig-dlopen"]
+# Compiles in the word and line break dictionaries for Chinese, Japanese,
+# Thai, Lao, Khmer and Burmese, so text in scripts without spaces between
+# words wraps and selects by word. It adds about 3 MB to every binary and
+# about 5 percent to the layout of other text, so it is off by default.
+complex-scripts = ["parley/complex-scripts"]
 
 [dependencies]
 fontique = { version = "0.12.0", default-features = false }

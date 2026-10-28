@@ -24,6 +24,9 @@ window = ["dep:smudge-platform"]
 # The vello-based GPU renderer, with the window's GPU presentation path, so a
 # window can choose or auto-detect it.
 gpu = ["window", "dep:smudge-gpu", "smudge-platform/gpu"]
+# Word and line break dictionaries for scripts without spaces between words,
+# as the feature of the same name in the text crate describes.
+complex-scripts = ["smudge-text/complex-scripts"]
 
 [package.metadata.docs.rs]
 all-features = true
