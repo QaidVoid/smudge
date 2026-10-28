@@ -2,12 +2,12 @@
 //! damaged rectangles of each one.
 
 use smudge_core::app::FrameOutput;
-use smudge_core::geometry::PixelRect;
+use smudge_core::geometry::{PixelRect, Point};
 use smudge_core::paint::DisplayItem;
 use smudge_core::renderer::Renderer;
 use tiny_skia::Pixmap;
 
-use crate::draw::{Canvas, PlannedOp, RasterPlan, for_each_op};
+use crate::draw::{Canvas, PlannedOp, RasterPlan, Surface, for_each_op};
 use crate::glyph_cache::GlyphCache;
 
 /// A renderer that keeps a premultiplied RGBA surface between frames and
@@ -134,7 +134,14 @@ impl CpuRenderer {
             [rect] => {
                 // One rectangle repaints in a single walk, without collecting
                 // the operations first.
-                paint_single(&mut canvas, &mut self.plan.clips, frame, *rect, height);
+                paint_single(
+                    &mut canvas,
+                    &mut self.plan.clips,
+                    &mut self.plan.offsets,
+                    frame,
+                    *rect,
+                    height,
+                );
             }
             damage => {
                 self.plan
@@ -206,7 +213,7 @@ fn paint_rect(
             let DisplayItem::Op(op) = &items[planned.index] else {
                 unreachable!("a planned index is an operation item");
             };
-            canvas.draw(op, part);
+            canvas.draw(op, part, planned.offset);
         }
     }
 }
@@ -216,6 +223,7 @@ fn paint_rect(
 fn paint_single(
     canvas: &mut Canvas<'_>,
     clips: &mut Vec<Option<PixelRect>>,
+    offsets: &mut Vec<Point>,
     frame: &FrameOutput<'_>,
     rect: PixelRect,
     height: u32,
@@ -225,12 +233,15 @@ fn paint_single(
     let scale = frame.scale;
     let items = frame.list.items();
     for_each_op(
-        |_, op, area| canvas.draw(op, area),
+        |_, op, area, offset| canvas.draw(op, area, offset),
         clips,
+        offsets,
         items,
-        scale,
-        width,
-        height,
+        Surface {
+            scale,
+            width,
+            height,
+        },
         rect,
     );
 }

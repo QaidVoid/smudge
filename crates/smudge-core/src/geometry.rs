@@ -114,6 +114,16 @@ impl Rect {
             && point.y <= self.y1
     }
 
+    /// Returns the rectangle moved by `by`.
+    pub fn translated(self, by: Point) -> Rect {
+        Rect::new(
+            self.x0 + by.x,
+            self.y0 + by.y,
+            self.x1 + by.x,
+            self.y1 + by.y,
+        )
+    }
+
     /// Returns the part of the rectangle that overlaps `other`.
     ///
     /// The result is empty when the two do not overlap or when either operand

@@ -23,6 +23,8 @@ pub(crate) struct Encoder {
     fonts: HashMap<(u64, u32), Option<FontData>>,
     /// Scratch for the outline of a border ring, reused across operations.
     ring: BezPath,
+    /// The transform of each open offset scope, reused across frames.
+    offsets: Vec<Affine>,
 }
 
 impl Encoder {
@@ -32,6 +34,7 @@ impl Encoder {
             scene: Scene::new(),
             fonts: HashMap::new(),
             ring: BezPath::new(),
+            offsets: Vec::new(),
         }
     }
 
@@ -44,25 +47,41 @@ impl Encoder {
         // so the depth is tracked here and leftover clips are closed before
         // rendering.
         let mut depth = 0usize;
+        // The translation the offset scopes around an item apply to it, which
+        // composes with the scale instead of costing a layer per scope.
+        let mut offset = Affine::IDENTITY;
+        self.offsets.clear();
         for item in frame.list.items() {
             match item {
                 DisplayItem::Op(op) => encode_op(
                     &mut self.scene,
                     &mut self.fonts,
                     &mut self.ring,
-                    transform,
+                    transform * offset,
                     op,
                 ),
                 DisplayItem::PushClip(rect) => {
                     depth += 1;
-                    self.scene
-                        .push_clip_layer(Fill::NonZero, transform, &kurbo_rect(*rect));
+                    self.scene.push_clip_layer(
+                        Fill::NonZero,
+                        transform * offset,
+                        &kurbo_rect(*rect),
+                    );
                 }
                 DisplayItem::PopClip => {
                     if depth > 0 {
                         depth -= 1;
                         self.scene.pop_layer();
                     }
+                }
+                DisplayItem::PushOffset(delta) => {
+                    self.offsets.push(offset);
+                    offset *= Affine::translate((f64::from(delta.x), f64::from(delta.y)));
+                }
+                DisplayItem::PopOffset => {
+                    // A stray pop in a release build keeps the offset it has,
+                    // as with clips.
+                    offset = self.offsets.pop().unwrap_or(offset);
                 }
             }
         }
@@ -79,7 +98,8 @@ impl Encoder {
 
 /// Encodes one paint operation.
 ///
-/// The transform scales logical coordinates to physical pixels.
+/// The transform scales logical coordinates to physical pixels and carries
+/// the translation of the offset scopes around the operation.
 fn encode_op(
     scene: &mut Scene,
     fonts: &mut HashMap<(u64, u32), Option<FontData>>,

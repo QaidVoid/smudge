@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use smudge_core::app::{App, AppConfig, FrameOutput, RepaintMode};
-use smudge_core::geometry::{Color, Corners, Rect, Size};
+use smudge_core::geometry::{Color, Corners, Point, Rect, Size};
 use smudge_core::paint::{DisplayList, FontBlob, GlyphRun, PaintOp, PositionedGlyph};
 use smudge_core::renderer::Renderer;
 use smudge_cpu::CpuRenderer;
@@ -132,6 +132,136 @@ fn a_pushed_clip_limits_what_after_it_draws() {
     let pixels = renderer.read_pixels();
     assert_eq!(pixel_at(&pixels, 8, 32), [200, 30, 40, 255]);
     assert_eq!(pixel_at(&pixels, 32, 32), [255, 255, 255, 255]);
+}
+
+#[test]
+fn an_offset_moves_what_after_it_draws() {
+    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+        eprintln!("skipping: no GPU adapter available for the headless renderer");
+        return;
+    };
+    let mut list = DisplayList::new();
+    list.push_offset(Point { x: 16.0, y: 8.0 });
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(8.0, 8.0, 32.0, 32.0),
+        radius: Corners::ZERO,
+        color: Color::rgb(200, 30, 40),
+    });
+    list.pop_offset();
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(48.0, 48.0, 64.0, 64.0),
+        radius: Corners::ZERO,
+        color: Color::rgb(30, 40, 200),
+    });
+    list.finish();
+    let mut renderer = GpuRenderer::headless(SIZE, SIZE)
+        .unwrap_or_else(|| panic!("the GPU adapter disappeared between tests"));
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &[],
+        full: true,
+        clear_color: Color::WHITE,
+        scale: 1.0,
+    });
+    let pixels = renderer.read_pixels();
+    assert_eq!(pixel_at(&pixels, 24, 24), [200, 30, 40, 255]);
+    assert_eq!(pixel_at(&pixels, 55, 55), [30, 40, 200, 255]);
+    assert_eq!(
+        pixel_at(&pixels, 8, 24),
+        [255, 255, 255, 255],
+        "left of the moved fill"
+    );
+    assert_eq!(
+        pixel_at(&pixels, 47, 55),
+        [255, 255, 255, 255],
+        "left of the unmoved fill"
+    );
+}
+
+#[test]
+fn an_offset_is_in_logical_pixels_at_any_scale() {
+    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+        eprintln!("skipping: no GPU adapter available for the headless renderer");
+        return;
+    };
+    let mut list = DisplayList::new();
+    list.push_offset(Point { x: 10.0, y: 6.0 });
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(2.0, 2.0, 8.0, 8.0),
+        radius: Corners::ZERO,
+        color: Color::rgb(200, 30, 40),
+    });
+    list.pop_offset();
+    list.finish();
+    let mut renderer = GpuRenderer::headless(SIZE, SIZE)
+        .unwrap_or_else(|| panic!("the GPU adapter disappeared between tests"));
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &[],
+        full: true,
+        clear_color: Color::WHITE,
+        scale: 2.0,
+    });
+    let pixels = renderer.read_pixels();
+    // The fill lands at (12, 8) to (18, 14) logical, 24 to 36 by 16 to 28
+    // physical. An offset applied after the scale would put it at 14 to 26
+    // by 10 to 22.
+    assert_eq!(pixel_at(&pixels, 34, 26), [200, 30, 40, 255]);
+    assert_eq!(
+        pixel_at(&pixels, 16, 12),
+        [255, 255, 255, 255],
+        "where an offset in physical pixels would have put the fill"
+    );
+}
+
+#[test]
+fn a_clip_under_an_offset_clips_where_the_offset_puts_it() {
+    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+        eprintln!("skipping: no GPU adapter available for the headless renderer");
+        return;
+    };
+    let mut list = DisplayList::new();
+    list.push_offset(Point { x: 8.0, y: 8.0 });
+    list.push_clip(Rect::new(0.0, 0.0, 16.0, 56.0));
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(0.0, 0.0, 64.0, 64.0),
+        radius: Corners::ZERO,
+        color: Color::rgb(200, 30, 40),
+    });
+    list.pop_clip();
+    list.pop_offset();
+    list.finish();
+    let mut renderer = GpuRenderer::headless(SIZE, SIZE)
+        .unwrap_or_else(|| panic!("the GPU adapter disappeared between tests"));
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &[],
+        full: true,
+        clear_color: Color::WHITE,
+        scale: 1.0,
+    });
+    let pixels = renderer.read_pixels();
+    assert_eq!(pixel_at(&pixels, 12, 32), [200, 30, 40, 255]);
+    assert_eq!(
+        pixel_at(&pixels, 24, 32),
+        [255, 255, 255, 255],
+        "right of the moved clip"
+    );
+    assert_eq!(
+        pixel_at(&pixels, 8, 8),
+        [200, 30, 40, 255],
+        "the moved clip's first pixel"
+    );
+    assert_eq!(
+        pixel_at(&pixels, 8, 7),
+        [255, 255, 255, 255],
+        "above the moved clip"
+    );
+    assert_eq!(
+        pixel_at(&pixels, 7, 32),
+        [255, 255, 255, 255],
+        "left of the moved clip"
+    );
 }
 
 /// The smallest box, in physical pixels, holding every pixel of a white

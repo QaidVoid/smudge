@@ -3,6 +3,7 @@
 //! The renderer replays a display list on a GPU through [vello], always
 //! redrawing the whole surface. It presents the same operations as the CPU
 //! renderer, so both backends can draw one display list interchangeably.
+//! Offset scopes in the display list move the operations and clips they wrap.
 
 mod encoder;
 mod renderer;

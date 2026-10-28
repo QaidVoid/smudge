@@ -9,7 +9,7 @@
 
 use std::ops::Range;
 
-use smudge_core::geometry::{Color, Corners, PixelRect, Rect};
+use smudge_core::geometry::{Color, Corners, PixelRect, Point, Rect};
 use smudge_core::paint::{DisplayItem, GlyphRun, PaintOp};
 
 use crate::glyph_cache::{GlyphCache, MAX_GLYPH_SIZE, MaskKey};
@@ -23,44 +23,69 @@ use crate::glyph_cache::{GlyphCache, MAX_GLYPH_SIZE, MaskKey};
 /// to the clip, because a crafted font's bearing has no useful bound.
 const PLACEMENT_LIMIT: f32 = 1.0e9;
 
+/// The surface a display list walk converts logical coordinates against.
+#[derive(Copy, Clone)]
+pub(crate) struct Surface {
+    /// Physical pixels per logical pixel.
+    pub(crate) scale: f32,
+    /// The surface width in physical pixels.
+    pub(crate) width: u32,
+    /// The surface height in physical pixels.
+    pub(crate) height: u32,
+}
+
 /// Walks `items` in paint order under `root`, calling `on_op` for every
-/// drawable operation with the physical pixels it can change.
+/// drawable operation with the physical pixels it can change and the logical
+/// offset the operation is drawn at.
 ///
 /// `root` is the rectangle the walk repaints, usually a damage rectangle or
 /// the whole surface: every area handed over lies inside it. Each operation's
 /// area is its [`PaintOp::bounds`] in physical pixels, intersected with every
 /// clip around it and clamped to the surface, so an operation outside `root`,
 /// outside the surface, or under an empty clip draws nothing and is never
-/// handed over. The walk visits clips and operations once, in list order, so a
-/// caller pays one bounds conversion per operation however many rectangles it
-/// repaints.
+/// handed over. An offset scope moves the operations and the clips it wraps,
+/// and the offsets it sits inside stack up. The walk visits clips, offsets and
+/// operations once, in list order, so a caller pays one bounds conversion per
+/// operation however many rectangles it repaints.
 pub(crate) fn for_each_op(
-    mut on_op: impl FnMut(usize, &PaintOp, PixelRect),
+    mut on_op: impl FnMut(usize, &PaintOp, PixelRect, Point),
     clips: &mut Vec<Option<PixelRect>>,
+    offsets: &mut Vec<Point>,
     items: &[DisplayItem],
-    scale: f32,
-    width: u32,
-    height: u32,
+    surface: Surface,
     root: PixelRect,
 ) {
     clips.clear();
     clips.push(Some(root));
-    // The clip that operations see, always the top of `clips`.
+    offsets.clear();
+    // The clip that operations see, always the top of `clips`, and the offset
+    // operations and clips are translated by, the sum of the open scopes.
     let mut current = Some(root);
+    let mut offset = Point::default();
     for (index, item) in items.iter().enumerate() {
         match item {
             DisplayItem::Op(op) => {
                 if let Some(clip) = current
-                    && let Some(area) = PixelRect::from_logical(op.bounds(), scale, width, height)
-                        .and_then(|area| area.intersect(clip))
+                    && let Some(area) = PixelRect::from_logical(
+                        op.bounds().translated(offset),
+                        surface.scale,
+                        surface.width,
+                        surface.height,
+                    )
+                    .and_then(|area| area.intersect(clip))
                 {
-                    on_op(index, op, area);
+                    on_op(index, op, area, offset);
                 }
             }
             DisplayItem::PushClip(rect) => {
                 let inner = current.and_then(|outer| {
-                    PixelRect::from_logical(*rect, scale, width, height)
-                        .and_then(|inner| inner.intersect(outer))
+                    PixelRect::from_logical(
+                        rect.translated(offset),
+                        surface.scale,
+                        surface.width,
+                        surface.height,
+                    )
+                    .and_then(|inner| inner.intersect(outer))
                 });
                 clips.push(inner);
                 current = inner;
@@ -72,6 +97,17 @@ pub(crate) fn for_each_op(
                     clips.pop();
                     current = clips.last().copied().flatten();
                 }
+            }
+            DisplayItem::PushOffset(delta) => {
+                offsets.push(offset);
+                offset = Point {
+                    x: offset.x + delta.x,
+                    y: offset.y + delta.y,
+                };
+            }
+            DisplayItem::PopOffset => {
+                // An unbalanced list keeps the offset it has, as with clips.
+                offset = offsets.pop().unwrap_or(offset);
             }
         }
     }
@@ -85,6 +121,9 @@ pub(crate) struct PlannedOp {
     /// The physical pixels the operation can change, already intersected with
     /// every clip around it and clamped to the surface.
     pub(crate) area: PixelRect,
+    /// The logical offset the operation's geometry is drawn at, the sum of
+    /// the offset scopes around it.
+    pub(crate) offset: Point,
 }
 
 /// A display list's drawable operations with the pixels each can change,
@@ -103,6 +142,8 @@ pub(crate) struct RasterPlan {
     ops: Vec<PlannedOp>,
     /// The clip stack scratch of the walk, reused between builds and walks.
     pub(crate) clips: Vec<Option<PixelRect>>,
+    /// The offset stack scratch of the walk, reused between builds and walks.
+    pub(crate) offsets: Vec<Point>,
 }
 
 impl RasterPlan {
@@ -111,6 +152,7 @@ impl RasterPlan {
         RasterPlan {
             ops: Vec::new(),
             clips: Vec::new(),
+            offsets: Vec::new(),
         }
     }
 
@@ -122,12 +164,21 @@ impl RasterPlan {
     pub(crate) fn build(&mut self, items: &[DisplayItem], scale: f32, width: u32, height: u32) {
         self.ops.clear();
         for_each_op(
-            |index, _op, area| self.ops.push(PlannedOp { index, area }),
+            |index, _op, area, offset| {
+                self.ops.push(PlannedOp {
+                    index,
+                    area,
+                    offset,
+                })
+            },
             &mut self.clips,
+            &mut self.offsets,
             items,
-            scale,
-            width,
-            height,
+            Surface {
+                scale,
+                width,
+                height,
+            },
             PixelRect {
                 x: 0,
                 y: 0,
@@ -174,14 +225,18 @@ impl Canvas<'_> {
 
     /// Draws `op` into `area`, the part of the operation's bounds inside the
     /// clip and the rectangle being repainted.
-    pub(crate) fn draw(&mut self, op: &PaintOp, area: PixelRect) {
+    ///
+    /// `offset` is the logical translation the offset scopes around the
+    /// operation apply to it: the operation's geometry is drawn moved by it,
+    /// while `area` is where the moved operation can land.
+    pub(crate) fn draw(&mut self, op: &PaintOp, area: PixelRect, offset: Point) {
         match *op {
             PaintOp::FillRect {
                 rect,
                 radius,
                 color,
             } => {
-                if let Some(shape) = Shape::new(rect, radius, self.scale) {
+                if let Some(shape) = Shape::new(rect.translated(offset), radius, self.scale) {
                     self.fill(
                         area,
                         color,
@@ -199,7 +254,7 @@ impl Canvas<'_> {
                 if !width.is_finite() || width <= 0.0 {
                     return;
                 }
-                let Some(outer) = Shape::new(rect, radius, self.scale) else {
+                let Some(outer) = Shape::new(rect.translated(offset), radius, self.scale) else {
                     return;
                 };
                 match outer.inset(width * self.scale) {
@@ -217,12 +272,13 @@ impl Canvas<'_> {
                     ),
                 }
             }
-            PaintOp::Glyphs(ref run) => self.draw_glyphs(run.as_ref(), area),
+            PaintOp::Glyphs(ref run) => self.draw_glyphs(run.as_ref(), area, offset),
         }
     }
 
     /// Blits every glyph of `run` that reaches into `area`, the part of the
-    /// run's ink bounds inside the clip.
+    /// run's ink bounds inside the clip, with the run drawn moved by the
+    /// logical `offset`.
     ///
     /// Each glyph is drawn from its cached alpha mask at its own physical
     /// position. A glyph's mask depends on the glyph, its quantized size and
@@ -235,7 +291,7 @@ impl Canvas<'_> {
     /// [`MAX_GLYPH_SIZE`] physical pixels, or whose origin lies more than
     /// [`PLACEMENT_LIMIT`] physical pixels from the surface origin draws
     /// nothing.
-    fn draw_glyphs(&mut self, run: &GlyphRun, area: PixelRect) {
+    fn draw_glyphs(&mut self, run: &GlyphRun, area: PixelRect, offset: Point) {
         let size_px = run.size * self.scale;
         if !run.size.is_finite()
             || run.size <= 0.0
@@ -259,9 +315,11 @@ impl Canvas<'_> {
             ..
         } = self;
         let scale = *scale;
+        let shift_x = offset.x * scale;
+        let shift_y = offset.y * scale;
         for glyph in &run.glyphs {
-            let x = glyph.x * scale;
-            let y = (glyph.y * scale).round();
+            let x = glyph.x * scale + shift_x;
+            let y = (glyph.y * scale + shift_y).round();
             // Only positions far past any surface are skipped, so the integer
             // placement below cannot overflow. A bearing is not bounded by
             // the mask size, so nothing closer may be skipped, and the clip to

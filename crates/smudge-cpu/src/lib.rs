@@ -5,7 +5,8 @@
 //! survives between frames, so untouched pixels cost nothing. Each damaged
 //! rectangle is cleared and redrawn in place, with drawing clipped to it.
 //! Glyphs are drawn from a cache of alpha masks that rasterizes each glyph
-//! once per size and subpixel phase.
+//! once per size and subpixel phase. Offset scopes in the display list move
+//! the operations and clips they wrap.
 //!
 //! Redrawing a rectangle on its own produces the same pixels as a full
 //! repaint, because each pixel's coverage is computed from its absolute

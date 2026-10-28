@@ -3,9 +3,12 @@
 //! Every test drives the public API, so what it checks is what a caller sees:
 //! the pixels of the surface after a frame.
 
+use std::rc::Rc;
+
 use smudge_core::app::FrameOutput;
-use smudge_core::geometry::{Color, Corners, PixelRect, Rect};
-use smudge_core::paint::{DisplayList, PaintOp};
+use smudge_core::geometry::{Color, Corners, PixelRect, Point, Rect};
+use smudge_core::paint::{DisplayList, GlyphRun, PaintOp};
+use smudge_text::{TextLayout, TextStyle, TextSystem};
 
 use crate::CpuRenderer;
 
@@ -378,6 +381,175 @@ fn border_outer_edge_follows_a_background_with_the_same_radius() {
             }
         }
     }
+}
+
+#[test]
+fn op_under_an_offset_draws_at_the_offset() {
+    let mut renderer = CpuRenderer::new(40, 40);
+    let mut list = DisplayList::new();
+    list.push_offset(Point { x: 10.0, y: 6.5 });
+    list.push_op(fill(Rect::new(2.0, 2.0, 20.0, 20.0), Color::BLACK));
+    list.pop_offset();
+    list.push_op(fill(Rect::new(30.0, 30.0, 40.0, 40.0), Color::BLACK));
+    list.finish();
+
+    render(&mut renderer, &list, &[surface(40)], 1.0);
+
+    assert_eq!(pixel(&renderer, 12, 8), BLACK, "inside the moved fill");
+    assert_eq!(pixel(&renderer, 30, 8), BLACK, "at the moved fill's edge");
+    assert_eq!(pixel(&renderer, 11, 8), WHITE, "left of the moved fill");
+    assert_eq!(pixel(&renderer, 31, 37), BLACK, "outside any offset");
+    assert_eq!(pixel(&renderer, 30, 36), WHITE, "above the unmoved fill");
+}
+
+#[test]
+fn a_clip_under_an_offset_clips_where_the_offset_puts_it() {
+    let mut renderer = CpuRenderer::new(40, 40);
+    let mut list = DisplayList::new();
+    list.push_offset(Point { x: 8.0, y: 8.0 });
+    list.push_clip(Rect::new(4.0, 4.0, 20.0, 20.0));
+    list.push_op(fill(Rect::new(0.0, 0.0, 40.0, 40.0), Color::BLACK));
+    list.pop_clip();
+    list.pop_offset();
+    list.finish();
+
+    render(&mut renderer, &list, &[surface(40)], 1.0);
+
+    assert_eq!(pixel(&renderer, 12, 12), BLACK);
+    assert_eq!(pixel(&renderer, 27, 27), BLACK);
+    assert_eq!(pixel(&renderer, 11, 12), WHITE, "left of the moved clip");
+    assert_eq!(pixel(&renderer, 12, 11), WHITE, "above the moved clip");
+    assert_eq!(pixel(&renderer, 28, 15), WHITE, "right of the moved clip");
+    assert_eq!(pixel(&renderer, 15, 28), WHITE, "below the moved clip");
+}
+
+#[test]
+fn nested_offsets_compose() {
+    let mut renderer = CpuRenderer::new(48, 48);
+    let mut list = DisplayList::new();
+    list.push_offset(Point { x: 10.0, y: 4.0 });
+    list.push_offset(Point { x: 2.0, y: 30.0 });
+    list.push_op(fill(Rect::new(0.0, 0.0, 8.0, 8.0), Color::BLACK));
+    list.pop_offset();
+    list.push_op(fill(Rect::new(0.0, 0.0, 8.0, 8.0), Color::BLACK));
+    list.pop_offset();
+    list.finish();
+
+    render(&mut renderer, &list, &[surface(48)], 1.0);
+
+    assert_eq!(pixel(&renderer, 12, 34), BLACK, "inside both offsets");
+    assert_eq!(pixel(&renderer, 17, 39), BLACK);
+    assert_eq!(pixel(&renderer, 11, 34), WHITE, "left of the inner fill");
+    assert_eq!(
+        pixel(&renderer, 10, 4),
+        BLACK,
+        "inside the outer offset only"
+    );
+    assert_eq!(pixel(&renderer, 17, 11), BLACK);
+    assert_eq!(pixel(&renderer, 9, 4), WHITE, "left of the outer fill");
+}
+
+#[test]
+fn an_offset_at_a_fractional_scale_lands_on_physical_pixels() {
+    let mut renderer = CpuRenderer::new(48, 48);
+    let mut list = DisplayList::new();
+    list.push_offset(Point { x: 5.0, y: 7.0 });
+    list.push_op(fill(Rect::new(2.0, 2.0, 14.0, 14.0), Color::BLACK));
+    list.pop_offset();
+    list.finish();
+
+    render(&mut renderer, &list, &[surface(48)], 2.0);
+
+    assert_eq!(pixel(&renderer, 14, 18), BLACK);
+    assert_eq!(pixel(&renderer, 37, 41), BLACK);
+    assert_eq!(pixel(&renderer, 13, 18), WHITE, "left of the moved fill");
+    assert_eq!(pixel(&renderer, 14, 17), WHITE, "above the moved fill");
+    assert_eq!(pixel(&renderer, 38, 18), WHITE, "right of the moved fill");
+    assert_eq!(pixel(&renderer, 14, 42), WHITE, "below the moved fill");
+}
+
+#[test]
+fn text_under_an_offset_draws_the_same_bytes_as_translated_text() {
+    TextSystem::bundled_only().install();
+    let run = TextSystem::with(|_| {
+        TextLayout::new("Smudge", &TextStyle::default(), None)
+            .glyph_runs_at(Point { x: 4.0, y: 4.0 }, Color::BLACK)
+    });
+    let run = run.into_iter().next().expect("the label shapes one run");
+    let moved = {
+        let mut glyphs = run.glyphs.clone();
+        for glyph in &mut glyphs {
+            glyph.x += 10.0;
+            glyph.y += 12.0;
+        }
+        GlyphRun {
+            font: run.font.clone(),
+            size: run.size,
+            color: run.color,
+            glyphs,
+            ink_bounds: run.ink_bounds.translated(Point { x: 10.0, y: 12.0 }),
+        }
+    };
+
+    let mut list = DisplayList::new();
+    list.push_offset(Point { x: 10.0, y: 12.0 });
+    list.push_op(PaintOp::Glyphs(Rc::new(run)));
+    list.pop_offset();
+    list.finish();
+    let translated = list_of(PaintOp::Glyphs(Rc::new(moved)));
+
+    let mut shifted = CpuRenderer::new(40, 40);
+    render(&mut shifted, &list, &[surface(40)], 1.0);
+    let mut direct = CpuRenderer::new(40, 40);
+    render(&mut direct, &translated, &[surface(40)], 1.0);
+
+    assert_eq!(first_difference(&shifted, &direct), None);
+}
+
+#[test]
+fn damage_render_equals_a_full_repaint_under_an_offset() {
+    let shifted = |inner: Color| {
+        let mut list = DisplayList::new();
+        list.push_offset(Point { x: 6.0, y: 2.0 });
+        list.push_clip(Rect::new(2.0, 2.0, 30.0, 30.0));
+        list.push_op(fill(
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+            Color::rgb(200, 200, 200),
+        ));
+        list.push_op(PaintOp::FillRect {
+            rect: Rect::new(4.0, 4.0, 20.0, 20.0),
+            radius: Corners::all(3.0),
+            color: inner,
+        });
+        list.pop_clip();
+        list.pop_offset();
+        list.finish();
+        list
+    };
+
+    let mut damaged = CpuRenderer::new(40, 40);
+    render(&mut damaged, &shifted(Color::BLACK), &[surface(40)], 1.0);
+    render(
+        &mut damaged,
+        &shifted(Color::rgb(10, 20, 30)),
+        &[PixelRect {
+            x: 10,
+            y: 6,
+            width: 16,
+            height: 16,
+        }],
+        1.0,
+    );
+
+    let mut full = CpuRenderer::new(40, 40);
+    render(
+        &mut full,
+        &shifted(Color::rgb(10, 20, 30)),
+        &[surface(40)],
+        1.0,
+    );
+
+    assert_eq!(first_difference(&full, &damaged), None);
 }
 
 #[test]
