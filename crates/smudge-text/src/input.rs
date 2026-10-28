@@ -557,8 +557,8 @@ impl Editor {
     /// Converts the laid out text into glyph runs at `origin`, in paint
     /// order, with every run in `color`.
     ///
-    /// `origin` is where the top left corner of the layout box goes, in
-    /// logical window coordinates.
+    /// `origin` is where the top left corner of the layout box goes, in the
+    /// caller's paint coordinates.
     ///
     /// # Panics
     ///

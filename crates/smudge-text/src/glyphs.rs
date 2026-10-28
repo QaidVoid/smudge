@@ -34,13 +34,14 @@ thread_local! {
 impl TextLayout {
     /// Converts the laid out text into glyph runs at `origin`, in paint order.
     ///
-    /// `origin` is where the top left corner of the layout box goes, in
-    /// logical window coordinates, so the first line's baseline lies one
-    /// ascent below it. The layout itself carries no color, so `color` is the
+    /// `origin` is where the top left corner of the layout box goes, in the
+    /// caller's paint coordinates, which leave out the scroll offsets of
+    /// enclosing views, so the first line's baseline lies one ascent below
+    /// it. The layout itself carries no color, so `color` is the
     /// color every returned run paints with, resolved by the caller at paint
     /// time. Each run carries the font as bytes, the size its style used, the
-    /// given color, and glyphs positioned in absolute logical window
-    /// coordinates. A run whose text is empty produces no runs.
+    /// given color, and glyphs positioned in those same coordinates. A run
+    /// whose text is empty produces no runs.
     ///
     /// # Panics
     ///

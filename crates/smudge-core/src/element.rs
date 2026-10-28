@@ -618,12 +618,13 @@ impl<W: Widget> Element<W> {
     /// Translates the node's flowing children by this offset after layout,
     /// outside the layout engine.
     ///
-    /// This is what a scroll view changes when it scrolls: the walk that
-    /// computes absolute rectangles subtracts the offset from the origin of
-    /// every child that stays in the flow, without running the layout engine
-    /// again, and the moved nodes repaint. An absolutely positioned child is
-    /// left where its insets place it, so chrome drawn over the content does
-    /// not scroll away with it.
+    /// This is what a scroll view changes when it scrolls: every child that
+    /// stays in the flow moves by minus the offset in the window, without
+    /// running the layout engine again. The frame damages the areas the
+    /// children moved out of and into and wraps them in an offset display
+    /// item, so a child that only moved does not paint again. An absolutely
+    /// positioned child is left where its insets place it, so chrome drawn
+    /// over the content does not scroll away with it.
     ///
     /// The offset can be bound to a signal, like the style builders. It is a
     /// position, not a style: it takes part in no layout comparison, and an

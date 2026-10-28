@@ -1,9 +1,12 @@
 //! Paint operations and the display list that renderers replay.
 //!
-//! Widgets emit [`PaintOp`]s in absolute logical window coordinates, with the
-//! origin at the top left of the window and y growing downwards. The frame
-//! collects them into one [`DisplayList`] in paint order, and both renderers
-//! replay that list.
+//! Widgets emit [`PaintOp`]s in paint coordinates: logical window
+//! coordinates with the scroll offsets of the enclosing scroll views left
+//! out, so that scrolling moves existing operations instead of rebuilding
+//! them (see [`crate::widget::Widget::paint`]). Outside a scrolled subtree
+//! the two coincide. Y grows downwards and the origin is the top left of the
+//! window. The frame collects the operations into one [`DisplayList`] in
+//! paint order, and both renderers replay that list.
 //!
 //! A display list may carry [`DisplayItem::PushOffset`] scopes. Items inside a
 //! scope are drawn translated by the offset, so a scrolled subtree can keep
@@ -51,8 +54,7 @@ impl std::fmt::Debug for FontBlob {
     }
 }
 
-/// One glyph of a [`GlyphRun`], positioned in absolute logical window
-/// coordinates.
+/// One glyph of a [`GlyphRun`], positioned in the run's paint coordinates.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PositionedGlyph {
     /// The glyph identifier inside the run's font, as shaping produced it.
@@ -65,10 +67,12 @@ pub struct PositionedGlyph {
 
 /// A shaped run of glyphs that all use one font, size and color.
 ///
-/// Glyph positions are absolute logical window coordinates, with each glyph's
-/// `x` and `y` at its baseline origin. A renderer rasterizes each glyph
-/// separately and blits it in its run's color, so nothing else about the text,
-/// such as clusters or line breaking, travels with the run.
+/// Glyph positions are in the run's paint coordinates, which leave out the
+/// scroll offsets of enclosing views (see [`crate::widget::Widget::paint`]),
+/// with each glyph's `x` and `y` at its baseline origin. A renderer
+/// rasterizes each glyph separately and blits it in its run's color, so
+/// nothing else about the text, such as clusters or line breaking, travels
+/// with the run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlyphRun {
     /// The font the glyph identifiers refer to.
@@ -79,7 +83,7 @@ pub struct GlyphRun {
     pub color: Color,
     /// The glyphs of the run, in paint order.
     pub glyphs: Vec<PositionedGlyph>,
-    /// The rectangle in absolute logical coordinates that covers the ink of
+    /// The rectangle in the run's paint coordinates that covers the ink of
     /// every glyph, plus one logical pixel on every side for anti-aliasing.
     ///
     /// A renderer may rely on it as the area the run can change: ink outside
@@ -87,7 +91,8 @@ pub struct GlyphRun {
     pub ink_bounds: Rect,
 }
 
-/// A single drawing operation in absolute logical window coordinates.
+/// A single drawing operation in paint coordinates, which leave out the
+/// scroll offsets of enclosing views (see [`crate::widget::Widget::paint`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaintOp {
     /// A filled rectangle with optional rounded corners.
@@ -119,7 +124,7 @@ pub enum PaintOp {
 }
 
 impl PaintOp {
-    /// Returns the rectangle in absolute logical window coordinates that this
+    /// Returns the rectangle in the operation's paint coordinates that this
     /// operation can change.
     ///
     /// The bounds cover the whole operation, including a stroke, which is drawn

@@ -57,7 +57,7 @@ const SELECTION_ALPHA: u8 = 96;
 /// What the caret node paints, placed by the input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CaretPaint {
-    /// The caret's rectangle in window coordinates.
+    /// The caret's rectangle in paint coordinates.
     rect: Rect,
     /// The color the caret draws with.
     color: Color,
