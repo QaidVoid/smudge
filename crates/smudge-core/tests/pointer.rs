@@ -704,6 +704,34 @@ fn pointer_handlers_measure_from_the_node_and_follow_its_scroll() {
 }
 
 #[test]
+fn a_second_press_without_a_release_ends_the_first_drag() {
+    let (ups, on_up) = point_log();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .row()
+                .child(
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .on_pointer_up(on_up),
+                )
+                .child(panel().width(px(40.0)).height(px(20.0)).on_press(|| {})),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 5.0 });
+    harness.button_down(Point { x: 60.0, y: 5.0 });
+
+    assert_eq!(
+        *ups.borrow(),
+        [Point { x: 60.0, y: 5.0 }],
+        "the first node hears its press end where the second press landed"
+    );
+}
+
+#[test]
 fn a_disabled_node_hears_no_moves_or_release() {
     let (moves, on_move) = point_log();
     let (ups, on_up) = point_log();

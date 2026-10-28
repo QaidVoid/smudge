@@ -170,7 +170,9 @@ impl WidgetTree {
     /// press also updates hover, because a press can arrive without a move
     /// before it, except while a press is already held: a non-primary down
     /// then leaves hover and the capture alone, and a primary press replaces
-    /// the capture. Any processed press turns the keyboard navigation mode
+    /// the capture. The replaced node hears `on_pointer_up` first, because the
+    /// release of its press never arrived, so a drag it started still ends.
+    /// Any processed press turns the keyboard navigation mode
     /// off, and a primary press focuses the target when it can take the focus
     /// or clears the focus when it cannot.
     pub(crate) fn pointer_down(&mut self, position: Point, button: PointerButton) {
@@ -195,6 +197,7 @@ impl WidgetTree {
         self.stale_focus = None;
         if let Some(previous) = self.pressed.take() {
             self.set_bit(previous, Interaction::PRESSED, false);
+            self.run_pointer_up(previous, position);
         }
         self.run_press_outside(target);
         let Some(target) = target else {
