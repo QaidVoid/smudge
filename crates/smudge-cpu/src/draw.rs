@@ -34,6 +34,16 @@ pub(crate) struct Surface {
     pub(crate) height: u32,
 }
 
+/// Translates `rect` by `offset`, unless the offset is zero, which is what
+/// operations outside every offset scope carry.
+fn maybe_translated(rect: Rect, offset: Point) -> Rect {
+    if offset == Point::default() {
+        rect
+    } else {
+        rect.translated(offset)
+    }
+}
+
 /// Walks `items` in paint order under `root`, calling `on_op` for every
 /// drawable operation with the physical pixels it can change and the logical
 /// offset the operation is drawn at.
@@ -67,7 +77,7 @@ pub(crate) fn for_each_op(
             DisplayItem::Op(op) => {
                 if let Some(clip) = current
                     && let Some(area) = PixelRect::from_logical(
-                        op.bounds().translated(offset),
+                        maybe_translated(op.bounds(), offset),
                         surface.scale,
                         surface.width,
                         surface.height,
@@ -80,7 +90,7 @@ pub(crate) fn for_each_op(
             DisplayItem::PushClip(rect) => {
                 let inner = current.and_then(|outer| {
                     PixelRect::from_logical(
-                        rect.translated(offset),
+                        maybe_translated(*rect, offset),
                         surface.scale,
                         surface.width,
                         surface.height,
@@ -236,7 +246,8 @@ impl Canvas<'_> {
                 radius,
                 color,
             } => {
-                if let Some(shape) = Shape::new(rect.translated(offset), radius, self.scale) {
+                if let Some(shape) = Shape::new(maybe_translated(rect, offset), radius, self.scale)
+                {
                     self.fill(
                         area,
                         color,
@@ -254,7 +265,8 @@ impl Canvas<'_> {
                 if !width.is_finite() || width <= 0.0 {
                     return;
                 }
-                let Some(outer) = Shape::new(rect.translated(offset), radius, self.scale) else {
+                let Some(outer) = Shape::new(maybe_translated(rect, offset), radius, self.scale)
+                else {
                     return;
                 };
                 match outer.inset(width * self.scale) {
