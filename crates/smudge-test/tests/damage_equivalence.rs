@@ -34,10 +34,13 @@
 //!
 //! The root also mounts a scroll view. A scroll edit moves the view's
 //! content and its thumb without a layout, and an offset past either end
-//! checks the clamp. The view measures its heights when it paints and applies
-//! them on the next frame, so after every frame the case runs the frames
-//! those measurements ask for, checking each one the same way, before it
-//! compares with a fresh mount.
+//! checks the clamp. The view's content holds an absolutely positioned badge,
+//! which a scroll must leave where its insets put it, and a second, nested
+//! scroll view with its own tracked offset, so a scroll of one view is a
+//! damage computation over a subtree that contains another scroll. The view
+//! measures its heights when it paints and applies them on the next frame, so
+//! after every frame the case runs the frames those measurements ask for,
+//! checking each one the same way, before it compares with a fresh mount.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -842,6 +845,9 @@ struct Scene {
     /// The offset of the scroll view the root mounts, which a scroll edit
     /// changes.
     scroll: ScrollTracked,
+    /// The offset of the scroll view nested inside the outer one, which an
+    /// inner scroll edit changes.
+    inner_scroll: ScrollTracked,
     /// The viewport the scene is laid out in, which a viewport edit changes.
     viewport: Cell<Size>,
     /// The scale the scene renders at, which a viewport edit changes.
@@ -904,6 +910,10 @@ impl Scene {
             scroll: match values {
                 Values::Signals => ScrollTracked::new(0.0),
                 Values::Current(from, _) => ScrollTracked::new(from.scroll.value()),
+            },
+            inner_scroll: match values {
+                Values::Signals => ScrollTracked::new(0.0),
+                Values::Current(from, _) => ScrollTracked::new(from.inner_scroll.value()),
             },
             viewport: Cell::new(viewport),
             scale: Cell::new(scale),
@@ -1168,7 +1178,7 @@ fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
         let list = Rc::clone(&scene.list.get);
         element
             .child(for_each(move || list(), |item| *item, list_row).direction(Direction::Column))
-            .child(scroll_view(&scene.scroll))
+            .child(scroll_view(&scene.scroll, &scene.inner_scroll))
     } else {
         element
     }
@@ -1182,7 +1192,7 @@ fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
 /// to and the thumb's length. The view has a border and padding, so the clip
 /// inside the border and the content box reach the comparisons, and the rows
 /// paint distinct colors, so a scroll moves pixels they can tell apart.
-fn scroll_view(tracked: &ScrollTracked) -> Element<ScrollView> {
+fn scroll_view(tracked: &ScrollTracked, inner: &ScrollTracked) -> Element<ScrollView> {
     let mut content = column();
     for index in 0..SCROLL_ROW_COUNT {
         content = content.child(
@@ -1196,12 +1206,51 @@ fn scroll_view(tracked: &ScrollTracked) -> Element<ScrollView> {
                 )),
         );
     }
+    content = content.child(inner_view(inner));
     scroll(content)
         .offset(tracked.signal.clone())
         .height(px(SCROLL_VIEW_HEIGHT))
         .border(2.0)
         .border_color(Color::rgb(40, 40, 40))
         .padding(px(3.0))
+        // A badge the scroll must leave put: it hangs off the view itself,
+        // outside the flow, so a scroll moves the content under it.
+        .child(
+            panel()
+                .width(px(16.0))
+                .height(px(16.0))
+                .background(Color::rgb(250, 240, 10))
+                .absolute()
+                .inset(Edges {
+                    top: Length::px(4.0),
+                    left: Length::px(4.0),
+                    right: Length::Auto,
+                    bottom: Length::Auto,
+                }),
+        )
+}
+
+/// The scroll view nested inside the outer one.
+///
+/// Its content is taller than its viewport, so an edit can scroll it, and its
+/// rows paint distinct colors, so the two views' pixels can be told apart.
+fn inner_view(tracked: &ScrollTracked) -> Element<ScrollView> {
+    let mut content = column();
+    for index in 0..3 {
+        content = content.child(
+            panel()
+                .width(px(60.0))
+                .height(px(20.0))
+                .background(Color::rgb(
+                    (index * 100 + 5) as u8,
+                    (index * 40 + 200) as u8,
+                    (index * 90 + 60) as u8,
+                )),
+        );
+    }
+    scroll(content)
+        .offset(tracked.signal.clone())
+        .height(px(40.0))
 }
 
 /// The row the keyed list mounts for its key.
@@ -1283,6 +1332,8 @@ enum Edit {
     ListReverse,
     /// Scrolls the scene's scroll view to this offset, in logical pixels.
     Scroll(f32),
+    /// Scrolls the scroll view nested inside it to this offset.
+    InnerScroll(f32),
     /// Moves the pointer to this position, in logical pixels.
     Move(Point),
     /// Presses the primary button at this position.
@@ -1344,6 +1395,7 @@ impl Edit {
                 scene.list.write(keys);
             }
             Edit::Scroll(offset) => scene.scroll.write(offset),
+            Edit::InnerScroll(offset) => scene.inner_scroll.write(offset),
             Edit::Move(position) => harness.move_to(position),
             Edit::DownAt(position) => harness.event(InputEvent::PointerDown {
                 position,
@@ -1397,7 +1449,8 @@ impl Edit {
             | Edit::ListAppend(_)
             | Edit::ListRemove(_)
             | Edit::ListReverse
-            | Edit::Scroll(_) => {}
+            | Edit::Scroll(_)
+            | Edit::InnerScroll(_) => {}
         }
     }
 }
@@ -1431,6 +1484,8 @@ enum EditKind {
     ListReverse,
     /// A scroll offset change.
     Scroll,
+    /// A scroll offset change of the nested view.
+    InnerScroll,
 }
 
 /// Any edit kind, and every scene has a target for each of them.
@@ -1449,6 +1504,7 @@ fn any_edit_kind() -> impl Strategy<Value = EditKind> {
         Just(EditKind::ListRemove),
         Just(EditKind::ListReverse),
         Just(EditKind::Scroll),
+        Just(EditKind::InnerScroll),
     ]
 }
 
@@ -1487,6 +1543,8 @@ fn any_edit(counts: SignalCounts) -> impl Strategy<Value = Edit> {
         // The view's range is at least 0 to 64, and offsets past either end
         // check the clamp and the write-back.
         EditKind::Scroll => (-20.0f32..=200.0).prop_map(Edit::Scroll).boxed(),
+        // The nested view's range is 0 to 20, so most values clamp.
+        EditKind::InnerScroll => (-20.0f32..=200.0).prop_map(Edit::InnerScroll).boxed(),
     })
 }
 

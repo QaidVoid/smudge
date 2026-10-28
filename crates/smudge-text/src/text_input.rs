@@ -78,13 +78,15 @@ struct InputChrome {
     caret_on: RwSignal<bool>,
     /// Whether the input holds the focus, which is when a caret shows at all.
     caret_shown: RwSignal<bool>,
-    /// The input's content box and the color its caret drew with, as the
-    /// last paint left them, or `None` before the first paint.
+    /// The input's content box in paint coordinates, the color its caret
+    /// drew with and the box's origin relative to the input's rectangle, as
+    /// the last paint left them, or `None` before the first paint.
     ///
-    /// The pointer handlers read the box to turn window coordinates into the
-    /// editor's, and an edit places the caret against it before the frame
-    /// paints, so the caret moves in the same frame as the text.
-    painted: Cell<Option<(Rect, Color)>>,
+    /// The pointer handlers read the origin to turn positions relative to the
+    /// input into the editor's coordinates, and an edit places the caret
+    /// against the box before the frame paints, so the caret moves in the
+    /// same frame as the text.
+    painted: Cell<Option<(Rect, Color, Point)>>,
     /// How far the text is scrolled left, in logical pixels.
     scroll_x: Cell<f32>,
     /// Whether the pointer is held down on the input, which turns moves into
@@ -173,7 +175,7 @@ impl InputChrome {
     /// Before the first paint there is nothing to place against, and the
     /// first paint places the caret itself.
     fn place_before_paint(&self) {
-        if let Some((content, color)) = self.painted.get() {
+        if let Some((content, color, _)) = self.painted.get() {
             self.place(content, color);
         }
     }
@@ -380,7 +382,11 @@ impl Widget for TextInput {
     /// which the paint pass cannot do.
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
         let color = self.text_color(cx);
-        self.chrome.painted.set(Some((cx.content, color)));
+        let inset = Point {
+            x: cx.content.x0 - cx.rect.x0,
+            y: cx.content.y0 - cx.rect.y0,
+        };
+        self.chrome.painted.set(Some((cx.content, color, inset)));
         let scroll = self.chrome.place(cx.content, color);
         let text_origin = Point {
             x: cx.content.x0 - scroll,
@@ -434,9 +440,10 @@ impl Widget for TextInput {
     /// the focus.
     ///
     /// The area is the text the user is editing, which is the preedit while
-    /// one is being composed and the selection otherwise.
+    /// one is being composed and the selection otherwise, in paint
+    /// coordinates.
     fn ime_area(&self) -> Option<Rect> {
-        let (content, _) = self.chrome.painted.get()?;
+        let (content, _, _) = self.chrome.painted.get()?;
         let area = self.chrome.editor.ime_area();
         let scroll = self.chrome.scroll_x.get();
         Some(Rect::new(
@@ -690,12 +697,13 @@ fn handle_release(chrome: &InputChrome, _position: Point) {
     chrome.dragging.set(false);
 }
 
-/// Places the caret at `position`, in the editor's own coordinates.
+/// Turns `position`, relative to the input's rectangle, into the editor's own
+/// coordinates.
 fn layout_position(chrome: &InputChrome, position: Point) -> (f32, f32) {
     let origin = chrome
         .painted
         .get()
-        .map(|(content, _)| content.origin())
+        .map(|(_, _, inset)| inset)
         .unwrap_or_default();
     (
         position.x - origin.x + chrome.scroll_x.get(),

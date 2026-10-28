@@ -552,18 +552,34 @@ impl WidgetTree {
         ran
     }
 
+    /// Returns `position`, in window coordinates, relative to the top left of
+    /// the rectangle of `id`, which is where the node's pointer handlers
+    /// measure from. A stale id leaves it as it is.
+    fn local_position(&self, id: WidgetId, position: Point) -> Point {
+        let origin = self
+            .nodes
+            .get(id)
+            .map(|node| node.rect.origin())
+            .unwrap_or_default();
+        Point {
+            x: position.x - origin.x,
+            y: position.y - origin.y,
+        }
+    }
+
     /// Runs `on_pointer_down` of `id` inside the node's owner.
     fn run_pointer_down(&mut self, id: WidgetId, position: Point) {
         let Some(owner) = self.owner(id).cloned() else {
             return;
         };
+        let local = self.local_position(id, position);
         owner.with(|| {
             if let Some(on_pointer_down) = self
                 .nodes
                 .get_mut(id)
                 .and_then(|node| node.handlers.on_pointer_down.as_mut())
             {
-                on_pointer_down(position);
+                on_pointer_down(local);
             }
         });
     }
@@ -581,13 +597,14 @@ impl WidgetTree {
         let Some(owner) = self.owner(id).cloned() else {
             return;
         };
+        let local = self.local_position(id, position);
         owner.with(|| {
             if let Some(on_pointer_move) = self
                 .nodes
                 .get_mut(id)
                 .and_then(|node| node.handlers.on_pointer_move.as_mut())
             {
-                on_pointer_move(position);
+                on_pointer_move(local);
             }
         });
     }
@@ -605,13 +622,14 @@ impl WidgetTree {
         let Some(owner) = self.owner(id).cloned() else {
             return;
         };
+        let local = self.local_position(id, position);
         owner.with(|| {
             if let Some(on_pointer_up) = self
                 .nodes
                 .get_mut(id)
                 .and_then(|node| node.handlers.on_pointer_up.as_mut())
             {
-                on_pointer_up(position);
+                on_pointer_up(local);
             }
         });
     }

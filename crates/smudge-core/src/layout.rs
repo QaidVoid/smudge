@@ -12,7 +12,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::style::{Length, Overflow, Position};
 use crate::widget::{AvailableSpace, MeasureInput};
 
-use super::{Dirty, WidgetId, WidgetTree};
+use super::{Dirty, PaintedBounds, WidgetId, WidgetTree};
 
 /// Converts the engine's space variant to the type a widget's measure sees.
 fn from_engine(space: TaffySpace) -> AvailableSpace {
@@ -33,10 +33,12 @@ impl WidgetTree {
     /// size set on the root element.
     ///
     /// Each node ends the pass with an absolute rectangle and clip. A node
-    /// whose rectangle or clip changed is marked [`Dirty::Paint`], because it
-    /// has to paint at its new position. A hidden node and its subtree get an
+    /// whose rectangle in paint coordinates changed, or whose clip became or
+    /// stopped being empty, is marked [`Dirty::Paint`], because it has to
+    /// paint again; a node that only moved in the window keeps its operations
+    /// and damages its old and new area. A hidden node and its subtree get an
     /// empty rectangle and an empty clip, so they paint nothing. Hiding a node
-    /// therefore changes its clip, which marks it so the paint pass clears the
+    /// therefore empties its clip, which marks it so the paint pass clears the
     /// pixels it painted last frame. Every [`Dirty::Layout`] flag drops to
     /// [`Dirty::Paint`], because a laid out node still has to be painted.
     ///
@@ -78,9 +80,12 @@ impl WidgetTree {
     /// the layout engine: it re-runs the walk that computes absolute
     /// rectangles for the subtree of `id` alone, from the origin and the clip
     /// its parent gives it, which is what makes scrolling cheap next to a
-    /// layout pass. A node whose rectangle changed is marked for painting, so
-    /// its operations are regenerated at the moved position and its old and
-    /// new bounds reach the damage of the frame.
+    /// layout pass.
+    ///
+    /// The children that move keep their operations: the walk queues their
+    /// painted bounds as damage at the old and the new position, and the
+    /// display list pass wraps them in an offset scope that moves them in the
+    /// window, so a scroll frame repaints no moved node at all.
     ///
     /// The walk leaves the absolutely positioned children of `id` where their
     /// insets place them. Before the first layout pass, and while `id` or an
@@ -108,17 +113,18 @@ impl WidgetTree {
             }
             ancestor = node.parent;
         }
-        let (origin, clip) = match parent {
+        let (origin, clip, shift) = match parent {
             Some(parent) => {
                 let frame = self.child_frame(parent);
-                (frame.origin(position), frame.clip)
+                (frame.origin, frame.clip, frame.shift(position))
             }
             None => (
                 Point::default(),
                 Rect::new(0.0, 0.0, viewport.width, viewport.height),
+                Point::default(),
             ),
         };
-        if self.update_subtree(id, origin, clip, false) {
+        if self.update_subtree(id, origin, clip, false, shift) {
             // The subtree moved under a pointer that stays still, so the
             // hovered chain is rebuilt from the last pointer position, as the
             // layout pass does. A hover style can mark a node for layout,
@@ -197,7 +203,8 @@ impl WidgetTree {
         self.layout_runs += 1;
 
         let clip = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        let rects_changed = self.update_subtree(root, Point::default(), clip, false);
+        let rects_changed =
+            self.update_subtree(root, Point::default(), clip, false, Point::default());
 
         self.layout_dirty = false;
         for node in self.nodes.values_mut() {
@@ -209,12 +216,33 @@ impl WidgetTree {
     }
 
     /// Writes the absolute rectangle and clip of `id` and its subtree, given
-    /// the subtree's origin and inherited clip, and returns whether any node
-    /// in the subtree changed either one.
+    /// the subtree's origin in paint coordinates, its clip in window
+    /// coordinates and its paint shift, and returns whether any node in the
+    /// subtree changed its rectangle or clip in the window.
     ///
     /// `hidden` reports whether an ancestor is hidden, which makes this node
-    /// and everything below it empty.
-    fn update_subtree(&mut self, id: WidgetId, origin: Point, clip: Rect, hidden: bool) -> bool {
+    /// and everything below it empty. A flowing child adds the scroll offset
+    /// of its parent to the shift it inherits, and an absolutely positioned
+    /// child keeps it.
+    ///
+    /// A node is marked for painting when its rectangle or content box in
+    /// paint coordinates changed, or when its clip became empty or stopped
+    /// being empty, so its operations are regenerated and its old and new
+    /// bounds reach the damage of the frame. A node that only moved in the
+    /// window or changed its clip, which is how a scroll moves its flowing
+    /// children, keeps its operations, because they hold neither: its painted
+    /// bounds are queued as damage at the old and the new shift and clip, and
+    /// the display list pass later wraps the moved children in an offset
+    /// scope so renderers draw them at the moved position without repainting
+    /// them.
+    fn update_subtree(
+        &mut self,
+        id: WidgetId,
+        origin: Point,
+        clip: Rect,
+        hidden: bool,
+        shift: Point,
+    ) -> bool {
         let node = self.nodes.get(id).expect("the id is a live node");
         let taffy_node = node.taffy;
         let hidden = hidden || node.resolved.layout.hidden;
@@ -225,31 +253,63 @@ impl WidgetTree {
             .layout(taffy_node)
             .expect("every node has a live layout node");
         let clip = if hidden { Rect::default() } else { clip };
-        let rect = if hidden {
-            Rect::default()
+        let (paint_rect, paint_content, rect, content) = if hidden {
+            Default::default()
         } else {
-            Rect::new(
+            let paint_rect = Rect::new(
                 origin.x + layout.location.x,
                 origin.y + layout.location.y,
                 origin.x + layout.location.x + layout.size.width,
                 origin.y + layout.location.y + layout.size.height,
+            );
+            let paint_content = inset(inset(paint_rect, layout.border), layout.padding);
+            let back = Point {
+                x: -shift.x,
+                y: -shift.y,
+            };
+            (
+                paint_rect,
+                paint_content,
+                paint_rect.translated(back),
+                paint_content.translated(back),
             )
-        };
-
-        let content = if hidden {
-            Rect::default()
-        } else {
-            inset(inset(rect, layout.border), layout.padding)
         };
 
         let node = self.nodes.get_mut(id).expect("the id is a live node");
         let changed = node.rect != rect || node.content != content || node.clip != clip;
+        let repaint = node.paint_rect != paint_rect
+            || node.paint_content != paint_content
+            || node.clip.is_empty() != clip.is_empty();
+        if !repaint
+            && changed
+            && let Some(painted) = node.painted
+        {
+            let moved = PaintedBounds {
+                clip,
+                shift,
+                ..painted
+            };
+            node.painted = Some(moved);
+            self.pending_damage.push(painted);
+            self.pending_damage.push(moved);
+        }
+        let node = self.nodes.get_mut(id).expect("the id is a live node");
         node.rect = rect;
         node.content = content;
         node.clip = clip;
-        let frame = ChildFrame::new(rect, clip, overflow, layout.border, node.scroll_offset);
-
-        if changed {
+        node.paint_shift = shift;
+        node.paint_rect = paint_rect;
+        node.paint_content = paint_content;
+        let frame = ChildFrame::new(
+            paint_rect,
+            rect,
+            clip,
+            overflow,
+            layout.border,
+            node.scroll_offset,
+            shift,
+        );
+        if repaint {
             self.mark(id, Dirty::Paint);
         }
 
@@ -261,15 +321,16 @@ impl WidgetTree {
             .and_then(|node| node.children.get(index))
             .copied()
         {
-            let origin = frame.origin(self.nodes[child].resolved.layout.position);
-            subtree_changed |= self.update_subtree(child, origin, frame.clip, hidden);
+            let child_shift = frame.shift(self.nodes[child].resolved.layout.position);
+            subtree_changed |=
+                self.update_subtree(child, frame.origin, frame.clip, hidden, child_shift);
             index += 1;
         }
         subtree_changed
     }
 
-    /// Returns the area inside the border of `id`, which is what a node that
-    /// clips its children clips them to.
+    /// Returns the area inside the border of `id` in its paint coordinates,
+    /// which is what a node that clips its children clips them to.
     ///
     /// # Panics
     ///
@@ -281,11 +342,11 @@ impl WidgetTree {
             .taffy
             .layout(node.taffy)
             .expect("every node has a live layout node");
-        inset(node.rect, layout.border)
+        inset(node.paint_rect, layout.border)
     }
 
-    /// Returns the origins and the clip the walk gives the children of `id`,
-    /// from the rectangle and clip the last walk left on it.
+    /// Returns the origin, the clip and the shifts the walk gives the
+    /// children of `id`, from the geometry the last walk left on it.
     ///
     /// # Panics
     ///
@@ -298,11 +359,13 @@ impl WidgetTree {
             .layout(node.taffy)
             .expect("every node has a live layout node");
         ChildFrame::new(
+            node.paint_rect,
             node.rect,
             node.clip,
             node.resolved.layout.overflow,
             layout.border,
             node.scroll_offset,
+            node.paint_shift,
         )
     }
 
@@ -317,50 +380,62 @@ impl WidgetTree {
     }
 }
 
-/// Where the walk places the children of one node, and what it clips them to.
+/// Where the walk places the children of one node, what it clips them to and
+/// what paint shift they inherit.
 struct ChildFrame {
-    /// The origin of a child in the flow, which the node's scroll offset
-    /// moves.
-    flow: Point,
-    /// The origin of an absolutely positioned child, which is placed by its
-    /// insets outside the flow, so a scroll offset does not move it.
-    absolute: Point,
-    /// The clip every child inherits.
+    /// The origin every child is placed from, in paint coordinates.
+    ///
+    /// A scroll offset moves the flowing children in the window and adds to
+    /// their shift by the same amount, so in paint coordinates they start
+    /// where the absolutely positioned ones do.
+    origin: Point,
+    /// The clip every child inherits, in window coordinates.
     clip: Rect,
+    /// The paint shift a child in the flow inherits: the node's own shift
+    /// plus its scroll offset, because the child paints inside the offset
+    /// scope the node's scroll produces.
+    flow_shift: Point,
+    /// The paint shift an absolutely positioned child inherits, which is the
+    /// node's own shift: a scroll offset does not move it.
+    absolute_shift: Point,
 }
 
 impl ChildFrame {
-    /// Builds the frame of a node from its rectangle, its clip, its overflow,
-    /// its border widths and its scroll offset.
+    /// Builds the frame of a node from its rectangle in paint and in window
+    /// coordinates, its clip, its overflow, its border widths, its scroll
+    /// offset and its paint shift.
     ///
     /// A node that clips its children clips them to the area inside its
     /// border, so content that scrolls or overflows never covers the border.
     fn new(
+        paint_rect: Rect,
         rect: Rect,
         clip: Rect,
         overflow: Overflow,
         border: taffy::Rect<f32>,
         scroll: Point,
+        shift: Point,
     ) -> ChildFrame {
         ChildFrame {
-            flow: Point {
-                x: rect.x0 - scroll.x,
-                y: rect.y0 - scroll.y,
-            },
-            absolute: rect.origin(),
+            origin: paint_rect.origin(),
             clip: if overflow == Overflow::Clip {
                 clip.intersect(inset(rect, border))
             } else {
                 clip
             },
+            flow_shift: Point {
+                x: shift.x + scroll.x,
+                y: shift.y + scroll.y,
+            },
+            absolute_shift: shift,
         }
     }
 
-    /// Returns the origin of a child with `position`.
-    fn origin(&self, position: Position) -> Point {
+    /// Returns the paint shift of a child with `position`.
+    fn shift(&self, position: Position) -> Point {
         match position {
-            Position::Absolute => self.absolute,
-            Position::Relative => self.flow,
+            Position::Absolute => self.absolute_shift,
+            Position::Relative => self.flow_shift,
         }
     }
 }

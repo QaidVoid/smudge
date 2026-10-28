@@ -13,10 +13,10 @@ use smudge_core::element::Element;
 use smudge_core::geometry::{Color, Point, Rect, Size};
 use smudge_core::input::InputEvent;
 use smudge_core::reactive::{RwSignal, prelude::*};
-use smudge_core::style::px;
+use smudge_core::style::{Edges, Length, px};
 use smudge_core::widget::{Panel, panel};
 use smudge_test::Harness;
-use smudge_text::TextSystem;
+use smudge_text::{TextSystem, text_input};
 
 use smudge_widgets::{ScrollExt, button, column, scroll};
 
@@ -490,4 +490,369 @@ fn wheel_does_nothing_while_the_content_fits() {
         !report.layout_ran,
         "the offset never moved, so no layout runs"
     );
+}
+
+#[test]
+fn a_wheel_frame_repaints_no_node() {
+    let mut harness = tall_view();
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+
+    wheel(&mut harness, 30.0);
+    let report = harness.frame();
+
+    assert_eq!(
+        report.nodes_painted, 0,
+        "the content and the thumb move without any node repainting"
+    );
+    assert!(
+        !report.damage.is_empty(),
+        "the scroll damages where the ink moved"
+    );
+    harness.assert_matches_full_repaint();
+}
+
+/// A view of two rows with a badge that hangs off the view itself, outside
+/// the flow, settled.
+fn badged_view() -> Harness {
+    let mut harness = Harness::new(120.0, 200.0, 1.0, || {
+        panel().column().child(
+            scroll(column().children([
+                row(60.0, Color::rgb(200, 0, 0)),
+                row(61.0, Color::rgb(0, 200, 0)),
+            ]))
+            .height(px(100.0))
+            .child(
+                panel()
+                    .width(px(16.0))
+                    .height(px(16.0))
+                    .background(Color::rgb(0, 0, 200))
+                    .absolute()
+                    .inset(Edges {
+                        top: Length::px(4.0),
+                        left: Length::px(4.0),
+                        right: Length::Auto,
+                        bottom: Length::Auto,
+                    }),
+            ),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    harness
+}
+
+/// The badge of the badged view: the 16 by 16 panel hanging off the view.
+fn badge(harness: &mut Harness) -> Rect {
+    nodes(harness)
+        .into_iter()
+        .find(|node| node.name == "Panel" && node.rect.width() == 16.0)
+        .expect("the badge is mounted")
+        .rect
+}
+
+#[test]
+fn an_absolute_child_stays_put_while_the_content_scrolls() {
+    let mut harness = badged_view();
+    let before = badge(&mut harness);
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+
+    wheel(&mut harness, 30.0);
+    let report = harness.frame();
+
+    assert_eq!(
+        badge(&mut harness),
+        before,
+        "the scroll leaves the badge where its insets put it"
+    );
+    let rows = content_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: -21.0 }),
+        "the content moved under the badge, clamped to the 21 pixels of range, first row at {:?}",
+        rows[0]
+    );
+    assert_eq!(report.nodes_painted, 0, "nothing needed repainting");
+    harness.assert_matches_full_repaint();
+}
+
+/// A view with a second view nested between its rows, settled.
+fn nested_views() -> Harness {
+    let mut harness = Harness::new(120.0, 200.0, 1.0, || {
+        panel().column().child(
+            scroll(
+                column()
+                    .child(row(60.0, Color::rgb(200, 0, 0)))
+                    .child(
+                        scroll(
+                            column()
+                                .child(row(40.0, Color::rgb(0, 200, 0)))
+                                .child(row(41.0, Color::rgb(0, 0, 200))),
+                        )
+                        .height(px(50.0)),
+                    )
+                    .child(row(62.0, Color::rgb(10, 10, 10))),
+            )
+            .height(px(163.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    harness
+}
+
+/// The rows of the outer and the inner view of the nested scene, by height.
+fn nested_rows(harness: &mut Harness) -> Vec<Rect> {
+    let heights = [60.0, 62.0, 40.0];
+    let mut rows: Vec<Rect> = nodes(harness)
+        .into_iter()
+        .filter(|node| node.name == "Panel" && heights.contains(&node.rect.height()))
+        .map(|node| node.rect)
+        .collect();
+    rows.sort_by_key(|rect| rect.y0 as i64);
+    rows
+}
+
+#[test]
+fn a_nested_view_scrolls_alone() {
+    let mut harness = nested_views();
+    // The inner view spans 50 pixels from 60 down, under the first row.
+    harness.move_to(Point { x: 60.0, y: 80.0 });
+
+    wheel(&mut harness, 10.0);
+    let report = harness.frame();
+
+    let rows = nested_rows(&mut harness);
+    // Rows top to bottom: the outer first row at 0, the inner first row at
+    // 50 after its scroll, the outer last row at 110, below the inner view.
+    assert!(
+        same_point(rows[1].origin(), Point { x: 0.0, y: 50.0 }),
+        "the inner view's content moved, at {:?}",
+        rows[1]
+    );
+    assert!(
+        same_point(rows[2].origin(), Point { x: 0.0, y: 110.0 }),
+        "the outer view's content stayed put, at {:?}",
+        rows[2]
+    );
+    assert_eq!(report.nodes_painted, 0, "neither view repainted a node");
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn the_input_method_area_stays_in_window_coordinates_inside_a_scrolled_view() {
+    let bound = RwSignal::new(String::from("hello"));
+    let for_input = bound.clone();
+    let mut harness = Harness::new(120.0, 200.0, 1.0, move || {
+        panel().column().child(
+            scroll(
+                column()
+                    .child(row(150.0, Color::rgb(200, 0, 0)))
+                    .child(text_input(for_input.clone()).height(px(30.0))),
+            )
+            .height(px(100.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+
+    // The input sits at 150, so the view's 80 pixels of range bring it to 70.
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+    wheel(&mut harness, 80.0);
+    harness.frame();
+    harness.settle();
+    harness.click(Point { x: 60.0, y: 85.0 });
+    harness.settle();
+
+    let area = harness.app().ime_area().expect("the input reports an area");
+    assert!(
+        area.y0 >= 70.0 && area.y1 <= 100.0,
+        "the anchor sits inside the input's on-screen band 70 to 100, got {area:?}"
+    );
+}
+
+#[test]
+fn a_press_after_a_sideways_scroll_places_the_caret_under_the_pointer() {
+    let bound = RwSignal::new(String::from("abcdef"));
+    let for_input = bound.clone();
+    let offset = RwSignal::new(0.0_f32);
+    let for_view = offset.clone();
+    let mut harness = Harness::new(200.0, 60.0, 1.0, move || {
+        let for_view = for_view.clone();
+        panel().column().child(
+            panel()
+                .clip(true)
+                .scroll_offset(move || Point {
+                    x: for_view.get(),
+                    y: 0.0,
+                })
+                .child(
+                    text_input(for_input.clone())
+                        .width(px(150.0))
+                        .height(px(30.0)),
+                ),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    // A negative offset moves the input 30 pixels to the right, so a stale
+    // origin would put this press well inside the text.
+    offset.set(-30.0);
+    harness.frame();
+    harness.settle();
+
+    let input = nodes(&mut harness)
+        .into_iter()
+        .find(|node| node.name == "TextInput")
+        .expect("the input is mounted")
+        .rect;
+    harness.click(Point {
+        x: input.x0 + 2.0,
+        y: input.y0 + input.height() / 2.0,
+    });
+    harness.settle();
+    harness.type_text("X");
+    harness.settle();
+
+    assert_eq!(
+        bound.get(),
+        "Xabcdef",
+        "the press at the input's left edge put the caret before the text"
+    );
+}
+
+/// Scrolls the settled `harness` by `step` 40 times, checks every frame
+/// against a full repaint, and returns how many nodes the frames painted.
+fn scroll_steps(harness: &mut Harness, step: f32) -> u32 {
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+    let mut painted = 0;
+    for _ in 0..40 {
+        wheel(harness, step);
+        painted += harness.frame().nodes_painted;
+        harness.assert_matches_full_repaint();
+    }
+    painted
+}
+
+#[test]
+fn fractional_wheel_steps_repaint_no_node() {
+    let mut harness = Harness::new(120.0, 200.0, 1.0, || {
+        panel().column().child(
+            scroll(column().children(
+                (0..20).map(|i| row(10.3 + i as f32 * 0.17, Color::rgb(200, i * 10, 0))),
+            ))
+            .height(px(100.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+
+    assert_eq!(
+        scroll_steps(&mut harness, 0.37),
+        0,
+        "content that only scrolled keeps its operations at any step"
+    );
+}
+
+#[test]
+fn scrolling_clipping_cards_paints_only_the_cards_entering_or_leaving() {
+    let mut harness = Harness::new(120.0, 200.0, 1.0, || {
+        panel().column().child(
+            scroll(column().children((0..20).map(|i| {
+                panel()
+                    .clip(true)
+                    .height(px(30.0))
+                    .child(row(20.0, Color::rgb(0, i * 10, 200)))
+            })))
+            .height(px(100.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+
+    // 40 steps of 3 move 120 pixels, which takes four cards out of the
+    // view and four in, and each of their rows paints once as its clip
+    // stops or starts being empty.
+    assert_eq!(scroll_steps(&mut harness, 3.0), 8);
+}
+
+#[test]
+fn a_scroll_and_a_repaint_in_one_frame_match_a_full_repaint() {
+    let color = RwSignal::new(Color::rgb(0, 200, 0));
+    let for_row = color.clone();
+    let mut harness = Harness::new(120.0, 200.0, 1.0, move || {
+        let for_row = for_row.clone();
+        panel().column().child(
+            scroll(
+                column().children([
+                    row(60.0, Color::rgb(200, 0, 0)),
+                    panel()
+                        .height(px(61.0))
+                        .background(move || for_row.get().into()),
+                    row(62.0, Color::rgb(0, 0, 200)),
+                ]),
+            )
+            .height(px(100.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+
+    wheel(&mut harness, 30.0);
+    color.set(Color::rgb(250, 120, 0));
+    let report = harness.frame();
+
+    assert_eq!(report.nodes_painted, 1, "only the recolored row paints");
+    harness.assert_matches_full_repaint();
+}
+
+/// A view whose flowing content is split by a badge out of the flow, with its
+/// offset bound to `offset`, settled.
+fn split_view(offset: RwSignal<f32>) -> Harness {
+    let mut harness = Harness::new(120.0, 200.0, 1.0, move || {
+        panel().column().child(
+            scroll(row(150.0, Color::rgb(200, 0, 0)))
+                .offset(offset.clone())
+                .height(px(100.0))
+                .child(
+                    panel()
+                        .width(px(16.0))
+                        .height(px(16.0))
+                        .background(Color::rgb(0, 0, 200))
+                        .absolute()
+                        .inset(Edges {
+                            top: Length::px(4.0),
+                            left: Length::px(4.0),
+                            right: Length::Auto,
+                            bottom: Length::Auto,
+                        }),
+                )
+                .child(row(80.0, Color::rgb(0, 200, 0)).shrink(0.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    harness
+}
+
+#[test]
+fn an_absolute_child_between_flowing_ones_stays_put_while_they_scroll() {
+    let mut harness = split_view(RwSignal::new(0.0));
+    let before = badge(&mut harness);
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+
+    wheel(&mut harness, 30.0);
+    let report = harness.frame();
+
+    let after = nodes(&mut harness)
+        .into_iter()
+        .find(|node| node.name == "Panel" && node.rect.height() == 80.0)
+        .expect("the flowing row after the badge is mounted")
+        .rect;
+    assert!(
+        same_point(after.origin(), Point { x: 0.0, y: 120.0 }),
+        "the flowing row after the badge scrolled with the content, at {after:?}"
+    );
+    assert_eq!(badge(&mut harness), before);
+    assert_eq!(report.nodes_painted, 0);
+    harness.assert_matches(&split_view(RwSignal::new(30.0)));
 }

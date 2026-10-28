@@ -84,15 +84,30 @@ pub enum Dirty {
 /// The bounds a node painted in the last frame, and the clip it painted under.
 ///
 /// The bounds are the union of the node's paint operation bounds before
-/// clipping. The clip is kept beside them, because damage converts the two to
-/// physical pixels separately: a pixel that a clip edge only partly covers is
-/// still drawn, and clipping the bounds in logical space first would miss it.
+/// clipping, in the paint coordinates the node painted at, which are its
+/// window coordinates translated by `shift`. The clip is kept beside them,
+/// because damage converts the two to physical pixels separately: a pixel
+/// that a clip edge only partly covers is still drawn, and clipping the
+/// bounds in logical space first would miss it.
 #[derive(Copy, Clone, Debug, PartialEq)]
 struct PaintedBounds {
     /// The union of the node's paint operation bounds, before clipping.
     bounds: Rect,
-    /// The rectangle the node's subtree was clipped to.
+    /// The rectangle the node's subtree was clipped to, in window coordinates.
     clip: Rect,
+    /// The paint shift the bounds are relative to, so damage can turn them
+    /// back into window coordinates.
+    shift: Point,
+}
+
+impl PaintedBounds {
+    /// Returns the bounds in window coordinates.
+    fn window_bounds(&self) -> Rect {
+        self.bounds.translated(Point {
+            x: -self.shift.x,
+            y: -self.shift.y,
+        })
+    }
 }
 
 /// One widget and everything the frame needs to know about it.
@@ -124,20 +139,42 @@ struct Node {
     owner: Owner,
     /// How much of the node is out of date.
     dirty: Dirty,
-    /// The node's absolute rectangle, set by the layout pass.
+    /// The node's absolute rectangle, set by the walk that computes absolute
+    /// rectangles, which the layout pass and a scroll offset change run.
     rect: Rect,
     /// The node's content box: its rectangle inside the border and the
-    /// padding, set by the layout pass.
+    /// padding, set by the same walk.
     content: Rect,
-    /// The rectangle the node's subtree is clipped to, set by the layout pass.
+    /// The translation from the node's window coordinates to its paint
+    /// coordinates, which is the sum of the scroll offsets that move it.
+    ///
+    /// The walk that computes absolute rectangles maintains it: a flowing
+    /// child adds the scroll offset of its parent to the parent's shift, and
+    /// an absolutely positioned child inherits the parent's shift. The paint
+    /// pass stores operations and painted bounds in paint coordinates, which
+    /// lets a scroll move content by changing offsets alone: the display list
+    /// wraps the moved children in an offset scope instead of repainting
+    /// them, and damage translates the bounds back with the shift.
+    paint_shift: Point,
+    /// The node's rectangle in paint coordinates, `rect` translated by
+    /// `paint_shift`.
+    ///
+    /// The walk computes it from the layout without the scroll offsets, so a
+    /// scroll leaves it exactly as it was and the walk can tell a node that
+    /// only scrolled from one that has to paint again.
+    paint_rect: Rect,
+    /// The node's content box in paint coordinates, `content` translated by
+    /// `paint_shift`.
+    paint_content: Rect,
+    /// The rectangle the node's subtree is clipped to, set by the same walk.
     clip: Rect,
     /// The translation applied to the node's flowing children after layout,
     /// outside the layout engine. It is how a scroll view moves its content:
-    /// the walk that computes absolute rectangles subtracts it from the
-    /// origin of every child that stays in the flow, and
-    /// [`WidgetTree::set_scroll_offset`] re-runs that walk for the subtree
-    /// alone. An absolutely positioned child is left where its insets place
-    /// it.
+    /// the walk that computes absolute rectangles adds it to the paint shift
+    /// of every child that stays in the flow, which moves the child's window
+    /// rectangle by minus the offset, and [`WidgetTree::set_scroll_offset`]
+    /// re-runs that walk for the subtree alone. An absolutely positioned
+    /// child is left where its insets place it.
     scroll_offset: Point,
     /// The node's interaction state: hovered, pressed, disabled and focus.
     interaction: Interaction,
@@ -319,6 +356,9 @@ impl WidgetTree {
             dirty: Dirty::Clean,
             rect: Rect::default(),
             content: Rect::default(),
+            paint_shift: Point::default(),
+            paint_rect: Rect::default(),
+            paint_content: Rect::default(),
             clip: Rect::default(),
             scroll_offset: Point::default(),
             interaction: Interaction::default(),

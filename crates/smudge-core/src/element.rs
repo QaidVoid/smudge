@@ -848,7 +848,8 @@ impl<W: Widget> Element<W> {
     /// Runs `handler` when the primary pointer button is pressed on the node.
     ///
     /// The position is in logical pixels, relative to the top left of the
-    /// window. Other buttons do not run it.
+    /// node's rectangle, so it does not depend on where layout or a scroll
+    /// view put the node. Other buttons do not run it.
     pub fn on_pointer_down(mut self, handler: impl FnMut(Point) + 'static) -> Self {
         self.handlers.on_pointer_down = Some(Box::new(handler));
         self
@@ -888,9 +889,9 @@ impl<W: Widget> Element<W> {
     /// and the pointer moves, so a node can follow the pointer without being
     /// pressed. While a press is held, hover does not change, and the moves
     /// go to the captured node alone. The position is in logical pixels,
-    /// relative to the top left of the window. The handler runs inside the
-    /// node's owner, so it can write the signals the element's bindings
-    /// read.
+    /// relative to the top left of the node's rectangle. The handler runs
+    /// inside the node's owner, so it can write the signals the element's
+    /// bindings read.
     pub fn on_pointer_move(mut self, handler: impl FnMut(Point) + 'static) -> Self {
         self.handlers.on_pointer_move = Some(Box::new(handler));
         self
@@ -902,8 +903,8 @@ impl<W: Widget> Element<W> {
     /// wherever that happens, which is how a drag ends even when the pointer
     /// is no longer over the node. With no press held, the handler runs when
     /// the release happens over the node as the hover target. The position is
-    /// in logical pixels, relative to the top left of the window. The handler
-    /// runs inside the node's owner, so it can write the signals the
+    /// in logical pixels, relative to the top left of the node's rectangle.
+    /// The handler runs inside the node's owner, so it can write the signals the
     /// element's bindings read.
     pub fn on_pointer_up(mut self, handler: impl FnMut(Point) + 'static) -> Self {
         self.handlers.on_pointer_up = Some(Box::new(handler));

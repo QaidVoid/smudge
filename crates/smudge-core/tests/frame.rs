@@ -7,11 +7,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use smudge_core::app::{App, AppConfig, RepaintMode};
-use smudge_core::element::{Element, show};
-use smudge_core::geometry::{Color, Corners, PixelRect, Rect, Size};
+use smudge_core::element::{Element, Value, show};
+use smudge_core::geometry::{Color, Corners, PixelRect, Point, Rect, Size};
 use smudge_core::paint::{DisplayItem, PaintOp};
-use smudge_core::reactive::{prelude::*, signal_local};
-use smudge_core::style::px;
+use smudge_core::reactive::{RwSignal, prelude::*, signal_local};
+use smudge_core::style::{Edges, Length, px};
 use smudge_core::tree::Dirty;
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 
@@ -594,4 +594,114 @@ fn a_write_the_frame_applies_asks_for_no_further_frame() {
 
     set_dark.set(false);
     assert_eq!(wakes.get(), 1, "a write between frames still asks for one");
+}
+
+/// A view at (10, 20), 60 by 40, that clips and scrolls, holding one box in
+/// the flow and one out of it.
+fn scrolled_scene(offset: impl Into<Value<Point>> + 'static) -> Element<Panel> {
+    panel().column().child(
+        panel()
+            .width(px(60.0))
+            .height(px(40.0))
+            .clip(true)
+            .scroll_offset(offset)
+            .background(Color::rgb(200, 200, 200))
+            .child(
+                panel()
+                    .width(px(30.0))
+                    .height(px(20.0))
+                    .background(Color::BLACK),
+            )
+            .child(
+                panel()
+                    .width(px(10.0))
+                    .height(px(10.0))
+                    .background(Color::rgb(0, 0, 255))
+                    .absolute()
+                    .inset(Edges {
+                        top: Length::px(2.0),
+                        left: Length::px(2.0),
+                        right: Length::Auto,
+                        bottom: Length::Auto,
+                    }),
+            ),
+    )
+}
+
+/// The index of the first item equal to `wanted`.
+fn position_of(items: &[DisplayItem], wanted: &DisplayItem) -> usize {
+    items
+        .iter()
+        .position(|item| item == wanted)
+        .expect("the item is in the list")
+}
+
+#[test]
+fn a_scrolled_view_lists_its_content_under_an_offset_scope() {
+    let mut app = App::new(config(RepaintMode::Damage), || {
+        scrolled_scene(Point { x: 0.0, y: 8.0 })
+    });
+    let first = frame(&mut app);
+
+    // Paint order: the view, then the view's clip around both children, with
+    // the offset scope around the flowing child alone.
+    let view = position_of(
+        &first.items,
+        &DisplayItem::Op(fill(
+            Rect::new(0.0, 0.0, 60.0, 40.0),
+            Color::rgb(200, 200, 200),
+        )),
+    );
+    assert_eq!(
+        first.items[view + 1],
+        DisplayItem::PushClip(Rect::new(0.0, 0.0, 60.0, 40.0)),
+        "the view clips its children inside its border"
+    );
+    assert_eq!(
+        first.items[view + 2],
+        DisplayItem::PushOffset(Point { x: 0.0, y: -8.0 }),
+        "the flowing child is drawn under minus the scroll offset"
+    );
+    assert_eq!(
+        first.items[view + 3],
+        DisplayItem::Op(fill(Rect::new(0.0, 0.0, 30.0, 20.0), Color::BLACK)),
+        "the flowing child's operations are in paint coordinates, so a \
+         scroll leaves them alone"
+    );
+    assert_eq!(first.items[view + 4], DisplayItem::PopOffset);
+    assert_eq!(
+        first.items[view + 5],
+        DisplayItem::Op(fill(Rect::new(2.0, 2.0, 12.0, 12.0), Color::rgb(0, 0, 255))),
+        "the absolutely positioned child is outside the scope, in window coordinates"
+    );
+    assert_eq!(first.items[view + 6], DisplayItem::PopClip);
+}
+
+#[test]
+fn a_scroll_frame_repaints_no_node_but_rebuilds_the_list() {
+    let offset = RwSignal::new(Point { x: 0.0, y: 0.0 });
+    let read = offset.clone();
+    let mut app = App::new(config(RepaintMode::Damage), move || {
+        scrolled_scene(move || read.get())
+    });
+    frame(&mut app);
+
+    offset.set(Point { x: 0.0, y: 30.0 });
+    let scrolled = frame(&mut app);
+
+    assert_eq!(
+        app.stats().nodes_painted,
+        0,
+        "a scroll repaints no node at all"
+    );
+    assert!(
+        !scrolled.damage.is_empty(),
+        "the scroll still damages where the content moved"
+    );
+    assert!(
+        scrolled
+            .items
+            .contains(&DisplayItem::PushOffset(Point { x: 0.0, y: -30.0 })),
+        "the list carries the new offset, so renderers move the content"
+    );
 }

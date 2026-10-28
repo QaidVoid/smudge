@@ -5,6 +5,13 @@
 //! as damage. Regenerating one node's operations touches no other node, so a
 //! frame that changes a single box repaints that box and nothing else.
 //!
+//! Widgets paint in paint coordinates, which leave out the scroll offsets of
+//! the enclosing scroll views. A scrolled subtree keeps its operations while
+//! it scrolls, and the display list pass wraps the moving children in an
+//! offset scope so renderers land them in the window. Damage, which renderers
+//! consume in window coordinates, translates the painted bounds back with the
+//! shift each bounds record carries.
+//!
 //! Damage has to cover the area a node painted last frame as well as the area
 //! it paints now. The first is where stale pixels have to be cleared, and the
 //! second is where new pixels appear. A node that moved therefore damages both
@@ -25,9 +32,10 @@ impl WidgetTree {
     /// changed. The pass adds the bounds the node painted last frame to
     /// `damage`, regenerates the node's operations, and adds the bounds it
     /// paints now unless they equal the old ones, which already cover them. A
-    /// node's painted bounds are the union of its operations'
-    /// bounds, kept together with the clip the layout pass gave it, and the two
-    /// are intersected in physical pixels when the damage is finished. A child
+    /// node's painted bounds are the union of its operations' bounds in the
+    /// node's paint coordinates, kept together with the clip the layout pass
+    /// gave it and the shift the bounds are relative to, and the two are
+    /// intersected in physical pixels when the damage is finished. A child
     /// that overflows a clipping parent therefore damages only the part inside
     /// the clip, including the pixels the clip edge passes through. A node
     /// whose clip is empty, such as a hidden node, keeps no operations and its
@@ -59,15 +67,15 @@ impl WidgetTree {
 
             let old = node.painted.take();
             if let Some(bounds) = old {
-                damage.add_clipped(bounds.bounds, bounds.clip);
+                damage.add_clipped(bounds.window_bounds(), bounds.clip);
             }
 
             node.ops.clear();
             if !node.clip.is_empty() {
                 self.theme.reset_consulted();
                 let cx = PaintCx {
-                    rect: node.rect,
-                    content: node.content,
+                    rect: node.paint_rect,
+                    content: node.paint_content,
                     style: &node.resolved,
                     theme: &self.theme,
                 };
@@ -88,19 +96,20 @@ impl WidgetTree {
                 Some(PaintedBounds {
                     bounds,
                     clip: node.clip,
+                    shift: node.paint_shift,
                 })
             };
             if let Some(bounds) = node.painted
                 && node.painted != old
             {
-                damage.add_clipped(bounds.bounds, bounds.clip);
+                damage.add_clipped(bounds.window_bounds(), bounds.clip);
             }
             node.dirty = Dirty::Clean;
             painted += 1;
         }
 
         for bounds in self.pending_damage.drain(..) {
-            damage.add_clipped(bounds.bounds, bounds.clip);
+            damage.add_clipped(bounds.window_bounds(), bounds.clip);
         }
 
         painted

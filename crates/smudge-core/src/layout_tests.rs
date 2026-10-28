@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::geometry::{Color, Point, Rect, Size};
+use crate::damage::DamageAccumulator;
+use crate::geometry::{Color, Corners, PixelRect, Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::style::{Align, Direction, Edges, Length, Overflow, Position, Style};
 use crate::tree::{Dirty, WidgetId, WidgetTree};
-use crate::widget::{AvailableSpace, MeasureInput, PaintCx, Widget};
+use crate::widget::{AvailableSpace, MeasureInput, PaintCx, Panel, Widget};
 
 /// A widget with no measurement and no paint.
 struct Empty;
@@ -511,5 +512,186 @@ fn a_leaf_with_a_fixed_width_gets_known_width_and_one_without_gets_the_offer() {
         free.iter()
             .any(|input| input.available_width == AvailableSpace::Definite(200.0)),
         "the widget is offered the root's content box, not {free:?}"
+    );
+}
+
+/// A widget that records every paint context it sees and paints its whole
+/// rectangle.
+struct Recorder(Rc<RefCell<Vec<(Rect, Rect)>>>);
+
+impl Widget for Recorder {
+    fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
+        self.0.borrow_mut().push((cx.rect, cx.content));
+        out.push(PaintOp::FillRect {
+            rect: cx.rect,
+            radius: Corners::ZERO,
+            color: Color::BLACK,
+        });
+    }
+}
+
+/// The viewport the scroll tests lay their trees out for.
+const SCROLL_VIEWPORT: Size = Size {
+    width: 200.0,
+    height: 100.0,
+};
+
+/// A clipping view at (30, 10), 80 by 40, with a 100 tall flowing child and
+/// a 10 by 4 child out of the flow, both painting.
+fn painted_scrolled_tree() -> (WidgetTree, WidgetId, WidgetId, WidgetId, WidgetId) {
+    let mut tree = WidgetTree::new();
+    let mut root_style = fixed(200.0, 100.0);
+    root_style.layout.direction = Direction::Column;
+    let root = tree.insert(None, Box::new(Empty), root_style);
+    tree.insert(Some(root), Box::new(Empty), fixed(10.0, 10.0));
+    let mut scrolled_style = fixed(80.0, 40.0);
+    scrolled_style.layout.margin.left = Length::px(30.0);
+    scrolled_style.layout.overflow = Overflow::Clip;
+    let scrolled = tree.insert(Some(root), Box::new(Empty), scrolled_style);
+    let flowing = tree.insert(
+        Some(scrolled),
+        Box::new(Recorder(Rc::new(RefCell::new(Vec::new())))),
+        fixed(80.0, 100.0),
+    );
+    let mut absolute_style = fixed(4.0, 10.0);
+    absolute_style.layout.position = Position::Absolute;
+    absolute_style.layout.inset.top = Length::px(0.0);
+    absolute_style.layout.inset.right = Length::px(0.0);
+    absolute_style.paint.background = Some(Color::BLACK.into());
+    let absolute = tree.insert(Some(scrolled), Box::new(Panel), absolute_style);
+    tree.layout(SCROLL_VIEWPORT);
+    (tree, root, scrolled, flowing, absolute)
+}
+
+/// Paints one frame and leaves the tree clean, the way a frame ends.
+fn paint_one_frame(tree: &mut WidgetTree, damage: &mut DamageAccumulator) {
+    tree.paint(damage);
+    tree.clear_dirty();
+    damage.clear();
+}
+
+#[test]
+fn a_scroll_repaints_no_moved_node_and_damages_both_inks() {
+    let mut damage = DamageAccumulator::new();
+    let (mut tree, _, scrolled, flowing, _) = painted_scrolled_tree();
+    paint_one_frame(&mut tree, &mut damage);
+
+    tree.set_scroll_offset(scrolled, Point { x: 0.0, y: 25.0 });
+
+    assert_eq!(
+        tree.dirty(flowing),
+        Some(Dirty::Clean),
+        "a scroll keeps the moved child's operations, so it marks nothing for paint"
+    );
+
+    let painted = tree.paint(&mut damage);
+    let rects = damage.finish(1.0, 200, 100).to_vec();
+
+    assert_eq!(painted, 0, "the scroll frame repaints no node");
+    assert_eq!(
+        rects,
+        vec![PixelRect {
+            x: 30,
+            y: 10,
+            width: 80,
+            height: 40,
+        }],
+        "the damage covers the view, where the ink left and arrived"
+    );
+}
+
+#[test]
+fn the_paint_pass_gives_widgets_paint_coordinates() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut tree = WidgetTree::new();
+    let mut root_style = fixed(200.0, 100.0);
+    root_style.layout.direction = Direction::Column;
+    let root = tree.insert(None, Box::new(Empty), root_style);
+    tree.insert(Some(root), Box::new(Empty), fixed(10.0, 10.0));
+    let mut scrolled_style = fixed(80.0, 40.0);
+    scrolled_style.layout.margin.left = Length::px(30.0);
+    scrolled_style.layout.overflow = Overflow::Clip;
+    let scrolled = tree.insert(Some(root), Box::new(Empty), scrolled_style);
+    let flowing = tree.insert(
+        Some(scrolled),
+        Box::new(Recorder(Rc::clone(&seen))),
+        fixed(80.0, 100.0),
+    );
+
+    let mut damage = DamageAccumulator::new();
+    tree.layout(SCROLL_VIEWPORT);
+    tree.paint(&mut damage);
+    tree.clear_dirty();
+    damage.clear();
+
+    assert_eq!(
+        seen.borrow().last(),
+        Some(&(
+            Rect::new(30.0, 10.0, 110.0, 110.0),
+            Rect::new(30.0, 10.0, 110.0, 110.0),
+        )),
+        "outside a scrolled view the paint context is the window rectangle"
+    );
+
+    tree.set_scroll_offset(scrolled, Point { x: 0.0, y: 25.0 });
+    tree.apply_paint(flowing, |paint| {
+        paint.background = Some(Color::BLACK.into())
+    });
+    tree.paint(&mut damage);
+
+    assert_eq!(
+        seen.borrow().last(),
+        Some(&(
+            Rect::new(30.0, 10.0, 110.0, 110.0),
+            Rect::new(30.0, 10.0, 110.0, 110.0),
+        )),
+        "a repaint after a scroll sees the same paint rectangle"
+    );
+}
+
+#[test]
+fn a_scroll_without_painted_content_damages_nothing() {
+    let (mut tree, _, scrolled, _, _) = scrolled_tree();
+    let mut damage = DamageAccumulator::new();
+    paint_one_frame(&mut tree, &mut damage);
+
+    tree.set_scroll_offset(scrolled, Point { x: 0.0, y: 25.0 });
+
+    let painted = tree.paint(&mut damage);
+    let rects = damage.finish(1.0, 200, 100).to_vec();
+
+    assert_eq!(painted, 0);
+    assert!(rects.is_empty(), "nothing painted, so nothing is damaged");
+}
+
+#[test]
+fn a_scroll_that_moves_a_nested_clip_repaints_nothing_inside_it() {
+    let mut damage = DamageAccumulator::new();
+    let (mut tree, _, scrolled, flowing, _) = painted_scrolled_tree();
+    tree.apply_layout(flowing, |layout| {
+        layout.overflow = Overflow::Clip;
+        layout.height = Length::px(20.0);
+    });
+    let inner = tree.insert(
+        Some(flowing),
+        Box::new(Recorder(Rc::new(RefCell::new(Vec::new())))),
+        fixed(60.0, 20.0),
+    );
+    tree.layout(SCROLL_VIEWPORT);
+    paint_one_frame(&mut tree, &mut damage);
+
+    // The card spans 10 to 30 and the view 10 to 50, so a scroll by 5 cuts
+    // the card's clip to 10 to 25.
+    tree.set_scroll_offset(scrolled, Point { x: 0.0, y: 5.0 });
+
+    assert_eq!(
+        tree.dirty(inner),
+        Some(Dirty::Clean),
+        "the clip moved with the card, which the operations do not hold"
+    );
+    assert_eq!(
+        tree.paint(&mut damage),
+        0,
+        "the scroll frame repaints no node"
     );
 }

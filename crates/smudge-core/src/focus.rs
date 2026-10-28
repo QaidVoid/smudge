@@ -6,7 +6,7 @@
 //! focus ring can draw for keyboard users alone. A pointer press turns the
 //! mode off again.
 
-use crate::geometry::Rect;
+use crate::geometry::{Point, Rect};
 use crate::input::{Handled, Key, KeyEvent};
 use crate::widget::Widget;
 
@@ -300,14 +300,21 @@ impl WidgetTree {
     /// Returns the area the focused widget reports to the input method, when
     /// it reports one.
     ///
-    /// The rectangle is in window coordinates, as the widget's paint
-    /// operations are. A focused node that has since become disabled or
-    /// hidden reports none, as it would hear no key.
+    /// The widget paints in paint coordinates, so the rectangle it reports is
+    /// in paint coordinates too, and this translates it back into window
+    /// coordinates with the node's shift. A focused node that has since
+    /// become disabled or hidden reports none, as it would hear no key.
     pub(crate) fn ime_area(&self) -> Option<Rect> {
         let focused = self.focused.filter(|&id| self.can_hold_focus(id))?;
         let node = self.nodes.get(focused)?;
+        let shift = node.paint_shift;
         let widget: &dyn Widget = node.widget.as_ref();
-        widget.ime_area()
+        widget.ime_area().map(|area| {
+            area.translated(Point {
+                x: -shift.x,
+                y: -shift.y,
+            })
+        })
     }
 
     /// Returns the next focusable node in tree order after `from`, or the

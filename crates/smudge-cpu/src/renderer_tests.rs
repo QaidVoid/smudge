@@ -387,7 +387,7 @@ fn border_outer_edge_follows_a_background_with_the_same_radius() {
 fn op_under_an_offset_draws_at_the_offset() {
     let mut renderer = CpuRenderer::new(40, 40);
     let mut list = DisplayList::new();
-    list.push_offset(Point { x: 10.0, y: 6.5 });
+    list.push_offset(Point { x: 10.0, y: 6.0 });
     list.push_op(fill(Rect::new(2.0, 2.0, 20.0, 20.0), Color::BLACK));
     list.pop_offset();
     list.push_op(fill(Rect::new(30.0, 30.0, 40.0, 40.0), Color::BLACK));
@@ -395,11 +395,26 @@ fn op_under_an_offset_draws_at_the_offset() {
 
     render(&mut renderer, &list, &[surface(40)], 1.0);
 
-    assert_eq!(pixel(&renderer, 12, 8), BLACK, "inside the moved fill");
-    assert_eq!(pixel(&renderer, 30, 8), BLACK, "at the moved fill's edge");
+    assert_eq!(
+        pixel(&renderer, 12, 8),
+        BLACK,
+        "the moved fill's first pixel"
+    );
+    assert_eq!(
+        pixel(&renderer, 29, 25),
+        BLACK,
+        "the moved fill's last pixel"
+    );
     assert_eq!(pixel(&renderer, 11, 8), WHITE, "left of the moved fill");
-    assert_eq!(pixel(&renderer, 31, 37), BLACK, "outside any offset");
-    assert_eq!(pixel(&renderer, 30, 36), WHITE, "above the unmoved fill");
+    assert_eq!(pixel(&renderer, 12, 7), WHITE, "above the moved fill");
+    assert_eq!(pixel(&renderer, 30, 8), WHITE, "right of the moved fill");
+    assert_eq!(pixel(&renderer, 12, 26), WHITE, "below the moved fill");
+    assert_eq!(
+        pixel(&renderer, 30, 30),
+        BLACK,
+        "the unmoved fill's first pixel"
+    );
+    assert_eq!(pixel(&renderer, 29, 30), WHITE, "left of the unmoved fill");
 }
 
 #[test]
@@ -471,11 +486,11 @@ fn an_offset_at_a_fractional_scale_lands_on_physical_pixels() {
 #[test]
 fn text_under_an_offset_draws_the_same_bytes_as_translated_text() {
     TextSystem::bundled_only().install();
-    let run = TextSystem::with(|_| {
-        TextLayout::new("Smudge", &TextStyle::default(), None)
-            .glyph_runs_at(Point { x: 4.0, y: 4.0 }, Color::BLACK)
-    });
-    let run = run.into_iter().next().expect("the label shapes one run");
+    let run = TextLayout::new("Smudge", &TextStyle::default(), None)
+        .glyph_runs_at(Point { x: 4.0, y: 4.0 }, Color::BLACK)
+        .into_iter()
+        .next()
+        .expect("the label shapes one run");
     let moved = {
         let mut glyphs = run.glyphs.clone();
         for glyph in &mut glyphs {

@@ -611,6 +611,99 @@ fn a_drag_sends_every_move_and_the_release_to_the_pressed_node() {
 }
 
 #[test]
+fn a_press_held_across_a_scroll_hears_positions_from_where_the_node_went() {
+    let (moves, on_move) = point_log();
+    let (ups, on_up) = point_log();
+    let (offset, set_offset) = reactive::signal_local(0.0_f32);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .height(px(40.0))
+                .clip(true)
+                .scroll_offset(move || Point {
+                    x: offset.get(),
+                    y: 0.0,
+                })
+                .child(
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .on_press(|| {})
+                        .on_pointer_move(on_move)
+                        .on_pointer_up(on_up),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 20.0, y: 5.0 });
+    set_offset.set(10.0);
+    harness.frame();
+    harness.move_to(Point { x: 20.0, y: 5.0 });
+    harness.button_up(Point { x: 20.0, y: 5.0 });
+
+    assert_eq!(
+        *moves.borrow(),
+        [Point { x: 20.0, y: 5.0 }, Point { x: 30.0, y: 5.0 }],
+        "the node moved 10 to the left under the held pointer"
+    );
+    assert_eq!(*ups.borrow(), [Point { x: 30.0, y: 5.0 }]);
+}
+
+#[test]
+fn pointer_handlers_measure_from_the_node_and_follow_its_scroll() {
+    let (downs, on_down) = point_log();
+    let (moves, on_move) = point_log();
+    let (ups, on_up) = point_log();
+    let (offset, set_offset) = reactive::signal_local(0.0_f32);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .padding(px(10.0))
+                .height(px(40.0))
+                .clip(true)
+                .scroll_offset(move || Point {
+                    x: offset.get(),
+                    y: 0.0,
+                })
+                .child(
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .margin(px(5.0))
+                        .on_pointer_down(on_down)
+                        .on_pointer_move(on_move)
+                        .on_pointer_up(on_up),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 18.0, y: 17.0 });
+    harness.move_to(Point { x: 30.0, y: 20.0 });
+    harness.button_up(Point { x: 30.0, y: 20.0 });
+    set_offset.set(10.0);
+    harness.frame();
+    harness.button_down(Point { x: 18.0, y: 17.0 });
+
+    assert_eq!(
+        *downs.borrow(),
+        [Point { x: 3.0, y: 2.0 }, Point { x: 13.0, y: 2.0 }],
+        "a press is relative to the node, which the scroll moved 10 to the left"
+    );
+    assert_eq!(
+        *moves.borrow(),
+        [
+            Point { x: 3.0, y: 2.0 },
+            Point { x: 15.0, y: 5.0 },
+            Point { x: 13.0, y: 2.0 }
+        ],
+        "every move a press brings is relative to the node too"
+    );
+    assert_eq!(*ups.borrow(), [Point { x: 15.0, y: 5.0 }]);
+}
+
+#[test]
 fn a_disabled_node_hears_no_moves_or_release() {
     let (moves, on_move) = point_log();
     let (ups, on_up) = point_log();

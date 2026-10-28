@@ -79,14 +79,25 @@ pub trait Widget: Any + type_name::TypeName {
         None
     }
 
-    /// Appends this widget's paint operations, in absolute logical coordinates.
+    /// Appends this widget's paint operations, in paint coordinates.
     ///
-    /// `cx` carries the node's rectangle after layout and its resolved style.
-    /// Paint this node only: its children paint themselves.
+    /// Paint coordinates are logical window coordinates with the scroll
+    /// offsets of the enclosing scroll views left out, so outside a scrolled
+    /// subtree they are the window's own. A scroll then moves the operations
+    /// without asking the widget to paint again.
+    ///
+    /// `cx` carries the node's rectangle after layout, in paint coordinates,
+    /// and its resolved style. Paint this node only: its children paint
+    /// themselves.
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>);
 
     /// Returns the rectangle the input method should anchor to while this
-    /// widget holds the keyboard focus, in window coordinates.
+    /// widget holds the keyboard focus, in the paint coordinates of
+    /// [`Widget::paint`].
+    ///
+    /// The app reports the rectangle in window coordinates: it moves the
+    /// rectangle by minus the scroll offsets that move the widget at the time
+    /// it asks.
     ///
     /// The app asks only the focused widget and reports [`None`] when nothing
     /// is focused or the widget has no area to report. The default reports
@@ -128,11 +139,13 @@ pub(crate) mod type_name {
 
 /// What a widget paints from.
 pub struct PaintCx<'a> {
-    /// The node's absolute rectangle in logical pixels, as the last layout pass
-    /// left it.
+    /// The node's rectangle in logical pixels, in the paint coordinates of
+    /// [`Widget::paint`], as the last layout pass left it. A scroll does not
+    /// change it.
     pub rect: Rect,
-    /// The node's content box in logical pixels: its rectangle inside the
-    /// border and the padding, as the last layout pass left it.
+    /// The node's content box in logical pixels, in paint coordinates: its
+    /// rectangle inside the border and the padding, as the last layout pass
+    /// left it.
     pub content: Rect,
     /// The node's resolved style.
     pub style: &'a Style,

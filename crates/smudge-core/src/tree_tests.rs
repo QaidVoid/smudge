@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::geometry::{Color, Rect, Size};
+use crate::geometry::{Color, Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{self, Owner, RenderEffect, prelude::*};
 use crate::style::{Edges, Length, Position, Style};
@@ -162,13 +162,18 @@ fn removing_a_painted_node_damages_its_painted_bounds() {
 
     let bounds = Rect::new(4.0, 8.0, 24.0, 18.0);
     let clip = Rect::new(0.0, 0.0, 40.0, 30.0);
-    tree.nodes[child].painted = Some(PaintedBounds { bounds, clip });
+    let painted = PaintedBounds {
+        bounds,
+        clip,
+        shift: Point::default(),
+    };
+    tree.nodes[child].painted = Some(painted);
 
     tree.remove(child);
 
     assert_eq!(
         tree.pending_damage,
-        vec![PaintedBounds { bounds, clip }],
+        vec![painted],
         "the area the node painted last frame needs a repaint"
     );
 }
