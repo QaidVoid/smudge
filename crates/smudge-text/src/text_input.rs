@@ -32,6 +32,7 @@ use smudge_core::theme::ColorToken;
 use smudge_core::timer::{self, TimerHandle};
 use smudge_core::tree::Dirty;
 use smudge_core::widget::{AvailableSpace, MeasureInput, PaintCx, Widget};
+use smudge_core::window::Cursor;
 use web_time::Instant;
 
 use crate::input::Editor;
@@ -571,6 +572,7 @@ pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
 
     Element::new(TextInput::new(Rc::clone(&chrome)))
         .clip(true)
+        .cursor(Cursor::Text)
         .bind(current_text_style, apply_ambient_style)
         .bind(move || value.get(), apply_value)
         .bind(move || edits_chrome.edits.get(), apply_edits)
