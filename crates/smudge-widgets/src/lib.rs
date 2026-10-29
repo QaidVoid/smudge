@@ -1,10 +1,11 @@
-//! The core widget set: layout containers, the button, the scroll view and
-//! the virtual list.
+//! The core widget set: layout containers, the button, the image, the scroll
+//! view and the virtual list.
 //!
-//! Every widget here is built from the [`Panel`](smudge_core::widget::Panel)
-//! the core provides and the [`Label`](smudge_text::Label) the text crate
-//! provides, styled with theme tokens by default. A theme switch therefore
-//! repaints what these widgets show without any extra code.
+//! The widgets here are built from the [`Panel`](smudge_core::widget::Panel)
+//! the core provides, the [`Label`](smudge_text::Label) the text crate
+//! provides, and the [`Widget`](smudge_core::widget::Widget) trait directly,
+//! styled with theme tokens by default. A theme switch therefore repaints
+//! what these widgets show without any extra code.
 //!
 //! ```
 //! use smudge_core::geometry::Size;
@@ -25,10 +26,12 @@
 
 mod button;
 mod containers;
+mod image;
 mod scroll;
 mod virtual_list;
 
 pub use button::{ButtonExt, button};
 pub use containers::{column, row, spacer, stack};
+pub use image::{ImageView, image};
 pub use scroll::{ScrollExt, ScrollView, scroll};
 pub use virtual_list::virtual_list;

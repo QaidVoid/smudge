@@ -28,6 +28,7 @@ use smudge_cpu::CpuRenderer;
 use smudge_gpu::wgpu::{Device, Queue};
 use smudge_gpu::{GpuRenderer, wgpu};
 use smudge_text::{LabelExt, TextSystem, label};
+use smudge_widgets::image;
 
 /// The viewport every scene mounts in, in logical pixels.
 const VIEWPORT: Size = Size {
@@ -152,6 +153,20 @@ const TOLERANCES: &[Tolerance] = &[
         max: 93,
         over_eight: 0.02633,
     },
+    Tolerance {
+        scene: "images",
+        scale: 1.0,
+        mean: 0.1571,
+        max: 78,
+        over_eight: 0.0035,
+    },
+    Tolerance {
+        scene: "images",
+        scale: 2.0,
+        mean: 0.0984,
+        max: 75,
+        over_eight: 0.00206,
+    },
 ];
 
 /// The mean, maximum and over-8 difference of one channel over one image.
@@ -222,6 +237,69 @@ fn both_renderers_draw_the_feature_subset_within_the_calibrated_tolerances() {
         violations.is_empty(),
         "the renderers disagree past the calibrated tolerances:\n{}",
         violations.join("\n")
+    );
+}
+
+#[test]
+fn an_evicted_image_uploads_again_and_renders_identically() {
+    let Some((device, queue, adapter)) = headless_device() else {
+        eprintln!("skipping: no GPU adapter available for the headless renderer");
+        return;
+    };
+    eprintln!("parity adapter: {adapter}");
+
+    // One frame with the images, then three frames that draw other images
+    // of the same sizes, which drops the cached brushes at the start of the
+    // third frame after the images' last use, then the first images again.
+    // The same `Image` values come back, so their ids are the ones the cache
+    // dropped: the re-rendered frame must match the first byte for byte, and
+    // must not show the stand-ins that filled the frames between. A fresh
+    // renderer's cold upload of the same frame must match both.
+    let config = || AppConfig {
+        viewport: VIEWPORT,
+        scale: 1.0,
+        clear_color: Color::WHITE,
+        repaint: RepaintMode::Full,
+    };
+    let (width, height) = (VIEWPORT.width as u32, VIEWPORT.height as u32);
+    let mut gpu = GpuRenderer::new(device.clone(), queue.clone(), width, height);
+    let sources = image_sources(0);
+    let stand_ins = image_sources(97);
+
+    let mut app = App::new(config(), {
+        let sources = sources.clone();
+        move || images_of(sources)
+    });
+    let frame = app.frame();
+    gpu.render(&frame);
+    let first = gpu.read_pixels();
+
+    let mut between = Vec::new();
+    for _ in 0..3 {
+        let mut idle = App::new(config(), {
+            let stand_ins = stand_ins.clone();
+            move || images_of(stand_ins)
+        });
+        gpu.render(&idle.frame());
+        between = gpu.read_pixels();
+    }
+    assert_ne!(first, between, "the stand-ins draw different pixels");
+
+    let mut app = App::new(config(), move || images_of(sources));
+    let frame = app.frame();
+    gpu.render(&frame);
+    let again = gpu.read_pixels();
+    assert_eq!(
+        first, again,
+        "an image that outlived its cache entry renders the same bytes"
+    );
+
+    let mut fresh = GpuRenderer::new(device, queue, width, height);
+    fresh.render(&frame);
+    assert_eq!(
+        fresh.read_pixels(),
+        again,
+        "the re-upload matches a cold upload"
     );
 }
 
@@ -562,6 +640,71 @@ fn box_grid() -> Element<Panel> {
     panel().align_items(Align::Start).child(grid)
 }
 
+/// A gradient image stretched over rounded rects: one at a fractional
+/// position, one translucent, one stretched from a small source, and one
+/// clipped by a big radius, so sampling, blending and clipping all differ
+/// between the rasterizers.
+fn images() -> Element<Panel> {
+    images_of(image_sources(0))
+}
+
+/// The four sources of [`images`], their seeds shifted by `shift`, so two
+/// sets of the same sizes can draw different pixels.
+fn image_sources(shift: u8) -> [smudge_core::image::Image; 4] {
+    [
+        gradient_image(24, 16, 10u8.wrapping_add(shift)),
+        gradient_image(8, 8, 140u8.wrapping_add(shift)),
+        gradient_image(3, 3, 90u8.wrapping_add(shift)),
+        gradient_image(24, 16, 30u8.wrapping_add(shift)),
+    ]
+}
+
+/// The scene of [`images`], drawing `sources` in its four places.
+fn images_of(sources: [smudge_core::image::Image; 4]) -> Element<Panel> {
+    let positioned = |left: f32, top: f32, source: smudge_core::image::Image, radius: f32| {
+        let width = source.width();
+        let height = source.height();
+        image(Some(source))
+            .absolute()
+            .width(px(width as f32 * 2.0))
+            .height(px(height as f32 * 2.0))
+            .corner_radius(radius)
+            .inset(Edges {
+                left: Length::px(left),
+                top: Length::px(top),
+                right: Length::auto(),
+                bottom: Length::auto(),
+            })
+    };
+    let [first, second, third, fourth] = sources;
+    panel()
+        .child(positioned(6.5, 10.0, first, 5.0))
+        .child(positioned(80.0, 12.0, second, 8.0))
+        .child(positioned(120.0, 8.0, third, 0.0))
+        .child(positioned(20.0, 80.0, fourth, 12.0))
+}
+
+/// A `width` by `height` gradient image seeded by `seed`, with a translucent
+/// band so blending has something to interpolate.
+///
+/// Each straight channel stays within 0 to 255 before it is multiplied by
+/// the alpha, so every pixel is valid premultiplied data.
+fn gradient_image(width: u32, height: u32, seed: u8) -> smudge_core::image::Image {
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    let seed = u32::from(seed);
+    for y in 0..height {
+        for x in 0..width {
+            let alpha: u32 = if (x + y) % 3 == 0 { 150 } else { 255 };
+            pixels.push(((seed + x * 9) % 256) as u8);
+            pixels.push(((seed * 3 + y * 11) % 256) as u8);
+            pixels.push(((seed * 7 + 40) % 256) as u8);
+            pixels.push(alpha as u8);
+        }
+    }
+    smudge_core::image::Image::from_straight_rgba(width, height, pixels)
+        .expect("the gradient fills the buffer")
+}
+
 /// The scenes of the subset, in the order they run.
 fn scenes() -> &'static [Scene] {
     &[
@@ -571,6 +714,7 @@ fn scenes() -> &'static [Scene] {
         ("nested clips", nested_clips),
         ("text", text_lines),
         ("box grid", box_grid),
+        ("images", images),
     ]
 }
 
