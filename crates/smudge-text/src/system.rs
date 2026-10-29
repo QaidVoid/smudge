@@ -135,6 +135,7 @@ impl TextSystem {
             .expect("a font file yields at least one family");
 
         self.fall_back_to(fontique::GenericFamily::SansSerif, sans_family);
+        self.fall_back_to(fontique::GenericFamily::SystemUi, sans_family);
         self.fall_back_to(fontique::GenericFamily::Monospace, mono_family);
     }
 
