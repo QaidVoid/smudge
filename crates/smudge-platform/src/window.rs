@@ -32,16 +32,19 @@ use crate::renderer::RendererChoice;
 #[cfg(feature = "gpu")]
 use smudge_gpu::AdapterSummary;
 
-/// The user event the run loop carries, of which the accessibility adapter
-/// sends the only kind.
+/// The user event the run loop carries.
 ///
-/// With the `a11y` feature off the run loop carries `()` and nothing is ever
-/// sent.
-#[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
+/// Every build carries the wake, which a message from another thread posts to
+/// ask for the frame that applies it. With the `a11y` feature the
+/// accessibility adapter sends its events through the same loop.
 pub(crate) enum PlatformEvent {
+    /// A message waits for the app: ask for a frame when the app has work
+    /// only a frame can finish.
+    Wake,
     /// An event from the accessibility adapter: a request for the initial
     /// tree, an action a user ran in an assistive tool, or a notice that the
     /// platform stopped reading the tree.
+    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     A11y(accesskit_winit::Event),
 }
 
@@ -53,10 +56,7 @@ impl From<accesskit_winit::Event> for PlatformEvent {
 }
 
 /// The user event type the run loop is built with.
-#[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
 type UserEvent = PlatformEvent;
-#[cfg(any(not(feature = "a11y"), target_arch = "wasm32"))]
-type UserEvent = ();
 
 /// The measurement hook that receives one pair of statistics per presented
 /// frame.
@@ -178,8 +178,9 @@ impl std::fmt::Debug for WindowOptions {
 ///
 /// `build` runs once, when the window first appears, and mounts the element it
 /// returns. A frame runs after a reactive signal wakes an effect, after a
-/// resize or a scale change, and once per frame while a tick is installed.
-/// Otherwise the window waits for the next event.
+/// message from another thread arrives, after a resize or a scale change, and
+/// once per frame while a tick is installed. Otherwise the window waits for
+/// the next event.
 ///
 /// Call this from the main thread. The event loop takes over the calling
 /// thread until the window closes.
@@ -314,7 +315,6 @@ pub fn run_with<E: IntoElement + 'static>(
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .map_err(PlatformError::EventLoop)?;
-    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     let proxy = event_loop.create_proxy();
     // The web loop takes the state by value, so nothing mutates it here.
     #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
@@ -325,7 +325,6 @@ pub fn run_with<E: IntoElement + 'static>(
         configure: Some(Box::new(configure)),
         state: None,
         error: None,
-        #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         proxy,
     };
     // The web loop runs on the browser's own event loop and never runs to
@@ -367,8 +366,8 @@ where
     state: Option<WindowState>,
     /// The first error that stopped the run.
     error: Option<PlatformError>,
-    /// The sender the accessibility adapter posts its events through.
-    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
+    /// The sender that messages from other threads and the accessibility
+    /// adapter post their events through.
     proxy: winit::event_loop::EventLoopProxy<UserEvent>,
 }
 
@@ -498,6 +497,13 @@ where
         if let Some(configure) = self.configure.take() {
             configure(&mut app);
         }
+
+        // A message from another thread posts a wake through the proxy, so a
+        // sending thread never polls and the window never does either.
+        let proxy = self.proxy.clone();
+        app.set_remote_waker(move || {
+            let _ = proxy.send_event(PlatformEvent::Wake);
+        });
 
         let (width, height) = app.surface_size();
         let presenter = create_presenter(
@@ -748,10 +754,18 @@ where
         }
     }
 
-    #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
-        let UserEvent::A11y(event) = event;
-        self.handle_a11y_event(event);
+        match event {
+            PlatformEvent::Wake => {
+                if let Some(state) = self.state.as_mut()
+                    && state.app.needs_frame()
+                {
+                    state.window.request_redraw();
+                }
+            }
+            #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
+            PlatformEvent::A11y(event) => self.handle_a11y_event(event),
+        }
     }
 
     fn window_event(
