@@ -23,5 +23,6 @@ pub mod timer;
 pub mod tree;
 pub mod variants;
 pub mod widget;
+pub mod window;
 
 pub use app::{App, AppConfig, FrameOutput, FrameStats, RepaintMode};

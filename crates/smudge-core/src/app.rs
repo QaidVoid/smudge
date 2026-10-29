@@ -156,6 +156,9 @@ pub struct App {
     /// The channels other threads send values through, and the book the
     /// frame drains them from.
     channels: Rc<RefCell<crate::channel::ChannelBook>>,
+    /// The window commands handlers queue and the state the window reports,
+    /// shared with every owner of the tree.
+    window: Rc<RefCell<crate::window::WindowBook>>,
     /// Whether the next frame repaints the whole surface.
     force_full: bool,
     /// The owner that the build closure, the signals it created, every
@@ -203,6 +206,10 @@ impl App {
         root.data()
             .channel_book
             .replace(Some(Rc::downgrade(&channels)));
+        let window = crate::window::new_book(&root);
+        root.data()
+            .window_book
+            .replace(Some(Rc::downgrade(&window)));
         let mut tree = WidgetTree::new();
         let queue = UpdateQueue::default();
         root.with(|| mount(build().into_any(), &mut tree, &queue, None));
@@ -219,6 +226,7 @@ impl App {
             tick: None,
             timers,
             channels,
+            window,
             force_full: true,
             _root: root,
             clipboard: None,
@@ -373,6 +381,54 @@ impl App {
     /// before this call get the waker too, and later ones start with it.
     pub fn set_remote_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
         crate::channel::install_waker(&self.channels, std::sync::Arc::new(waker));
+    }
+
+    /// Ends the held press as if it had been cancelled, without running the
+    /// pressed node's `on_press`.
+    ///
+    /// The windowing layer calls this when the window system takes over the
+    /// press, as it does for an interactive move or resize: the release of
+    /// that press never reaches the app, so without this the press would stay
+    /// captured and hover would stop following the pointer. The pressed node
+    /// loses its pressed state and hears `on_pointer_up`, so a drag it started
+    /// ends. With no press held it does nothing.
+    pub fn release_press(&mut self) {
+        self.tree.release_press();
+    }
+
+    /// Takes every window command queued so far, in the order the handlers
+    /// queued them.
+    ///
+    /// The windowing layer calls this after it hands an input event over, so
+    /// a command starts its move or resize while the press that queued it is
+    /// still being handled. A headless application has no windowing layer and
+    /// no need to take the commands, so they stay queued for a test to
+    /// inspect. Taking them empties the queue.
+    pub fn take_window_commands(&mut self) -> Vec<crate::window::WindowCommand> {
+        crate::window::take_commands(&self.window)
+    }
+
+    /// Replaces the window state the application's
+    /// [`maximized`](crate::window::maximized) reads.
+    ///
+    /// The windowing layer calls this when the window's maximized state may
+    /// have changed. An equal report changes nothing, so a binding that reads
+    /// the state reruns only on a real change.
+    pub fn set_window_state(&mut self, state: crate::window::WindowState) {
+        crate::window::set_state(&self.window, state);
+    }
+
+    /// Returns the cursor the pointer should show.
+    ///
+    /// This is the cursor of the deepest enabled node under the pointer that
+    /// set one with the [`cursor`](crate::element::Element::cursor) builder,
+    /// or [`Cursor::Default`](crate::window::Cursor::Default) when no node
+    /// under the pointer sets one or the pointer left the window. While a
+    /// press is held, the walk starts at the pressed node instead. The
+    /// windowing layer reads it after every input event and every frame and
+    /// shows it on the window.
+    pub fn cursor(&self) -> crate::window::Cursor {
+        self.tree.cursor()
     }
 
     /// Sets a callback that runs once at the start of every frame with the

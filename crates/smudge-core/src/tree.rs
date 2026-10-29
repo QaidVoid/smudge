@@ -178,6 +178,9 @@ struct Node {
     scroll_offset: Point,
     /// The node's interaction state: hovered, pressed, disabled and focus.
     interaction: Interaction,
+    /// The cursor the node's element set for the pointer over it, or `None`
+    /// when the node leaves the choice to an ancestor or the platform.
+    cursor: Option<crate::window::Cursor>,
     /// The input handlers the node owns, set by its element's builders.
     handlers: Handlers,
     /// The role the element's builders set for the accessibility projection,
@@ -362,6 +365,7 @@ impl WidgetTree {
             clip: Rect::default(),
             scroll_offset: Point::default(),
             interaction: Interaction::default(),
+            cursor: None,
             handlers: Handlers::default(),
             a11y_role: None,
             a11y_label: None,

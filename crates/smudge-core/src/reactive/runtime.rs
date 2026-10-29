@@ -93,6 +93,10 @@ pub(crate) struct OwnerData {
     /// root owner when the app is created. A channel registers into the book
     /// of the root its owner chain leads to.
     pub(crate) channel_book: RefCell<Option<Weak<RefCell<crate::channel::ChannelBook>>>>,
+    /// The window book of the app this owner tree belongs to, set on the
+    /// root owner when the app is created. A window command queues into the
+    /// book of the root its owner chain leads to.
+    pub(crate) window_book: RefCell<Option<Weak<RefCell<crate::window::WindowBook>>>>,
 }
 
 impl OwnerData {
@@ -143,6 +147,7 @@ impl OwnerData {
             timer_book: RefCell::new(None),
             clipboard: RefCell::new(None),
             channel_book: RefCell::new(None),
+            window_book: RefCell::new(None),
         });
         self.adopt(&inner);
         Owner { inner }
@@ -193,6 +198,10 @@ pub(crate) enum Node {
         state: MemoState,
         /// Bumped when a recomputation changes the value.
         version: u32,
+        /// The owner that was current when the memo was created. Only
+        /// [`observer_owner`] reads it; a recomputation does not make it
+        /// current.
+        owner: Option<Weak<OwnerData>>,
     },
     /// A function that reruns when a source it read changes.
     Effect {
@@ -208,6 +217,10 @@ pub(crate) enum Node {
         generation: u64,
         /// The root scope a wake of this effect reports to.
         scope: Rc<Scope>,
+        /// The owner that was current when the effect was created. Only
+        /// [`observer_owner`] reads it; a rerun does not make it current, so
+        /// what a rerun creates is not adopted by it.
+        owner: Option<Weak<OwnerData>>,
     },
 }
 
@@ -394,6 +407,7 @@ impl Runtime {
             sources: Vec::new(),
             state: MemoState::Dirty,
             version: 0,
+            owner: self.current.upgrade().as_ref().map(Rc::downgrade),
         });
         self.register_node(id);
         id
@@ -401,6 +415,7 @@ impl Runtime {
 
     /// Creates an effect node and returns its id.
     pub(crate) fn new_effect(&mut self, cell: Rc<EffectCell>, scope: Rc<Scope>) -> NodeId {
+        let owner = self.current.upgrade().as_ref().map(Rc::downgrade);
         let id = self.arena.insert(Node::Effect {
             cell,
             sources: Vec::new(),
@@ -408,6 +423,7 @@ impl Runtime {
             runs: 0,
             generation: u64::MAX,
             scope,
+            owner,
         });
         self.register_node(id);
         id
@@ -660,6 +676,18 @@ impl Runtime {
         }
     }
 
+    /// Returns the live owner that was current when the memo or effect `id`
+    /// was created.
+    fn creation_owner(&self, id: NodeId) -> Option<Rc<OwnerData>> {
+        match self.node(id) {
+            Some(Node::Effect { owner, .. } | Node::Memo { owner, .. }) => owner
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .filter(|owner| !owner.cleaned.get()),
+            _ => None,
+        }
+    }
+
     /// Unsubscribes the reader from its old sources, keeping the list's
     /// allocation, so the run ahead records the sources it reaches.
     fn clear_sources(&mut self, id: NodeId) {
@@ -846,6 +874,16 @@ pub(crate) fn track_read(source: NodeId) {
             runtime.track(reader, source, version);
         }
     });
+}
+
+/// Returns the live owner that was current when the running effect or memo
+/// was created, or `None` when no effect or memo runs.
+///
+/// A rerun runs with no owner current, so a read that needs the application
+/// of the running code, such as the window state, finds it through here.
+pub(crate) fn observer_owner() -> Option<Rc<OwnerData>> {
+    let observer = OBSERVER.with(Cell::get)?;
+    with_runtime(|runtime| runtime.creation_owner(observer))
 }
 
 /// Runs the flush loop and returns whether any effect ran.

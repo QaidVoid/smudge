@@ -741,3 +741,47 @@ fn two_apps_woken_in_one_frame_each_request_a_redraw() {
         "one write that reaches both apps wakes both"
     );
 }
+
+/// Returns how many times an inner effect runs for one write to the signal it
+/// reads, after an owned outer effect has rerun `reruns` times, replacing the
+/// handle of the inner effect it creates on every run.
+fn inner_runs_after(reruns: u32) -> u32 {
+    reactive::init();
+    let owner = Owner::new();
+    let (outer, set_outer) = signal_local(0u32);
+    let (inner, set_inner) = signal_local(0u32);
+    let runs = Rc::new(Cell::new(0u32));
+    let held: Rc<RefCell<Option<RenderEffect>>> = Rc::new(RefCell::new(None));
+    let counted = Rc::clone(&runs);
+    let slot = Rc::clone(&held);
+    owner.with(|| {
+        RenderEffect::new(move || {
+            outer.get();
+            let counted = Rc::clone(&counted);
+            let inner = inner.clone();
+            slot.replace(Some(RenderEffect::new(move || {
+                inner.get();
+                counted.set(counted.get() + 1);
+            })));
+        });
+    });
+    for value in 1..=reruns {
+        set_outer.set(value);
+        reactive::flush();
+    }
+    runs.set(0);
+    set_inner.set(1);
+    reactive::flush();
+    owner.cleanup();
+    runs.get()
+}
+
+#[test]
+fn effects_created_by_reruns_do_not_accumulate() {
+    assert_eq!(
+        inner_runs_after(1),
+        inner_runs_after(5),
+        "an effect a rerun creates and then replaces stops with its handle, \
+         so more reruns leave no more effects behind"
+    );
+}

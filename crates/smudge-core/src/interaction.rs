@@ -242,6 +242,24 @@ impl WidgetTree {
         self.run_pointer_up(captured, position);
     }
 
+    /// Ends the held press without a release: the captured node loses its
+    /// pressed bit and hears `on_pointer_up`, so a drag it started ends, but
+    /// not `on_press`. Hover then follows the pointer again. Without a held
+    /// press it does nothing.
+    pub(crate) fn release_press(&mut self) {
+        let Some(captured) = self.pressed.take() else {
+            return;
+        };
+        self.set_bit(captured, Interaction::PRESSED, false);
+        self.run_pointer_up(captured, self.pointer);
+        let hovered = if self.pointer_inside {
+            self.hover_target(self.pointer)
+        } else {
+            None
+        };
+        self.set_hover_target(hovered);
+    }
+
     /// Clears the hover of the whole tree, as when the pointer leaves the
     /// window.
     ///
@@ -304,6 +322,46 @@ impl WidgetTree {
         if let Some(node) = self.nodes.get_mut(id) {
             node.handlers = handlers;
         }
+    }
+
+    /// Sets the cursor the pointer shows over the node, or `None` to leave
+    /// the choice to an ancestor.
+    ///
+    /// Called when a node mounts and again by the binding of a
+    /// [`cursor`](crate::element::Element::cursor) builder value. A stale id
+    /// does nothing.
+    pub(crate) fn set_cursor(&mut self, id: WidgetId, cursor: Option<crate::window::Cursor>) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.cursor = cursor;
+        }
+    }
+
+    /// Returns the cursor of the deepest enabled node under the pointer that
+    /// set one, or the platform default when none did.
+    ///
+    /// The walk starts at the deepest node the pointer hits, not at the hover
+    /// target, so a node that sets only a cursor shows it without becoming a
+    /// target. While a press is held it starts at the captured node instead,
+    /// because hover stays with the capture during a drag. A pointer outside
+    /// the window shows the default.
+    pub(crate) fn cursor(&self) -> crate::window::Cursor {
+        let mut next = match self.pressed {
+            Some(pressed) => Some(pressed),
+            None if self.pointer_inside => self.root.and_then(|root| self.hit(root, self.pointer)),
+            None => None,
+        };
+        while let Some(id) = next {
+            let Some(node) = self.nodes.get(id) else {
+                break;
+            };
+            if !node.interaction.has(Interaction::DISABLED)
+                && let Some(cursor) = node.cursor
+            {
+                return cursor;
+            }
+            next = node.parent;
+        }
+        crate::window::Cursor::default()
     }
 
     /// Sets whether the node is disabled, and marks the node when the state

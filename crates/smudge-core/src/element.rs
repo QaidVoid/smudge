@@ -134,6 +134,7 @@ static_values!(
     Align,
     Justify,
     Point,
+    crate::window::Cursor,
 );
 
 impl From<String> for Value<String> {
@@ -274,6 +275,22 @@ impl Binding {
         }
     }
 
+    /// A binding that writes the node's cursor.
+    fn cursor(get: Rc<dyn Fn() -> crate::window::Cursor>) -> Binding {
+        Binding {
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_cursor(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes one property of the node's widget.
     ///
     /// The apply function reports how much of the node its write invalidated,
@@ -326,6 +343,9 @@ pub struct Element<W: Widget> {
     handlers: Handlers,
     /// Whether the node starts disabled.
     disabled: bool,
+    /// The cursor the node sets for the pointer over it, when its element
+    /// set a static one.
+    cursor: Option<crate::window::Cursor>,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
     /// The role the accessibility projection reports, when an element set
@@ -358,6 +378,7 @@ impl<W: Widget> Element<W> {
             variants: None,
             handlers: Handlers::default(),
             disabled: false,
+            cursor: None,
             focusable: false,
             a11y_role: None,
             a11y_label: None,
@@ -960,6 +981,35 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Sets the cursor the pointer shows while it is over the node, or over
+    /// a descendant that sets none of its own.
+    ///
+    /// The window shows the cursor of the deepest enabled node under the
+    /// pointer that sets one, so a nested setter wins over an ancestor's.
+    /// Setting a cursor does not make the node a target: a press over a node
+    /// that sets only a cursor still lands on the nearest ancestor that
+    /// responds, and so does hover. This can be bound to a signal, like the
+    /// style builders.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Color;
+    /// use smudge_core::widget::panel;
+    /// use smudge_core::window::Cursor;
+    ///
+    /// let link = panel()
+    ///     .width(smudge_core::style::px(80.0))
+    ///     .height(smudge_core::style::px(24.0))
+    ///     .background(Color::rgb(40, 40, 48))
+    ///     .cursor(Cursor::Pointer);
+    /// ```
+    pub fn cursor(mut self, cursor: impl Into<Value<crate::window::Cursor>>) -> Self {
+        match cursor.into() {
+            Value::Static(cursor) => self.cursor = Some(cursor),
+            Value::Dynamic(get) => self.bindings.push(Binding::cursor(get)),
+        }
+        self
+    }
+
     /// Sets the role the accessibility projection reports for the node.
     ///
     /// A widget that reports no role of its own stays out of the projection
@@ -1155,6 +1205,9 @@ pub struct AnyElement {
     handlers: Handlers,
     /// Whether the node starts disabled.
     disabled: bool,
+    /// The cursor the node sets for the pointer over it, when its element
+    /// set a static one.
+    cursor: Option<crate::window::Cursor>,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
     /// The role the accessibility projection reports, when an element set
@@ -1178,6 +1231,7 @@ impl AnyElement {
             variants: element.variants,
             handlers: element.handlers,
             disabled: element.disabled,
+            cursor: element.cursor,
             focusable: element.focusable,
             a11y_role: element.a11y_role,
             a11y_label: element.a11y_label,
@@ -1224,6 +1278,7 @@ pub(crate) fn mount(
         variants,
         handlers,
         disabled,
+        cursor,
         focusable,
         a11y_role,
         a11y_label,
@@ -1233,6 +1288,7 @@ pub(crate) fn mount(
     let id = tree.insert(parent, widget, style);
     tree.set_variants(id, variants.map(Rc::new));
     tree.set_disabled(id, disabled);
+    tree.set_cursor(id, cursor);
     tree.set_focusable(id, focusable);
     tree.set_a11y_role(id, a11y_role);
     tree.set_handlers(id, handlers);

@@ -562,6 +562,7 @@ impl Owner {
             timer_book: RefCell::new(None),
             clipboard: RefCell::new(None),
             channel_book: RefCell::new(None),
+            window_book: RefCell::new(None),
         });
         if let Some(parent) = parent {
             parent.adopt(&inner);
