@@ -89,6 +89,10 @@ pub(crate) struct OwnerData {
     /// owner when the app installs one. A handler reaches the clipboard of
     /// the root its owner chain leads to.
     pub(crate) clipboard: RefCell<Option<crate::clipboard::WeakSlot>>,
+    /// The channel book of the app this owner tree belongs to, set on the
+    /// root owner when the app is created. A channel registers into the book
+    /// of the root its owner chain leads to.
+    pub(crate) channel_book: RefCell<Option<Weak<RefCell<crate::channel::ChannelBook>>>>,
 }
 
 impl OwnerData {
@@ -138,6 +142,7 @@ impl OwnerData {
             state: RefCell::new(OwnerState::default()),
             timer_book: RefCell::new(None),
             clipboard: RefCell::new(None),
+            channel_book: RefCell::new(None),
         });
         self.adopt(&inner);
         Owner { inner }

@@ -153,6 +153,9 @@ pub struct App {
     tick: Option<Box<dyn FnMut(Instant)>>,
     /// The timers of the app and the clock they read.
     timers: Rc<RefCell<TimerBook>>,
+    /// The channels other threads send values through, and the book the
+    /// frame drains them from.
+    channels: Rc<RefCell<crate::channel::ChannelBook>>,
     /// Whether the next frame repaints the whole surface.
     force_full: bool,
     /// The owner that the build closure, the signals it created, every
@@ -196,6 +199,10 @@ impl App {
         let root = Owner::new();
         let timers = Rc::new(RefCell::new(TimerBook::new(clock)));
         root.data().timer_book.replace(Some(Rc::downgrade(&timers)));
+        let channels = Rc::new(RefCell::new(crate::channel::ChannelBook::default()));
+        root.data()
+            .channel_book
+            .replace(Some(Rc::downgrade(&channels)));
         let mut tree = WidgetTree::new();
         let queue = UpdateQueue::default();
         root.with(|| mount(build().into_any(), &mut tree, &queue, None));
@@ -211,6 +218,7 @@ impl App {
             stats: FrameStats::default(),
             tick: None,
             timers,
+            channels,
             force_full: true,
             _root: root,
             clipboard: None,
@@ -355,6 +363,18 @@ impl App {
         self._root.set_wake_callback(callback);
     }
 
+    /// Sets the callback that a message from another thread runs to ask for
+    /// the frame that applies it.
+    ///
+    /// The platform installs one that posts a wake event to the event loop,
+    /// so a thread that sends does not have to poll and the window does not
+    /// wake for anything else. A headless app needs none: its next
+    /// [`App::frame`] call finds the values on its own. Channels created
+    /// before this call get the waker too, and later ones start with it.
+    pub fn set_remote_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
+        crate::channel::install_waker(&self.channels, std::sync::Arc::new(waker));
+    }
+
     /// Sets a callback that runs once at the start of every frame with the
     /// current time.
     ///
@@ -400,12 +420,14 @@ impl App {
     ///
     /// An input event can change how the tree looks without writing a signal,
     /// for example by hovering a node with a hover style, so the reactive wake
-    /// callback never hears of it. A platform calls this after handing events
-    /// over and asks for a frame when it is `true`. Most pointer moves change
+    /// callback never hears of it. A message from another thread also leaves
+    /// such work: the values its channel queues are the frame's to deliver.
+    /// A platform calls this after handing events over and asks for a frame
+    /// when it is `true`. Most pointer moves change
     /// nothing, and asking for a frame every time would present the window
     /// for nothing.
     pub fn needs_frame(&self) -> bool {
-        self.tree.has_pending_work()
+        self.tree.has_pending_work() || crate::channel::has_pending(&self.channels)
     }
 
     /// Handles one input event between frames.
@@ -524,17 +546,20 @@ impl App {
     ///
     /// The frame runs these steps in order:
     ///
-    /// 1. The timers that are due on the app's clock, then the tick callback,
+    /// 1. The values other threads sent through the app's channels: each
+    ///    handler runs inside the owner that created its channel, delivering
+    ///    at most what the queue held when the drain reached it.
+    /// 2. The timers that are due on the app's clock, then the tick callback,
     ///    when one is set.
-    /// 2. Reactive effects and the updates they queue, until neither has work
+    /// 3. Reactive effects and the updates they queue, until neither has work
     ///    left. A signal write therefore lands before layout, including one a
-    ///    timer made at the start of the frame.
-    /// 3. The layout pass, which runs the layout engine only when a node needs
+    ///    channel handler or a timer made at the start of the frame.
+    /// 4. The layout pass, which runs the layout engine only when a node needs
     ///    it.
-    /// 4. The paint pass, which regenerates the operations of the nodes that
+    /// 5. The paint pass, which regenerates the operations of the nodes that
     ///    changed and reports their old and new bounds as damage.
-    /// 5. The display list, rebuilt only when something may have changed.
-    /// 6. Damage conversion and merging, then the output.
+    /// 6. The display list, rebuilt only when something may have changed.
+    /// 7. Damage conversion and merging, then the output.
     ///
     /// The output borrows the app until it is dropped, so read [`App::stats`]
     /// either before the output is kept or after it is let go.
@@ -551,10 +576,11 @@ impl App {
     /// flush, which means it writes a signal that wakes it again, directly or
     /// through another binding. A release build never returns from that frame.
     pub fn frame(&mut self) -> FrameOutput<'_> {
-        // The frame runs every effect its timers, its tick and its updates
-        // wake before it lays out, so reporting those wakes would only ask
-        // the platform for a second frame with nothing to do.
+        // The frame runs every effect its channels, its timers, its tick and
+        // its updates wake before it lays out, so reporting those wakes would
+        // only ask the platform for a second frame with nothing to do.
         let quiet = QuietWakes::enter(&self._root);
+        crate::channel::drain_all(&self.channels);
         timer::fire_due(&self.timers);
 
         let now = self.now();
