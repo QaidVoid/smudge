@@ -21,7 +21,8 @@
 ## Text
 
 - **Scripts without spaces need a feature.** Thai, Lao, Khmer and Burmese wrap only at spaces unless `complex-scripts` is on. See [Text and input](/guide/text-and-input#scripts-without-spaces).
-- **Font types come from parley.** Setting a label's weight or family names `FontWeight` and `FontFamily` from the `parley` crate.
+- **Label truncation assumes left-to-right text.** A label capped with `max_lines` cuts its last line at the visually trailing edge and ends it in an ellipsis. A layout whose dominant direction is right-to-left is left whole instead, since the ellipsis would have to lead the line rather than close it.
+- **The ellipsis needs a font that maps it.** Truncation shapes the font's horizontal ellipsis, or three full stops when the font lacks the ellipsis but maps a full stop. A font that maps neither leaves the text whole.
 
 ## Platforms
 

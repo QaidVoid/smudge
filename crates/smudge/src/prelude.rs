@@ -1,7 +1,12 @@
 //! The types an application names most often, in one glob import.
 //!
+//! The text style types come along, so naming a weight needs no other
+//! crate:
+//!
 //! ```
 //! use smudge::prelude::*;
+//!
+//! let heading = label("Account").text_size(22.0).weight(FontWeight::SEMI_BOLD);
 //! ```
 
 pub use smudge_core::element::{Element, IntoElement, for_each, show};
@@ -13,8 +18,8 @@ pub use smudge_core::theme::{ColorToken, RadiusToken, Theme};
 pub use smudge_core::widget::{Panel, panel};
 pub use smudge_core::window::Cursor;
 pub use smudge_text::{
-    Label, LabelExt, TextInputExt, TextLayout, TextStyle, TextSystem, current_text_style, label,
-    provide_text_style, text_input,
+    FontWeight, Label, LabelExt, TextInputExt, TextLayout, TextStyle, TextSystem,
+    current_text_style, label, provide_text_style, text_input,
 };
 pub use smudge_widgets::{
     ButtonExt, ScrollView, button, column, row, scroll, spacer, stack, virtual_list,

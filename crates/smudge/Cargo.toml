@@ -27,6 +27,9 @@ gpu = ["window", "dep:smudge-gpu", "smudge-platform/gpu"]
 # Word and line break dictionaries for scripts without spaces between words,
 # as the feature of the same name in the text crate describes.
 complex-scripts = ["smudge-text/complex-scripts"]
+# Font discovery for the fonts installed on the machine, as the feature of
+# the same name in the text crate describes. Unavailable on wasm.
+system-fonts = ["smudge-text/system-fonts"]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -17,10 +17,18 @@ let hint = label("Changes save automatically").text_color(ColorToken::TEXT_MUTED
 | `text_color(...)` | Glyph color, a `Color`, a token or a closure. |
 | `weight(FontWeight)` | Font weight, for example `FontWeight::BOLD`. |
 | `family(FontFamily)` | Font family, named or generic. |
+| `max_lines(Option<u32>)` | The most lines shown, `Some(n)` or `None`; the last one ends in an ellipsis. Accepts a closure. |
 
-`weight` and `family` take `FontWeight` and `FontFamily` from the `parley` crate, version 0.12, which Smudge lays text out with. Add it to your dependencies to name them.
+`weight` takes `FontWeight`, which the prelude re-exports. `family` takes `FontFamily`, which comes from `smudge_text`: `use smudge::text::FontFamily;`. No other crate is needed to name them.
 
-A label wraps at the width its parent gives it, and its height follows the number of lines.
+A label wraps at the width its parent gives it, and its height follows the number of lines. A label with `max_lines` keeps its first lines and ends the last one with an ellipsis, cut back so the whole fits the width, and reports the kept lines' height. The accessible value keeps the full text, so a screen reader reads what was cut. A width below the ellipsis's own advance leaves it standing alone and past the width.
+
+```rust
+use smudge::prelude::*;
+
+let name = label("Long department name").max_lines(Some(2));
+let open = label("Open-ended").max_lines(None);
+```
 
 ### Default style
 
@@ -36,7 +44,7 @@ provide_text_style(TextStyle {
 
 ## Fonts
 
-The default build embeds Noto Sans, Noto Sans Bold and Noto Sans Mono, so text looks the same on every machine and nothing is read from the system. Enable the `system-fonts` feature of `smudge-text` to add the fonts installed on the machine, for scripts and families the bundled fonts do not cover. It is not available on the web.
+The default build embeds Noto Sans, Noto Sans Bold and Noto Sans Mono, so text looks the same on every machine and nothing is read from the system. Enable the `system-fonts` feature of `smudge` to add the fonts installed on the machine, for scripts and families the bundled fonts do not cover. It is not available on the web. The generic families resolve to the system's choices first and keep the bundled faces as the fallback, so a machine without usable fonts still lays text out.
 
 ### Scripts without spaces
 
