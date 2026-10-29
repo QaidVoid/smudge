@@ -241,6 +241,9 @@ pub(crate) struct WidgetTree {
     pending_damage: Vec<PaintedBounds>,
     /// The viewport the last layout pass ran for, or `None` before the first.
     viewport: Option<Size>,
+    /// The scale the next layout pass measures at. A widget that sizes itself
+    /// from pixel data measures against it.
+    scale: f32,
     /// How many times the layout engine has run for this tree.
     layout_runs: u64,
     /// The deepest node the pointer is over, or `None` when it is over no
@@ -292,6 +295,7 @@ impl WidgetTree {
             layout_dirty: false,
             pending_damage: Vec::new(),
             viewport: None,
+            scale: 1.0,
             layout_runs: 0,
             hovered: None,
             pointer: Point::default(),

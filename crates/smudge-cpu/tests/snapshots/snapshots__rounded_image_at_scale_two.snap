@@ -1,0 +1,6 @@
+---
+source: crates/smudge-cpu/tests/snapshots.rs
+expression: "render_list(&list, 64, 64, 2.0)"
+extension: png
+snapshot_kind: binary
+---

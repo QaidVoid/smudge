@@ -1,0 +1,7 @@
+---
+source: crates/smudge-cpu/tests/snapshots.rs
+assertion_line: 169
+expression: "render_list(&list, 16, 14, 1.0)"
+extension: png
+snapshot_kind: binary
+---

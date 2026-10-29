@@ -211,6 +211,7 @@ impl App {
             .window_book
             .replace(Some(Rc::downgrade(&window)));
         let mut tree = WidgetTree::new();
+        tree.set_scale(config.scale);
         let queue = UpdateQueue::default();
         root.with(|| mount(build().into_any(), &mut tree, &queue, None));
 
@@ -242,6 +243,7 @@ impl App {
     pub fn set_viewport(&mut self, viewport: Size, scale: f32) {
         self.config.viewport = viewport;
         self.config.scale = scale;
+        self.tree.set_scale(scale);
         self.force_full = true;
     }
 

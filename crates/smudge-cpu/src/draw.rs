@@ -285,6 +285,59 @@ impl Canvas<'_> {
                 }
             }
             PaintOp::Glyphs(ref run) => self.draw_glyphs(run.as_ref(), area, offset),
+            PaintOp::Image {
+                rect,
+                radius,
+                ref image,
+            } => self.draw_image(maybe_translated(rect, offset), radius, image, area),
+        }
+    }
+
+    /// Draws `image` stretched over a rounded rectangle, into `area`.
+    ///
+    /// Each pixel of the area inside the shape is shaded with the image
+    /// sampled bilinearly at the pixel's center mapped into image space, and
+    /// multiplied by the rounded-rect coverage, which the fill path computes
+    /// from the pixel's absolute position. Nothing here reads the edges of
+    /// `area`, so a damaged repaint gives the same bytes as a full one.
+    fn draw_image(
+        &mut self,
+        rect: Rect,
+        radius: Corners,
+        image: &smudge_core::image::Image,
+        area: PixelRect,
+    ) {
+        let Some(shape) = Shape::new(rect, radius, self.scale) else {
+            return;
+        };
+        let (img_width, img_height) = (image.width(), image.height());
+        if img_width == 0 || img_height == 0 {
+            return;
+        }
+        // The image stretches over the shape's bounds, so one texel is
+        // `bounds / pixels` physical pixels wide, and a pixel center maps to
+        // the sample position between the texel centers it sits between.
+        let to_source_x = img_width as f32 / (shape.x1 - shape.x0);
+        let to_source_y = img_height as f32 / (shape.y1 - shape.y0);
+        let pixels = image.pixels();
+        for y in area.y..area.y + area.height {
+            let v = (y as f32 + 0.5 - shape.y0) * to_source_y - 0.5;
+            for x in area.x..area.x + area.width {
+                let coverage = shape.coverage(x, y);
+                if coverage == 0.0 {
+                    continue;
+                }
+                let u = (x as f32 + 0.5 - shape.x0) * to_source_x - 0.5;
+                let sample = sample_bilinear(pixels, img_width, img_height, u, v);
+                let cov = (coverage * 255.0 + 0.5) as u32;
+                let start = self.index(x, y);
+                let target = &mut self.pixels[start..start + 4];
+                blend_image(
+                    target.try_into().expect("a pixel is four bytes"),
+                    sample,
+                    cov,
+                );
+            }
         }
     }
 
@@ -613,6 +666,66 @@ fn blend(target: &mut [u8; 4], color: Color, alpha: u32) {
     target[1] = mix(color.g, target[1]);
     target[2] = mix(color.b, target[2]);
     target[3] = mix(255, target[3]);
+}
+
+/// Samples a premultiplied RGBA8 image bilinearly at `u` and `v`, which are
+/// in texel coordinates where texel `i`'s center sits at `i`.
+///
+/// Coordinates outside the image clamp to the edge texels, so a rect that
+/// reaches past the image stretches its edge texels.
+fn sample_bilinear(pixels: &[u8], width: u32, height: u32, u: f32, v: f32) -> [u8; 4] {
+    // Clamping the coordinate, not the texel pair, keeps the fraction in
+    // step with the clamped texel pair at the edges.
+    let (fw, fh) = (width as f32, height as f32);
+    let u = u.clamp(0.0, fw - 1.0);
+    let v = v.clamp(0.0, fh - 1.0);
+    // The index clamp is redundant for dimensions up to 2^24, where the
+    // dimension and its last texel index are both exactly representable in
+    // f32, and keeps a larger image inside its buffer past that.
+    let left = (u.floor() as u32).min(width - 1);
+    let top = (v.floor() as u32).min(height - 1);
+    let right = (left + 1).min(width - 1);
+    let bottom = (top + 1).min(height - 1);
+    let fx = u - u.floor();
+    let fy = v - v.floor();
+    let texel = |x: u32, y: u32| {
+        let start = (y as usize * width as usize + x as usize) * 4;
+        [
+            pixels[start],
+            pixels[start + 1],
+            pixels[start + 2],
+            pixels[start + 3],
+        ]
+    };
+    let a = texel(left, top);
+    let b = texel(right, top);
+    let c = texel(left, bottom);
+    let d = texel(right, bottom);
+    let mut sample = [0u8; 4];
+    for i in 0..4 {
+        let top_row = f32::from(a[i]) * (1.0 - fx) + f32::from(b[i]) * fx;
+        let bottom_row = f32::from(c[i]) * (1.0 - fx) + f32::from(d[i]) * fx;
+        sample[i] = (top_row * (1.0 - fy) + bottom_row * fy + 0.5) as u8;
+    }
+    sample
+}
+
+/// Blends a premultiplied RGBA `sample` over a premultiplied pixel at
+/// `alpha`, the shape's coverage in 0..=255.
+///
+/// The coverage scales the premultiplied sample, and the pixel keeps the
+/// part of itself that the effective source alpha, the sample's own alpha
+/// times the coverage, leaves.
+fn blend_image(target: &mut [u8; 4], sample: [u8; 4], alpha: u32) {
+    let a = (u32::from(sample[3]) * alpha + 127) / 255;
+    let rest = 255 - a;
+    let mix =
+        |source: u32, target: u8| ((source * 255 + u32::from(target) * rest + 127) / 255) as u8;
+    for i in 0..3 {
+        let src = (u32::from(sample[i]) * alpha + 127) / 255;
+        target[i] = mix(src, target[i]);
+    }
+    target[3] = mix(a, target[3]);
 }
 
 /// Returns `channel` multiplied by `alpha` out of 255, rounded.

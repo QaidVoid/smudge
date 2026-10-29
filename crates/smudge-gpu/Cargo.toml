@@ -20,4 +20,5 @@ workspace = true
 parley = { version = "0.12.0", default-features = false, features = ["std"] }
 smudge-cpu = { path = "../smudge-cpu" }
 smudge-text = { path = "../smudge-text" }
+smudge-widgets = { path = "../smudge-widgets" }
 tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "png-format"] }

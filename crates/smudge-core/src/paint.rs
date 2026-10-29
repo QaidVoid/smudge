@@ -121,6 +121,15 @@ pub enum PaintOp {
     /// The run is shared in an `Rc` so that rebuilding the display list for a
     /// frame in which text did not change copies no glyph vectors.
     Glyphs(Rc<GlyphRun>),
+    /// A premultiplied RGBA image stretched over a rounded rectangle.
+    Image {
+        /// Area the image stretches over.
+        rect: Rect,
+        /// Corner radii of the rounded rectangle the image clips to.
+        radius: Corners,
+        /// The pixels to draw, shared with the element that shows them.
+        image: crate::image::Image,
+    },
 }
 
 impl PaintOp {
@@ -135,6 +144,7 @@ impl PaintOp {
         match self {
             PaintOp::FillRect { rect, .. } | PaintOp::StrokeRect { rect, .. } => *rect,
             PaintOp::Glyphs(run) => run.ink_bounds,
+            PaintOp::Image { rect, .. } => *rect,
         }
     }
 }

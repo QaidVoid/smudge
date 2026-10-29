@@ -24,6 +24,29 @@ fn from_engine(space: TaffySpace) -> AvailableSpace {
 }
 
 impl WidgetTree {
+    /// Sets the scale the next layout pass measures at, in physical pixels
+    /// per logical pixel.
+    ///
+    /// A scale change changes every widget's measure answer without changing
+    /// any style or offered space, so the layout engine's cached measures are
+    /// all stale and every widget is asked again. The tree starts at 1.0.
+    ///
+    /// A scale that is not finite or not positive is ignored, the way
+    /// [`PixelRect::from_logical`](crate::geometry::PixelRect::from_logical)
+    /// ignores one.
+    pub(crate) fn set_scale(&mut self, scale: f32) {
+        if !scale.is_finite() || scale <= 0.0 || self.scale == scale {
+            return;
+        }
+        self.scale = scale;
+        self.layout_dirty = true;
+        for (_, node) in self.nodes.iter() {
+            self.taffy
+                .mark_dirty(node.taffy)
+                .expect("every widget node has a live layout node");
+        }
+    }
+
     /// Lays the tree out for `viewport` and returns whether the layout engine
     /// ran.
     ///
@@ -186,6 +209,7 @@ impl WidgetTree {
                                     known_height: known.height,
                                     available_width: from_engine(available.width),
                                     available_height: from_engine(available.height),
+                                    scale: self.scale,
                                 })
                             });
                             measured

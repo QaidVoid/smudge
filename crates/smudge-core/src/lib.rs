@@ -12,6 +12,7 @@ pub mod clipboard;
 mod damage;
 pub mod element;
 pub mod geometry;
+pub mod image;
 pub mod input;
 pub mod paint;
 pub mod reactive;

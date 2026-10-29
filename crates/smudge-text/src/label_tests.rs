@@ -22,6 +22,7 @@ fn offer(width: AvailableSpace) -> MeasureInput {
         known_height: None,
         available_width: width,
         available_height: AvailableSpace::MaxContent,
+        scale: 1.0,
     }
 }
 

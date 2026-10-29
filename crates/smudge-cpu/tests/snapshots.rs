@@ -85,6 +85,90 @@ fn rounded_scene_at_scale_one_and_a_half() {
     assert_binary_snapshot!(".png", render(72, 48, 1.5));
 }
 
+/// A gradient image stretched over a small rounded rect, and a translucent
+/// one over another, at twice the scale, so bilinear sampling, premultiplied
+/// blending and rounded-rect coverage are all in the snapshot.
+fn image_scene() -> DisplayList {
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::Image {
+        rect: Rect::new(4.0, 4.0, 26.0, 22.0),
+        radius: Corners::all(6.0),
+        image: gradient_image(16, 12),
+    });
+    list.push_op(PaintOp::Image {
+        rect: Rect::new(14.0, 12.0, 24.0, 26.0),
+        radius: Corners::all(3.0),
+        image: gradient_image(4, 4),
+    });
+    list.finish();
+    list
+}
+
+/// A diagonal gradient with a translucent band, so sampling and
+/// premultiplied blending both have something to interpolate.
+fn gradient_image(width: u32, height: u32) -> smudge_core::image::Image {
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let alpha: u32 = if y % 3 == 0 { 128 } else { 255 };
+            let red = (x * 255) / (width - 1).max(1);
+            let green = (y * 255) / (height - 1).max(1);
+            let premultiply = |channel: u32| ((channel * alpha + 127) / 255) as u8;
+            pixels.push(premultiply(red));
+            pixels.push(premultiply(green));
+            pixels.push(premultiply(90));
+            pixels.push(alpha as u8);
+        }
+    }
+    smudge_core::image::Image::from_premultiplied_rgba(width, height, pixels)
+        .expect("the gradient fills the buffer")
+}
+
+/// Renders `list` into a fresh renderer with full-surface damage.
+fn render_list(list: &DisplayList, width: u32, height: u32, scale: f32) -> Vec<u8> {
+    let mut renderer = CpuRenderer::new(width, height);
+    let damage = [PixelRect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    }];
+    renderer.render(&FrameOutput {
+        list,
+        damage: &damage,
+        full: true,
+        clear_color: Color::WHITE,
+        scale,
+    });
+    renderer.encode_png()
+}
+
+#[test]
+fn rounded_image_at_scale_one() {
+    let list = image_scene();
+    assert_binary_snapshot!(".png", render_list(&list, 32, 32, 1.0));
+}
+
+#[test]
+fn rounded_image_at_scale_two() {
+    let list = image_scene();
+    assert_binary_snapshot!(".png", render_list(&list, 64, 64, 2.0));
+}
+
+/// An image whose rect is smaller than its pixel size, so sampling skips
+/// source pixels instead of stretching across them.
+#[test]
+fn downsampled_image_at_scale_one() {
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::Image {
+        rect: Rect::new(4.0, 4.0, 12.0, 10.0),
+        radius: Corners::all(3.0),
+        image: gradient_image(16, 12),
+    });
+    list.finish();
+    assert_binary_snapshot!(".png", render_list(&list, 16, 14, 1.0));
+}
+
 /// A white background with a line of black text on it.
 ///
 /// The glyphs come from the bundled font, so the ink is the same on every

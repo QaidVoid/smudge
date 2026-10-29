@@ -690,7 +690,8 @@ impl<W: Widget> Element<W> {
     }
 
     /// Sets the corner radius of the background and the border, the same on all
-    /// four corners. This repaints the node without laying it out again.
+    /// four corners. An image widget rounds the pixels it paints by the same
+    /// radius. This repaints the node without laying it out again.
     ///
     /// The radius can be an [`f32`] or a
     /// [`RadiusToken`]. A token resolves against

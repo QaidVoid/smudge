@@ -2,12 +2,15 @@
 //! renderer and the surface presenter.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use smudge_core::app::FrameOutput;
 use smudge_core::geometry::{Color, Corners, Rect};
 use smudge_core::paint::{DisplayItem, FontBlob, PaintOp};
 use vello::kurbo::{Affine, BezPath, Rect as KurboRect, RoundedRect, RoundedRectRadii, Shape};
-use vello::peniko::{Blob, Color as PenikoColor, Fill, FontData};
+use vello::peniko::{
+    Blob, Color as PenikoColor, Fill, FontData, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
+};
 use vello::{Glyph, Scene};
 
 /// A vello scene with the font data of the runs encoded into it.
@@ -21,6 +24,11 @@ pub(crate) struct Encoder {
     /// The font data handed to vello, keyed by the paint operation's font id
     /// and face index, or `None` for a face that does not parse.
     fonts: HashMap<(u64, u32), Option<FontData>>,
+    /// The images handed to vello, keyed by the smudge image's id, each
+    /// stamped with the generation it was last used at.
+    images: HashMap<u64, (ImageBrush, u64)>,
+    /// How many frames this encoder has encoded, for the image stamps.
+    generation: u64,
     /// Scratch for the outline of a border ring, reused across operations.
     ring: BezPath,
     /// The transform of each open offset scope, reused across frames.
@@ -33,6 +41,8 @@ impl Encoder {
         Encoder {
             scene: Scene::new(),
             fonts: HashMap::new(),
+            images: HashMap::new(),
+            generation: 0,
             ring: BezPath::new(),
             offsets: Vec::new(),
         }
@@ -41,6 +51,13 @@ impl Encoder {
     /// Replaces the scene's contents with `frame`'s display list.
     pub(crate) fn encode(&mut self, frame: &FrameOutput<'_>) {
         self.scene.reset();
+        // Images the last two frames did not use leave the cache at the
+        // start of the third frame after their last use. That releases only
+        // this cache's reference: vello's atlas keeps its own until it
+        // needs the space for another image.
+        self.generation += 1;
+        let generation = self.generation;
+        self.images.retain(|_, (_, stamp)| generation - *stamp <= 2);
         let transform = Affine::scale(f64::from(frame.scale));
         // The display list is balanced by construction, but a stray `PopClip`
         // in a release build would pop a vello layer that was never pushed,
@@ -57,6 +74,8 @@ impl Encoder {
                     &mut self.scene,
                     &mut self.fonts,
                     &mut self.ring,
+                    &mut self.images,
+                    self.generation,
                     transform * offset,
                     op,
                 ),
@@ -104,6 +123,8 @@ fn encode_op(
     scene: &mut Scene,
     fonts: &mut HashMap<(u64, u32), Option<FontData>>,
     ring: &mut BezPath,
+    images: &mut HashMap<u64, (ImageBrush, u64)>,
+    generation: u64,
     transform: Affine,
     op: &PaintOp,
 ) {
@@ -158,6 +179,28 @@ fn encode_op(
                     }),
                 );
         }
+        PaintOp::Image {
+            rect,
+            radius,
+            ref image,
+        } => {
+            if !(rect.width() > 0.0 && rect.height() > 0.0) {
+                return;
+            }
+            let brush = image_brush(images, image, generation);
+            let sx = f64::from(rect.width()) / f64::from(image.width());
+            let sy = f64::from(rect.height()) / f64::from(image.height());
+            let local = transform
+                * Affine::translate((f64::from(rect.x0), f64::from(rect.y0)))
+                * Affine::scale_non_uniform(sx, sy);
+            if radius != Corners::ZERO {
+                scene.push_clip_layer(Fill::NonZero, transform, &rounded(rect, radius));
+            }
+            scene.draw_image(brush, local);
+            if radius != Corners::ZERO {
+                scene.pop_layer();
+            }
+        }
     }
 }
 
@@ -168,6 +211,46 @@ const PATH_TOLERANCE: f64 = 0.01;
 /// Returns `rect` with `radius` as kurbo's rounded rectangle.
 fn rounded(rect: Rect, radius: Corners) -> RoundedRect {
     RoundedRect::from_rect(kurbo_rect(rect), kurbo_radii(radius))
+}
+
+/// Returns the vello image for `image`, uploading its pixels once and
+/// stamping the generation it was last used at.
+///
+/// The stamp is what drops the entries an application stopped drawing: the
+/// encoder drops an image at the start of the third frame after the last
+/// frame that drew it. The brush is kept across frames because vello keys
+/// its atlas by the blob's identity, and a fresh blob per frame would upload
+/// every image again each frame. The blob shares the image's pixels rather
+/// than copying them.
+fn image_brush<'a>(
+    images: &'a mut HashMap<u64, (ImageBrush, u64)>,
+    image: &smudge_core::image::Image,
+    generation: u64,
+) -> &'a ImageBrush {
+    let entry = images.entry(image.id()).or_insert_with(|| {
+        (
+            ImageBrush::new(ImageData {
+                data: Blob::new(Arc::new(SharedPixels(image.clone()))),
+                format: ImageFormat::Rgba8,
+                alpha_type: ImageAlphaType::AlphaPremultiplied,
+                width: image.width(),
+                height: image.height(),
+            }),
+            generation,
+        )
+    });
+    entry.1 = generation;
+    &entry.0
+}
+
+/// An image's pixels handed to vello as blob data, shared with the image
+/// rather than copied.
+struct SharedPixels(smudge_core::image::Image);
+
+impl AsRef<[u8]> for SharedPixels {
+    fn as_ref(&self) -> &[u8] {
+        self.0.pixels()
+    }
 }
 
 /// Fills a rectangle with optional rounded corners.
@@ -249,3 +332,7 @@ fn kurbo_radii(radius: Corners) -> RoundedRectRadii {
         f64::from(radius.bottom_left.max(0.0)),
     )
 }
+
+#[cfg(test)]
+#[path = "encoder_tests.rs"]
+mod tests;

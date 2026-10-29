@@ -316,6 +316,244 @@ fn damage_render_equals_a_full_repaint_at_a_fractional_scale() {
     assert_eq!(first_difference(&full, &damaged), None);
 }
 
+/// A rounded image stretched over most of the surface, and a translucent
+/// rounded image over part of it, so one frame exercises bilinear sampling,
+/// premultiplied blending and the rounded-rect coverage together.
+fn image_scene() -> DisplayList {
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::Image {
+        rect: Rect::new(2.0, 2.0, 30.0, 26.0),
+        radius: Corners::all(6.0),
+        image: gradient_image(16, 12),
+    });
+    list.push_op(PaintOp::Image {
+        rect: Rect::new(10.0, 14.0, 26.0, 34.0),
+        radius: Corners::all(3.0),
+        image: gradient_image(4, 4),
+    });
+    list.finish();
+    list
+}
+
+/// A `width` by `height` image of a diagonal gradient with a translucent
+/// band, so sampling and premultiplied blending both have something to
+/// interpolate. The color channels are premultiplied by the alpha, as the
+/// format asks.
+fn gradient_image(width: u32, height: u32) -> smudge_core::image::Image {
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let alpha: u32 = if y % 3 == 0 { 128 } else { 255 };
+            let red = (x * 255) / (width - 1).max(1);
+            let green = (y * 255) / (height - 1).max(1);
+            let premultiply = |channel: u32| ((channel * alpha + 127) / 255) as u8;
+            pixels.push(premultiply(red));
+            pixels.push(premultiply(green));
+            pixels.push(premultiply(90));
+            pixels.push(alpha as u8);
+        }
+    }
+    smudge_core::image::Image::from_premultiplied_rgba(width, height, pixels)
+        .expect("the gradient fills the buffer")
+}
+
+#[test]
+fn damage_through_an_image_matches_a_full_repaint() {
+    for scale in [1.0, 1.5] {
+        let size = (40.0 * scale) as u32;
+        let list = image_scene();
+        let mut full = CpuRenderer::new(size, size);
+        render(&mut full, &list, &[surface(size)], scale);
+
+        for tile in 1..=19 {
+            let mut tiled = CpuRenderer::new(size, size);
+            render(&mut tiled, &list, &tiles(size, tile), scale);
+            assert_eq!(
+                first_difference(&full, &tiled),
+                None,
+                "tiles of {tile} pixels at scale {scale}"
+            );
+        }
+    }
+}
+
+#[test]
+fn moving_an_image_between_damage_passes_matches_a_full_repaint() {
+    // The image is drawn at one position with full damage, then at a moved
+    // position with damage covering only the image's old and new area plus
+    // one rect nowhere near it, and both passes must match a full repaint of
+    // the same list, because sampling reads only the absolute position.
+    for scale in [1.0, 1.5] {
+        let size = (40.0 * scale) as u32;
+        let image = gradient_image(8, 8);
+        let at = |x0: f32, y0: f32| {
+            let mut list = DisplayList::new();
+            list.push_op(PaintOp::Image {
+                rect: Rect::new(x0, y0, x0 + 20.0, y0 + 20.0),
+                radius: Corners::all(4.0),
+                image: image.clone(),
+            });
+            list.finish();
+            list
+        };
+        let mut full = CpuRenderer::new(size, size);
+        render(&mut full, &at(4.0, 4.0), &[surface(size)], scale);
+        render(&mut full, &at(9.0, 7.0), &[surface(size)], scale);
+
+        // The device rect that covers a logical rect at this scale.
+        let area = |x0: f32, y0: f32, x1: f32, y1: f32| PixelRect {
+            x: (x0 * scale) as u32,
+            y: (y0 * scale) as u32,
+            width: (x1 * scale).ceil() as u32 - (x0 * scale) as u32,
+            height: (y1 * scale).ceil() as u32 - (y0 * scale) as u32,
+        };
+        // The union of the image's old and new bounds, and a disjoint rect.
+        let moved = [area(4.0, 4.0, 29.0, 27.0), area(31.0, 31.0, 38.0, 38.0)];
+        let mut tiled = CpuRenderer::new(size, size);
+        render(&mut tiled, &at(4.0, 4.0), &tiles(size, 7), scale);
+        render(&mut tiled, &at(9.0, 7.0), &moved, scale);
+        assert_eq!(
+            first_difference(&full, &tiled),
+            None,
+            "a moved image at scale {scale}"
+        );
+    }
+}
+
+#[test]
+fn an_image_blends_over_a_translucent_surface() {
+    // The clear is premultiplied for the surface: (100, 150, 200) at 128
+    // leaves [50, 75, 100, 128]. The one-texel source is premultiplied
+    // [64, 0, 32, 128], so at full coverage the effective source alpha is
+    // 128 and the output is, per channel,
+    // (src * 255 + dst * (255 - 128) + 127) / 255.
+    let image = smudge_core::image::Image::from_premultiplied_rgba(1, 1, vec![64, 0, 32, 128])
+        .expect("one texel fills the buffer");
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::Image {
+        rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+        radius: Corners::ZERO,
+        image,
+    });
+    list.finish();
+
+    let mut renderer = CpuRenderer::new(2, 2);
+    let damage = [PixelRect {
+        x: 0,
+        y: 0,
+        width: 2,
+        height: 2,
+    }];
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &damage,
+        full: true,
+        clear_color: Color::rgba(100, 150, 200, 128),
+        scale: 1.0,
+    });
+
+    assert_eq!(pixel(&renderer, 0, 0), [89, 37, 82, 192]);
+    assert_eq!(
+        pixel(&renderer, 1, 1),
+        [50, 75, 100, 128],
+        "the pixels the image does not cover keep the clear"
+    );
+}
+
+#[test]
+fn a_fully_transparent_texel_leaves_the_surface_alone() {
+    // The second texel has alpha zero, so the row it covers must come
+    // back exactly as the clear left it, alpha included.
+    let image =
+        smudge_core::image::Image::from_premultiplied_rgba(1, 2, vec![64, 0, 32, 128, 0, 0, 0, 0])
+            .expect("two texels fill the buffer");
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::Image {
+        rect: Rect::new(0.0, 0.0, 1.0, 2.0),
+        radius: Corners::ZERO,
+        image,
+    });
+    list.finish();
+
+    let mut renderer = CpuRenderer::new(2, 2);
+    let damage = [PixelRect {
+        x: 0,
+        y: 0,
+        width: 2,
+        height: 2,
+    }];
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &damage,
+        full: true,
+        clear_color: Color::rgba(100, 150, 200, 128),
+        scale: 1.0,
+    });
+
+    assert_eq!(pixel(&renderer, 0, 0), [89, 37, 82, 192]);
+    assert_eq!(pixel(&renderer, 0, 1), [50, 75, 100, 128]);
+}
+
+#[test]
+fn a_wide_image_indexes_rows_by_its_true_width() {
+    // f32 holds integers exactly only up to 2^24, so a dimension past that
+    // must never pass through one: 16_777_219 rounds up to 16_777_220 as
+    // f32, and a stride built from the rounded width shifts every row past
+    // the first by one texel. The pattern of the second row differs under
+    // that shift, so sampling it catches the wrong stride byte for byte.
+    let width = (1 << 24) + 3;
+    let pattern = |x: u32| -> [u8; 4] {
+        match x % 4 {
+            0 => [0, 50, 60, 255],
+            1 => [200, 50, 60, 255],
+            2 => [40, 50, 60, 255],
+            _ => [240, 50, 60, 255],
+        }
+    };
+    let mut pixels = Vec::with_capacity(width as usize * 2 * 4);
+    for _y in 0..2u32 {
+        for x in 0..width {
+            pixels.extend_from_slice(&pattern(x));
+        }
+    }
+    let image = smudge_core::image::Image::from_premultiplied_rgba(width, 2, pixels)
+        .expect("the pattern fills the buffer");
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::Image {
+        rect: Rect::new(0.0, 0.0, 2.0, 2.0),
+        radius: Corners::ZERO,
+        image,
+    });
+    list.finish();
+
+    let mut renderer = CpuRenderer::new(2, 2);
+    let damage = [PixelRect {
+        x: 0,
+        y: 0,
+        width: 2,
+        height: 2,
+    }];
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &damage,
+        full: true,
+        clear_color: CLEAR,
+        scale: 1.0,
+    });
+
+    // The pixel center sits halfway between two texels of the second row,
+    // at a coordinate below 2^23 where f32 keeps the half exactly. With the
+    // true width the red channel averages pattern 0 and 1 into 100; with the
+    // f32-rounded width the pair shifts to pattern 1 and 2, which average
+    // 120.
+    let sampled = pixel(&renderer, 0, 1);
+    assert_eq!(
+        sampled,
+        [100, 50, 60, 255],
+        "row one is indexed by the true width, not the f32-rounded one"
+    );
+}
+
 #[test]
 fn damage_edges_through_rounded_corners_match_a_full_repaint() {
     for scale in [1.0, 1.5] {

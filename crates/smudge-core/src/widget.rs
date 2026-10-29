@@ -43,6 +43,10 @@ pub struct MeasureInput {
     pub available_width: AvailableSpace,
     /// The space offered on the y axis, inside the node's padding and border.
     pub available_height: AvailableSpace,
+    /// The number of physical pixels per logical pixel the window runs at,
+    /// so a widget that sizes itself from pixel data, such as an image,
+    /// can divide it out.
+    pub scale: f32,
 }
 
 /// A piece of user interface owned by one tree node.
