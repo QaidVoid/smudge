@@ -38,4 +38,4 @@ jobs:
         run: |
           ! grep -q 'source = "git+' Cargo.lock
       - name: Check wasm targets
-        run: cargo check --target wasm32-unknown-unknown -p smudge-core -p smudge-cpu -p smudge-text
+        run: RUSTFLAGS="-D warnings" cargo check --target wasm32-unknown-unknown -p smudge-core -p smudge-cpu -p smudge-platform -p smudge-text -p smudge-widgets -p smudge
