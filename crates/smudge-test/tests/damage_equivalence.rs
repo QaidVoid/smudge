@@ -49,6 +49,7 @@ use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 use smudge_core::element::{AnyElement, Element, IntoElement, for_each, show};
 use smudge_core::geometry::{Color, Point, Size};
+use smudge_core::image::Image;
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*, signal_local};
@@ -56,7 +57,7 @@ use smudge_core::style::{Direction, Edges, Length, px};
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 use smudge_test::Harness;
 use smudge_text::{TextLayout, TextStyle, TextSystem};
-use smudge_widgets::{ScrollExt, ScrollView, column, scroll};
+use smudge_widgets::{ImageView, ScrollExt, ScrollView, column, image, scroll};
 
 /// The viewport a scene starts in, in logical pixels.
 const VIEWPORT: Size = Size {
@@ -78,6 +79,9 @@ const SCROLL_ROW_COUNT: usize = 5;
 
 /// The deepest level a generated node may sit at, counting the root as one.
 const MAX_DEPTH: u32 = 4;
+
+/// The most nodes a generated scene starts with, before any appended one.
+const MAX_NODES: usize = 40;
 
 /// The most children one generated node asks for.
 const MAX_CHILDREN: u8 = 3;
@@ -196,6 +200,8 @@ struct NodeSpec {
     disabled_variant: bool,
     /// Whether the node's disabled state is read from a signal.
     bind_disabled: bool,
+    /// Whether the node paints an image instead of a panel or text.
+    image: bool,
 }
 
 /// A node's layout properties.
@@ -323,6 +329,7 @@ fn any_spec() -> impl Strategy<Value = NodeSpec> {
                 focused_variant,
                 disabled_variant,
                 bind_disabled,
+                image: false,
             }
         })
 }
@@ -347,7 +354,8 @@ impl SceneData {
     /// first child is mounted through a visibility property and, when no other
     /// node has one, hidden through a hidden property. The root itself is
     /// never mounted through one or hidden, because the harness builds it
-    /// directly.
+    /// directly, and it always paints a panel, because the keyed list and the
+    /// scroll views mount only under one.
     fn new(mut nodes: Vec<NodeSpec>) -> SceneData {
         nodes[0].children = nodes[0].children.max(1);
 
@@ -377,6 +385,8 @@ impl SceneData {
         nodes[0].bind_width = true;
         nodes[0].bind_background = true;
         nodes[0].bind_radius = true;
+        nodes[0].text = false;
+        nodes[0].image = false;
         nodes[0].hover_variant = false;
         nodes[0].pressed_variant = false;
         nodes[0].focused_variant = false;
@@ -402,7 +412,6 @@ impl SceneData {
             nodes[1].text = true;
             nodes[1].bind_glyph_color = true;
         }
-
         // A style patch is only visible on a panel, which paints the
         // background and the border a patch sets. When every child paints
         // text, one panel is appended so the interaction edits always have a
@@ -439,6 +448,7 @@ impl SceneData {
                     focused_variant: false,
                     disabled_variant: false,
                     bind_disabled: false,
+                    image: false,
                 });
                 children[0].push(index);
                 children.push(Vec::new());
@@ -453,6 +463,31 @@ impl SceneData {
         nodes[variant].bind_disabled = true;
 
         SceneData { nodes, children }
+    }
+
+    /// Marks the nodes whose `flags` entry is set as image nodes, and makes
+    /// sure at least one node paints an image.
+    ///
+    /// The flags come from their own strategy, drawn after the rest of the
+    /// case, so adding images left the seeds of older failures meaning what
+    /// they did. An image node reads every property a panel reads, so the
+    /// flags change no property count but the images'. The root stays a
+    /// panel, and a text node stays text. When no other node is an image, the
+    /// first child that paints no text becomes one; the variant target
+    /// guarantees there is such a child.
+    fn with_images(mut self, flags: &[bool]) -> SceneData {
+        for (node, &flag) in self.nodes.iter_mut().zip(flags).skip(1) {
+            node.image = flag;
+        }
+        if !self.nodes[1..].iter().any(|node| node.image && !node.text) {
+            let target = self.nodes[1..]
+                .iter()
+                .position(|node| !node.text)
+                .expect("the variant target paints no text")
+                + 1;
+            self.nodes[target].image = true;
+        }
+        self
     }
 
     /// How many properties of each kind the scene reads through one.
@@ -478,6 +513,11 @@ impl SceneData {
                 .filter(|node| node.text && node.bind_glyph_color)
                 .count(),
             disableds: self.nodes.iter().filter(|node| node.bind_disabled).count(),
+            images: self
+                .nodes
+                .iter()
+                .filter(|node| node.image && !node.text)
+                .count(),
         }
     }
 }
@@ -493,6 +533,7 @@ struct SignalCounts {
     texts: usize,
     glyph_colors: usize,
     disableds: usize,
+    images: usize,
 }
 
 /// Reads one property of a scene.
@@ -507,6 +548,30 @@ fn initial_text(index: usize) -> String {
 /// The color a node's glyphs start with, chosen from its index.
 fn initial_glyph_color(index: usize) -> Color {
     Color::rgb((index * 37) as u8, (index * 73) as u8, (index * 109) as u8)
+}
+
+/// A `seed`ed three by three gradient, so an image edit has a small set of
+/// distinct images to swap between. Seeds run 0 to 7; the eighth seed an
+/// edit can draw clears the source instead.
+fn gradient(seed: u8) -> Image {
+    let seed = u32::from(seed);
+    let mut pixels = Vec::with_capacity(3 * 3 * 4);
+    for y in 0..3u32 {
+        for x in 0..3u32 {
+            let alpha = if (x + y) % 2 == 0 { 255 } else { 160 };
+            pixels.push(((seed + x * 40) % 256) as u8);
+            pixels.push(((seed * 7 + y * 40) % 256) as u8);
+            pixels.push(((seed * 13 + 60) % 256) as u8);
+            pixels.push(alpha);
+        }
+    }
+    Image::from_straight_rgba(3, 3, pixels).expect("the gradient fills the buffer")
+}
+
+/// Any seed an image edit draws: 0 to 7 pick a gradient, 8 clears the
+/// source, so the empty-source path of the widget reaches the oracle.
+fn any_image_seed() -> impl Strategy<Value = u8> {
+    0u8..=8
 }
 
 /// The background the hovered patch of the node at `index` paints.
@@ -651,6 +716,55 @@ impl TextTracked {
     /// Writes a new string through the refcell and the signal, so the reactive
     /// scene and a fresh mount of it show the same thing.
     fn write(&self, value: String) {
+        *self.value.borrow_mut() = value.clone();
+        (self.set)(value);
+    }
+}
+
+/// One image property of a scene: the pixels it shows, and how a scene reads
+/// them.
+///
+/// It mirrors [`TextTracked`] for values that do not fit in a [`Cell`]: the
+/// current image is kept in a refcell, the reactive scene reads a signal, and
+/// a static scene reads the refcell alone.
+struct ImageTracked {
+    /// Reads the image the scene shows now.
+    get: Getter<Option<Image>>,
+    /// Writes the reactive scene's signal. A static scene has no signal, so
+    /// its writer does nothing.
+    set: Box<dyn Fn(Option<Image>)>,
+    /// The image the scene shows now.
+    value: Rc<RefCell<Option<Image>>>,
+}
+
+impl ImageTracked {
+    /// Creates an image that edits change through a signal.
+    fn reactive(value: Option<Image>) -> ImageTracked {
+        let initial = value.clone();
+        let (read, write) = signal_local(value);
+        ImageTracked {
+            get: Rc::new(move || read.get()),
+            set: Box::new(move |value| write.set(value)),
+            value: Rc::new(RefCell::new(initial)),
+        }
+    }
+
+    /// Creates an image that holds one value for the scene's whole life.
+    fn static_value(value: Option<Image>) -> ImageTracked {
+        let value = Rc::new(RefCell::new(value));
+        ImageTracked {
+            get: Rc::new({
+                let value = Rc::clone(&value);
+                move || value.borrow().clone()
+            }),
+            set: Box::new(|_| ()),
+            value,
+        }
+    }
+
+    /// Writes a new image through the refcell and the signal, so the reactive
+    /// scene and a fresh mount of it show the same thing.
+    fn write(&self, value: Option<Image>) {
         *self.value.borrow_mut() = value.clone();
         (self.set)(value);
     }
@@ -823,6 +937,8 @@ struct SceneNode {
     text: Option<Getter<String>>,
     /// The color the node's glyphs paint with, when a property supplies it.
     glyph_color: Option<Getter<Color>>,
+    /// The image the node paints, when a property supplies it.
+    image: Option<Getter<Option<Image>>>,
 }
 
 /// A built scene: its nodes and the properties its bindings read.
@@ -840,6 +956,7 @@ struct Scene {
     disableds: Vec<Tracked<bool>>,
     texts: Vec<TextTracked>,
     glyph_colors: Vec<Tracked<Color>>,
+    images: Vec<ImageTracked>,
     /// The keys of the keyed list the root mounts, which a list edit changes.
     list: ListTracked,
     /// The offset of the scroll view the root mounts, which a scroll edit
@@ -901,6 +1018,7 @@ impl Scene {
             disableds: Vec::new(),
             texts: Vec::new(),
             glyph_colors: Vec::new(),
+            images: Vec::new(),
             list: match values {
                 Values::Signals => ListTracked::reactive(vec![1, 2, 3]),
                 Values::Current(from, _) => {
@@ -927,8 +1045,9 @@ impl Scene {
             mut text,
             mut glyph_color,
             mut disabled,
+            mut image,
         ) = (
-            0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+            0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
         );
         for (index, spec) in data.nodes.iter().enumerate() {
             let color = if spec.bind_background {
@@ -1042,6 +1161,21 @@ impl Scene {
             } else {
                 None
             };
+            let image = if spec.image && !spec.text {
+                let value = match values {
+                    Values::Signals => ImageTracked::reactive(Some(gradient(index as u8))),
+                    Values::Current(from, _) => {
+                        let current = from.images[image].value.borrow().clone();
+                        ImageTracked::static_value(current)
+                    }
+                };
+                image += 1;
+                let get = value.get.clone();
+                scene.images.push(value);
+                Some(get)
+            } else {
+                None
+            };
             scene.nodes.push(SceneNode {
                 spec: spec.clone(),
                 children: data.children[index].clone(),
@@ -1053,6 +1187,7 @@ impl Scene {
                 disabled,
                 text,
                 glyph_color,
+                image,
             });
         }
         scene
@@ -1067,11 +1202,32 @@ impl Scene {
 /// same, so a fresh mount differs from the reactive scene only in where its
 /// values come from.
 fn build_node(scene: &Rc<Scene>, index: usize) -> AnyElement {
-    if scene.nodes[index].spec.text {
+    if scene.nodes[index].spec.image && !scene.nodes[index].spec.text {
+        build_image_node(scene, index).into_any()
+    } else if scene.nodes[index].spec.text {
         build_text_block(scene, index).into_any()
     } else {
         build_panel(scene, index).into_any()
     }
+}
+
+/// Builds the image node at `index`.
+///
+/// It reads every property a panel reads and carries the same box, so the
+/// layout, style and visibility edits reach it the way they reach a panel,
+/// and its padding and border inset the image from its background. A swap
+/// between equal-size sources repaints the image's rectangle and nothing
+/// else; a clear or a size change relays the node out, which is the layout
+/// path the seed that clears the source reaches.
+fn build_image_node(scene: &Rc<Scene>, index: usize) -> Element<ImageView> {
+    let element = match &scene.nodes[index].image {
+        Some(source) => {
+            let source = Rc::clone(source);
+            image(move || source())
+        }
+        None => image(Option::<Image>::None),
+    };
+    append_children(scene, index, style_node(scene, index, element))
 }
 
 /// Builds the element of the text node at `index`.
@@ -1101,10 +1257,24 @@ fn build_text_block(scene: &Rc<Scene>, index: usize) -> Element<TextBlock> {
 
 /// Builds the element of the panel node at `index`.
 fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
+    let element = append_children(scene, index, style_node(scene, index, panel()));
+    if index == 0 {
+        let list = Rc::clone(&scene.list.get);
+        element
+            .child(for_each(move || list(), |item| *item, list_row).direction(Direction::Column))
+            .child(scroll_view(&scene.scroll, &scene.inner_scroll))
+    } else {
+        element
+    }
+}
+
+/// Applies the box, the style variants and the bound properties of the node
+/// at `index` to `element`, which a panel and an image node share.
+fn style_node<W: Widget>(scene: &Rc<Scene>, index: usize, element: Element<W>) -> Element<W> {
     let node = &scene.nodes[index];
     let spec = &node.spec;
 
-    let mut element = panel()
+    let mut element = element
         .height(spec.height)
         .padding(px(spec.padding))
         .gap(Size {
@@ -1172,16 +1342,7 @@ fn build_panel(scene: &Rc<Scene>, index: usize) -> Element<Panel> {
         let hidden = Rc::clone(hidden);
         element = element.hidden(move || hidden());
     }
-
-    let element = append_children(scene, index, element);
-    if index == 0 {
-        let list = Rc::clone(&scene.list.get);
-        element
-            .child(for_each(move || list(), |item| *item, list_row).direction(Direction::Column))
-            .child(scroll_view(&scene.scroll, &scene.inner_scroll))
-    } else {
-        element
-    }
+    element
 }
 
 /// The scroll view the root mounts.
@@ -1319,6 +1480,8 @@ enum Edit {
     Text(usize, String),
     /// Sets the glyph color property at this index to a color.
     GlyphColor(usize, Color),
+    /// Replaces the image source at this index, or clears it.
+    Image(usize, Option<Image>),
     /// Moves the viewport the scene is laid out in, or changes its scale.
     Viewport(Size, f32),
     /// Flips the disabled property at this index, which takes the node out of
@@ -1366,6 +1529,7 @@ impl Edit {
             }
             Edit::Text(index, ref text) => scene.texts[index].write(text.clone()),
             Edit::GlyphColor(index, color) => scene.glyph_colors[index].write(color),
+            Edit::Image(index, ref image) => scene.images[index].write(image.clone()),
             Edit::Viewport(viewport, scale) => {
                 scene.viewport.set(viewport);
                 scene.scale.set(scale);
@@ -1445,6 +1609,7 @@ impl Edit {
             | Edit::Hidden(_)
             | Edit::Text(..)
             | Edit::GlyphColor(..)
+            | Edit::Image(..)
             | Edit::Viewport(..)
             | Edit::ListAppend(_)
             | Edit::ListRemove(_)
@@ -1643,8 +1808,28 @@ fn any_event_frames(counts: SignalCounts) -> impl Strategy<Value = Vec<Vec<Edit>
 
 /// A generated case: a scene, the edits of its geometry segment, and the edits
 /// and events of its event segment, one group per frame.
+///
+/// The image flags and the image edits are drawn after everything else, so
+/// the seeds the regression file kept from before images existed still
+/// generate the scenes and edits they recorded, now with images added.
 fn any_case() -> impl Strategy<Value = (SceneData, Vec<Vec<Edit>>, Vec<Vec<Edit>>)> {
-    prop::collection::vec(any_spec(), 2..=40)
+    (any_base_case(), any_image_plan()).prop_map(
+        |((data, mut geometry, events), (flags, image_edits))| {
+            let data = data.with_images(&flags);
+            let images = data.signal_counts().images;
+            for (group, edits) in geometry.iter_mut().zip(image_edits) {
+                group.extend(edits.into_iter().map(|(index, seed)| {
+                    Edit::Image(index.index(images), (seed < 8).then(|| gradient(seed)))
+                }));
+            }
+            (data, geometry, events)
+        },
+    )
+}
+
+/// A case without images: a scene, its geometry edits and its event frames.
+fn any_base_case() -> impl Strategy<Value = (SceneData, Vec<Vec<Edit>>, Vec<Vec<Edit>>)> {
+    prop::collection::vec(any_spec(), 2..=MAX_NODES)
         .prop_map(SceneData::new)
         .prop_flat_map(|data| {
             let counts = data.signal_counts();
@@ -1654,6 +1839,19 @@ fn any_case() -> impl Strategy<Value = (SceneData, Vec<Vec<Edit>>, Vec<Vec<Edit>
                 any_event_frames(counts),
             )
         })
+}
+
+/// The image part of a case: a flag for every node a scene can hold, and
+/// for every geometry frame up to two image edits, each an image property
+/// picked by position and a seed that [`any_image_seed`] describes.
+fn any_image_plan() -> impl Strategy<Value = (Vec<bool>, Vec<Vec<(prop::sample::Index, u8)>>)> {
+    (
+        prop::collection::vec(any::<bool>(), MAX_NODES + 1),
+        prop::collection::vec(
+            prop::collection::vec((any::<prop::sample::Index>(), any_image_seed()), 0..=2),
+            MAX_GEOMETRY_FRAMES,
+        ),
+    )
 }
 
 /// Panics when the app still holds work that only a frame can finish.
@@ -1805,4 +2003,150 @@ damage_equivalence_tests! {
     damage_matches_full_repaint_at_scale_one_and_a_quarter at 1.25;
     damage_matches_full_repaint_at_scale_one_and_a_half at 1.5;
     damage_matches_full_repaint_at_scale_two at 2.0;
+}
+
+/// A scene, the edits of its geometry segment and those of its event segment.
+type Case = (SceneData, Vec<Vec<Edit>>, Vec<Vec<Edit>>);
+
+/// The cases behind two seeds of the regression file that were recorded
+/// while each node drew its own image flag, before the image plan moved to a
+/// strategy of its own. The seeds no longer generate these cases, so they
+/// are kept as data: for each seed, the case it generated and the smaller
+/// case proptest shrank it to.
+#[rustfmt::skip]
+fn first_image_strategy_cases() -> Vec<Case> {
+    vec![
+        (
+            SceneData {
+                nodes: vec![
+                    NodeSpec { children: 2, width: Length::Auto, height: Length::Px(35.448734), padding: 6.172589, gap: 5.391601, direction: Direction::Column, background: None, border: 1.126722, border_color: Color { r: 54, g: 166, b: 20, a: 108 }, radius: 8.725183, clip: true, absolute: false, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Auto, left: Length::Px(104.56829) }, bind_width: true, bind_background: true, bind_radius: true, bind_hidden: false, show: false, text: false, bind_text: false, bind_glyph_color: true, hover_variant: false, hover_layout: false, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 3, width: Length::Auto, height: Length::Px(37.86434), padding: 5.589048, gap: 2.9332893, direction: Direction::Row, background: None, border: 0.8256354, border_color: Color { r: 225, g: 84, b: 172, a: 210 }, radius: 9.622329, clip: true, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(45.087433), bottom: Length::Auto, left: Length::Px(48.982925) }, bind_width: true, bind_background: false, bind_radius: false, bind_hidden: false, show: true, text: true, bind_text: true, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: false, focused_variant: true, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 3, width: Length::Px(115.8967), height: Length::Px(54.07467), padding: 3.6107488, gap: 6.103102, direction: Direction::Column, background: None, border: 0.28458706, border_color: Color { r: 87, g: 229, b: 121, a: 230 }, radius: 6.0041018, clip: false, absolute: true, inset: Edges { top: Length::Auto, right: Length::Px(12.9605055), bottom: Length::Px(5.33184), left: Length::Auto }, bind_width: true, bind_background: false, bind_radius: true, bind_hidden: false, show: false, text: true, bind_text: true, bind_glyph_color: true, hover_variant: false, hover_layout: true, pressed_variant: true, focused_variant: false, disabled_variant: true, bind_disabled: false, image: true },
+                    NodeSpec { children: 3, width: Length::Px(39.252712), height: Length::Px(74.42163), padding: 5.7661915, gap: 3.9479623, direction: Direction::Column, background: Some(Color { r: 69, g: 6, b: 14, a: 164 }), border: 2.286792, border_color: Color { r: 88, g: 104, b: 132, a: 147 }, radius: 9.514615, clip: false, absolute: false, inset: Edges { top: Length::Px(0.00086383405), right: Length::Auto, bottom: Length::Px(89.36668), left: Length::Px(10.434255) }, bind_width: false, bind_background: true, bind_radius: false, bind_hidden: false, show: true, text: false, bind_text: true, bind_glyph_color: true, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: true, image: false },
+                    NodeSpec { children: 2, width: Length::Px(51.430134), height: Length::Px(90.14198), padding: 7.5408254, gap: 0.9391404, direction: Direction::Row, background: None, border: 0.18031308, border_color: Color { r: 4, g: 51, b: 50, a: 30 }, radius: 10.526427, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(43.492664), bottom: Length::Px(62.638706), left: Length::Px(64.958626) }, bind_width: true, bind_background: false, bind_radius: true, bind_hidden: false, show: false, text: true, bind_text: true, bind_glyph_color: false, hover_variant: false, hover_layout: true, pressed_variant: false, focused_variant: true, disabled_variant: true, bind_disabled: true, image: true },
+                    NodeSpec { children: 0, width: Length::Px(85.1741), height: Length::Px(40.650085), padding: 1.9025575, gap: 7.3749366, direction: Direction::Column, background: None, border: 1.5459536, border_color: Color { r: 159, g: 142, b: 179, a: 165 }, radius: 10.976462, clip: false, absolute: true, inset: Edges { top: Length::Px(4.9318104), right: Length::Auto, bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: false, show: false, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: true, image: false },
+                    NodeSpec { children: 3, width: Length::Px(77.68155), height: Length::Px(44.240734), padding: 5.6354876, gap: 3.3513935, direction: Direction::Column, background: Some(Color { r: 200, g: 91, b: 44, a: 176 }), border: 2.427538, border_color: Color { r: 239, g: 220, b: 60, a: 228 }, radius: 6.3040276, clip: true, absolute: false, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Auto, left: Length::Px(82.61925) }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: false, show: false, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: false, image: true },
+                    NodeSpec { children: 0, width: Length::Auto, height: Length::Auto, padding: 3.077374, gap: 6.266622, direction: Direction::Row, background: Some(Color { r: 4, g: 138, b: 172, a: 24 }), border: 1.1509877, border_color: Color { r: 58, g: 115, b: 119, a: 112 }, radius: 10.552148, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(46.368694), bottom: Length::Px(100.89143), left: Length::Auto }, bind_width: true, bind_background: false, bind_radius: false, bind_hidden: false, show: true, text: true, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 1, width: Length::Auto, height: Length::Auto, padding: 1.782927, gap: 3.0044503, direction: Direction::Row, background: Some(Color { r: 178, g: 159, b: 85, a: 182 }), border: 1.240352, border_color: Color { r: 33, g: 88, b: 92, a: 229 }, radius: 4.072737, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Px(60.798832), left: Length::Px(64.04918) }, bind_width: false, bind_background: true, bind_radius: true, bind_hidden: true, show: true, text: true, bind_text: false, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: false, focused_variant: true, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 2, width: Length::Px(91.88855), height: Length::Px(111.20018), padding: 5.627167, gap: 2.159307, direction: Direction::Column, background: Some(Color { r: 120, g: 240, b: 10, a: 230 }), border: 0.78831446, border_color: Color { r: 253, g: 106, b: 155, a: 81 }, radius: 9.028052, clip: true, absolute: false, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Px(69.104706), left: Length::Px(6.9023037) }, bind_width: false, bind_background: true, bind_radius: false, bind_hidden: false, show: true, text: true, bind_text: false, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: true, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 3, width: Length::Auto, height: Length::Px(2.4180765), padding: 5.1052203, gap: 7.902674, direction: Direction::Column, background: None, border: 0.9611314, border_color: Color { r: 42, g: 218, b: 189, a: 125 }, radius: 11.128218, clip: false, absolute: true, inset: Edges { top: Length::Px(80.763504), right: Length::Auto, bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: true, bind_hidden: false, show: true, text: false, bind_text: true, bind_glyph_color: true, hover_variant: true, hover_layout: true, pressed_variant: false, focused_variant: true, disabled_variant: true, bind_disabled: true, image: true },
+                    NodeSpec { children: 2, width: Length::Auto, height: Length::Auto, padding: 3.2565627, gap: 4.01096, direction: Direction::Row, background: None, border: 1.5070136, border_color: Color { r: 19, g: 254, b: 106, a: 87 }, radius: 4.183633, clip: true, absolute: true, inset: Edges { top: Length::Px(71.26463), right: Length::Px(114.57188), bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: true, bind_hidden: true, show: false, text: true, bind_text: false, bind_glyph_color: true, hover_variant: false, hover_layout: true, pressed_variant: true, focused_variant: false, disabled_variant: true, bind_disabled: false, image: true },
+                    NodeSpec { children: 2, width: Length::Auto, height: Length::Px(82.983086), padding: 6.2785425, gap: 6.621998, direction: Direction::Row, background: Some(Color { r: 227, g: 194, b: 223, a: 97 }), border: 1.424069, border_color: Color { r: 108, g: 242, b: 203, a: 135 }, radius: 10.31094, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(70.08039), bottom: Length::Px(101.21103), left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: true, bind_hidden: true, show: false, text: true, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: false, image: true },
+                    NodeSpec { children: 0, width: Length::Auto, height: Length::Px(24.628963), padding: 6.495573, gap: 4.404489, direction: Direction::Column, background: Some(Color { r: 105, g: 26, b: 89, a: 178 }), border: 0.5616599, border_color: Color { r: 75, g: 34, b: 106, a: 120 }, radius: 11.04623, clip: false, absolute: true, inset: Edges { top: Length::Px(59.418243), right: Length::Px(104.557686), bottom: Length::Px(114.539894), left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: true, show: false, text: false, bind_text: true, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: false, disabled_variant: true, bind_disabled: true, image: false },
+                    NodeSpec { children: 1, width: Length::Auto, height: Length::Px(0.8950497), padding: 7.00368, gap: 2.1010723, direction: Direction::Row, background: Some(Color { r: 64, g: 29, b: 16, a: 242 }), border: 0.31010342, border_color: Color { r: 204, g: 52, b: 98, a: 143 }, radius: 7.0718164, clip: true, absolute: true, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Px(107.73754), left: Length::Px(105.371025) }, bind_width: true, bind_background: false, bind_radius: true, bind_hidden: true, show: true, text: false, bind_text: true, bind_glyph_color: true, hover_variant: false, hover_layout: true, pressed_variant: false, focused_variant: true, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 0, width: Length::Px(68.044846), height: Length::Px(89.71813), padding: 2.0475514, gap: 1.0570676, direction: Direction::Row, background: None, border: 2.0111852, border_color: Color { r: 26, g: 209, b: 141, a: 168 }, radius: 7.67408, clip: true, absolute: false, inset: Edges { top: Length::Px(8.945305), right: Length::Auto, bottom: Length::Px(95.4137), left: Length::Auto }, bind_width: false, bind_background: true, bind_radius: true, bind_hidden: true, show: true, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: true, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 0, width: Length::Px(103.53603), height: Length::Px(67.49067), padding: 5.4699945, gap: 1.642934, direction: Direction::Row, background: Some(Color { r: 159, g: 11, b: 67, a: 248 }), border: 2.343492, border_color: Color { r: 180, g: 210, b: 170, a: 121 }, radius: 3.2543333, clip: true, absolute: true, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: false, show: true, text: false, bind_text: true, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: false, disabled_variant: false, bind_disabled: true, image: false },
+                    NodeSpec { children: 3, width: Length::Auto, height: Length::Auto, padding: 2.5661473, gap: 2.5665705, direction: Direction::Row, background: Some(Color { r: 108, g: 39, b: 182, a: 59 }), border: 1.528279, border_color: Color { r: 61, g: 241, b: 21, a: 250 }, radius: 4.243484, clip: true, absolute: true, inset: Edges { top: Length::Auto, right: Length::Px(35.0535), bottom: Length::Px(76.45695), left: Length::Px(29.406702) }, bind_width: false, bind_background: false, bind_radius: true, bind_hidden: false, show: true, text: false, bind_text: true, bind_glyph_color: false, hover_variant: false, hover_layout: false, pressed_variant: false, focused_variant: false, disabled_variant: true, bind_disabled: false, image: true },
+                ],
+                children: vec![vec![1, 2], vec![3, 4, 5], vec![11, 12, 13], vec![6, 7, 8], vec![9, 10], vec![], vec![], vec![], vec![], vec![], vec![], vec![14, 15], vec![16, 17], vec![], vec![], vec![], vec![], vec![]],
+            },
+            vec![
+                vec![Edit::Disabled(1), Edit::InnerScroll(151.73155)],
+                vec![Edit::Image(1, None), Edit::ListReverse, Edit::ListRemove(0), Edit::InnerScroll(142.65848)],
+                vec![Edit::Viewport(Size { width: 168.32367, height: 196.65868 }, 1.0), Edit::Image(1, Some(gradient(3)))],
+                vec![Edit::ListAppend(7), Edit::Show(9)],
+                vec![Edit::Viewport(Size { width: 192.72708, height: 325.11703 }, 2.0), Edit::Color(4, Color { r: 80, g: 243, b: 22, a: 83 }), Edit::Viewport(Size { width: 344.75284, height: 335.385 }, 1.25), Edit::Radius(3, 9.072614)],
+            ],
+            vec![
+                vec![Edit::Move(Point { x: 194.39325, y: 77.772156 }), Edit::UpAt(Point { x: 194.39325, y: 77.772156 }), Edit::GlyphColor(0, Color { r: 198, g: 76, b: 59, a: 182 }), Edit::Radius(8, 0.8350722)],
+                vec![Edit::Move(Point { x: 219.75507, y: 91.74988 }), Edit::UpAt(Point { x: 219.75507, y: 91.74988 }), Edit::GlyphColor(0, Color { r: 2, g: 38, b: 47, a: 135 })],
+            ],
+        ),
+        (
+            SceneData {
+                nodes: vec![
+                    NodeSpec { children: 3, width: Length::Auto, height: Length::Px(37.86434), padding: 5.589048, gap: 2.9332893, direction: Direction::Row, background: None, border: 0.8256354, border_color: Color { r: 225, g: 84, b: 172, a: 210 }, radius: 9.622329, clip: true, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(45.087433), bottom: Length::Auto, left: Length::Px(48.982925) }, bind_width: true, bind_background: true, bind_radius: true, bind_hidden: false, show: false, text: true, bind_text: true, bind_glyph_color: true, hover_variant: false, hover_layout: false, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 3, width: Length::Px(115.8967), height: Length::Px(54.07467), padding: 3.6107488, gap: 6.103102, direction: Direction::Column, background: None, border: 0.28458706, border_color: Color { r: 87, g: 229, b: 121, a: 230 }, radius: 6.0041018, clip: false, absolute: true, inset: Edges { top: Length::Auto, right: Length::Px(12.9605055), bottom: Length::Px(5.33184), left: Length::Auto }, bind_width: true, bind_background: false, bind_radius: true, bind_hidden: false, show: false, text: true, bind_text: true, bind_glyph_color: true, hover_variant: false, hover_layout: true, pressed_variant: true, focused_variant: false, disabled_variant: true, bind_disabled: false, image: true },
+                    NodeSpec { children: 3, width: Length::Px(39.252712), height: Length::Px(74.42163), padding: 5.7661915, gap: 3.9479623, direction: Direction::Column, background: Some(Color { r: 69, g: 6, b: 14, a: 164 }), border: 2.286792, border_color: Color { r: 88, g: 104, b: 132, a: 147 }, radius: 9.514615, clip: false, absolute: false, inset: Edges { top: Length::Px(0.00086383405), right: Length::Auto, bottom: Length::Px(89.36668), left: Length::Px(10.434255) }, bind_width: false, bind_background: true, bind_radius: false, bind_hidden: false, show: true, text: false, bind_text: true, bind_glyph_color: true, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: true, image: false },
+                    NodeSpec { children: 2, width: Length::Px(51.430134), height: Length::Px(90.14198), padding: 7.5408254, gap: 0.9391404, direction: Direction::Row, background: None, border: 0.18031308, border_color: Color { r: 4, g: 51, b: 50, a: 30 }, radius: 10.526427, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(43.492664), bottom: Length::Px(62.638706), left: Length::Px(64.958626) }, bind_width: true, bind_background: false, bind_radius: true, bind_hidden: false, show: false, text: true, bind_text: true, bind_glyph_color: false, hover_variant: false, hover_layout: true, pressed_variant: false, focused_variant: true, disabled_variant: true, bind_disabled: true, image: true },
+                    NodeSpec { children: 0, width: Length::Px(85.1741), height: Length::Px(40.650085), padding: 1.9025575, gap: 7.3749366, direction: Direction::Column, background: None, border: 1.5459536, border_color: Color { r: 159, g: 142, b: 179, a: 165 }, radius: 10.976462, clip: false, absolute: true, inset: Edges { top: Length::Px(4.9318104), right: Length::Auto, bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: false, show: false, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: true, image: false },
+                    NodeSpec { children: 3, width: Length::Px(77.68155), height: Length::Px(44.240734), padding: 5.6354876, gap: 3.3513935, direction: Direction::Column, background: Some(Color { r: 200, g: 91, b: 44, a: 176 }), border: 2.427538, border_color: Color { r: 239, g: 220, b: 60, a: 228 }, radius: 6.3040276, clip: true, absolute: false, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Auto, left: Length::Px(82.61925) }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: false, show: false, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: false, image: true },
+                    NodeSpec { children: 0, width: Length::Auto, height: Length::Auto, padding: 3.077374, gap: 6.266622, direction: Direction::Row, background: Some(Color { r: 4, g: 138, b: 172, a: 24 }), border: 1.1509877, border_color: Color { r: 58, g: 115, b: 119, a: 112 }, radius: 10.552148, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(46.368694), bottom: Length::Px(100.89143), left: Length::Auto }, bind_width: true, bind_background: false, bind_radius: false, bind_hidden: false, show: true, text: true, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 1, width: Length::Auto, height: Length::Auto, padding: 1.782927, gap: 3.0044503, direction: Direction::Row, background: Some(Color { r: 178, g: 159, b: 85, a: 182 }), border: 1.240352, border_color: Color { r: 33, g: 88, b: 92, a: 229 }, radius: 4.072737, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Px(60.798832), left: Length::Px(64.04918) }, bind_width: false, bind_background: true, bind_radius: true, bind_hidden: true, show: true, text: true, bind_text: false, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: false, focused_variant: true, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 2, width: Length::Px(91.88855), height: Length::Px(111.20018), padding: 5.627167, gap: 2.159307, direction: Direction::Column, background: Some(Color { r: 120, g: 240, b: 10, a: 230 }), border: 0.78831446, border_color: Color { r: 253, g: 106, b: 155, a: 81 }, radius: 9.028052, clip: true, absolute: false, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Px(69.104706), left: Length::Px(6.9023037) }, bind_width: false, bind_background: true, bind_radius: false, bind_hidden: false, show: true, text: true, bind_text: false, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: true, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 3, width: Length::Auto, height: Length::Px(2.4180765), padding: 5.1052203, gap: 7.902674, direction: Direction::Column, background: None, border: 0.9611314, border_color: Color { r: 42, g: 218, b: 189, a: 125 }, radius: 11.128218, clip: false, absolute: true, inset: Edges { top: Length::Px(80.763504), right: Length::Auto, bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: true, bind_hidden: false, show: true, text: false, bind_text: true, bind_glyph_color: true, hover_variant: true, hover_layout: true, pressed_variant: false, focused_variant: true, disabled_variant: true, bind_disabled: true, image: true },
+                    NodeSpec { children: 2, width: Length::Auto, height: Length::Auto, padding: 3.2565627, gap: 4.01096, direction: Direction::Row, background: None, border: 1.5070136, border_color: Color { r: 19, g: 254, b: 106, a: 87 }, radius: 4.183633, clip: true, absolute: true, inset: Edges { top: Length::Px(71.26463), right: Length::Px(114.57188), bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: true, bind_hidden: true, show: false, text: true, bind_text: false, bind_glyph_color: true, hover_variant: false, hover_layout: true, pressed_variant: true, focused_variant: false, disabled_variant: true, bind_disabled: false, image: true },
+                    NodeSpec { children: 2, width: Length::Auto, height: Length::Px(82.983086), padding: 6.2785425, gap: 6.621998, direction: Direction::Row, background: Some(Color { r: 227, g: 194, b: 223, a: 97 }), border: 1.424069, border_color: Color { r: 108, g: 242, b: 203, a: 135 }, radius: 10.31094, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(70.08039), bottom: Length::Px(101.21103), left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: true, bind_hidden: true, show: false, text: true, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: false, image: true },
+                    NodeSpec { children: 0, width: Length::Auto, height: Length::Px(24.628963), padding: 6.495573, gap: 4.404489, direction: Direction::Column, background: Some(Color { r: 105, g: 26, b: 89, a: 178 }), border: 0.5616599, border_color: Color { r: 75, g: 34, b: 106, a: 120 }, radius: 11.04623, clip: false, absolute: true, inset: Edges { top: Length::Px(59.418243), right: Length::Px(104.557686), bottom: Length::Px(114.539894), left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: true, show: false, text: false, bind_text: true, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: false, disabled_variant: true, bind_disabled: true, image: false },
+                    NodeSpec { children: 1, width: Length::Auto, height: Length::Px(0.8950497), padding: 7.00368, gap: 2.1010723, direction: Direction::Row, background: Some(Color { r: 64, g: 29, b: 16, a: 242 }), border: 0.31010342, border_color: Color { r: 204, g: 52, b: 98, a: 143 }, radius: 7.0718164, clip: true, absolute: true, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Px(107.73754), left: Length::Px(105.371025) }, bind_width: true, bind_background: false, bind_radius: true, bind_hidden: true, show: true, text: false, bind_text: true, bind_glyph_color: true, hover_variant: false, hover_layout: true, pressed_variant: false, focused_variant: true, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 0, width: Length::Px(68.044846), height: Length::Px(89.71813), padding: 2.0475514, gap: 1.0570676, direction: Direction::Row, background: None, border: 2.0111852, border_color: Color { r: 26, g: 209, b: 141, a: 168 }, radius: 7.67408, clip: true, absolute: false, inset: Edges { top: Length::Px(8.945305), right: Length::Auto, bottom: Length::Px(95.4137), left: Length::Auto }, bind_width: false, bind_background: true, bind_radius: true, bind_hidden: true, show: true, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: true, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 0, width: Length::Px(103.53603), height: Length::Px(67.49067), padding: 5.4699945, gap: 1.642934, direction: Direction::Row, background: Some(Color { r: 159, g: 11, b: 67, a: 248 }), border: 2.343492, border_color: Color { r: 180, g: 210, b: 170, a: 121 }, radius: 3.2543333, clip: true, absolute: true, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: false, show: true, text: false, bind_text: true, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: false, disabled_variant: false, bind_disabled: true, image: false },
+                    NodeSpec { children: 3, width: Length::Auto, height: Length::Auto, padding: 2.5661473, gap: 2.5665705, direction: Direction::Row, background: Some(Color { r: 108, g: 39, b: 182, a: 59 }), border: 1.528279, border_color: Color { r: 61, g: 241, b: 21, a: 250 }, radius: 4.243484, clip: true, absolute: true, inset: Edges { top: Length::Auto, right: Length::Px(35.0535), bottom: Length::Px(76.45695), left: Length::Px(29.406702) }, bind_width: false, bind_background: false, bind_radius: true, bind_hidden: false, show: true, text: false, bind_text: true, bind_glyph_color: false, hover_variant: false, hover_layout: false, pressed_variant: false, focused_variant: false, disabled_variant: true, bind_disabled: false, image: true },
+                    NodeSpec { children: 3, width: Length::Auto, height: Length::Auto, padding: 4.020834, gap: 5.4302993, direction: Direction::Column, background: None, border: 0.38868198, border_color: Color { r: 189, g: 118, b: 174, a: 149 }, radius: 1.5905874, clip: true, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(57.657528), bottom: Length::Px(18.08034), left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: true, bind_hidden: true, show: false, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: false, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 2, width: Length::Px(1.8405118), height: Length::Auto, padding: 6.173014, gap: 6.507891, direction: Direction::Column, background: None, border: 1.5204725, border_color: Color { r: 66, g: 64, b: 70, a: 32 }, radius: 2.9650028, clip: true, absolute: true, inset: Edges { top: Length::Auto, right: Length::Px(11.03873), bottom: Length::Px(63.808884), left: Length::Px(53.966545) }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: true, show: true, text: false, bind_text: false, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: false, focused_variant: true, disabled_variant: false, bind_disabled: true, image: true },
+                    NodeSpec { children: 2, width: Length::Auto, height: Length::Px(53.82057), padding: 0.7800085, gap: 0.30162942, direction: Direction::Column, background: Some(Color { r: 164, g: 56, b: 90, a: 250 }), border: 0.42081338, border_color: Color { r: 41, g: 67, b: 191, a: 217 }, radius: 8.5350895, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Auto, left: Length::Px(31.163967) }, bind_width: true, bind_background: false, bind_radius: true, bind_hidden: true, show: false, text: true, bind_text: true, bind_glyph_color: true, hover_variant: false, hover_layout: true, pressed_variant: false, focused_variant: false, disabled_variant: true, bind_disabled: true, image: true },
+                    NodeSpec { children: 2, width: Length::Px(87.142746), height: Length::Px(7.4322786), padding: 2.839135, gap: 0.11796351, direction: Direction::Column, background: Some(Color { r: 204, g: 100, b: 155, a: 9 }), border: 0.78058976, border_color: Color { r: 47, g: 123, b: 252, a: 196 }, radius: 10.247074, clip: false, absolute: true, inset: Edges { top: Length::Px(12.57998), right: Length::Px(114.65555), bottom: Length::Auto, left: Length::Px(28.375944) }, bind_width: true, bind_background: false, bind_radius: true, bind_hidden: true, show: true, text: true, bind_text: false, bind_glyph_color: false, hover_variant: true, hover_layout: false, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 0, width: Length::Px(20.592388), height: Length::Auto, padding: 7.2603817, gap: 0.52885234, direction: Direction::Column, background: Some(Color { r: 139, g: 63, b: 19, a: 231 }), border: 1.1711266, border_color: Color { r: 223, g: 86, b: 190, a: 92 }, radius: 0.5918814, clip: false, absolute: true, inset: Edges { top: Length::Px(3.7580633), right: Length::Px(55.720173), bottom: Length::Px(84.57943), left: Length::Auto }, bind_width: true, bind_background: false, bind_radius: false, bind_hidden: true, show: false, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: true, image: false },
+                    NodeSpec { children: 1, width: Length::Px(2.9690902), height: Length::Auto, padding: 5.8474426, gap: 7.738557, direction: Direction::Row, background: Some(Color { r: 20, g: 147, b: 179, a: 101 }), border: 2.7827864, border_color: Color { r: 189, g: 18, b: 58, a: 51 }, radius: 7.6529818, clip: false, absolute: true, inset: Edges { top: Length::Px(105.01049), right: Length::Auto, bottom: Length::Auto, left: Length::Px(41.551632) }, bind_width: true, bind_background: false, bind_radius: true, bind_hidden: false, show: true, text: false, bind_text: true, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: false, focused_variant: true, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 1, width: Length::Auto, height: Length::Auto, padding: 6.232303, gap: 2.9698226, direction: Direction::Row, background: None, border: 2.6614482, border_color: Color { r: 111, g: 56, b: 79, a: 150 }, radius: 7.2174172, clip: true, absolute: true, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Auto, left: Length::Auto }, bind_width: true, bind_background: true, bind_radius: true, bind_hidden: true, show: true, text: false, bind_text: false, bind_glyph_color: false, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: false, image: false },
+                ],
+                children: vec![vec![1, 2, 3], vec![4, 5, 6], vec![10, 11, 12], vec![17, 18], vec![], vec![7, 8, 9], vec![], vec![], vec![], vec![], vec![13, 14], vec![15, 16], vec![], vec![], vec![], vec![], vec![], vec![19, 20, 21], vec![22, 23], vec![], vec![], vec![], vec![], vec![]],
+            },
+            vec![
+                vec![Edit::Viewport(Size { width: 160.0, height: 120.0 }, 1.0)],
+            ],
+            vec![
+                vec![Edit::Disabled(0)],
+            ],
+        ),
+        (
+            SceneData {
+                nodes: vec![
+                    NodeSpec { children: 1, width: Length::Auto, height: Length::Auto, padding: 3.7645786, gap: 2.155126, direction: Direction::Column, background: None, border: 0.968374, border_color: Color { r: 2, g: 222, b: 18, a: 226 }, radius: 1.5801493, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Auto, bottom: Length::Px(17.584173), left: Length::Auto }, bind_width: true, bind_background: true, bind_radius: true, bind_hidden: false, show: false, text: false, bind_text: false, bind_glyph_color: false, hover_variant: false, hover_layout: false, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 3, width: Length::Px(14.072466), height: Length::Auto, padding: 3.789862, gap: 2.033609, direction: Direction::Row, background: Some(Color { r: 37, g: 225, b: 153, a: 148 }), border: 0.4709828, border_color: Color { r: 62, g: 186, b: 67, a: 21 }, radius: 7.6075397, clip: true, absolute: false, inset: Edges { top: Length::Px(41.495773), right: Length::Px(72.657524), bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: false, show: true, text: true, bind_text: false, bind_glyph_color: true, hover_variant: false, hover_layout: false, pressed_variant: false, focused_variant: false, disabled_variant: true, bind_disabled: false, image: false },
+                    NodeSpec { children: 3, width: Length::Px(86.966125), height: Length::Auto, padding: 0.84681976, gap: 2.8076894, direction: Direction::Column, background: Some(Color { r: 61, g: 30, b: 126, a: 4 }), border: 0.4987102, border_color: Color { r: 131, g: 180, b: 96, a: 29 }, radius: 1.6237, clip: true, absolute: true, inset: Edges { top: Length::Px(20.90008), right: Length::Auto, bottom: Length::Px(93.476234), left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: true, bind_hidden: false, show: true, text: false, bind_text: true, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: true, image: true },
+                    NodeSpec { children: 1, width: Length::Auto, height: Length::Auto, padding: 6.057809, gap: 1.6023473, direction: Direction::Row, background: Some(Color { r: 115, g: 73, b: 142, a: 145 }), border: 1.6511965, border_color: Color { r: 175, g: 147, b: 213, a: 232 }, radius: 0.6776339, clip: true, absolute: true, inset: Edges { top: Length::Px(39.47943), right: Length::Auto, bottom: Length::Auto, left: Length::Auto }, bind_width: true, bind_background: true, bind_radius: true, bind_hidden: false, show: false, text: false, bind_text: false, bind_glyph_color: false, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: false, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 0, width: Length::Px(61.765137), height: Length::Auto, padding: 0.85120946, gap: 0.95010024, direction: Direction::Row, background: Some(Color { r: 226, g: 81, b: 240, a: 186 }), border: 2.2426782, border_color: Color { r: 60, g: 101, b: 17, a: 53 }, radius: 5.7743363, clip: true, absolute: true, inset: Edges { top: Length::Auto, right: Length::Px(28.703823), bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: false, show: false, text: true, bind_text: false, bind_glyph_color: false, hover_variant: true, hover_layout: false, pressed_variant: false, focused_variant: true, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 0, width: Length::Auto, height: Length::Px(88.11439), padding: 3.4001927, gap: 7.549609, direction: Direction::Column, background: None, border: 0.57856405, border_color: Color { r: 44, g: 168, b: 10, a: 37 }, radius: 3.7204359, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(16.92067), bottom: Length::Auto, left: Length::Auto }, bind_width: true, bind_background: true, bind_radius: true, bind_hidden: true, show: true, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: false, focused_variant: true, disabled_variant: false, bind_disabled: true, image: true },
+                    NodeSpec { children: 2, width: Length::Px(59.12697), height: Length::Px(80.87143), padding: 5.2976694, gap: 7.607315, direction: Direction::Column, background: Some(Color { r: 150, g: 195, b: 208, a: 215 }), border: 2.7282326, border_color: Color { r: 176, g: 40, b: 125, a: 233 }, radius: 3.5051274, clip: true, absolute: true, inset: Edges { top: Length::Px(115.60308), right: Length::Auto, bottom: Length::Px(69.97305), left: Length::Px(66.02197) }, bind_width: false, bind_background: true, bind_radius: true, bind_hidden: false, show: false, text: true, bind_text: true, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 3, width: Length::Auto, height: Length::Px(94.74095), padding: 4.269309, gap: 1.1295856, direction: Direction::Column, background: Some(Color { r: 246, g: 194, b: 177, a: 81 }), border: 0.8461132, border_color: Color { r: 15, g: 60, b: 149, a: 64 }, radius: 2.429125, clip: false, absolute: false, inset: Edges { top: Length::Px(5.674514), right: Length::Auto, bottom: Length::Px(75.03263), left: Length::Auto }, bind_width: false, bind_background: true, bind_radius: false, bind_hidden: false, show: true, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: true, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 1, width: Length::Auto, height: Length::Px(68.40522), padding: 5.556398, gap: 0.03207418, direction: Direction::Row, background: Some(Color { r: 84, g: 232, b: 185, a: 254 }), border: 1.968023, border_color: Color { r: 187, g: 0, b: 152, a: 217 }, radius: 11.037146, clip: false, absolute: true, inset: Edges { top: Length::Auto, right: Length::Px(0.1456055), bottom: Length::Px(85.241), left: Length::Px(67.23364) }, bind_width: true, bind_background: false, bind_radius: false, bind_hidden: false, show: false, text: true, bind_text: true, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: true },
+                ],
+                children: vec![vec![1], vec![2, 3, 4], vec![5, 6, 7], vec![8], vec![], vec![], vec![], vec![], vec![]],
+            },
+            vec![
+                vec![Edit::InnerScroll(172.50739), Edit::Text(1, "IWu.".to_string()), Edit::InnerScroll(128.87663)],
+                vec![Edit::Scroll(96.45899), Edit::Radius(0, 4.3364897)],
+                vec![Edit::Viewport(Size { width: 234.70947, height: 141.02023 }, 2.0)],
+                vec![Edit::ListAppend(6)],
+            ],
+            vec![
+                vec![Edit::DownAt(Point { x: 160.0, y: 120.0 }), Edit::Tab(false), Edit::Move(Point { x: 195.33284, y: 137.07268 })],
+                vec![Edit::Text(0, ",?7?..,?".to_string()), Edit::Color(1, Color { r: 147, g: 184, b: 196, a: 165 })],
+                vec![Edit::Move(Point { x: 175.1018, y: 146.35692 }), Edit::UpAt(Point { x: 175.1018, y: 146.35692 })],
+                vec![Edit::Color(0, Color { r: 174, g: 247, b: 186, a: 155 })],
+            ],
+        ),
+        (
+            SceneData {
+                nodes: vec![
+                    NodeSpec { children: 3, width: Length::Px(86.966125), height: Length::Auto, padding: 0.84681976, gap: 2.8076894, direction: Direction::Column, background: Some(Color { r: 61, g: 30, b: 126, a: 4 }), border: 0.4987102, border_color: Color { r: 131, g: 180, b: 96, a: 29 }, radius: 1.6237, clip: true, absolute: true, inset: Edges { top: Length::Px(20.90008), right: Length::Auto, bottom: Length::Px(93.476234), left: Length::Auto }, bind_width: true, bind_background: true, bind_radius: true, bind_hidden: false, show: false, text: false, bind_text: true, bind_glyph_color: false, hover_variant: false, hover_layout: true, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 1, width: Length::Auto, height: Length::Auto, padding: 6.057809, gap: 1.6023473, direction: Direction::Row, background: Some(Color { r: 115, g: 73, b: 142, a: 145 }), border: 1.6511965, border_color: Color { r: 175, g: 147, b: 213, a: 232 }, radius: 0.6776339, clip: true, absolute: true, inset: Edges { top: Length::Px(39.47943), right: Length::Auto, bottom: Length::Auto, left: Length::Auto }, bind_width: true, bind_background: true, bind_radius: true, bind_hidden: false, show: false, text: true, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: false, pressed_variant: true, focused_variant: false, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 0, width: Length::Px(61.765137), height: Length::Auto, padding: 0.85120946, gap: 0.95010024, direction: Direction::Row, background: Some(Color { r: 226, g: 81, b: 240, a: 186 }), border: 2.2426782, border_color: Color { r: 60, g: 101, b: 17, a: 53 }, radius: 5.7743363, clip: true, absolute: true, inset: Edges { top: Length::Auto, right: Length::Px(28.703823), bottom: Length::Auto, left: Length::Auto }, bind_width: false, bind_background: false, bind_radius: false, bind_hidden: false, show: false, text: true, bind_text: false, bind_glyph_color: false, hover_variant: true, hover_layout: false, pressed_variant: false, focused_variant: true, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 0, width: Length::Auto, height: Length::Px(88.11439), padding: 3.4001927, gap: 7.549609, direction: Direction::Column, background: None, border: 0.57856405, border_color: Color { r: 44, g: 168, b: 10, a: 37 }, radius: 3.7204359, clip: false, absolute: false, inset: Edges { top: Length::Auto, right: Length::Px(16.92067), bottom: Length::Auto, left: Length::Auto }, bind_width: true, bind_background: true, bind_radius: true, bind_hidden: true, show: true, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: true, disabled_variant: true, bind_disabled: true, image: true },
+                    NodeSpec { children: 2, width: Length::Px(59.12697), height: Length::Px(80.87143), padding: 5.2976694, gap: 7.607315, direction: Direction::Column, background: Some(Color { r: 150, g: 195, b: 208, a: 215 }), border: 2.7282326, border_color: Color { r: 176, g: 40, b: 125, a: 233 }, radius: 3.5051274, clip: true, absolute: true, inset: Edges { top: Length::Px(115.60308), right: Length::Auto, bottom: Length::Px(69.97305), left: Length::Px(66.02197) }, bind_width: false, bind_background: true, bind_radius: true, bind_hidden: false, show: false, text: true, bind_text: true, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: true },
+                    NodeSpec { children: 3, width: Length::Auto, height: Length::Px(94.74095), padding: 4.269309, gap: 1.1295856, direction: Direction::Column, background: Some(Color { r: 246, g: 194, b: 177, a: 81 }), border: 0.8461132, border_color: Color { r: 15, g: 60, b: 149, a: 64 }, radius: 2.429125, clip: false, absolute: false, inset: Edges { top: Length::Px(5.674514), right: Length::Auto, bottom: Length::Px(75.03263), left: Length::Auto }, bind_width: false, bind_background: true, bind_radius: false, bind_hidden: false, show: true, text: false, bind_text: false, bind_glyph_color: true, hover_variant: true, hover_layout: true, pressed_variant: true, focused_variant: true, disabled_variant: false, bind_disabled: false, image: false },
+                    NodeSpec { children: 1, width: Length::Auto, height: Length::Px(68.40522), padding: 5.556398, gap: 0.03207418, direction: Direction::Row, background: Some(Color { r: 84, g: 232, b: 185, a: 254 }), border: 1.968023, border_color: Color { r: 187, g: 0, b: 152, a: 217 }, radius: 11.037146, clip: false, absolute: true, inset: Edges { top: Length::Auto, right: Length::Px(0.1456055), bottom: Length::Px(85.241), left: Length::Px(67.23364) }, bind_width: true, bind_background: false, bind_radius: false, bind_hidden: false, show: false, text: true, bind_text: true, bind_glyph_color: false, hover_variant: true, hover_layout: true, pressed_variant: false, focused_variant: false, disabled_variant: false, bind_disabled: false, image: true },
+                ],
+                children: vec![vec![1, 2, 3], vec![4], vec![], vec![], vec![5, 6], vec![], vec![]],
+            },
+            vec![
+                vec![Edit::Viewport(Size { width: 160.0, height: 120.0 }, 1.0)],
+            ],
+            vec![
+                vec![Edit::Move(Point { x: 166.16211, y: 116.51529 })],
+                vec![Edit::Move(Point { x: 147.68515, y: 160.29877 }), Edit::Color(2, Color { r: 92, g: 246, b: 254, a: 168 }), Edit::Text(0, "".to_string()), Edit::Move(Point { x: 170.47397, y: 167.93658 })],
+                vec![Edit::DownAt(Point { x: 170.47397, y: 167.93658 }), Edit::DownAt(Point { x: 170.47397, y: 167.93658 }), Edit::Move(Point { x: 181.67816, y: 181.99153 })],
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn the_first_image_strategy_cases_match_a_full_repaint() {
+    for (data, geometry, events) in first_image_strategy_cases() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            check_scene(scale, &data, &geometry, &events);
+        }
+    }
 }
