@@ -2,9 +2,9 @@
 //!
 //! A [`Label`] lays its text out through the thread's [`TextSystem`] with one
 //! [`TextStyle`], measures itself from the laid out lines, and paints the
-//! resulting glyph runs. A change to the text, the font size, the weight or
-//! the family lays the label out again, and a change to the color only
-//! repaints it.
+//! resulting glyph runs. A change to the text, the font size, the weight,
+//! the family or the line cap lays the label out again, and a change to the
+//! color only repaints it.
 //!
 //! Create one with [`label`] and shape it with the [`LabelExt`] builder
 //! methods. At mount the label reads the ambient text style, which
@@ -54,6 +54,8 @@ pub struct Label {
     /// The style fields an explicit write set, which the ambient style leaves
     /// alone.
     explicit: ExplicitStyle,
+    /// The most lines the label shows, or `None` for every line.
+    max_lines: Option<u32>,
     /// The layout of [`Label::text`], or `None` before the first measure and
     /// after every change that invalidates it.
     ///
@@ -94,6 +96,7 @@ impl Label {
             text,
             style: TextStyle::default(),
             explicit: ExplicitStyle::default(),
+            max_lines: None,
             layout: None,
             broken_width: None,
             min_content: None,
@@ -132,7 +135,11 @@ impl Widget for Label {
     /// [`AvailableSpace::MinContent`] request gets the text wrapped at every
     /// opportunity, whose width is its longest unbreakable word, so a label
     /// in a row too narrow for it can shrink and wrap instead of overflowing
-    /// and squeezing its siblings.
+    /// and squeezing its siblings. A label capped to one line answers with
+    /// its ellipsis alone and one line of height, since it can cut any text
+    /// down to that. Under a cap of more lines, the min-content height stays
+    /// the full text's, since it answers what the text needs rather than what
+    /// the cap shows; the line cap reports its height at a definite width.
     ///
     /// The text is shaped once and kept; a call that offers another width
     /// than the last one re-breaks the shaped text's lines, because the
@@ -156,20 +163,24 @@ impl Widget for Label {
                 self.shape_and_break(Some(0.0));
                 let layout = self
                     .layout
-                    .as_ref()
+                    .as_mut()
                     .expect("the layout was just built or is cached");
+                if matches!(self.max_lines, Some(0 | 1)) {
+                    layout.truncate(self.max_lines, Some(0.0), &self.style);
+                }
                 self.min_content = Some(layout.size());
                 // Paint draws the lines the layout holds, so they go back to
-                // the width the label was last measured at.
-                if let Some(width) = painted {
-                    self.shape_and_break(width);
-                }
+                // the width the label was last measured at, truncated as the
+                // label was last shown. A label measured nowhere yet goes
+                // back to max content, so the cache key the next measure
+                // reads never describes a state the label was not left in.
+                self.shape_and_show(painted.unwrap_or(None));
             }
             return self.min_content;
         }
         let max_width = wrap_width(input.available_width);
         if self.broken_width != Some(max_width) {
-            self.shape_and_break(max_width);
+            self.shape_and_show(max_width);
         }
         let layout = self
             .layout
@@ -226,10 +237,24 @@ impl Widget for Label {
 
 impl Label {
     /// Shapes [`Label::text`] with [`Label::style`] when no shaped layout is
-    /// kept, and breaks its lines at `max_width`.
+    /// kept, breaks its lines at `max_width`, and cuts the lines to
+    /// [`Label::max_lines`].
     ///
     /// Both outcomes change the lines, so the cached glyph runs, which bake
     /// the line positions in, are dropped here.
+    fn shape_and_show(&mut self, max_width: Option<f32>) {
+        self.shape_and_break(max_width);
+        if let Some(layout) = &mut self.layout {
+            layout.truncate(self.max_lines, max_width, &self.style);
+        }
+    }
+
+    /// Shapes [`Label::text`] with [`Label::style`] when no shaped layout is
+    /// kept, and breaks its lines at `max_width` without truncating them.
+    ///
+    /// The min-content measure breaks at every opportunity to read the
+    /// longest unbreakable word off the lines, which truncation would
+    /// shorten, so it asks for the untruncated break.
     fn shape_and_break(&mut self, max_width: Option<f32>) {
         match &mut self.layout {
             Some(layout) => layout.rebreak(max_width),
@@ -275,13 +300,15 @@ pub fn label(text: impl Into<Value<String>>) -> Element<Label> {
 
 /// Builder methods that set the text style of a [`label`] element.
 ///
-/// Import the trait to use them:
+/// Import the trait to use them. The style types the methods name come from
+/// this crate, so nothing else is needed:
 ///
 /// ```
+/// use smudge_text::FontWeight;
 /// use smudge_text::LabelExt;
 /// use smudge_text::label;
 ///
-/// let element = label("Hello").text_size(18.0);
+/// let element = label("Hello").text_size(18.0).weight(FontWeight::SEMI_BOLD);
 /// ```
 ///
 /// Every method sets one field of the label's text style; the remaining
@@ -307,6 +334,28 @@ pub trait LabelExt: Sized {
     /// The family can change what the label measures, so the node is laid out
     /// again.
     fn family(self, family: FontFamily<'static>) -> Self;
+
+    /// Caps the lines the label shows at `max_lines`.
+    ///
+    /// A layout that breaks into more lines, or whose last kept line is
+    /// wider than the label, keeps its first `max_lines` and ends the last
+    /// one with an ellipsis, cut back on a cluster boundary so the whole fits
+    /// the width the label wraps at. A width below the ellipsis's own advance
+    /// leaves it standing alone and past the width. Right-to-left text keeps
+    /// its first lines without an ellipsis, and so does text in fonts that
+    /// map neither an ellipsis nor a full stop. `None`, the default, shows
+    /// every line. The accessible value keeps the full text either way. The
+    /// cap can change what the label measures, so the node is laid out
+    /// again, without shaping the text again.
+    ///
+    /// ```
+    /// use smudge_text::LabelExt;
+    /// use smudge_text::label;
+    ///
+    /// let capped = label("Hello").max_lines(Some(2));
+    /// let uncapped = label("Hello").max_lines(None);
+    /// ```
+    fn max_lines(self, max_lines: impl Into<Value<Option<u32>>>) -> Self;
 }
 
 impl LabelExt for Element<Label> {
@@ -320,6 +369,10 @@ impl LabelExt for Element<Label> {
 
     fn family(self, family: FontFamily<'static>) -> Self {
         self.bind(Value::Static(family), set_family)
+    }
+
+    fn max_lines(self, max_lines: impl Into<Value<Option<u32>>>) -> Self {
+        self.bind(max_lines, set_max_lines)
     }
 }
 
@@ -377,6 +430,20 @@ fn set_family(label: &mut Label, family: FontFamily<'static>) -> Dirty {
     }
     label.style.family = family;
     label.invalidate_layout();
+    Dirty::Layout
+}
+
+/// Writes the line cap into the label and relays it out when it changed.
+///
+/// The shaped text stays: only its lines are broken and cut again.
+fn set_max_lines(label: &mut Label, max_lines: Option<u32>) -> Dirty {
+    if label.max_lines == max_lines {
+        return Dirty::Clean;
+    }
+    label.max_lines = max_lines;
+    label.broken_width = None;
+    label.min_content = None;
+    *label.runs.borrow_mut() = None;
     Dirty::Layout
 }
 

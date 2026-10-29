@@ -137,6 +137,12 @@ static_values!(
     crate::window::Cursor,
 );
 
+impl From<Option<u32>> for Value<Option<u32>> {
+    fn from(value: Option<u32>) -> Value<Option<u32>> {
+        Value::Static(value)
+    }
+}
+
 impl From<String> for Value<String> {
     fn from(text: String) -> Value<String> {
         Value::Static(text)

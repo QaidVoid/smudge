@@ -18,7 +18,10 @@ use skrifa::instance::{LocationRef, Size};
 use smudge_core::geometry::{Color, Point, Rect};
 use smudge_core::paint::{FontBlob, GlyphRun, PositionedGlyph};
 
+use crate::layout::Cut;
+use crate::layout::Ellipsis;
 use crate::layout::TextLayout;
+use crate::layout::Truncation;
 
 thread_local! {
     /// The font blobs already mapped out of parley's font data, keyed by the
@@ -49,7 +52,7 @@ impl TextLayout {
     /// particular when called from inside another `with` call on the same
     /// thread.
     pub fn glyph_runs_at(&self, origin: Point, color: Color) -> Vec<GlyphRun> {
-        glyph_runs(&self.layout, origin, color)
+        glyph_runs_with(&self.layout, origin, color, self.truncation.as_ref())
     }
 }
 
@@ -57,61 +60,140 @@ impl TextLayout {
 ///
 /// The conversion is shared with the text input, which paints a parley
 /// [`Layout`](parley::Layout) it drives through the editor rather than a
-/// [`TextLayout`] it laid out itself.
+/// [`TextLayout`] it laid out itself, and truncates nothing.
 pub(crate) fn glyph_runs<B: parley::Brush>(
     layout: &parley::Layout<B>,
     origin: Point,
     color: Color,
 ) -> Vec<GlyphRun> {
-    layout
-        .lines()
-        .flat_map(|line| line.items())
-        .filter_map(|item| match item {
-            PositionedLayoutItem::GlyphRun(run) => Some(run),
-            PositionedLayoutItem::InlineBox(_) => None,
-        })
-        .map(|run| {
-            let parley_run = run.run();
-            let font = font_blob(parley_run.font());
-            let size = parley_run.font_size();
-            // skrifa reads the font once per run, not once per glyph.
-            let metrics = skrifa::FontRef::from_index(
-                parley_run.font().data.as_ref(),
-                parley_run.font().index,
-            )
-            .ok()
-            .map(|font| font.glyph_metrics(Size::new(size), LocationRef::default()));
-            let mut glyphs = Vec::new();
-            let mut ink = Rect::default();
-            for glyph in run.positioned_glyphs() {
-                let position = PositionedGlyph {
-                    id: glyph.id,
-                    x: origin.x + glyph.x,
-                    y: origin.y + glyph.y,
-                };
-                if let Some(bounds) = metrics
-                    .as_ref()
-                    .and_then(|metrics| metrics.bounds(GlyphId::new(glyph.id)))
-                {
-                    // Font coordinates grow up, window coordinates down.
-                    ink = ink.union(Rect::new(
-                        position.x + bounds.x_min,
-                        position.y - bounds.y_max,
-                        position.x + bounds.x_max,
-                        position.y - bounds.y_min,
-                    ));
-                }
-                glyphs.push(position);
+    glyph_runs_with(layout, origin, color, None)
+}
+
+/// Converts the glyph runs of any laid out text into paint operations' runs,
+/// cut to `truncation`.
+///
+/// `truncation` limits the conversion to a truncation's kept lines and cuts
+/// the last of them: the runs before the cut survive whole, the cut run
+/// keeps its leading glyphs, and the ellipsis follows them in a run of its
+/// own, since its font can differ from the cut run's.
+pub(crate) fn glyph_runs_with<B: parley::Brush>(
+    layout: &parley::Layout<B>,
+    origin: Point,
+    color: Color,
+    truncation: Option<&Truncation>,
+) -> Vec<GlyphRun> {
+    let kept_lines = truncation.map_or(usize::MAX, |truncation| truncation.kept_lines);
+    let mut runs = Vec::new();
+    for (line_index, line) in layout.lines().enumerate().take(kept_lines) {
+        let cut = match truncation {
+            Some(truncation) if line_index + 1 == truncation.kept_lines => truncation.cut.as_ref(),
+            _ => None,
+        };
+        let mut run_index = 0usize;
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(run) = item else {
+                continue;
+            };
+            let kept = match cut {
+                Some(cut) if run_index > cut.run => break,
+                Some(cut) if run_index == cut.run => cut.glyphs,
+                _ => usize::MAX,
+            };
+            run_index += 1;
+            if kept == 0 {
+                continue;
             }
-            GlyphRun {
-                font,
-                size,
-                color,
+            let glyphs = run
+                .positioned_glyphs()
+                .take(kept)
+                .map(|glyph| (glyph.id, origin.x + glyph.x, origin.y + glyph.y));
+            runs.push(paint_run(
+                run.run().font(),
+                run.run().font_size(),
                 glyphs,
-                ink_bounds: expand(ink, 1.0),
-            }
-        })
-        .collect()
+                color,
+            ));
+        }
+        if let Some(Cut {
+            x,
+            baseline,
+            ellipsis: Some(ellipsis),
+            ..
+        }) = cut
+        {
+            let y = origin.y + baseline;
+            let dots = (0..ellipsis.dots).map(|dot| {
+                let dot_x = origin.x + x + dot as f32 * ellipsis.advance;
+                (ellipsis.glyph, dot_x, y)
+            });
+            runs.push(paint_run(&ellipsis.font, ellipsis.size, dots, color));
+        }
+    }
+    runs
+}
+
+/// Builds one [`GlyphRun`] out of the glyph identifiers and absolute pen
+/// positions `glyphs` yields, painted with `font` at `size`.
+///
+/// Every glyph's ink is measured with skrifa against that font and size.
+fn paint_run(
+    font: &FontData,
+    size: f32,
+    glyphs: impl Iterator<Item = (u32, f32, f32)>,
+    color: Color,
+) -> GlyphRun {
+    // skrifa reads the font once per run, not once per glyph.
+    let metrics = skrifa::FontRef::from_index(font.data.as_ref(), font.index)
+        .ok()
+        .map(|font| font.glyph_metrics(Size::new(size), LocationRef::default()));
+    let mut painted = Vec::new();
+    let mut ink = Rect::default();
+    for (id, x, y) in glyphs {
+        if let Some(bounds) = metrics
+            .as_ref()
+            .and_then(|metrics| metrics.bounds(GlyphId::new(id)))
+        {
+            // Font coordinates grow up, window coordinates down.
+            ink = ink.union(Rect::new(
+                x + bounds.x_min,
+                y - bounds.y_max,
+                x + bounds.x_max,
+                y - bounds.y_min,
+            ));
+        }
+        painted.push(PositionedGlyph { id, x, y });
+    }
+    GlyphRun {
+        font: font_blob(font),
+        size,
+        color,
+        glyphs: painted,
+        ink_bounds: expand(ink, 1.0),
+    }
+}
+
+/// Resolves the ellipsis glyph truncation appends, measured with the font
+/// and size of the run it ends.
+///
+/// The horizontal ellipsis stands in for the cut text, or three full stops
+/// when the font maps no ellipsis. Returns `None` when the font maps
+/// neither, so truncation looks for the ellipsis elsewhere.
+pub(crate) fn ellipsis_glyph(font: &FontData, font_size: f32) -> Option<Ellipsis> {
+    let face = skrifa::FontRef::from_index(font.data.as_ref(), font.index).ok()?;
+    let charmap = face.charmap();
+    let (glyph, dots) = match charmap.map('\u{2026}') {
+        Some(id) => (id.to_u32(), 1),
+        None => (charmap.map('.')?.to_u32(), 3),
+    };
+    let metrics = face.glyph_metrics(Size::new(font_size), LocationRef::default());
+    let advance = metrics.advance_width(GlyphId::new(glyph)).unwrap_or(0.0);
+    Some(Ellipsis {
+        font: font.clone(),
+        size: font_size,
+        glyph,
+        dots,
+        advance,
+    })
 }
 
 /// Returns the [`FontBlob`] for parley's font data, reusing the blob the font

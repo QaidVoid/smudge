@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bea325cbd1b1caac80c4ef379a097e8d0e9a2c0211889fc55ac2805994439397 # shrinks to width = 186.91637, lines = 2
+cc a89f67c4536718b5165ba5ba1798c18e80adc58deab0669c66d5f95ed2be5194 # shrinks to words = ["word", "ﬁne", "word", "a", "a"], width = 102.30265, lines = 2, mono = false
+cc c830796b9387ea1ce073d4f5e380561c017574d8ba1e15f143942d786d1bbabb # shrinks to words = ["🇳🇵🇯🇵", "Ωμέγα", "🇳🇵🇯🇵", "Ωμέγα", "a"], width = 183.47763, lines = 2, mono = true
+cc 04038000cff18b9c8021a774b5c43f83bf6b05ebfa7f2a2b7197313b3bf27f91 # shrinks to words = ["a", "Ωμέγα", "naïve", "q\u{301}x", "a"], width = 138.24512, lines = 2, mono = true
+cc d3581f51bfc2bca94cfe3fd9f5b4aa0feeeac16e74283318da4f9ff8635e115c # shrinks to words = ["שלום", "🇳🇵🇯🇵", "word", "שלום", "naïve", "ﬁne", "ﬁne", "a"], width = 157.28789, lines = 2, mono = true
+cc 0b9df912e2548a21a88183e53de06beec035b507fb36badad4b0acea6ec7536a # shrinks to words = ["שלום", "a", "ﬁne", "Ωμέγα", "שלום", "a"], width = 155.55145, lines = 1, mono = false
