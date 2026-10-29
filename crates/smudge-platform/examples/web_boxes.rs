@@ -12,12 +12,11 @@ use std::cell::RefCell;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use smudge_core::app::RepaintMode;
 use smudge_core::geometry::{Color, Size};
 use smudge_core::reactive::{self, RwSignal, prelude::*};
 use smudge_core::style::{Align, Length, px};
 use smudge_core::widget::panel;
-use smudge_platform::{PlatformError, PresentStatsHandle, RendererChoice, WindowOptions, run_with};
+use smudge_platform::{PlatformError, PresentStatsHandle, WindowOptions, run_with};
 use smudge_text::{LabelExt, label};
 
 /// How many boxes the grid holds.
@@ -149,13 +148,8 @@ fn run() -> Result<(), PlatformError> {
                 height: 640.0,
             },
             clear_color: Color::rgb(16, 17, 21),
-            repaint: RepaintMode::Damage,
-            show_damage: false,
-            renderer: RendererChoice::default(),
             stats: Some(stats.clone()),
-            on_frame: None,
-            on_event: None,
-            frame_limit: None,
+            ..WindowOptions::default()
         },
         build,
         move |app| {

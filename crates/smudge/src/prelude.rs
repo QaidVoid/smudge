@@ -11,6 +11,7 @@ pub use smudge_core::reactive::{Memo, Owner, ReadSignal, RenderEffect, RwSignal,
 pub use smudge_core::style::{Align, Direction, Justify, Length, Overflow, pct, px};
 pub use smudge_core::theme::{ColorToken, RadiusToken, Theme};
 pub use smudge_core::widget::{Panel, panel};
+pub use smudge_core::window::Cursor;
 pub use smudge_text::{
     Label, LabelExt, TextInputExt, TextLayout, TextStyle, TextSystem, current_text_style, label,
     provide_text_style, text_input,

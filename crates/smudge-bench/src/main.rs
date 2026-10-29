@@ -675,12 +675,12 @@ fn run_window(args: &Args) -> Result<(Vec<RepeatRun>, Option<AdapterRecord>), Pl
             size: scene.viewport,
             clear_color: CLEAR_COLOR,
             repaint: args.mode,
-            show_damage: false,
             renderer: args.renderer.choice(),
             stats: Some(stats.clone()),
             on_frame: Some(on_frame),
             on_event: Some(on_event),
             frame_limit: Some(per_repeat * repeats),
+            ..WindowOptions::default()
         },
         build,
         |_| {},

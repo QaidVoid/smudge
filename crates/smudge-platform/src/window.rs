@@ -8,6 +8,7 @@ use smudge_core::app::{App, AppConfig, FrameOutput, FrameStats, RepaintMode};
 use smudge_core::clipboard::{Clipboard, MemoryClipboard};
 use smudge_core::element::IntoElement;
 use smudge_core::geometry::{Color, PixelRect, Rect, Size};
+use smudge_core::window::{Cursor, WindowCommand};
 use smudge_cpu::CpuRenderer;
 use softbuffer::{Context, Surface};
 use web_time::Instant;
@@ -18,7 +19,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, ResizeDirection, Window, WindowAttributes, WindowId};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::clipboard::SystemClipboard;
@@ -155,6 +156,46 @@ pub struct WindowOptions {
     /// for none, so the run waits for the window to change instead of
     /// spinning.
     pub frame_limit: Option<u64>,
+    /// Whether the window system draws its own decorations around the
+    /// window.
+    ///
+    /// An application that draws its own title bar turns this off and starts
+    /// moves and resizes itself through the window commands.
+    pub decorations: bool,
+    /// The smallest size the user can resize the window to, in logical
+    /// pixels.
+    ///
+    /// `None`, the default, puts no limit on the resize.
+    pub min_size: Option<Size>,
+    /// The name the window system reports for the application.
+    ///
+    /// On Wayland this is the `xdg_toplevel` app id, and on X11 both parts of
+    /// the WM_CLASS, so a desktop can match the window to a `.desktop` entry.
+    /// On the other platforms the field has no effect.
+    pub app_id: Option<String>,
+}
+
+impl Default for WindowOptions {
+    fn default() -> Self {
+        WindowOptions {
+            title: String::new(),
+            size: Size {
+                width: 1024.0,
+                height: 768.0,
+            },
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Damage,
+            show_damage: false,
+            renderer: RendererChoice::default(),
+            stats: None,
+            on_frame: None,
+            on_event: None,
+            frame_limit: None,
+            decorations: true,
+            min_size: None,
+            app_id: None,
+        }
+    }
 }
 
 impl std::fmt::Debug for WindowOptions {
@@ -170,6 +211,9 @@ impl std::fmt::Debug for WindowOptions {
             .field("on_frame", &self.on_frame.is_some())
             .field("on_event", &self.on_event.is_some())
             .field("frame_limit", &self.frame_limit)
+            .field("decorations", &self.decorations)
+            .field("min_size", &self.min_size)
+            .field("app_id", &self.app_id)
             .finish()
     }
 }
@@ -204,11 +248,10 @@ impl std::fmt::Debug for WindowOptions {
 /// # Examples
 ///
 /// ```no_run
-/// use smudge_core::app::RepaintMode;
 /// use smudge_core::geometry::{Color, Size};
 /// use smudge_core::style::px;
 /// use smudge_core::widget::panel;
-/// use smudge_platform::{RendererChoice, WindowOptions, run};
+/// use smudge_platform::{WindowOptions, run};
 ///
 /// run(
 ///     WindowOptions {
@@ -218,13 +261,7 @@ impl std::fmt::Debug for WindowOptions {
 ///             height: 200.0,
 ///         },
 ///         clear_color: Color::WHITE,
-///         repaint: RepaintMode::Damage,
-///         show_damage: false,
-///         renderer: RendererChoice::default(),
-///         stats: None,
-///         on_frame: None,
-///         on_event: None,
-///         frame_limit: None,
+///         ..WindowOptions::default()
 ///     },
 ///     || panel().width(px(120.0)).height(px(40.0)).background(Color::BLACK),
 /// )?;
@@ -267,12 +304,11 @@ pub fn run<E: IntoElement + 'static>(
 /// # Examples
 ///
 /// ```no_run
-/// use smudge_core::app::RepaintMode;
 /// use smudge_core::geometry::{Color, Size};
 /// use smudge_core::reactive::{self, prelude::*};
 /// use smudge_core::style::px;
 /// use smudge_core::widget::panel;
-/// use smudge_platform::{RendererChoice, WindowOptions, run_with};
+/// use smudge_platform::{WindowOptions, run_with};
 ///
 /// let (color, set_color) = reactive::signal_local(Color::BLACK);
 /// run_with(
@@ -283,13 +319,7 @@ pub fn run<E: IntoElement + 'static>(
 ///             height: 200.0,
 ///         },
 ///         clear_color: Color::WHITE,
-///         repaint: RepaintMode::Damage,
-///         show_damage: false,
-///         renderer: RendererChoice::default(),
-///         stats: None,
-///         on_frame: None,
-///         on_event: None,
-///         frame_limit: None,
+///         ..WindowOptions::default()
 ///     },
 ///     move || panel().width(px(120.0)).background(move || color.get().into()),
 ///     move |app| {
@@ -417,6 +447,10 @@ struct WindowState {
     ime_scale: f32,
     /// Whether the window currently accepts input method input.
     ime_allowed: bool,
+    /// The cursor icon the window last showed. The window asks for the icon
+    /// only when it changes, so a hover that crosses nodes which show the
+    /// same look costs no call into the window system.
+    cursor: CursorIcon,
     /// The bridge that maps the app's accessibility projection onto the
     /// platform's, when the platform builds with accessibility.
     #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
@@ -456,9 +490,22 @@ where
                 f64::from(self.options.size.width),
                 f64::from(self.options.size.height),
             ))
+            .with_decorations(self.options.decorations)
             // The accessibility adapter must be attached before the window is
             // shown, so the window starts hidden and is shown right after.
             .with_visible(false);
+        let attributes = match self.options.min_size {
+            Some(size) => attributes.with_min_inner_size(LogicalSize::new(
+                f64::from(size.width),
+                f64::from(size.height),
+            )),
+            None => attributes,
+        };
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let attributes = match self.options.app_id.clone() {
+            Some(app_id) => with_app_name(attributes, app_id),
+            None => attributes,
+        };
         // A web window draws into a canvas, which the page shows only once it
         // is part of the document.
         #[cfg(target_arch = "wasm32")]
@@ -558,6 +605,7 @@ where
             ime_area: None,
             ime_scale: scale,
             ime_allowed: false,
+            cursor: CursorIcon::Default,
             #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
             adapter,
             #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
@@ -608,6 +656,7 @@ where
         );
         state.scale = scale;
         state.physical = (physical.width, physical.height);
+        state.report_maximized();
         state.window.request_redraw();
         Ok(())
     }
@@ -819,6 +868,14 @@ where
                 Ok(())
             }
         };
+        // The commands run while the event that queued them is still being
+        // handled: the window system honors an interactive move or resize
+        // only during the press that started it, and a close must end the
+        // loop before the next event reaches the app.
+        if let Some(state) = self.state.as_mut() {
+            state.apply_window_commands(event_loop);
+            state.update_cursor();
+        }
         if let Err(error) = result {
             self.fail(event_loop, error);
         }
@@ -826,10 +883,70 @@ where
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.wait_for_timers(event_loop);
+        // A command from a timer or a channel handler runs here, so an idle
+        // window that queues one applies it without waiting for an input
+        // event.
+        if let Some(state) = self.state.as_mut() {
+            state.apply_window_commands(event_loop);
+            state.update_cursor();
+        }
     }
 }
 
 impl WindowState {
+    /// Applies the window commands the app queued since the last event.
+    ///
+    /// The caller runs this during the event whose handler queued the
+    /// commands, because the window system honors an interactive move or
+    /// resize only while the press that started it is being reported. A
+    /// refused move or resize leaves the window where it is, which is the
+    /// behavior of a compositor that offers no interactive move, so the
+    /// errors carry nothing the app could act on.
+    fn apply_window_commands(&mut self, event_loop: &ActiveEventLoop) {
+        for command in self.app.take_window_commands() {
+            match command {
+                WindowCommand::Move => {
+                    let _ = self.window.drag_window();
+                }
+                WindowCommand::Resize(edge) => {
+                    let _ = self.window.drag_resize_window(resize_direction(edge));
+                }
+                WindowCommand::ToggleMaximize => {
+                    let maximized = !self.window.is_maximized();
+                    self.window.set_maximized(maximized);
+                    self.report_maximized();
+                }
+                WindowCommand::Close => event_loop.exit(),
+            }
+        }
+    }
+
+    /// Reports the window's maximized state to the app.
+    ///
+    /// The app writes the value into the signal [`maximized`] reads and
+    /// skips an equal report, so this costs nothing while the state stands.
+    /// Right after a `set_maximized` the window may still answer with the
+    /// old state, because the compositor confirms the change later; the
+    /// report is not wrong then, only early, and the `Resized` that follows
+    /// reports the settled value.
+    fn report_maximized(&mut self) {
+        let maximized = self.window.is_maximized();
+        self.app
+            .set_window_state(smudge_core::window::WindowState { maximized });
+    }
+
+    /// Shows the cursor the app asks for, when it changed.
+    ///
+    /// The caller runs this after every event and every frame, because both
+    /// can move the hover or change a bound cursor without a pixel changing.
+    fn update_cursor(&mut self) {
+        let icon = cursor_icon(self.app.cursor());
+        if icon != self.cursor {
+            self.cursor = icon;
+            self.window.set_cursor(icon);
+        }
+    }
+
     /// Reports the area the focused widget offers the input method to the
     /// window system.
     ///
@@ -1203,6 +1320,54 @@ fn logical_size(physical: PhysicalSize<u32>, scale: f32) -> Size {
     Size {
         width: physical.width as f32 / scale,
         height: physical.height as f32 / scale,
+    }
+}
+
+/// Maps the app's cursor onto the window system's icon.
+///
+/// The resize directions map onto the icons the window system shows while it
+/// resizes that edge or corner itself, so a handle shows the same look both
+/// ways.
+fn cursor_icon(cursor: Cursor) -> CursorIcon {
+    match cursor {
+        Cursor::Default => CursorIcon::Default,
+        Cursor::Pointer => CursorIcon::Pointer,
+        Cursor::Text => CursorIcon::Text,
+        Cursor::Resize(edge) => CursorIcon::from(resize_direction(edge)),
+    }
+}
+
+/// Maps the app's resize edge onto the window system's resize direction.
+fn resize_direction(edge: smudge_core::window::ResizeEdge) -> ResizeDirection {
+    use smudge_core::window::ResizeEdge;
+    match edge {
+        ResizeEdge::North => ResizeDirection::North,
+        ResizeEdge::South => ResizeDirection::South,
+        ResizeEdge::East => ResizeDirection::East,
+        ResizeEdge::West => ResizeDirection::West,
+        ResizeEdge::NorthEast => ResizeDirection::NorthEast,
+        ResizeEdge::NorthWest => ResizeDirection::NorthWest,
+        ResizeEdge::SouthEast => ResizeDirection::SouthEast,
+        ResizeEdge::SouthWest => ResizeDirection::SouthWest,
+    }
+}
+
+/// Sets the application name the window system reports for the window.
+///
+/// Both windowing protocols carry the name through an extension trait whose
+/// method is called `with_name`, so each call sits in a block where only one
+/// trait is in scope. On Wayland the first name is the `xdg_toplevel` app id
+/// and the second is ignored; on X11 they are the class and the instance of
+/// the WM_CLASS.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn with_app_name(attributes: WindowAttributes, app_id: String) -> WindowAttributes {
+    let attributes = {
+        use winit::platform::wayland::WindowAttributesExtWayland as _;
+        attributes.with_name(app_id.clone(), app_id.clone())
+    };
+    {
+        use winit::platform::x11::WindowAttributesExtX11 as _;
+        attributes.with_name(app_id.clone(), app_id)
     }
 }
 

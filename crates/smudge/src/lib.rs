@@ -24,13 +24,7 @@
 //!                 height: 140.0,
 //!             },
 //!             clear_color: Color::rgb(16, 17, 21),
-//!             repaint: Default::default(),
-//!             show_damage: false,
-//!             renderer: RendererChoice::default(),
-//!             stats: None,
-//!             on_frame: None,
-//!             on_event: None,
-//!             frame_limit: None,
+//!             ..WindowOptions::default()
 //!         },
 //!         move || {
 //!             column()
@@ -91,6 +85,30 @@ pub mod prelude;
 pub use smudge_core as core;
 pub use smudge_text as text;
 pub use smudge_widgets as widgets;
+
+/// The commands an application sends to its window from a handler, the
+/// window state it reads, and the pointer cursors.
+///
+/// This is the core's window module under a name that does not clash with
+/// [`window`], the windowing layer that applies the commands.
+///
+/// ```
+/// use smudge::commands::{self, ResizeEdge};
+/// use smudge::prelude::*;
+///
+/// let header = row()
+///     .height(px(36.0))
+///     .on_pointer_down(|_| commands::start_move())
+///     .child(
+///         panel()
+///             .width(px(6.0))
+///             .cursor(Cursor::Resize(ResizeEdge::East))
+///             .hidden(commands::maximized)
+///             .on_pointer_down(|_| commands::start_resize(ResizeEdge::East)),
+///     )
+///     .child(button("Close").on_press(commands::close));
+/// ```
+pub use smudge_core::window as commands;
 
 #[cfg(feature = "window")]
 pub use smudge_platform as window;

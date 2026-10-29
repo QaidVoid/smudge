@@ -131,9 +131,8 @@ fn main() -> ExitCode {
             show_damage,
             renderer,
             stats: stats.clone(),
-            on_frame: None,
-            on_event: None,
             frame_limit,
+            ..WindowOptions::default()
         },
         build,
         move |app| {

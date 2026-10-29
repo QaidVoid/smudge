@@ -4,30 +4,22 @@ use std::time::Duration;
 
 use web_time::Instant;
 
-use smudge_core::app::RepaintMode;
 use smudge_core::geometry::{Color, Size};
 use smudge_core::widget::panel;
 
 use super::{WaitDecision, WindowOptions, run_with, wait_decision};
-use crate::{PlatformError, RendererChoice};
+use crate::PlatformError;
 
 /// Returns options with an opaque clear color, so a test only has to change
 /// the field it checks.
 fn options(clear_color: Color) -> WindowOptions {
     WindowOptions {
-        title: String::new(),
         size: Size {
             width: 100.0,
             height: 100.0,
         },
         clear_color,
-        repaint: RepaintMode::Damage,
-        show_damage: false,
-        renderer: RendererChoice::default(),
-        stats: None,
-        on_frame: None,
-        on_event: None,
-        frame_limit: None,
+        ..WindowOptions::default()
     }
 }
 
@@ -37,6 +29,15 @@ fn a_translucent_clear_color_fails_before_any_window_opens() {
         .expect_err("a clear color that is not opaque must be rejected");
 
     assert!(matches!(error, PlatformError::ClearColor));
+}
+
+#[test]
+fn the_default_options_ask_for_decorations() {
+    assert!(
+        WindowOptions::default().decorations,
+        "a window opens decorated unless the application asks for no \
+         decorations"
+    );
 }
 
 #[test]
