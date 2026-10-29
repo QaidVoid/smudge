@@ -268,11 +268,13 @@ impl Editor {
     /// Inserts `text` from a clipboard, replacing the selection, as one undo
     /// step.
     ///
-    /// Line breaks go, because the editor holds one line: a paste from a
-    /// multi-line source pastes its text in one line. An empty paste, or one
-    /// that was nothing but line breaks, inserts nothing.
+    /// Every line break becomes one space, because the editor holds one
+    /// line: a paste from a multi-line source pastes its text in one line.
+    /// A carriage return and line feed together count as one break, so a
+    /// Windows paste gains no extra space where its text had one break. An
+    /// empty paste inserts nothing.
     pub fn paste(&self, text: &str) {
-        let single_line: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+        let single_line = flatten_line_breaks(text);
         if single_line.is_empty() {
             return;
         }
@@ -663,4 +665,27 @@ fn rect(area: parley::BoundingBox) -> Rect {
         area.x1 as f32,
         area.y1 as f32,
     )
+}
+
+/// Replaces every line break in `text` with one space.
+///
+/// A carriage return immediately followed by a line feed counts as one
+/// break, so a Windows paste gains no extra space where its text had one
+/// line break.
+fn flatten_line_breaks(text: &str) -> String {
+    let mut line = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\r' => {
+                line.push(' ');
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
+            '\n' => line.push(' '),
+            _ => line.push(character),
+        }
+    }
+    line
 }

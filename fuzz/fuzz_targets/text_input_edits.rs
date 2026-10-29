@@ -223,6 +223,13 @@ fuzz_target!(|data: &[u8]| {
             "the editor and the signal drifted apart, after {op:?}"
         );
 
+        // The editor holds one line: a paste flattens its line breaks into
+        // spaces, and every other edit's text carries none.
+        assert!(
+            !value.get().contains(['\n', '\r']),
+            "the editor text grew a line break, after {op:?}"
+        );
+
         let raw = editor.raw_text();
         let Range { start, end } = editor.selection();
         assert!(

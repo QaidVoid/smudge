@@ -555,7 +555,7 @@ fn cut_moves_the_selection_to_the_clipboard() {
 }
 
 #[test]
-fn a_paste_flattens_line_breaks_into_one_line() {
+fn a_paste_flattens_line_breaks_into_spaces() {
     let (mut harness, value, mut clipboard) = mounted_with_clipboard("");
     focus(&mut harness);
 
@@ -563,17 +563,24 @@ fn a_paste_flattens_line_breaks_into_one_line() {
     harness.press_key_with(Key::Character(String::from("v")), command());
     assert_eq!(
         value.get(),
-        "onetwothree",
-        "a single line takes a multi-line paste as one line"
+        "one two three",
+        "a single line takes a multi-line paste as spaces, a CRLF pair as one"
     );
 
-    harness.press_key_with(Key::Character(String::from("a")), command());
-    clipboard.set(String::from("\r\n"));
+    clipboard.set(String::from("\r\nx\ry\nz"));
     harness.press_key_with(Key::Character(String::from("v")), command());
     assert_eq!(
         value.get(),
-        "onetwothree",
-        "a paste of nothing but line breaks keeps the selection"
+        "one two three x y z",
+        "every kind of line break becomes exactly one space"
+    );
+
+    clipboard.set(String::from("\r\n\r"));
+    harness.press_key_with(Key::Character(String::from("v")), command());
+    assert_eq!(
+        value.get(),
+        "one two three x y z  ",
+        "a paste of nothing but line breaks becomes spaces"
     );
 }
 
