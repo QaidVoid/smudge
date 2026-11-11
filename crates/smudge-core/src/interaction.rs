@@ -174,7 +174,8 @@ impl WidgetTree {
     /// release of its press never arrived, so a drag it started still ends.
     /// Any processed press turns the keyboard navigation mode
     /// off, and a primary press focuses the target when it can take the focus
-    /// or clears the focus when it cannot.
+    /// or clears the focus when it cannot. While a focus trap is mounted, a
+    /// press outside the trap leaves the focus where it is instead.
     pub(crate) fn pointer_down(&mut self, position: Point, button: PointerButton) {
         self.pointer = position;
         self.pointer_inside = true;
@@ -187,14 +188,22 @@ impl WidgetTree {
         if button != PointerButton::Primary {
             return;
         }
-        if target.is_some_and(|id| self.focusable(id)) {
-            self.set_focus(target);
-        } else {
-            self.set_focus(None);
+        // A press outside the active focus trap is not a focus gesture: the
+        // focus stays wherever the trap holds it, on nothing when it holds
+        // nothing.
+        let outside_trap = self
+            .active_focus_trap()
+            .is_some_and(|trap| target.is_none_or(|target| !self.is_within(target, trap)));
+        if !outside_trap {
+            if target.is_some_and(|id| self.focusable(id)) {
+                self.set_focus(target);
+            } else {
+                self.set_focus(None);
+            }
+            // A press is a focus gesture, so it also ends the reach of a
+            // focus that a disabled or hidden node lost earlier.
+            self.stale_focus = None;
         }
-        // A press is a focus gesture, so it also ends the reach of a focus
-        // that a disabled or hidden node lost earlier.
-        self.stale_focus = None;
         if let Some(previous) = self.pressed.take() {
             self.set_bit(previous, Interaction::PRESSED, false);
             self.run_pointer_up(previous, position);

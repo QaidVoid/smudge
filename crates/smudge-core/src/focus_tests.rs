@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::geometry::{Point, Size};
-use crate::input::{Key, KeyEvent, Modifiers, PointerButton};
+use crate::input::{Handled, Key, KeyEvent, Modifiers, PointerButton};
 use crate::paint::PaintOp;
 use crate::style::{Length, Style};
 use crate::tree::interaction::{Handlers, Interaction};
@@ -66,6 +66,38 @@ fn focused_bit(tree: &WidgetTree, id: WidgetId) -> bool {
 /// Returns whether the node holds the keyboard focus bit.
 fn keyboard_bit(tree: &WidgetTree, id: WidgetId) -> bool {
     tree.nodes[id].interaction.has(Interaction::KEYBOARD_FOCUS)
+}
+
+/// Presses Escape, as a keyboard would deliver it.
+fn press_escape(tree: &mut WidgetTree) {
+    tree.key(&KeyEvent {
+        key: Key::Escape,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::default(),
+        text: None,
+    });
+}
+
+/// Sets an `on_key` handler that counts fresh presses of Escape and takes
+/// them.
+fn escape_counter() -> (Rc<Cell<u32>>, Handlers) {
+    let hears = Rc::new(Cell::new(0u32));
+    let handlers = Handlers {
+        on_key: Some({
+            let hears = Rc::clone(&hears);
+            Box::new(move |event: &KeyEvent| {
+                if event.pressed && event.key == Key::Escape {
+                    hears.set(hears.get() + 1);
+                    Handled::Yes
+                } else {
+                    Handled::No
+                }
+            })
+        }),
+        ..Handlers::default()
+    };
+    (hears, handlers)
 }
 
 #[test]
@@ -227,5 +259,400 @@ fn removing_the_focused_node_clears_the_focus() {
     tree.remove(a);
     assert_eq!(tree.focused(), None);
     assert!(tree.keyboard_nav(), "the mode survives the removal");
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn a_key_with_no_focus_reaches_the_root() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let (hears, handlers) = escape_counter();
+    tree.set_handlers(root, handlers);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+
+    press_escape(&mut tree);
+    assert_eq!(
+        hears.get(),
+        1,
+        "a key pressed while nothing holds the focus routes from the root"
+    );
+    press_escape(&mut tree);
+    assert_eq!(hears.get(), 2, "every anchorless key routes from the root");
+}
+
+#[test]
+fn tab_moves_inside_a_focus_trap_and_never_outside() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let trap = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 100.0));
+    tree.push_focus_trap(trap);
+    let a = focusable_child(&mut tree, trap);
+    let b = focusable_child(&mut tree, trap);
+    focusable_child(&mut tree, root);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+
+    press_tab(&mut tree, false);
+    assert_eq!(
+        tree.focused(),
+        Some(a),
+        "a Tab with nothing focused enters the trap"
+    );
+    press_tab(&mut tree, false);
+    assert_eq!(tree.focused(), Some(b));
+    press_tab(&mut tree, false);
+    assert_eq!(tree.focused(), Some(a), "the cycle wraps inside the trap");
+    press_tab(&mut tree, true);
+    assert_eq!(
+        tree.focused(),
+        Some(b),
+        "Shift+Tab reverses inside the trap"
+    );
+    press_tab(&mut tree, true);
+    assert_eq!(tree.focused(), Some(a));
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn a_press_outside_a_focus_trap_keeps_the_focus_inside() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let trap = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 100.0));
+    tree.push_focus_trap(trap);
+    let a = focusable_child(&mut tree, trap);
+    focusable_child(&mut tree, root);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+
+    press_tab(&mut tree, false);
+    assert_eq!(tree.focused(), Some(a));
+
+    click(&mut tree, 50.0, 10.0);
+    assert_eq!(
+        tree.focused(),
+        Some(a),
+        "a press on a focusable node outside the trap does not move the focus"
+    );
+    click(&mut tree, 80.0, 80.0);
+    assert_eq!(
+        tree.focused(),
+        Some(a),
+        "a press on a plain node outside the trap does not clear the focus"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn removing_a_trap_restores_the_previous_one() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let outer = tree.insert(Some(root), Box::new(Empty), fixed(100.0, 100.0));
+    tree.push_focus_trap(outer);
+    let a = focusable_child(&mut tree, outer);
+    let inner = tree.insert(Some(outer), Box::new(Empty), fixed(50.0, 50.0));
+    tree.push_focus_trap(inner);
+    let x = focusable_child(&mut tree, inner);
+    let y = focusable_child(&mut tree, inner);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+
+    press_tab(&mut tree, false);
+    assert_eq!(tree.focused(), Some(x), "the trap mounted last wins");
+    press_tab(&mut tree, false);
+    assert_eq!(tree.focused(), Some(y));
+
+    tree.remove(inner);
+    press_tab(&mut tree, false);
+    assert_eq!(
+        tree.focused(),
+        Some(a),
+        "removing the trap restores the one mounted before it"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn a_hidden_trap_yields_to_an_earlier_trap() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let outer = tree.insert(Some(root), Box::new(Empty), fixed(100.0, 100.0));
+    tree.push_focus_trap(outer);
+    let a = focusable_child(&mut tree, outer);
+    let inner = tree.insert(Some(outer), Box::new(Empty), fixed(50.0, 50.0));
+    tree.push_focus_trap(inner);
+    focusable_child(&mut tree, inner);
+    tree.apply_layout(inner, |layout| layout.hidden = true);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+
+    press_tab(&mut tree, false);
+    assert_eq!(
+        tree.focused(),
+        Some(a),
+        "a hidden trap does not hold the keyboard"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn autofocus_takes_the_focus_after_its_first_layout() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let a = focusable_child(&mut tree, root);
+    tree.queue_autofocus(a);
+    assert_eq!(
+        tree.focused(),
+        None,
+        "the request waits for the layout that lays the node out"
+    );
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+    assert_eq!(
+        tree.focused(),
+        Some(a),
+        "the request resolves with the layout pass"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn the_last_autofocus_node_in_paint_order_wins() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let a = focusable_child(&mut tree, root);
+    let b = focusable_child(&mut tree, root);
+    tree.queue_autofocus(b);
+    tree.queue_autofocus(a);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+    assert_eq!(
+        tree.focused(),
+        Some(b),
+        "the request order does not matter, the paint order does"
+    );
+    assert!(!focused_bit(&tree, a));
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn autofocus_runs_once_per_mount() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let a = focusable_child(&mut tree, root);
+    let c = focusable_child(&mut tree, root);
+    tree.queue_autofocus(a);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+    assert_eq!(tree.focused(), Some(a));
+
+    press_tab(&mut tree, false);
+    assert_eq!(tree.focused(), Some(c));
+    assert!(tree.layout(Size {
+        width: 50.0,
+        height: 50.0
+    }));
+    assert_eq!(
+        tree.focused(),
+        Some(c),
+        "a later layout pass does not ask for the focus again"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn a_disabled_autofocus_node_yields_to_an_earlier_one() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let a = focusable_child(&mut tree, root);
+    let b = focusable_child(&mut tree, root);
+    tree.queue_autofocus(a);
+    tree.queue_autofocus(b);
+    tree.set_disabled(b, true);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+    assert_eq!(
+        tree.focused(),
+        Some(a),
+        "a node that cannot hold the focus is skipped"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn a_removed_autofocus_node_is_skipped() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let a = focusable_child(&mut tree, root);
+    tree.queue_autofocus(a);
+    tree.remove(a);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+    assert_eq!(
+        tree.focused(),
+        None,
+        "a request whose node is gone resolves to nothing"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn a_tab_with_an_empty_trap_neither_moves_nor_clears_the_focus() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let a = focusable_child(&mut tree, root);
+    let trap = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 100.0));
+    tree.push_focus_trap(trap);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+
+    assert!(tree.request_focus(a));
+    press_tab(&mut tree, false);
+    assert_eq!(
+        tree.focused(),
+        Some(a),
+        "a trap that holds no focusable node leaves the focus where it is"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn an_autofocus_node_hidden_at_its_first_layout_takes_nothing() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let a = focusable_child(&mut tree, root);
+    tree.queue_autofocus(a);
+    tree.apply_layout(a, |layout| layout.hidden = true);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+    assert_eq!(
+        tree.focused(),
+        None,
+        "a node that is hidden when its request resolves takes nothing"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn a_trap_under_a_hidden_ancestor_does_not_hold_the_keyboard() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let page = tree.insert(Some(root), Box::new(Empty), fixed(100.0, 100.0));
+    tree.apply_layout(page, |layout| layout.hidden = true);
+    let trap = tree.insert(Some(page), Box::new(Empty), fixed(40.0, 40.0));
+    tree.push_focus_trap(trap);
+    focusable_child(&mut tree, trap);
+    let c = focusable_child(&mut tree, root);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+
+    press_tab(&mut tree, false);
+    assert_eq!(
+        tree.focused(),
+        Some(c),
+        "a trap under a hidden ancestor leaves the keyboard to the tree"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn an_autofocus_outside_an_active_trap_does_not_take_the_focus() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let trap = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 100.0));
+    tree.push_focus_trap(trap);
+    let a = focusable_child(&mut tree, trap);
+    tree.queue_autofocus(a);
+    let b = focusable_child(&mut tree, root);
+    tree.queue_autofocus(b);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+    assert_eq!(
+        tree.focused(),
+        Some(a),
+        "the autofocus inside the trap wins over the one painted after it"
+    );
+    assert!(!focused_bit(&tree, b));
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn an_autofocus_with_no_node_inside_the_trap_takes_nothing() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let trap = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 100.0));
+    tree.push_focus_trap(trap);
+    focusable_child(&mut tree, trap);
+    let b = focusable_child(&mut tree, root);
+    tree.queue_autofocus(b);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+    assert_eq!(
+        tree.focused(),
+        None,
+        "a node outside the trap cannot pull the focus out of it"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn a_press_outside_a_trap_keeps_the_key_anchor_of_a_dropped_focus() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let trap = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 100.0));
+    tree.push_focus_trap(trap);
+    let a = focusable_child(&mut tree, trap);
+    let (root_hears, root_handlers) = escape_counter();
+    tree.set_handlers(root, root_handlers);
+    let (trap_hears, trap_handlers) = escape_counter();
+    tree.set_handlers(trap, trap_handlers);
+    assert!(tree.layout(Size {
+        width: 100.0,
+        height: 100.0
+    }));
+
+    press_tab(&mut tree, false);
+    assert_eq!(tree.focused(), Some(a));
+    tree.set_disabled(a, true);
+    assert_eq!(tree.focused(), None);
+
+    click(&mut tree, 80.0, 80.0);
+    press_escape(&mut tree);
+    assert_eq!(
+        trap_hears.get(),
+        1,
+        "the key still routes above the node the focus fell off of"
+    );
+    assert_eq!(root_hears.get(), 0);
     tree.debug_assert_consistent();
 }

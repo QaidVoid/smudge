@@ -30,11 +30,14 @@ impl WidgetTree {
     /// Routes a key event from the focused node through its ancestors.
     ///
     /// The focused node hears the key first, then its parent, and so on to the
-    /// root, until a handler reports [`Handled::Yes`]. A press of Tab or an
+    /// root, until a handler reports [`Handled::Yes`]. With nothing holding
+    /// the focus, the key starts at the root, so a shortcut mounted there
+    /// hears a key pressed anywhere in the window. A press of Tab or an
     /// arrow key turns the keyboard navigation mode on, whether or not a
     /// handler took the key, and an unhandled Tab or Shift+Tab moves the focus
-    /// to the next or previous focusable node in tree order. Releases and
-    /// every other key only route.
+    /// to the next or previous focusable node in tree order, confined to the
+    /// active focus trap when one is mounted. Releases and every other key
+    /// only route.
     ///
     /// A focused node that became disabled or hidden since it took the focus
     /// loses it first, and its own handler does not run: a disabled button
@@ -44,13 +47,16 @@ impl WidgetTree {
         // A node that lost the focus by becoming disabled or hidden still
         // anchors the next key, so shortcuts above it keep working. The key
         // starts at its parent: the node itself no longer holds the focus,
-        // even if it has been enabled again since.
+        // even if it has been enabled again since. With no anchor either,
+        // because nothing ever held the focus or a press consumed the last
+        // one, the key starts at the root.
         let start = match self.focused {
             Some(focused) => Some(focused),
             None => self
                 .stale_focus
                 .take()
-                .and_then(|anchor| self.nodes.get(anchor)?.parent),
+                .and_then(|anchor| self.nodes.get(anchor)?.parent)
+                .or(self.root),
         };
         self.drop_invalid_focus();
         let handled = self.route_key(start, event);
@@ -74,8 +80,9 @@ impl WidgetTree {
     /// Delivers the event to `start` and its ancestors, deepest first, and
     /// returns whether a handler took it.
     ///
-    /// `start` is the node that held the focus when the key arrived. Without
-    /// one the event reaches no handler.
+    /// `start` is the node the key routes from: the focused node, the parent
+    /// of the node the focus fell off of, or the root when nothing anchors
+    /// the key.
     fn route_key(&mut self, start: Option<WidgetId>, event: &KeyEvent) -> Handled {
         let mut next = start;
         while let Some(id) = next {
@@ -201,8 +208,15 @@ impl WidgetTree {
 
     /// Moves the focus to the next focusable node in tree order, or to the
     /// previous one when `backwards` is set, wrapping at both ends.
+    ///
+    /// When the walk finds nothing to move to while a node holds the focus,
+    /// which happens when the active focus trap holds no focusable node, the
+    /// focus stays where it is.
     fn move_focus(&mut self, backwards: bool) {
         let next = self.next_focusable(self.focused, backwards);
+        if next.is_none() && self.focused.is_some() {
+            return;
+        }
         self.set_focus(next);
         self.scroll_focus_into_view();
     }
@@ -323,11 +337,14 @@ impl WidgetTree {
     /// Without a focused node, forward navigation starts at the first
     /// focusable node and backward navigation at the last. A hidden node and
     /// its subtree are skipped, and a disabled node is skipped while its
-    /// children are still visited, matching hit testing.
+    /// children are still visited, matching hit testing. While a focus trap
+    /// is mounted, the order holds only the focusable nodes inside it, so a
+    /// Tab press from outside the trap enters it and one inside it never
+    /// leaves.
     fn next_focusable(&self, from: Option<WidgetId>, backwards: bool) -> Option<WidgetId> {
         let mut order = Vec::new();
-        if let Some(root) = self.root {
-            self.collect_focusable(root, &mut order);
+        if let Some(scope) = self.active_focus_trap().or(self.root) {
+            self.collect_focusable(scope, &mut order);
         }
         if order.is_empty() {
             return None;
@@ -380,6 +397,105 @@ impl WidgetTree {
             next = node.parent;
         }
         true
+    }
+
+    /// Queues an autofocus request for the node `id`, to resolve once a
+    /// layout pass has laid it out.
+    ///
+    /// A node's element calls this at mount. The request is resolved once,
+    /// when [`WidgetTree::resolve_autofocus`] runs, and a later frame never
+    /// asks again.
+    pub(crate) fn queue_autofocus(&mut self, id: WidgetId) {
+        self.pending_autofocus.push(id);
+    }
+
+    /// Focuses the node that mounted with autofocus and has been laid out.
+    ///
+    /// The requests queued since the last resolution are walked in paint
+    /// order, and the last one that can hold the focus wins, so when several
+    /// nodes mount in one frame the node painted last takes it. While a
+    /// focus trap is mounted, only a node inside it can win, so a node that
+    /// mounts elsewhere cannot pull the focus out of the trap. A request
+    /// whose node was removed since it queued, or that cannot hold the focus
+    /// when it resolves, is skipped and an earlier node then wins; a skipped
+    /// request is dropped and never asked again.
+    pub(super) fn resolve_autofocus(&mut self) {
+        let pending = std::mem::take(&mut self.pending_autofocus);
+        if pending.is_empty() {
+            return;
+        }
+        let Some(root) = self.root else {
+            return;
+        };
+        let trap = self.active_focus_trap();
+        let mut order = Vec::new();
+        self.collect_pending(root, &pending, &mut order);
+        for id in order.into_iter().rev() {
+            if trap.is_some_and(|trap| !self.is_within(id, trap)) {
+                continue;
+            }
+            if self.request_focus(id) {
+                self.scroll_focus_into_view();
+                return;
+            }
+        }
+    }
+
+    /// Marks the mounted node `id` as a focus trap.
+    ///
+    /// While a trap is the last one mounted and not hidden, Tab movement is
+    /// confined to its subtree and a press outside it does not move the
+    /// focus out. Removing the node ends the trap and restores the one
+    /// mounted before it.
+    pub(crate) fn push_focus_trap(&mut self, id: WidgetId) {
+        self.focus_traps.push(id);
+    }
+
+    /// Returns the trap that keyboard movement is confined to, when one is
+    /// active.
+    ///
+    /// The last mounted trap wins. A trap that cannot hold the focus,
+    /// because it became disabled or hidden or sits under a hidden ancestor,
+    /// yields to the one mounted before it; without one, movement ranges the
+    /// whole tree, and the hidden trap's own subtree is out of reach either
+    /// way.
+    pub(super) fn active_focus_trap(&self) -> Option<WidgetId> {
+        self.focus_traps
+            .iter()
+            .rev()
+            .copied()
+            .find(|&trap| self.can_hold_focus(trap))
+    }
+
+    /// Returns whether `id` is `ancestor` or one of its descendants.
+    pub(super) fn is_within(&self, id: WidgetId, ancestor: WidgetId) -> bool {
+        let mut next = Some(id);
+        while let Some(current) = next {
+            if current == ancestor {
+                return true;
+            }
+            next = self.nodes.get(current).and_then(|node| node.parent);
+        }
+        false
+    }
+
+    /// Appends the nodes of `pending` that the subtree holds, in paint order.
+    ///
+    /// A hidden node and its subtree are skipped, because a hidden node
+    /// cannot hold the focus.
+    fn collect_pending(&self, id: WidgetId, pending: &[WidgetId], order: &mut Vec<WidgetId>) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if node.resolved.layout.hidden {
+            return;
+        }
+        if pending.contains(&id) {
+            order.push(id);
+        }
+        for &child in &node.children {
+            self.collect_pending(child, pending, order);
+        }
     }
 
     /// Scrolls the nearest scrolling ancestor so the focused node is in view.

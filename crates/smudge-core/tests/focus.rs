@@ -814,3 +814,340 @@ fn losing_the_window_focus_clears_the_composition() {
         "gaining the window focus sends nothing"
     );
 }
+
+#[test]
+fn a_key_with_no_focus_reaches_a_root_on_key() {
+    let (escapes, on_root_escape) = key_counter(|event| event.key == Key::Escape);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || panel().on_key(on_root_escape));
+    harness.frame();
+    assert!(harness.app().focused().is_none());
+
+    harness.press_key(Key::Escape);
+    assert_eq!(
+        escapes.get(),
+        1,
+        "a key pressed while nothing holds the focus reaches the root"
+    );
+
+    harness.press_key(Key::Escape);
+    assert_eq!(
+        escapes.get(),
+        2,
+        "every key pressed without a focused node routes from the root"
+    );
+}
+
+#[test]
+fn an_autofocused_element_takes_the_focus_when_a_show_mounts_it() {
+    let (visible, set_visible) = reactive::signal_local(false);
+    let hears = Rc::new(Cell::new(0u32));
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, {
+        let hears = Rc::clone(&hears);
+        let log = Rc::clone(&log);
+        move || {
+            let hears = Rc::clone(&hears);
+            let log = Rc::clone(&log);
+            scene(panel().width(px(40.0)).height(px(20.0)).child(show(
+                move || visible.get(),
+                move || {
+                    let hears = Rc::clone(&hears);
+                    let log = Rc::clone(&log);
+                    panel()
+                        .width(px(20.0))
+                        .height(px(20.0))
+                        .autofocus()
+                        .on_focus(move |focused: bool| log.borrow_mut().push(("input", focused)))
+                        .on_key(move |event: &KeyEvent| {
+                            if event.pressed && event.key == Key::Escape {
+                                hears.set(hears.get() + 1);
+                                Handled::Yes
+                            } else {
+                                Handled::No
+                            }
+                        })
+                },
+            )))
+        }
+    });
+    harness.frame();
+    assert!(harness.app().focused().is_none());
+    assert!(log.borrow().is_empty());
+
+    set_visible.set(true);
+    harness.frame();
+    assert_eq!(
+        *log.borrow(),
+        [("input", true)],
+        "the autofocus takes the focus in the frame the element mounts"
+    );
+
+    harness.press_key(Key::Escape);
+    assert_eq!(hears.get(), 1, "the focused element hears the next key");
+}
+
+#[test]
+fn autofocus_prefers_the_last_node_in_paint_order() {
+    let (first_log, first_on_focus) = focus_log("first");
+    let (second_log, second_on_focus) = focus_log("second");
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .child(
+                    panel()
+                        .width(px(20.0))
+                        .height(px(20.0))
+                        .autofocus()
+                        .on_focus(first_on_focus),
+                )
+                .child(
+                    panel()
+                        .width(px(20.0))
+                        .height(px(20.0))
+                        .autofocus()
+                        .on_focus(second_on_focus),
+                ),
+        )
+    });
+    harness.frame();
+    assert!(
+        first_log.borrow().is_empty(),
+        "the node painted first loses"
+    );
+    assert_eq!(
+        *second_log.borrow(),
+        [("second", true)],
+        "the node painted last wins"
+    );
+}
+
+#[test]
+fn tab_cycles_inside_a_focus_trap_and_never_reaches_nodes_outside_it() {
+    let (a_log, a_on_focus) = focus_log("a");
+    let (b_log, b_on_focus) = focus_log("b");
+    let (c_log, c_on_focus) = focus_log("c");
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .child(
+                    panel()
+                        .trap_focus()
+                        .child(
+                            panel()
+                                .width(px(20.0))
+                                .height(px(20.0))
+                                .focusable()
+                                .on_focus(a_on_focus),
+                        )
+                        .child(
+                            panel()
+                                .width(px(20.0))
+                                .height(px(20.0))
+                                .focusable()
+                                .on_focus(b_on_focus),
+                        ),
+                )
+                .child(
+                    panel()
+                        .width(px(20.0))
+                        .height(px(20.0))
+                        .focusable()
+                        .on_focus(c_on_focus),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.press_key(Key::Tab);
+    assert_eq!(
+        *a_log.borrow(),
+        [("a", true)],
+        "a Tab with nothing focused enters the trap"
+    );
+    harness.press_key(Key::Tab);
+    assert_eq!(*b_log.borrow(), [("b", true)]);
+    harness.press_key(Key::Tab);
+    assert_eq!(
+        *a_log.borrow(),
+        [("a", true), ("a", false), ("a", true)],
+        "the cycle wraps inside the trap"
+    );
+
+    shift_tab(&mut harness);
+    assert_eq!(
+        *b_log.borrow(),
+        [("b", true), ("b", false), ("b", true)],
+        "Shift+Tab reverses inside the trap"
+    );
+    assert!(
+        c_log.borrow().is_empty(),
+        "no Tab press moves the focus outside the trap"
+    );
+}
+
+#[test]
+fn a_nested_focus_trap_wins_and_removal_restores_the_outer_one() {
+    let (a_log, a_on_focus) = focus_log("a");
+    let (b_log, b_on_focus) = focus_log("b");
+    let (x_log, _) = focus_log("x");
+    let (y_log, _) = focus_log("y");
+    let (c_log, c_on_focus) = focus_log("c");
+    let (visible, set_visible) = reactive::signal_local(true);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, {
+        let x_log = Rc::clone(&x_log);
+        let y_log = Rc::clone(&y_log);
+        move || {
+            scene(
+                panel()
+                    .child(
+                        panel()
+                            .trap_focus()
+                            .child(
+                                panel()
+                                    .width(px(20.0))
+                                    .height(px(20.0))
+                                    .focusable()
+                                    .on_focus(a_on_focus),
+                            )
+                            .child(show(
+                                move || visible.get(),
+                                move || {
+                                    let x_log = Rc::clone(&x_log);
+                                    let y_log = Rc::clone(&y_log);
+                                    panel()
+                                        .trap_focus()
+                                        .child(
+                                            panel()
+                                                .width(px(20.0))
+                                                .height(px(20.0))
+                                                .focusable()
+                                                .on_focus({
+                                                    let x_log = Rc::clone(&x_log);
+                                                    move |focused: bool| {
+                                                        x_log.borrow_mut().push(("x", focused))
+                                                    }
+                                                }),
+                                        )
+                                        .child(
+                                            panel()
+                                                .width(px(20.0))
+                                                .height(px(20.0))
+                                                .focusable()
+                                                .on_focus({
+                                                    let y_log = Rc::clone(&y_log);
+                                                    move |focused: bool| {
+                                                        y_log.borrow_mut().push(("y", focused))
+                                                    }
+                                                }),
+                                        )
+                                },
+                            ))
+                            .child(
+                                panel()
+                                    .width(px(20.0))
+                                    .height(px(20.0))
+                                    .focusable()
+                                    .on_focus(b_on_focus),
+                            ),
+                    )
+                    .child(
+                        panel()
+                            .width(px(20.0))
+                            .height(px(20.0))
+                            .focusable()
+                            .on_focus(c_on_focus),
+                    ),
+            )
+        }
+    });
+    harness.frame();
+
+    harness.press_key(Key::Tab);
+    assert_eq!(
+        *x_log.borrow(),
+        [("x", true)],
+        "the nested trap mounted last wins"
+    );
+    harness.press_key(Key::Tab);
+    assert_eq!(*y_log.borrow(), [("y", true)]);
+    harness.press_key(Key::Tab);
+    assert_eq!(
+        *x_log.borrow(),
+        [("x", true), ("x", false), ("x", true)],
+        "the cycle wraps inside the nested trap"
+    );
+    assert!(a_log.borrow().is_empty() && b_log.borrow().is_empty());
+    assert!(c_log.borrow().is_empty());
+
+    set_visible.set(false);
+    harness.frame();
+    assert_eq!(
+        *x_log.borrow(),
+        [("x", true), ("x", false), ("x", true)],
+        "a removed node hears no on_focus: its handlers go with it"
+    );
+    harness.press_key(Key::Tab);
+    assert_eq!(
+        *a_log.borrow(),
+        [("a", true)],
+        "removing the nested trap restores the outer one"
+    );
+    harness.press_key(Key::Tab);
+    assert_eq!(*b_log.borrow(), [("b", true)]);
+    harness.press_key(Key::Tab);
+    assert_eq!(
+        *a_log.borrow(),
+        [("a", true), ("a", false), ("a", true)],
+        "the outer trap cycles"
+    );
+    assert!(
+        c_log.borrow().is_empty(),
+        "the focus never leaves the outer trap"
+    );
+}
+
+#[test]
+fn a_press_outside_a_focus_trap_does_not_move_the_focus() {
+    let (a_log, a_on_focus) = focus_log("a");
+    let (c_log, c_on_focus) = focus_log("c");
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .child(
+                    panel().width(px(40.0)).height(px(60.0)).trap_focus().child(
+                        panel()
+                            .width(px(20.0))
+                            .height(px(20.0))
+                            .focusable()
+                            .on_focus(a_on_focus),
+                    ),
+                )
+                .child(
+                    panel()
+                        .width(px(20.0))
+                        .height(px(20.0))
+                        .focusable()
+                        .on_focus(c_on_focus),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.press_key(Key::Tab);
+    assert_eq!(*a_log.borrow(), [("a", true)]);
+
+    harness.click(Point { x: 50.0, y: 10.0 });
+    assert_eq!(
+        *a_log.borrow(),
+        [("a", true)],
+        "a press on a focusable node outside the trap does not move the focus"
+    );
+    assert!(c_log.borrow().is_empty());
+
+    harness.click(Point { x: 80.0, y: 50.0 });
+    assert_eq!(
+        *a_log.borrow(),
+        [("a", true)],
+        "a press on a plain node outside the trap does not clear the focus"
+    );
+}

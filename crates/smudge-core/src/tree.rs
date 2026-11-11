@@ -263,13 +263,21 @@ pub(crate) struct WidgetTree {
     /// The node the focus fell off of because it became disabled or hidden.
     ///
     /// The next key event still bubbles from that node, so a shortcut above a
-    /// disabled control keeps working, and any focus change or press consumes
-    /// the anchor.
+    /// disabled control keeps working. Any focus change consumes the anchor,
+    /// and so does any press that is not outside an active focus trap.
     stale_focus: Option<WidgetId>,
     /// Whether the focus last moved by keyboard navigation, so a focus ring
     /// can draw for keyboard users alone. A Tab or an arrow key turns this on
     /// and a pointer press turns it off.
     keyboard_nav: bool,
+    /// The autofocus requests that mounted nodes queued and no layout pass
+    /// has resolved yet.
+    pending_autofocus: Vec<WidgetId>,
+    /// The mounted focus traps, oldest first.
+    ///
+    /// The last mounted trap wins, and removing a node ends every trap it
+    /// holds, which restores the one mounted before it.
+    focus_traps: Vec<WidgetId>,
     /// The theme that paint-time token resolution reads.
     theme: Theme,
     /// The nodes whose projected accessibility state may have changed, in the
@@ -304,6 +312,8 @@ impl WidgetTree {
             focused: None,
             stale_focus: None,
             keyboard_nav: false,
+            pending_autofocus: Vec::new(),
+            focus_traps: Vec::new(),
             theme: Theme::light(),
             a11y_dirty: Vec::new(),
             a11y_reset: false,
@@ -440,6 +450,11 @@ impl WidgetTree {
         if self.pressed.is_some_and(|pressed| order.contains(&pressed)) {
             self.pressed = None;
         }
+        // A removed node keeps neither its autofocus request nor its trap:
+        // the request is dropped, and the trap mounted before it, if any,
+        // takes over.
+        self.pending_autofocus.retain(|id| !order.contains(id));
+        self.focus_traps.retain(|trap| !order.contains(trap));
 
         // Deepest node first, so every taffy node is still attached to a live
         // parent when it is removed, and so an owner's bindings stop before
@@ -1160,6 +1175,18 @@ impl WidgetTree {
                     .expect("every widget node has a live layout node"),
                 &node.resolved.layout.to_taffy(),
                 "the layout style agrees"
+            );
+        }
+        for trap in &self.focus_traps {
+            assert!(
+                self.nodes.contains_key(*trap),
+                "every mounted focus trap is a live node"
+            );
+        }
+        for id in &self.pending_autofocus {
+            assert!(
+                self.nodes.contains_key(*id),
+                "every queued autofocus request belongs to a live node"
             );
         }
     }

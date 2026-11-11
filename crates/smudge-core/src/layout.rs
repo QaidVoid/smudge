@@ -53,7 +53,9 @@ impl WidgetTree {
     /// The engine runs only when a node is marked [`Dirty::Layout`] or when the
     /// viewport differs from the previous pass, so a paint-only change costs
     /// nothing here. The root is sized to the viewport, which overrides any
-    /// size set on the root element.
+    /// size set on the root element. After the pass, a node that mounted with
+    /// autofocus takes the focus, and a focus or hover change that carries a
+    /// layout patch runs the engine once more, so both settle in this frame.
     ///
     /// Each node ends the pass with an absolute rectangle and clip. A node
     /// whose rectangle in paint coordinates changed, or whose clip became or
@@ -79,20 +81,26 @@ impl WidgetTree {
         let Some(rects_changed) = self.layout_pass(viewport) else {
             return false;
         };
+        // A node that mounted for this frame with autofocus takes the focus
+        // here: after the pass laid it out, so the styles the pass resolved
+        // say whether it can hold the focus, and before the frame paints, so
+        // it never shows a frame without the focus.
+        self.resolve_autofocus();
         // A node that the pass moved under a pointer that stays still keeps a
         // stale hover, because no pointer event announces the move. The chain
         // is rebuilt from the last pointer position, unless a held press keeps
         // the hover on its capture.
         if rects_changed && self.pointer_inside && self.pressed.is_none() {
             self.refresh_hover();
-            // A hover style can change the layout, and nothing would ask for
-            // another frame to apply it. One more pass settles it in this
-            // frame. Hover is not recomputed after it, so a style that moves
-            // the node off the pointer cannot loop. Such a hover stays stale
-            // until the pointer moves or a later layout pass changes rects.
-            if self.layout_dirty {
-                self.layout_pass(viewport);
-            }
+        }
+        // The focus autofocus set, and the hover the refresh above set, can
+        // carry variant patches that change the layout, and nothing would ask
+        // for another frame to apply them. One more pass settles both in this
+        // frame. Hover is not recomputed after it, so a style that moves the
+        // node off the pointer cannot loop. Such a hover stays stale until
+        // the pointer moves or a later layout pass changes rects.
+        if self.layout_dirty {
+            self.layout_pass(viewport);
         }
         true
     }

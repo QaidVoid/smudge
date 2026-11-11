@@ -494,14 +494,17 @@ impl App {
     /// chain, a primary press captures the node under the pointer and focuses
     /// it when it can take the focus, and a release runs the captured node's
     /// `on_press` when it happens over it. A press elsewhere clears the focus,
+    /// except while a focus trap is mounted and the press lands outside it,
     /// and any press turns the keyboard navigation mode off. A wheel scroll
     /// goes to the deepest node in the hovered chain that has a wheel handler.
     /// Key events are routed to the focused node and bubble to its ancestors
-    /// until a handler takes them, and an unhandled Tab or Shift+Tab moves the
-    /// focus. Handlers run at once, inside their node's owner, and a handler
-    /// that writes a signal makes the change visible with the next call to
-    /// [`App::frame`]. The app also records the pointer position from pointer
-    /// events and the keyboard modifiers from key and modifiers events.
+    /// until a handler takes them, starting at the root when nothing anchors
+    /// the key, and an unhandled Tab or Shift+Tab moves the focus, staying
+    /// inside the active focus trap when one is mounted. Handlers run at
+    /// once, inside their node's owner, and a handler that writes a signal
+    /// makes the change visible with the next call to [`App::frame`]. The app
+    /// also records the pointer position from pointer events and the keyboard
+    /// modifiers from key and modifiers events.
     pub fn handle_event(&mut self, event: InputEvent) {
         match event {
             InputEvent::PointerMoved { position } => {
@@ -563,7 +566,9 @@ impl App {
     /// Returns the node that holds the keyboard focus, when one does.
     ///
     /// A press on a focusable node focuses it, a press elsewhere clears the
-    /// focus, and Tab moves it. Removing the focused node clears the focus.
+    /// focus, and Tab moves it. While a focus trap is mounted, a press
+    /// outside the trap leaves the focus where it is, and Tab moves it within
+    /// the trap only. Removing the focused node clears the focus.
     pub fn focused(&self) -> Option<WidgetId> {
         self.tree.focused()
     }
@@ -826,6 +831,9 @@ impl App {
     /// A node that is not focusable, or that cannot hold the focus because
     /// it is disabled or hidden, is left alone and `false` is returned. A
     /// node that already holds the focus keeps it and `true` is returned.
+    /// Unlike the autofocus request, an active focus trap does not confine
+    /// this one: the trap binds Tab movement and pointer presses, not an
+    /// explicit request that names its node.
     pub fn request_focus(&mut self, id: WidgetId) -> bool {
         self.tree.request_focus(id)
     }

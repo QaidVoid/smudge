@@ -354,6 +354,12 @@ pub struct Element<W: Widget> {
     cursor: Option<crate::window::Cursor>,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
+    /// Whether the node requests the focus on the first frame after it is
+    /// laid out.
+    autofocus: bool,
+    /// Whether the node keeps Tab movement inside its subtree while it is
+    /// mounted.
+    trap_focus: bool,
     /// The role the accessibility projection reports, when an element set
     /// one.
     a11y_role: Option<Role>,
@@ -386,6 +392,8 @@ impl<W: Widget> Element<W> {
             disabled: false,
             cursor: None,
             focusable: false,
+            autofocus: false,
+            trap_focus: false,
             a11y_role: None,
             a11y_label: None,
             scroll_offset: Point::default(),
@@ -1050,6 +1058,81 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Takes the keyboard focus on the first frame the node is laid out
+    /// after it mounts.
+    ///
+    /// The request resolves after the layout pass that lays the node out, so
+    /// the focus is set before the frame paints and a node a [`show`] mounts
+    /// takes the focus in the frame it appears in. The request runs once per
+    /// mount: when the focus moves away later, the node does not ask again,
+    /// and a node unmounted and mounted again by a fresh [`show`] run does.
+    /// A request whose node cannot take the focus when it resolves, because
+    /// the node became disabled or hidden, is dropped and never asked again.
+    /// When several nodes mount in one frame, the node painted last wins.
+    ///
+    /// While a focus trap is mounted, only a node inside the trap can take
+    /// the focus this way; a request for a node outside it is dropped, like
+    /// any other request that cannot take the focus.
+    ///
+    /// This makes the node focusable, like [`Element::on_key`] does.
+    ///
+    /// ```
+    /// use std::cell::Cell;
+    /// use std::rc::Rc;
+    ///
+    /// use smudge_core::app::{App, AppConfig, RepaintMode};
+    /// use smudge_core::geometry::{Color, Size};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let focused = Rc::new(Cell::new(false));
+    /// let count = Rc::clone(&focused);
+    /// let mut app = App::new(
+    ///     AppConfig {
+    ///         viewport: Size {
+    ///             width: 100.0,
+    ///             height: 60.0,
+    ///         },
+    ///         scale: 1.0,
+    ///         clear_color: Color::WHITE,
+    ///         repaint: RepaintMode::Damage,
+    ///     },
+    ///     move || panel().autofocus().on_focus(move |on| count.set(on)),
+    /// );
+    /// app.frame();
+    ///
+    /// assert!(focused.get(), "the node took the focus on its first frame");
+    /// ```
+    pub fn autofocus(mut self) -> Self {
+        self.focusable = true;
+        self.autofocus = true;
+        self
+    }
+
+    /// Keeps Tab and Shift+Tab cycling among the focusable nodes inside the
+    /// node's subtree, for as long as the node is mounted and not hidden.
+    ///
+    /// A node the user Tabs to inside the trap never lands outside it: the
+    /// cycle wraps within the subtree, and a Tab pressed with nothing
+    /// focused enters the trap at its first focusable node. While the trap
+    /// holds no focusable node, a Tab press leaves the focus where it is. A
+    /// pointer press that lands on no node that can respond, or on a node
+    /// outside the trap, leaves the focus where it is, and a press on a node
+    /// inside the trap moves the focus as usual: to that node when it can
+    /// take the focus, and away when it cannot. This is how a modal dialog
+    /// keeps the keyboard inside itself instead of wandering into the view
+    /// behind it.
+    ///
+    /// When several traps are mounted, the last one wins, and a nested trap
+    /// therefore takes over from the one around it. Removing a trap, which
+    /// is what unmounting a [`show`] child does, restores the trap mounted
+    /// before it. A trap that cannot hold the focus, because it became
+    /// disabled or hidden or sits under a hidden ancestor, yields to an
+    /// earlier one while it stays mounted.
+    pub fn trap_focus(mut self) -> Self {
+        self.trap_focus = true;
+        self
+    }
+
     /// Runs `handler` when a key event reaches the node while the node or one
     /// of its descendants holds the keyboard focus.
     ///
@@ -1217,6 +1300,12 @@ pub struct AnyElement {
     cursor: Option<crate::window::Cursor>,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
+    /// Whether the node requests the focus on the first frame after it is
+    /// laid out.
+    autofocus: bool,
+    /// Whether the node keeps Tab movement inside its subtree while it is
+    /// mounted.
+    trap_focus: bool,
     /// The role the accessibility projection reports, when an element set
     /// one.
     a11y_role: Option<Role>,
@@ -1240,6 +1329,8 @@ impl AnyElement {
             disabled: element.disabled,
             cursor: element.cursor,
             focusable: element.focusable,
+            autofocus: element.autofocus,
+            trap_focus: element.trap_focus,
             a11y_role: element.a11y_role,
             a11y_label: element.a11y_label,
             scroll_offset: element.scroll_offset,
@@ -1287,6 +1378,8 @@ pub(crate) fn mount(
         disabled,
         cursor,
         focusable,
+        autofocus,
+        trap_focus,
         a11y_role,
         a11y_label,
         scroll_offset,
@@ -1297,6 +1390,12 @@ pub(crate) fn mount(
     tree.set_disabled(id, disabled);
     tree.set_cursor(id, cursor);
     tree.set_focusable(id, focusable);
+    if autofocus {
+        tree.queue_autofocus(id);
+    }
+    if trap_focus {
+        tree.push_focus_trap(id);
+    }
     tree.set_a11y_role(id, a11y_role);
     tree.set_handlers(id, handlers);
     let bindings = match a11y_label {
