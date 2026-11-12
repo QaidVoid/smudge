@@ -45,7 +45,7 @@ use std::rc::Rc;
 use crate::geometry::{Color, Point, Size};
 use crate::input::{Handled, KeyEvent};
 use crate::paint::PaintOp;
-use crate::reactive::{Owner, RenderEffect};
+use crate::reactive::{Owner, RenderEffect, RwSignal};
 use crate::semantics::Role;
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
@@ -360,6 +360,9 @@ pub struct Element<W: Widget> {
     /// Whether the node keeps Tab movement inside its subtree while it is
     /// mounted.
     trap_focus: bool,
+    /// The signal that pins the node's scroll offset to the end of its
+    /// content while it reads `true`.
+    follow_end: Option<RwSignal<bool>>,
     /// The role the accessibility projection reports, when an element set
     /// one.
     a11y_role: Option<Role>,
@@ -394,6 +397,7 @@ impl<W: Widget> Element<W> {
             focusable: false,
             autofocus: false,
             trap_focus: false,
+            follow_end: None,
             a11y_role: None,
             a11y_label: None,
             scroll_offset: Point::default(),
@@ -1066,9 +1070,12 @@ impl<W: Widget> Element<W> {
     /// takes the focus in the frame it appears in. The request runs once per
     /// mount: when the focus moves away later, the node does not ask again,
     /// and a node unmounted and mounted again by a fresh [`show`] run does.
-    /// A request whose node cannot take the focus when it resolves, because
-    /// the node became disabled or hidden, is dropped and never asked again.
-    /// When several nodes mount in one frame, the node painted last wins.
+    /// A node that is hidden, or sits under a hidden ancestor, keeps its
+    /// request until it is first laid out visible, so a dialog that mounts
+    /// hidden and shows later takes the focus in the frame it shows in. A
+    /// request whose node is disabled when it resolves is dropped and never
+    /// asked again. When several nodes show in one frame, the node painted
+    /// last wins.
     ///
     /// While a focus trap is mounted, only a node inside the trap can take
     /// the focus this way; a request for a node outside it is dropped, like
@@ -1122,14 +1129,49 @@ impl<W: Widget> Element<W> {
     /// keeps the keyboard inside itself instead of wandering into the view
     /// behind it.
     ///
+    /// While the trap is active, a key that would start outside it, because
+    /// the focus is outside the trap or nothing holds the focus, starts at
+    /// the trap node and bubbles from there to the root, so the trap's own
+    /// key handlers hear it and a control behind it does not.
+    ///
     /// When several traps are mounted, the last one wins, and a nested trap
     /// therefore takes over from the one around it. Removing a trap, which
     /// is what unmounting a [`show`] child does, restores the trap mounted
-    /// before it. A trap that cannot hold the focus, because it became
+    /// before it, and returns the focus to the node that held it when the
+    /// trap mounted, when that node is still mounted and can take it. A trap that cannot hold the focus, because it became
     /// disabled or hidden or sits under a hidden ancestor, yields to an
     /// earlier one while it stays mounted.
     pub fn trap_focus(mut self) -> Self {
         self.trap_focus = true;
+        self
+    }
+
+    /// Pins the node's scroll offset to the end of its flowing content while
+    /// `signal` reads `true`.
+    ///
+    /// Every layout pass that runs while the signal reads `true` ends with
+    /// the node's offset at the furthest its flowing content reaches, minus
+    /// the height of its content box, floored at zero. The pin uses the
+    /// rectangles that pass just computed, so a frame that grows the content
+    /// shows the end in view in the same frame. A signal that reads `false`
+    /// leaves the offset where it is, and a write of `true` from anywhere
+    /// pins the node in the next frame.
+    ///
+    /// What turns the signal is the caller's decision, not the core's: the
+    /// scroll view widget pairs this builder with its wheel handling, so a
+    /// step that leaves the end releases the pin and a step back to it
+    /// engages it again.
+    ///
+    /// ```
+    /// use smudge_core::element::Element;
+    /// use smudge_core::reactive::RwSignal;
+    /// use smudge_core::widget::Panel;
+    ///
+    /// let following = RwSignal::new(true);
+    /// let view = Element::new(Panel).follow(following);
+    /// ```
+    pub fn follow(mut self, signal: RwSignal<bool>) -> Self {
+        self.follow_end = Some(signal);
         self
     }
 
@@ -1306,6 +1348,9 @@ pub struct AnyElement {
     /// Whether the node keeps Tab movement inside its subtree while it is
     /// mounted.
     trap_focus: bool,
+    /// The signal that pins the node's scroll offset to the end of its
+    /// content while it reads `true`.
+    follow_end: Option<RwSignal<bool>>,
     /// The role the accessibility projection reports, when an element set
     /// one.
     a11y_role: Option<Role>,
@@ -1331,6 +1376,7 @@ impl AnyElement {
             focusable: element.focusable,
             autofocus: element.autofocus,
             trap_focus: element.trap_focus,
+            follow_end: element.follow_end,
             a11y_role: element.a11y_role,
             a11y_label: element.a11y_label,
             scroll_offset: element.scroll_offset,
@@ -1380,6 +1426,7 @@ pub(crate) fn mount(
         focusable,
         autofocus,
         trap_focus,
+        follow_end,
         a11y_role,
         a11y_label,
         scroll_offset,
@@ -1395,6 +1442,9 @@ pub(crate) fn mount(
     }
     if trap_focus {
         tree.push_focus_trap(id);
+    }
+    if let Some(signal) = follow_end {
+        tree.set_follow(id, signal);
     }
     tree.set_a11y_role(id, a11y_role);
     tree.set_handlers(id, handlers);

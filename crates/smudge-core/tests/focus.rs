@@ -10,7 +10,7 @@ use smudge_core::element::{Element, IntoElement, show};
 use smudge_core::geometry::{Point, Rect};
 use smudge_core::input::{Handled, InputEvent, Key, KeyEvent, Modifiers};
 use smudge_core::paint::PaintOp;
-use smudge_core::reactive::{self, prelude::*};
+use smudge_core::reactive::{self, RwSignal, prelude::*};
 use smudge_core::style::px;
 use smudge_core::widget::{PaintCx, Widget, panel};
 use smudge_test::Harness;
@@ -1149,5 +1149,80 @@ fn a_press_outside_a_focus_trap_does_not_move_the_focus() {
         *a_log.borrow(),
         [("a", true)],
         "a press on a plain node outside the trap does not clear the focus"
+    );
+}
+
+#[test]
+fn a_dialog_trap_hears_keys_before_its_opener_and_returns_the_focus_on_close() {
+    let open = RwSignal::new(false);
+    let (opener_log, opener_on_focus) = focus_log("opener");
+    let (opener_enters, opener_on_key) = key_counter(|event| event.key == Key::Enter);
+    let (dialog_enters, dialog_on_enter) = key_counter(|event| event.key == Key::Enter);
+    let dialog_on_enter = Rc::new(RefCell::new(dialog_on_enter));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, {
+        let open = open.clone();
+        move || {
+            let shown = open.clone();
+            let open = open.clone();
+            let dialog_on_enter = Rc::clone(&dialog_on_enter);
+            scene(
+                panel()
+                    .child(
+                        panel()
+                            .width(px(20.0))
+                            .height(px(20.0))
+                            .on_focus(opener_on_focus)
+                            .on_key(opener_on_key),
+                    )
+                    .child(show(
+                        move || shown.get(),
+                        move || {
+                            let open = open.clone();
+                            let dialog_on_enter = Rc::clone(&dialog_on_enter);
+                            panel()
+                                .width(px(40.0))
+                                .height(px(40.0))
+                                .trap_focus()
+                                .on_key(move |event: &KeyEvent| {
+                                    if event.pressed && event.key == Key::Escape {
+                                        open.set(false);
+                                        Handled::Yes
+                                    } else {
+                                        (dialog_on_enter.borrow_mut())(event)
+                                    }
+                                })
+                                .child(panel().width(px(20.0)).height(px(20.0)).focusable())
+                        },
+                    )),
+            )
+        }
+    });
+    harness.frame();
+    harness.press_key(Key::Tab);
+    assert_eq!(*opener_log.borrow(), [("opener", true)]);
+
+    open.set(true);
+    harness.frame();
+    harness.press_key(Key::Enter);
+    assert_eq!(
+        opener_enters.get(),
+        0,
+        "a key pressed while the dialog is open never reaches the control behind it"
+    );
+    assert_eq!(dialog_enters.get(), 1, "the dialog hears it instead");
+
+    harness.press_key(Key::Tab);
+    assert_eq!(
+        *opener_log.borrow(),
+        [("opener", true), ("opener", false)],
+        "Tab moves the focus into the dialog"
+    );
+    harness.press_key(Key::Escape);
+    harness.frame();
+    assert!(!open.get(), "the dialog heard Escape and closed");
+    assert_eq!(
+        *opener_log.borrow(),
+        [("opener", true), ("opener", false), ("opener", true)],
+        "closing the dialog returns the focus to its opener"
     );
 }

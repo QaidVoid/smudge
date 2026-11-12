@@ -11,7 +11,7 @@ use crate::input::{Handled, Key, KeyEvent};
 use crate::widget::Widget;
 
 use super::interaction::Interaction;
-use super::{WidgetId, WidgetTree};
+use super::{FocusTrap, WidgetId, WidgetTree};
 
 #[cfg(test)]
 #[path = "focus_tests.rs"]
@@ -32,7 +32,10 @@ impl WidgetTree {
     /// The focused node hears the key first, then its parent, and so on to the
     /// root, until a handler reports [`Handled::Yes`]. With nothing holding
     /// the focus, the key starts at the root, so a shortcut mounted there
-    /// hears a key pressed anywhere in the window. A press of Tab or an
+    /// hears a key pressed anywhere in the window. While a focus trap is
+    /// active, a key that would start outside it, because the focus is
+    /// outside it or nothing holds the focus, starts at the trap instead and
+    /// bubbles from there to the root. A press of Tab or an
     /// arrow key turns the keyboard navigation mode on, whether or not a
     /// handler took the key, and an unhandled Tab or Shift+Tab moves the focus
     /// to the next or previous focusable node in tree order, confined to the
@@ -57,6 +60,13 @@ impl WidgetTree {
                 .take()
                 .and_then(|anchor| self.nodes.get(anchor)?.parent)
                 .or(self.root),
+        };
+        // An active trap holds the keyboard: a key that would start outside
+        // it starts at the trap, so the trap's own handlers hear it before
+        // the shortcuts above it, and a control behind it never does.
+        let start = match self.active_focus_trap() {
+            Some(trap) if start.is_none_or(|start| !self.is_within(start, trap)) => Some(trap),
+            _ => start,
         };
         self.drop_invalid_focus();
         let handled = self.route_key(start, event);
@@ -400,28 +410,42 @@ impl WidgetTree {
     }
 
     /// Queues an autofocus request for the node `id`, to resolve once a
-    /// layout pass has laid it out.
+    /// layout pass has laid it out visible.
     ///
     /// A node's element calls this at mount. The request is resolved once,
-    /// when [`WidgetTree::resolve_autofocus`] runs, and a later frame never
-    /// asks again.
+    /// when [`WidgetTree::resolve_autofocus`] runs and finds the node
+    /// visible, and a later frame never asks again.
     pub(crate) fn queue_autofocus(&mut self, id: WidgetId) {
         self.pending_autofocus.push(id);
     }
 
-    /// Focuses the node that mounted with autofocus and has been laid out.
+    /// Focuses the node that mounted with autofocus and has been laid out
+    /// visible.
     ///
-    /// The requests queued since the last resolution are walked in paint
-    /// order, and the last one that can hold the focus wins, so when several
-    /// nodes mount in one frame the node painted last takes it. While a
-    /// focus trap is mounted, only a node inside it can win, so a node that
-    /// mounts elsewhere cannot pull the focus out of the trap. A request
-    /// whose node was removed since it queued, or that cannot hold the focus
-    /// when it resolves, is skipped and an earlier node then wins; a skipped
+    /// A request whose node is hidden, or sits under a hidden ancestor,
+    /// stays queued until a layout pass finds it visible. The other requests
+    /// are walked in paint order, and the last one that can hold the focus
+    /// wins, so when several nodes show in one frame the node painted last
+    /// takes it. While a focus trap is mounted, only a node inside it can
+    /// win, so a node that mounts elsewhere cannot pull the focus out of the
+    /// trap. A visible request that cannot hold the focus, because its node
+    /// is disabled, is skipped and an earlier node then wins; a skipped
     /// request is dropped and never asked again.
     pub(super) fn resolve_autofocus(&mut self) {
-        let pending = std::mem::take(&mut self.pending_autofocus);
-        if pending.is_empty() {
+        if self.pending_autofocus.is_empty() {
+            return;
+        }
+        let mut pending = std::mem::take(&mut self.pending_autofocus);
+        let mut ready = Vec::new();
+        pending.retain(|&id| {
+            let hidden = self.hidden_in_tree(id);
+            if !hidden {
+                ready.push(id);
+            }
+            hidden
+        });
+        self.pending_autofocus = pending;
+        if ready.is_empty() {
             return;
         }
         let Some(root) = self.root else {
@@ -429,7 +453,7 @@ impl WidgetTree {
         };
         let trap = self.active_focus_trap();
         let mut order = Vec::new();
-        self.collect_pending(root, &pending, &mut order);
+        self.collect_pending(root, &ready, &mut order);
         for id in order.into_iter().rev() {
             if trap.is_some_and(|trap| !self.is_within(id, trap)) {
                 continue;
@@ -441,14 +465,36 @@ impl WidgetTree {
         }
     }
 
+    /// Returns whether the live node `id` or one of its ancestors is hidden.
+    ///
+    /// A stale id counts as visible, so a caller that resolves it finds
+    /// nothing there.
+    fn hidden_in_tree(&self, id: WidgetId) -> bool {
+        let mut next = Some(id);
+        while let Some(current) = next {
+            let Some(node) = self.nodes.get(current) else {
+                return false;
+            };
+            if node.resolved.layout.hidden {
+                return true;
+            }
+            next = node.parent;
+        }
+        false
+    }
+
     /// Marks the mounted node `id` as a focus trap.
     ///
     /// While a trap is the last one mounted and not hidden, Tab movement is
-    /// confined to its subtree and a press outside it does not move the
-    /// focus out. Removing the node ends the trap and restores the one
-    /// mounted before it.
+    /// confined to its subtree, keys start there when the focus is outside
+    /// it, and a press outside it does not move the focus out. Removing the
+    /// node ends the trap, restores the one mounted before it, and returns
+    /// the focus to the node that held it when the trap mounted.
     pub(crate) fn push_focus_trap(&mut self, id: WidgetId) {
-        self.focus_traps.push(id);
+        self.focus_traps.push(FocusTrap {
+            node: id,
+            restore: self.focused,
+        });
     }
 
     /// Returns the trap that keyboard movement is confined to, when one is
@@ -463,7 +509,7 @@ impl WidgetTree {
         self.focus_traps
             .iter()
             .rev()
-            .copied()
+            .map(|trap| trap.node)
             .find(|&trap| self.can_hold_focus(trap))
     }
 

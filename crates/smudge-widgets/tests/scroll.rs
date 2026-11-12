@@ -9,11 +9,11 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use smudge_core::element::Element;
+use smudge_core::element::{Element, for_each};
 use smudge_core::geometry::{Color, Point, Rect, Size};
 use smudge_core::input::InputEvent;
 use smudge_core::reactive::{RwSignal, prelude::*};
-use smudge_core::style::{Edges, Length, px};
+use smudge_core::style::{Direction, Edges, Length, px};
 use smudge_core::widget::{Panel, panel};
 use smudge_test::Harness;
 use smudge_text::{TextSystem, text_input};
@@ -855,4 +855,285 @@ fn an_absolute_child_between_flowing_ones_stays_put_while_they_scroll() {
     assert_eq!(badge(&mut harness), before);
     assert_eq!(report.nodes_painted, 0);
     harness.assert_matches(&split_view(RwSignal::new(30.0)));
+}
+
+/// The rows of a log, keyed by themselves, from whole pixel heights.
+///
+/// A key identifies its row, so appends must not reuse a height the list
+/// already used.
+fn log_rows(heights: impl Fn() -> Vec<u64> + 'static) -> Element<impl smudge_core::widget::Widget> {
+    for_each(
+        heights,
+        |height| *height,
+        |height| row(height as f32, Color::rgb(200, 0, 0)),
+    )
+    .direction(Direction::Column)
+}
+
+/// A view 100 pixels tall over a signal of row heights, following `signal`.
+///
+/// The root is a column so the view stretches to the window's width.
+fn following_view(following: RwSignal<bool>, heights: RwSignal<Vec<u64>>) -> Harness {
+    let mut harness = Harness::new(120.0, 200.0, 1.0, move || {
+        panel().column().child(
+            scroll(log_rows(move || heights.get()))
+                .follow_end(following)
+                .height(px(100.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    harness
+}
+
+/// The content rows of a following view, told apart by height.
+fn follow_rows(harness: &mut Harness) -> Vec<Rect> {
+    let heights = [30.0, 60.0, 61.0, 62.0, 80.0, 81.0, 82.0];
+    let mut rows: Vec<Rect> = nodes(harness)
+        .into_iter()
+        .filter(|node| node.name == "Panel" && heights.contains(&node.rect.height()))
+        .map(|node| node.rect)
+        .collect();
+    rows.sort_by_key(|rect| rect.y0 as i64);
+    rows
+}
+
+#[test]
+fn an_append_while_following_shows_the_new_row_in_the_same_frame() {
+    let following = RwSignal::new(true);
+    let heights = RwSignal::new(vec![60, 61, 62]);
+    let mut harness = following_view(following.clone(), heights.clone());
+
+    let rows = follow_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: -83.0 }),
+        "the view starts at the end of the three rows, at {:?}",
+        rows[0]
+    );
+
+    heights.update(|rows| rows.push(80));
+    let report = harness.frame();
+
+    let rows = follow_rows(&mut harness);
+    assert!(
+        (rows[3].y1 - 100.0).abs() < 0.01,
+        "the appended row reaches the end of the viewport in the frame that \
+         appended it, at {:?} (layout ran: {})",
+        rows[3],
+        report.layout_ran
+    );
+    assert!(
+        following.read(|value| *value),
+        "the view stayed at the end, so it stays following"
+    );
+    harness.assert_matches_full_repaint();
+
+    harness.settle();
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn scrolling_up_releases_following_and_a_later_append_does_not_move_the_view() {
+    let following = RwSignal::new(true);
+    let heights = RwSignal::new(vec![60, 61, 62]);
+    let mut harness = following_view(following.clone(), heights.clone());
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+
+    wheel(&mut harness, -30.0);
+    harness.frame();
+    harness.settle();
+
+    assert!(
+        !following.read(|value| *value),
+        "a wheel step away from the end turns following off"
+    );
+    let rows = follow_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: -53.0 }),
+        "the wheel step moved the view up by its delta, at {:?}",
+        rows[0]
+    );
+
+    heights.update(|rows| rows.push(80));
+    harness.frame();
+    harness.settle();
+
+    let rows = follow_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: -53.0 }),
+        "an append while not following leaves the view where it was, at {:?}",
+        rows[0]
+    );
+    assert!(
+        !following.read(|value| *value),
+        "the append does not turn following back on"
+    );
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn scrolling_back_to_the_end_turns_following_on() {
+    let following = RwSignal::new(true);
+    let heights = RwSignal::new(vec![60, 61, 62]);
+    let mut harness = following_view(following.clone(), heights.clone());
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+    wheel(&mut harness, -30.0);
+    harness.frame();
+    harness.settle();
+
+    wheel(&mut harness, 30.0);
+    harness.frame();
+    harness.settle();
+
+    assert!(
+        following.read(|value| *value),
+        "a wheel step that lands on the end turns following on"
+    );
+    let rows = follow_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: -83.0 }),
+        "the view is back at the end, at {:?}",
+        rows[0]
+    );
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn a_wheel_step_that_lands_within_the_slack_snaps_to_the_end() {
+    let following = RwSignal::new(true);
+    let heights = RwSignal::new(vec![60, 61, 62]);
+    let mut harness = following_view(following.clone(), heights.clone());
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+    wheel(&mut harness, -30.0);
+    harness.frame();
+    harness.settle();
+
+    wheel(&mut harness, 28.0);
+    harness.frame();
+    harness.settle();
+
+    assert!(
+        following.read(|value| *value),
+        "a step that lands within four pixels of the end counts as at it"
+    );
+    let rows = follow_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: -83.0 }),
+        "the view snapped the rest of the way to the end, at {:?}",
+        rows[0]
+    );
+}
+
+#[test]
+fn a_view_that_starts_following_with_short_content_stays_at_offset_zero() {
+    let following = RwSignal::new(true);
+    let heights = RwSignal::new(vec![60, 30]);
+    let mut harness = following_view(following.clone(), heights.clone());
+
+    let rows = follow_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: 0.0 }),
+        "short content leaves the view at the top, at {:?}",
+        rows[0]
+    );
+    assert!(
+        following.read(|value| *value),
+        "the view follows, so the signal reads true"
+    );
+
+    heights.update(|rows| rows.push(80));
+    harness.frame();
+    harness.settle();
+
+    let rows = follow_rows(&mut harness);
+    assert!(
+        (rows[2].y1 - 100.0).abs() < 0.01,
+        "the growth carries the view to the new end, at {:?}",
+        rows[2]
+    );
+}
+
+#[test]
+fn writing_true_while_not_following_jumps_to_the_end() {
+    let following = RwSignal::new(false);
+    let heights = RwSignal::new(vec![60, 61, 62]);
+    let mut harness = following_view(following.clone(), heights.clone());
+
+    following.set(true);
+    harness.frame();
+    harness.settle();
+
+    let rows = follow_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: -83.0 }),
+        "a write of true jumps to the end, at {:?}",
+        rows[0]
+    );
+    assert!(
+        following.read(|value| *value),
+        "the view stays following after the jump"
+    );
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn a_following_view_receiving_appends_matches_a_full_repaint() {
+    let following = RwSignal::new(true);
+    let heights = RwSignal::new(vec![60, 61, 62]);
+    let mut harness = following_view(following.clone(), heights.clone());
+
+    for height in [80, 81, 82] {
+        heights.update(|rows| rows.push(height));
+        harness.frame();
+        harness.assert_matches_full_repaint();
+        harness.settle();
+        harness.assert_matches_full_repaint();
+    }
+
+    let rows = follow_rows(&mut harness);
+    assert_eq!(rows.len(), 6);
+    assert!(
+        (rows[5].y1 - 100.0).abs() < 0.01,
+        "the view followed every append, last row at {:?}",
+        rows[5]
+    );
+}
+
+#[test]
+fn a_hover_patch_the_pin_picks_up_settles_at_the_end_in_the_same_frame() {
+    let following = RwSignal::new(true);
+    let view = following.clone();
+    let mut harness = Harness::new(120.0, 200.0, 1.0, move || {
+        panel().column().child(
+            scroll(column().child(row(60.0, Color::rgb(200, 0, 0)).hover(|p| p.height(px(200.0)))))
+                .follow_end(view)
+                .height(px(100.0)),
+        )
+    });
+    harness.move_to(Point { x: 60.0, y: 30.0 });
+    let report = harness.frame();
+
+    // The hover patch grows the row in the settle pass, after the pin read
+    // the short extent. The pin runs once more after that pass, so the row
+    // still reaches the bottom of the viewport in the frame that grew it.
+    // The row sits above the viewport top, which sets it apart from the
+    // window-sized root panel, whose height the growth also reaches.
+    let grown = nodes(&mut harness)
+        .into_iter()
+        .find(|node| node.name == "Panel" && node.rect.height() == 200.0 && node.rect.y0 < 0.0)
+        .expect("the hovered row is mounted");
+    assert!(
+        (grown.rect.y1 - 100.0).abs() < 0.01,
+        "the grown row reaches the end of the viewport in the frame that \
+         grew it, at {:?} (layout ran: {})",
+        grown.rect,
+        report.layout_ran
+    );
+    assert!(
+        following.read(|value| *value),
+        "the view stayed at the end, so it stays following"
+    );
+
+    harness.settle();
+    harness.assert_matches_full_repaint();
 }

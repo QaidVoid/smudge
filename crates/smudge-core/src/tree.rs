@@ -17,7 +17,7 @@ use slotmap::{Key, SlotMap, new_key_type};
 
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
-use crate::reactive::Owner;
+use crate::reactive::{Owner, RwSignal};
 use crate::semantics::{A11yChanges, Role, SemanticsNode};
 use crate::style::{LayoutProps, PaintProps, Style};
 use crate::theme::Theme;
@@ -176,6 +176,11 @@ struct Node {
     /// re-runs that walk for the subtree alone. An absolutely positioned
     /// child is left where its insets place it.
     scroll_offset: Point,
+    /// The signal that pins the node's scroll offset to the end of its
+    /// flowing content while it reads `true`, set by the element's builders.
+    /// While it does, [`WidgetTree::layout`] pins the offset after each pass;
+    /// see the resolution in the layout pass module.
+    follow: Option<RwSignal<bool>>,
     /// The node's interaction state: hovered, pressed, disabled and focus.
     interaction: Interaction,
     /// The cursor the node's element set for the pointer over it, or `None`
@@ -221,6 +226,15 @@ fn children_differ_in_order(before: &[WidgetId], after: &[WidgetId]) -> bool {
 /// How many pending accessibility changes the tree queues before the next
 /// projection rebuilds from scratch instead.
 const A11Y_DIRTY_CAP: usize = 4096;
+
+/// A mounted focus trap, and the focus to restore when it is removed.
+#[derive(Clone, Copy)]
+struct FocusTrap {
+    /// The node whose subtree keeps the keyboard.
+    node: WidgetId,
+    /// The node that held the focus when the trap mounted.
+    restore: Option<WidgetId>,
+}
 
 /// The retained tree of widgets.
 ///
@@ -276,8 +290,13 @@ pub(crate) struct WidgetTree {
     /// The mounted focus traps, oldest first.
     ///
     /// The last mounted trap wins, and removing a node ends every trap it
-    /// holds, which restores the one mounted before it.
-    focus_traps: Vec<WidgetId>,
+    /// holds, which restores the one mounted before it and the focus held
+    /// when the oldest removed trap mounted.
+    focus_traps: Vec<FocusTrap>,
+    /// The nodes that carry a follow signal, so the follow resolution after
+    /// a layout pass visits them alone instead of every node. A removed node
+    /// leaves a stale id here until the next resolution drops it.
+    following: Vec<WidgetId>,
     /// The theme that paint-time token resolution reads.
     theme: Theme,
     /// The nodes whose projected accessibility state may have changed, in the
@@ -314,6 +333,7 @@ impl WidgetTree {
             keyboard_nav: false,
             pending_autofocus: Vec::new(),
             focus_traps: Vec::new(),
+            following: Vec::new(),
             theme: Theme::light(),
             a11y_dirty: Vec::new(),
             a11y_reset: false,
@@ -378,6 +398,7 @@ impl WidgetTree {
             paint_content: Rect::default(),
             clip: Rect::default(),
             scroll_offset: Point::default(),
+            follow: None,
             interaction: Interaction::default(),
             cursor: None,
             handlers: Handlers::default(),
@@ -452,9 +473,16 @@ impl WidgetTree {
         }
         // A removed node keeps neither its autofocus request nor its trap:
         // the request is dropped, and the trap mounted before it, if any,
-        // takes over.
+        // takes over. The focus goes back to where it was when the oldest
+        // removed trap mounted, since every later one mounted inside it.
         self.pending_autofocus.retain(|id| !order.contains(id));
-        self.focus_traps.retain(|trap| !order.contains(trap));
+        let restore = self
+            .focus_traps
+            .iter()
+            .find(|trap| order.contains(&trap.node))
+            .and_then(|trap| trap.restore)
+            .filter(|restore| !order.contains(restore));
+        self.focus_traps.retain(|trap| !order.contains(&trap.node));
 
         // Deepest node first, so every taffy node is still attached to a live
         // parent when it is removed, and so an owner's bindings stop before
@@ -483,6 +511,11 @@ impl WidgetTree {
             self.push_a11y(parent);
         }
         self.drop_stale_hoisted_children(parent, &removed_taffy);
+        if self.focused.is_none()
+            && let Some(restore) = restore
+        {
+            self.request_focus(restore);
+        }
     }
 
     /// Recreates the layout node of every ancestor, starting at `parent`,
@@ -1179,7 +1212,7 @@ impl WidgetTree {
         }
         for trap in &self.focus_traps {
             assert!(
-                self.nodes.contains_key(*trap),
+                self.nodes.contains_key(trap.node),
                 "every mounted focus trap is a live node"
             );
         }

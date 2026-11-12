@@ -1,9 +1,10 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::damage::DamageAccumulator;
 use crate::geometry::{Color, Corners, PixelRect, Point, Rect, Size};
 use crate::paint::PaintOp;
+use crate::reactive::{RwSignal, Set};
 use crate::style::{Align, Direction, Edges, Length, Overflow, Position, Style};
 use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::widget::{AvailableSpace, MeasureInput, PaintCx, Panel, Widget};
@@ -694,4 +695,200 @@ fn a_scroll_that_moves_a_nested_clip_repaints_nothing_inside_it() {
         0,
         "the scroll frame repaints no node"
     );
+}
+
+/// A widget whose measured height is read from a cell, so a test can grow
+/// the content the way a binding does, by marking the node for layout.
+struct Growable(Rc<Cell<f32>>);
+
+impl Widget for Growable {
+    fn measure(&mut self, _input: MeasureInput) -> Option<Size> {
+        Some(Size {
+            width: 200.0,
+            height: self.0.get(),
+        })
+    }
+
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+}
+
+/// A clipping view 200 wide and 100 tall with a content child whose height
+/// the returned cell controls, and whose follow signal is `following`.
+///
+/// The view is laid out for [`SCROLL_VIEWPORT`] before it returns, so a test
+/// starts from a settled frame and drives the next change itself.
+fn following_tree(
+    height: f32,
+    following: RwSignal<bool>,
+) -> (WidgetTree, WidgetId, WidgetId, Rc<Cell<f32>>) {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(200.0, 100.0));
+    let mut view_style = fixed(200.0, 100.0);
+    view_style.layout.overflow = Overflow::Clip;
+    view_style.layout.direction = Direction::Column;
+    let view = tree.insert(Some(root), Box::new(Empty), view_style);
+    let height = Rc::new(Cell::new(height));
+    let content = tree.insert(
+        Some(view),
+        Box::new(Growable(Rc::clone(&height))),
+        Style::default(),
+    );
+    tree.set_follow(view, following);
+    tree.layout(SCROLL_VIEWPORT);
+    (tree, view, content, height)
+}
+
+/// Grows the content of [`following_tree`] to `to` and lays the tree out
+/// once, the way a frame applies the binding that a signal write queued.
+fn grow_and_layout(tree: &mut WidgetTree, content: WidgetId, height: &Cell<f32>, to: f32) -> bool {
+    height.set(to);
+    tree.mark(content, Dirty::Layout);
+    tree.layout(SCROLL_VIEWPORT)
+}
+
+#[test]
+fn a_follow_pin_reaches_the_end_the_pass_laid_out() {
+    let (mut tree, _, content, height) = following_tree(183.0, RwSignal::new(true));
+    assert_eq!(
+        tree.rect(content),
+        Some(Rect::new(0.0, -83.0, 200.0, 100.0)),
+        "the first frame pins the view at the end of the content"
+    );
+    tree.clear_dirty();
+    let runs = tree.layout_runs();
+
+    assert!(
+        grow_and_layout(&mut tree, content, &height, 243.0),
+        "growing the content runs a pass"
+    );
+
+    assert_eq!(
+        tree.rect(content),
+        Some(Rect::new(0.0, -143.0, 200.0, 100.0)),
+        "the pin uses the heights the pass just laid out, not the painted \
+         ones, which are one frame old"
+    );
+    assert_eq!(
+        tree.layout_runs(),
+        runs + 1,
+        "the pin settles without another pass"
+    );
+}
+
+#[test]
+fn a_following_view_with_short_content_stays_at_offset_zero() {
+    let (tree, _, content, _) = following_tree(50.0, RwSignal::new(true));
+    assert_eq!(
+        tree.rect(content),
+        Some(Rect::new(0.0, 0.0, 200.0, 50.0)),
+        "content shorter than the view has no end to pin to"
+    );
+}
+
+#[test]
+fn a_follow_signal_that_reads_false_leaves_the_offset_alone() {
+    let following = RwSignal::new(false);
+    let (mut tree, _, content, height) = following_tree(183.0, following.clone());
+    tree.clear_dirty();
+
+    assert!(
+        grow_and_layout(&mut tree, content, &height, 243.0),
+        "growing the content runs a pass"
+    );
+
+    assert_eq!(
+        tree.rect(content),
+        Some(Rect::new(0.0, 0.0, 200.0, 243.0)),
+        "a signal that reads false leaves the offset where it is"
+    );
+
+    following.set(true);
+    assert!(
+        grow_and_layout(&mut tree, content, &height, 303.0),
+        "growing the content runs a pass"
+    );
+
+    assert_eq!(
+        tree.rect(content),
+        Some(Rect::new(0.0, -203.0, 200.0, 100.0)),
+        "a write of true pins the view on the next pass"
+    );
+}
+
+#[test]
+fn a_hidden_following_view_is_skipped_until_it_shows() {
+    let (mut tree, view, content, _) = following_tree(183.0, RwSignal::new(true));
+    tree.clear_dirty();
+
+    tree.apply_layout(view, |layout| layout.hidden = true);
+    tree.layout(SCROLL_VIEWPORT);
+
+    assert_eq!(
+        tree.rect(content),
+        Some(Rect::default()),
+        "a hidden view has no rectangles to measure"
+    );
+
+    tree.apply_layout(view, |layout| layout.hidden = false);
+    tree.layout(SCROLL_VIEWPORT);
+
+    assert_eq!(
+        tree.rect(content),
+        Some(Rect::new(0.0, -83.0, 200.0, 100.0)),
+        "the pin lands in the pass that shows the view"
+    );
+}
+
+#[test]
+fn a_follow_pin_ignores_children_out_of_the_flow() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(200.0, 100.0));
+    let mut view_style = fixed(200.0, 100.0);
+    view_style.layout.overflow = Overflow::Clip;
+    view_style.layout.direction = Direction::Column;
+    let view = tree.insert(Some(root), Box::new(Empty), view_style);
+    let content = tree.insert(Some(view), Box::new(Fixed(200.0, 50.0)), Style::default());
+    let mut badge_style = fixed(20.0, 20.0);
+    badge_style.layout.position = Position::Absolute;
+    badge_style.layout.inset.top = Length::px(100.0);
+    badge_style.layout.inset.left = Length::px(0.0);
+    badge_style.layout.inset.right = Length::px(0.0);
+    badge_style.layout.inset.bottom = Length::Auto;
+    tree.insert(Some(view), Box::new(Empty), badge_style);
+    tree.set_follow(view, RwSignal::new(true));
+
+    tree.layout(SCROLL_VIEWPORT);
+
+    assert_eq!(
+        tree.rect(content),
+        Some(Rect::new(0.0, 0.0, 200.0, 50.0)),
+        "a badge that hangs below the fold does not extend the extent the \
+         pin measures, because a scroll offset does not move it"
+    );
+}
+
+#[test]
+fn a_following_view_mounted_after_another_was_removed_still_pins() {
+    let (mut tree, view, _, _) = following_tree(183.0, RwSignal::new(true));
+    let root = tree.root.expect("the tree has a root");
+    tree.remove(view);
+    tree.layout(SCROLL_VIEWPORT);
+
+    let mut view_style = fixed(200.0, 100.0);
+    view_style.layout.overflow = Overflow::Clip;
+    view_style.layout.direction = Direction::Column;
+    let view = tree.insert(Some(root), Box::new(Empty), view_style);
+    let content = tree.insert(
+        Some(view),
+        Box::new(Growable(Rc::new(Cell::new(250.0)))),
+        Style::default(),
+    );
+    tree.set_follow(view, RwSignal::new(true));
+    tree.layout(SCROLL_VIEWPORT);
+    assert_eq!(
+        tree.rect(content),
+        Some(Rect::new(0.0, -150.0, 200.0, 100.0)),
+        "the new view pins although the removed one left a stale entry"
+    );
+    tree.debug_assert_consistent();
 }

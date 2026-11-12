@@ -5,11 +5,17 @@
 //! needs. The offset is the view's scroll offset, which the core applies after
 //! layout, so scrolling moves the content without a layout pass. The thumb
 //! moves the same way, through the scroll offset of a track it hangs from.
+//! Through [`ScrollExt::follow_end`] the view can also pin itself to the end
+//! of its content while a signal reads `true`, and release itself when a
+//! wheel step leaves the end.
 //!
 //! The view learns its own height and its content's height when the two
 //! paint, and writes them to signals its bindings read. A size-driven change,
 //! such as a thumb that follows a resize, therefore lands one frame after the
-//! resize that caused it, which keeps layout out of the paint pass.
+//! resize that caused it, which keeps layout out of the paint pass. The
+//! follow pin is the one exception: the core applies it after each layout
+//! pass with the heights that pass just wrote, so a frame that grows the
+//! content never shows the end out of view.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -35,6 +41,10 @@ const THUMB_RIGHT_INSET: f32 = 2.0;
 /// keeps a thumb that can still be seen.
 const MIN_THUMB_LENGTH: f32 = 24.0;
 
+/// How far from the end of the content a wheel step may land, in logical
+/// pixels, and still count as being at the end.
+const FOLLOW_SLACK: f32 = 4.0;
+
 /// The heights a scroll view measures when it paints.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Viewport {
@@ -52,6 +62,9 @@ struct ScrollChrome {
     /// created itself, and [`ScrollExt::offset`] swaps in one of the user's
     /// while the view is built.
     offset: RefCell<RwSignal<f32>>,
+    /// The signal that reports and sets whether the view follows the end of
+    /// its content, when [`ScrollExt::follow_end`] set one.
+    following: RefCell<Option<RwSignal<bool>>>,
     /// The height of the content, once the content has painted.
     content_height: RwSignal<Option<f32>>,
     /// The heights of the view, once the view has painted.
@@ -74,6 +87,11 @@ impl ScrollChrome {
         let content = self.content_height.get()?;
         let viewport = self.viewport.get()?;
         Some((content - viewport.visible).max(0.0))
+    }
+
+    /// Returns the follow signal, when [`ScrollExt::follow_end`] set one.
+    fn following(&self) -> Option<RwSignal<bool>> {
+        self.following.borrow().clone()
     }
 }
 
@@ -201,6 +219,7 @@ pub(crate) fn scroll_with_visible_height(
 ) -> Element<ScrollView> {
     let chrome = Rc::new(ScrollChrome {
         offset: RefCell::new(RwSignal::new(0.0)),
+        following: RefCell::new(None),
         content_height: RwSignal::new(None),
         viewport: RwSignal::new(None),
         visible_height,
@@ -220,28 +239,55 @@ pub(crate) fn scroll_with_visible_height(
         let Some(max) = wheel_chrome.max_offset() else {
             return;
         };
+        let follow_signal = wheel_chrome.following();
         // The signal, not the offset the binding last applied, is where a
         // step starts: several wheel events can arrive before the next flush,
-        // and each must add to the one before it.
+        // and each must add to the one before it. While the view follows it
+        // sits at the end, so the step starts there even when the signal has
+        // not caught up with the pin yet.
+        let following = follow_signal
+            .as_ref()
+            .is_some_and(|signal| signal.read(|active| *active));
         let signal = wheel_chrome.signal();
-        let current = clamp_offset(signal.read(|offset| *offset), max);
+        let current = if following {
+            max
+        } else {
+            clamp_offset(signal.read(|offset| *offset), max)
+        };
         let next = clamp_offset(current + finite(delta.y), max);
         if next != current {
             signal.set(next);
         }
+        let at_end = next >= max - FOLLOW_SLACK;
+        if let Some(signal) = &follow_signal
+            && following != at_end
+        {
+            signal.set(at_end);
+        }
     })
     .scroll_offset(move || {
         let signal = offset_chrome.signal();
-        let desired = signal.get();
+        let following = offset_chrome.following().is_some_and(|signal| signal.get());
         let applied = match offset_chrome.max_offset() {
+            // While the view follows, the end is the offset, whatever the
+            // signal held: the core pins the node with the heights the last
+            // layout pass wrote, which the painted ones the signal
+            // round-trips through lag by a frame.
+            Some(max) if following => {
+                if signal.read(|offset| *offset) != max {
+                    signal.set(max);
+                }
+                max
+            }
             Some(max) => {
+                let desired = signal.get();
                 let clamped = clamp_offset(desired, max);
                 if clamped != desired {
                     signal.set(clamped);
                 }
                 clamped
             }
-            None => finite(desired).max(0.0),
+            None => finite(signal.get()).max(0.0),
         };
         Point { x: 0.0, y: applied }
     })
@@ -275,11 +321,64 @@ pub trait ScrollExt: Sized {
     /// The wheel writes the same signal, and the view writes the clamped
     /// offset back to it, so the view, the thumb and the signal stay in step.
     fn offset(self, signal: RwSignal<f32>) -> Self;
+
+    /// Keeps the view at the end of its content while `signal` reads `true`.
+    ///
+    /// While it follows, every frame that grows the content leaves the view
+    /// pinned to the end in the same frame, so a line appended to a log is
+    /// already in view. The core applies that pin after each layout pass,
+    /// where the painted heights the offset signal round-trips through are
+    /// one frame old. The view writes the painted end back to the offset
+    /// signal, so a signal set with [`ScrollExt::offset`] tracks the position
+    /// on screen and catches up one frame after a frame that grew the
+    /// content.
+    ///
+    /// The signal is also where the view reports where the user is: a wheel
+    /// step that leaves the end by more than four logical pixels writes
+    /// `false`, and a step that comes back to within four pixels of it
+    /// writes `true`. Writing `true` from the application jumps to the end.
+    /// A view that starts following with content shorter than itself stays
+    /// at offset zero until the content grows past it.
+    ///
+    /// Give the signal to one view. Two views that share it pin and release
+    /// together, and a wheel step over either one decides for both.
+    ///
+    /// While it follows, the offset signal is the view's to write: a write
+    /// from the application is overwritten, and the way to move the view is
+    /// to write `false` first.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Color;
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    /// use smudge_widgets::{ScrollExt, column, scroll};
+    ///
+    /// let following = RwSignal::new(true);
+    /// let view = scroll(
+    ///     column().child(panel().height(px(400.0)).background(Color::WHITE)),
+    /// )
+    /// .follow_end(following.clone())
+    /// .height(px(120.0));
+    ///
+    /// // The view shows the end of the content from the first frame on,
+    /// // and stays there while the content grows.
+    /// following.set(false);
+    /// ```
+    fn follow_end(self, signal: RwSignal<bool>) -> Self;
 }
 
 impl ScrollExt for Element<ScrollView> {
     fn offset(self, signal: RwSignal<f32>) -> Self {
         self.bind(Value::Static(signal), use_offset_signal)
+    }
+
+    fn follow_end(self, signal: RwSignal<bool>) -> Self {
+        // `follow` is the core builder, named apart from this trait method so
+        // a call to `follow_end` on a view element reaches this one, which
+        // pairs the node's pin with the chrome's wheel handling.
+        self.follow(signal.clone())
+            .bind(Value::Static(signal), use_follow_signal)
     }
 }
 
@@ -289,6 +388,15 @@ impl ScrollExt for Element<ScrollView> {
 /// signal it replaces.
 fn use_offset_signal(view: &mut ScrollView, signal: RwSignal<f32>) -> Dirty {
     *view.chrome.offset.borrow_mut() = signal;
+    Dirty::Clean
+}
+
+/// Makes a scroll view turn `signal` with its wheel and pin its offset while
+/// it reads `true`.
+///
+/// This runs while the view is built, before any wheel event can arrive.
+fn use_follow_signal(view: &mut ScrollView, signal: RwSignal<bool>) -> Dirty {
+    *view.chrome.following.borrow_mut() = Some(signal);
     Dirty::Clean
 }
 

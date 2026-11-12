@@ -9,6 +9,7 @@
 use taffy::{AvailableSpace as TaffySpace, LayoutInput, LayoutOutput, Size as TaffySize};
 
 use crate::geometry::{Point, Rect, Size};
+use crate::reactive::{Read, RwSignal};
 use crate::style::{Length, Overflow, Position};
 use crate::widget::{AvailableSpace, MeasureInput};
 
@@ -54,8 +55,11 @@ impl WidgetTree {
     /// viewport differs from the previous pass, so a paint-only change costs
     /// nothing here. The root is sized to the viewport, which overrides any
     /// size set on the root element. After the pass, a node that mounted with
-    /// autofocus takes the focus, and a focus or hover change that carries a
-    /// layout patch runs the engine once more, so both settle in this frame.
+    /// autofocus takes the focus, a node whose follow signal reads `true`
+    /// pins its scroll offset to the end of its content with the rectangles
+    /// this pass just wrote, and a focus, hover or follow change that
+    /// carries a layout patch runs the engine once more, so all of them
+    /// settle in this frame.
     ///
     /// Each node ends the pass with an absolute rectangle and clip. A node
     /// whose rectangle in paint coordinates changed, or whose clip became or
@@ -93,14 +97,26 @@ impl WidgetTree {
         if rects_changed && self.pointer_inside && self.pressed.is_none() {
             self.refresh_hover();
         }
-        // The focus autofocus set, and the hover the refresh above set, can
-        // carry variant patches that change the layout, and nothing would ask
-        // for another frame to apply them. One more pass settles both in this
-        // frame. Hover is not recomputed after it, so a style that moves the
-        // node off the pointer cannot loop. Such a hover stays stale until
-        // the pointer moves or a later layout pass changes rects.
+        // A following node pins its offset here, after the pass laid its
+        // content out and before the frame paints, so a frame that grows the
+        // content never shows the end out of view. The painted heights the
+        // bindings read are one frame old.
+        self.resolve_follow();
+        // The focus autofocus set, the hover the refresh above set, and the
+        // offset a follow pin wrote, whose moved content can pick up a hover,
+        // can carry variant patches that change the layout, and nothing would
+        // ask for another frame to apply them. One more pass settles them all
+        // in this frame.
         if self.layout_dirty {
             self.layout_pass(viewport);
+            // The settle pass can change the extent a following view reaches,
+            // the way a hover variant its own pin picked up can. Pin again so
+            // the frame still ends at the end. The offset it writes usually
+            // equals the one already applied and does nothing. When it moves,
+            // the hover it refreshes stays stale until the pointer moves or a
+            // later pass changes rects, so the passes a frame runs stay
+            // bounded at two.
+            self.resolve_follow();
         }
         true
     }
@@ -164,6 +180,98 @@ impl WidgetTree {
                 self.refresh_hover();
             }
         }
+    }
+
+    /// Sets the signal that pins the scroll offset of `id` to the end of its
+    /// flowing content while it reads `true`.
+    ///
+    /// The element's builders call this at mount. While the signal reads
+    /// `true`, the layout pass pins the offset after it runs. See
+    /// [`WidgetTree::resolve_follow`]. A stale id does nothing.
+    pub(crate) fn set_follow(&mut self, id: WidgetId, signal: RwSignal<bool>) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            if node.follow.is_none() {
+                self.following.push(id);
+            }
+            node.follow = Some(signal);
+        }
+    }
+
+    /// Pins every following node's scroll offset to the end of its content.
+    ///
+    /// Only the nodes that carry a follow signal are visited. A node whose
+    /// follow signal reads `true` takes the furthest offset its
+    /// flowing content reaches. The pin reads the rectangles the passes of
+    /// this frame just wrote, where the heights a widget reports when it
+    /// paints are one frame old, so a frame that grows the content never
+    /// paints a following view short of its end. A hidden node is skipped,
+    /// because its rectangles are empty and say nothing about its content.
+    ///
+    /// The pin itself runs no layout: an offset is a translation applied
+    /// after layout. A hover the moved content picks up may ask for one. The
+    /// settle pass after the pin that runs before it applies that patch in
+    /// the same frame, and a hover the pin after the settle pass picks up
+    /// waits for a later frame's pass.
+    fn resolve_follow(&mut self) {
+        let nodes = &self.nodes;
+        self.following.retain(|id| nodes.contains_key(*id));
+        for at in 0..self.following.len() {
+            let id = self.following[at];
+            let node = &self.nodes[id];
+            let active = !node.resolved.layout.hidden
+                && node
+                    .follow
+                    .as_ref()
+                    .is_some_and(|signal| signal.read(|active| *active));
+            if !active {
+                continue;
+            }
+            let current = node.scroll_offset;
+            let Some(max) = self.follow_max(id) else {
+                continue;
+            };
+            self.set_scroll_offset(
+                id,
+                Point {
+                    x: current.x,
+                    y: max,
+                },
+            );
+        }
+    }
+
+    /// Returns the furthest offset the flowing content of `id` reaches, or
+    /// `None` when `id` is stale.
+    ///
+    /// The extent is measured from the content box, like the heights a
+    /// scroll view reports when it paints are, so the pin and the wheel
+    /// clamp agree on where the end is. Absolutely positioned children do
+    /// not count, because a scroll offset does not move them.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a node in the subtree has no live layout node, which is
+    /// an internal invariant for ids the caller took from the tree.
+    fn follow_max(&self, id: WidgetId) -> Option<f32> {
+        let node = self.nodes.get(id)?;
+        let layout = self
+            .taffy
+            .layout(node.taffy)
+            .expect("every node has a live layout node");
+        let top = layout.border.top + layout.padding.top;
+        let mut bottom = 0.0f32;
+        for &child in &node.children {
+            let child = &self.nodes[child];
+            if child.resolved.layout.position == Position::Absolute {
+                continue;
+            }
+            let child_layout = self
+                .taffy
+                .layout(child.taffy)
+                .expect("every node has a live layout node");
+            bottom = bottom.max(child_layout.location.y + child_layout.size.height);
+        }
+        Some((bottom - top - node.content.height()).max(0.0))
     }
 
     /// Runs the layout engine once when anything needs it, and returns whether

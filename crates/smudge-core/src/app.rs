@@ -499,7 +499,8 @@ impl App {
     /// goes to the deepest node in the hovered chain that has a wheel handler.
     /// Key events are routed to the focused node and bubble to its ancestors
     /// until a handler takes them, starting at the root when nothing anchors
-    /// the key, and an unhandled Tab or Shift+Tab moves the focus, staying
+    /// the key and at the active focus trap when the key would otherwise
+    /// start outside it, and an unhandled Tab or Shift+Tab moves the focus, staying
     /// inside the active focus trap when one is mounted. Handlers run at
     /// once, inside their node's owner, and a handler that writes a signal
     /// makes the change visible with the next call to [`App::frame`]. The app
@@ -568,7 +569,9 @@ impl App {
     /// A press on a focusable node focuses it, a press elsewhere clears the
     /// focus, and Tab moves it. While a focus trap is mounted, a press
     /// outside the trap leaves the focus where it is, and Tab moves it within
-    /// the trap only. Removing the focused node clears the focus.
+    /// the trap only. Removing the focused node clears the focus, and
+    /// removing a trap returns the focus to the node that held it when the
+    /// trap mounted.
     pub fn focused(&self) -> Option<WidgetId> {
         self.tree.focused()
     }
