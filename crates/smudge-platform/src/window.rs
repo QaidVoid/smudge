@@ -19,7 +19,15 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
-use winit::window::{CursorIcon, ResizeDirection, Window, WindowAttributes, WindowId};
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+use winit::window::WindowAttributes;
+use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::clipboard::SystemClipboard;
@@ -501,7 +509,13 @@ where
             )),
             None => attributes,
         };
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ))]
         let attributes = match self.options.app_id.clone() {
             Some(app_id) => with_app_name(attributes, app_id),
             None => attributes,
@@ -622,6 +636,10 @@ where
         let Some(state) = self.state.as_mut() else {
             return Ok(());
         };
+        // The window system reports a maximize or a restore with a resize
+        // event even when the size stays the same, so the state is read before
+        // the unchanged size returns early.
+        state.report_maximized();
         let scale = scale as f32;
         if !scale.is_finite() || scale <= 0.0 {
             return Ok(());
@@ -656,7 +674,6 @@ where
         );
         state.scale = scale;
         state.physical = (physical.width, physical.height);
-        state.report_maximized();
         state.window.request_redraw();
         Ok(())
     }
@@ -901,22 +918,39 @@ impl WindowState {
     /// resize only while the press that started it is being reported. A
     /// refused move or resize leaves the window where it is, which is the
     /// behavior of a compositor that offers no interactive move, so the
-    /// errors carry nothing the app could act on.
+    /// errors carry nothing the app could act on. An accepted one hands the
+    /// press to the window system, whose release then never reaches the app,
+    /// so the app's press ends here. On the web a close does nothing, like
+    /// the other commands there.
     fn apply_window_commands(&mut self, event_loop: &ActiveEventLoop) {
         for command in self.app.take_window_commands() {
             match command {
                 WindowCommand::Move => {
-                    let _ = self.window.drag_window();
+                    if self.window.drag_window().is_ok() {
+                        self.app.release_press();
+                    }
                 }
                 WindowCommand::Resize(edge) => {
-                    let _ = self.window.drag_resize_window(resize_direction(edge));
+                    if self
+                        .window
+                        .drag_resize_window(resize_direction(edge))
+                        .is_ok()
+                    {
+                        self.app.release_press();
+                    }
                 }
                 WindowCommand::ToggleMaximize => {
                     let maximized = !self.window.is_maximized();
                     self.window.set_maximized(maximized);
                     self.report_maximized();
                 }
-                WindowCommand::Close => event_loop.exit(),
+                WindowCommand::Close => {
+                    // Ending the loop on the web would tear down the page's
+                    // input handling, and a page cannot close itself.
+                    if cfg!(not(target_arch = "wasm32")) {
+                        event_loop.exit();
+                    }
+                }
             }
         }
     }
@@ -1359,7 +1393,13 @@ fn resize_direction(edge: smudge_core::window::ResizeEdge) -> ResizeDirection {
 /// trait is in scope. On Wayland the first name is the `xdg_toplevel` app id
 /// and the second is ignored; on X11 they are the class and the instance of
 /// the WM_CLASS.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
 fn with_app_name(attributes: WindowAttributes, app_id: String) -> WindowAttributes {
     let attributes = {
         use winit::platform::wayland::WindowAttributesExtWayland as _;
