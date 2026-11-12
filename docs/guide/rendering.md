@@ -13,13 +13,7 @@ fn main() -> Result<(), PlatformError> {
             title: String::from("Notes"),
             size: Size { width: 640.0, height: 480.0 },
             clear_color: Color::rgb(16, 17, 21),
-            repaint: Default::default(),
-            show_damage: false,
-            renderer: RendererChoice::default(),
-            stats: None,
-            on_frame: None,
-            on_event: None,
-            frame_limit: None,
+            ..WindowOptions::default()
         },
         || label("Hello"),
         |app| app.set_theme(Theme::dark()),
@@ -49,12 +43,48 @@ run_with(options, build, |app| {
 | `repaint` | `RepaintMode::Damage`, the default, repaints only what changed. `RepaintMode::Full` repaints the whole surface every frame, for comparison. |
 | `show_damage` | Tints the pixels each frame repainted. A debugging aid on the CPU renderer. |
 | `renderer` | Which renderer draws. See below. |
+| `decorations` | Whether the window system draws the title bar and borders. A window that draws its own header turns this off and starts a move itself. |
+| `min_size` | The smallest content area the user can resize the window to, in logical pixels. |
+| `app_id` | The identifier desktop environments use to group and pin the window. |
 | `stats` | A `PresentStatsHandle` to read what the latest present did. |
 | `on_frame` | A hook called after every presented frame with its statistics. |
 | `on_event` | A hook that can inject input before every frame but the first. |
 | `frame_limit` | Closes the window after this many presented frames. |
 
 The last three exist for measurement and automated runs. An application leaves them at `None`.
+
+## Window commands and cursors
+
+A window without decorations needs a way to be moved, resized and closed. The functions in `smudge::core::window` queue one command, which the window system applies against the press that is being handled:
+
+| Function | Effect |
+|---|---|
+| `start_move()` | Start an interactive move, as if the user grabbed the title bar. |
+| `start_resize(edge)` | Start an interactive resize from an edge or corner. |
+| `toggle_maximize()` | Maximize the window, or restore it. |
+| `close()` | Close the window and end the run. |
+
+Call them from a pointer-down handler, because the window system honors a move or a resize only while the press that started it is being handled:
+
+```rust
+use smudge::core::window::start_move;
+
+let header = panel()
+    .height(px(40.0))
+    .on_pointer_down(|_| start_move());
+```
+
+Any element can set the pointer cursor over itself with `cursor`:
+
+```rust
+use smudge::core::window::Cursor;
+
+let link = label("Open the docs")
+    .cursor(Cursor::Pointer)
+    .on_press(open_docs);
+```
+
+The cursor of the deepest enabled node under the pointer that sets one wins, and the platform default applies when none does. Setting a cursor does not change where a press lands: a press on a node that only sets a cursor reaches the nearest ancestor with a handler. `Cursor::Resize(edge)` names the direction a handle would resize in, so an edge handle shows the same look the window system uses for that edge.
 
 ## The two renderers
 

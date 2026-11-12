@@ -9,6 +9,7 @@
 | `window` | yes | Windows, input and presentation through `smudge-platform`, and `run`. Turn it off for a headless build that only uses `App`. |
 | `gpu` | no | The GPU renderer and its window path. Implies `window`. With it, `RendererChoice::Auto` becomes the default. |
 | `complex-scripts` | no | Word and line break dictionaries for Chinese, Japanese, Thai, Lao, Khmer and Burmese. About 3 MB per binary and about 5 percent slower layout of other text. |
+| `system-fonts` | no | Also finds the fonts installed on the machine. Desktop only. The same feature of `smudge-text`, forwarded, so applications can turn it on without adding `smudge-text` themselves. |
 
 ```toml
 [dependencies]
@@ -23,12 +24,11 @@ smudge = { version = "0.1", features = ["gpu"] }
 | `system-fonts` | no | Also finds the fonts installed on the machine. Desktop only. On Linux, fontconfig is loaded at run time, so building needs no fontconfig development files. |
 | `complex-scripts` | no | The break dictionaries, as above. |
 
-To turn on `system-fonts` in an application that depends on `smudge`, add `smudge-text` with the same version and the feature. Cargo merges the features into the one copy of the crate:
+An application that depends on `smudge` turns these on through the `smudge` features of the same name:
 
 ```toml
 [dependencies]
-smudge = "0.1"
-smudge-text = { version = "0.1", features = ["system-fonts"] }
+smudge = { version = "0.1", features = ["system-fonts"] }
 ```
 
 ## `smudge-platform`

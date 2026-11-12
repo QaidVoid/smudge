@@ -36,8 +36,9 @@ In a virtual machine without a GPU, where a software GPU renderer takes 6 to 24 
 - **Fine-grained signals.** Bindings are per property, so a write updates exactly what reads it. Layout runs only when a size could have changed.
 - **Two renderers.** A CPU renderer that repaints only the damage, and a GPU renderer behind the `gpu` feature. The automatic choice uses the GPU on real hardware and never on a software rasterizer.
 - **Scrolling without repainting.** Scrolled content keeps its paint and only moves.
-- **Text and input.** Shaped text with embedded fonts, a text input with selection, undo and redo, input method composition, and the system clipboard.
-- **Widgets.** Rows, columns, stacks, buttons, labels, a scroll view and a virtual list for very long lists, styled with theme tokens and interaction states.
+- **Text and input.** Shaped text with embedded fonts or the system's, labels capped with an ellipsis, a single-line input and a multi-line text area with selection, undo and redo, input method composition, and the system clipboard.
+- **Widgets.** Rows, columns, stacks, buttons, labels, images, a scroll view that can follow its end, and virtual lists for very long lists, including keyed rows of varying height that stay in place while rows above them change. All are styled with theme tokens and interaction states.
+- **Application plumbing.** Messages from other threads, timers, autofocus, focus traps and app-wide key handlers, and window commands and cursors for a custom title bar.
 - **Accessibility.** The widget tree is exposed to screen readers on the desktop, with keyboard focus and activation.
 - **Desktop and web.** One window API for the desktop, and the CPU renderer in a browser canvas.
 - **Testable headless.** An `App` runs without a window, frame by frame, and reports what each frame did.
@@ -61,13 +62,7 @@ fn main() -> Result<(), PlatformError> {
             title: String::from("Counter"),
             size: Size { width: 280.0, height: 140.0 },
             clear_color: Color::rgb(16, 17, 21),
-            repaint: Default::default(),
-            show_damage: false,
-            renderer: RendererChoice::default(),
-            stats: None,
-            on_frame: None,
-            on_event: None,
-            frame_limit: None,
+            ..WindowOptions::default()
         },
         move || {
             column()
@@ -98,7 +93,7 @@ cargo run --release --example lists -p smudge
 
 ## Status
 
-v0.1 is the first release. It is built and tested on Linux, and the window layer supports Windows and macOS. The API will change between minor versions while it settles. The [known limits](docs/reference/limits.md) list what is not there yet, such as multi-line text editing, horizontal scrolling and popups.
+v0.1 is the first release. It is built and tested on Linux, and the window layer supports Windows and macOS. The API will change between minor versions while it settles. The [known limits](docs/reference/limits.md) list what is not there yet, such as rich text spans, horizontal scrolling and popups.
 
 ## Documentation
 
@@ -118,8 +113,8 @@ It covers signals, layout, styling, widgets, text and input, renderers, the web 
 |---|---|
 | `smudge` | The facade and prelude. Start here. |
 | `smudge-core` | Widget tree, signals, layout, paint and damage. No window or GPU dependency. |
-| `smudge-text` | Fonts, text layout, the label and the text input. |
-| `smudge-widgets` | Containers, button, scroll view, virtual list. |
+| `smudge-text` | Fonts, text layout, the label, the text input and the text area. |
+| `smudge-widgets` | Containers, button, image, scroll view and virtual lists. |
 | `smudge-cpu` | The CPU renderer. |
 | `smudge-gpu` | The GPU renderer. |
 | `smudge-platform` | Windows, input, presentation and the web build. |

@@ -1,0 +1,16 @@
+[package]
+name = "docs-check"
+description = "Compiles the guide's Rust samples as tests, one module per page"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+smudge = { path = "../../crates/smudge" }
+smudge-cpu = { path = "../../crates/smudge-cpu" }

@@ -34,13 +34,7 @@ fn main() -> Result<(), PlatformError> {
             title: String::from("Counter"),
             size: Size { width: 280.0, height: 140.0 },
             clear_color: Color::rgb(16, 17, 21),
-            repaint: Default::default(),
-            show_damage: false,
-            renderer: RendererChoice::default(),
-            stats: None,
-            on_frame: None,
-            on_event: None,
-            frame_limit: None,
+            ..WindowOptions::default()
         },
         move || {
             column()
@@ -68,7 +62,7 @@ cargo run --release
 ## What happens
 
 1. `RwSignal::new(0)` creates the state. Cloning a signal handle is cheap and every clone names the same signal, so one clone moves into the button's handler and one into the label.
-2. `run` opens the window and calls the build closure once. The `column` and its children are mounted and stay mounted.
+2. `run_with` opens the window with these options and calls the build closure once. The `column` and its children are mounted and stay mounted. The last closure sets the app up before the first frame; here it picks the dark theme, so the text contrasts with the dark clear color. `run` is the shorter form with default options and no setup.
 3. The label gets a closure instead of a string. Smudge runs it once to get the first text, and records that it read `shown`.
 4. A press calls `press.update(...)`, which changes the value and marks the label's closure to run again. Nothing is drawn yet.
 5. The window schedules a frame. The closure runs, the label lays out its new text, and only the label's rectangle and the button's pressed state are repainted and presented.
@@ -79,14 +73,14 @@ Set `show_damage: true` and every present tints the pixels that frame repainted.
 
 ## The `WindowOptions` fields
 
-Every field is spelled out, because each one is a decision about the window. [Windows and renderers](./rendering) describes them all. The ones you will change most:
+A window opens with `WindowOptions::default()`, and a sample spells out only the fields it changes, with `..WindowOptions::default()` for the rest. [Windows and renderers](./rendering) describes them all. The ones you will change most:
 
 | Field | What it does |
 |---|---|
 | `title` | The title bar text. |
 | `size` | The content area in logical pixels. |
 | `clear_color` | The background behind everything. Must be opaque. |
-| `renderer` | `RendererChoice::Auto` by default: the GPU when it pays, the CPU otherwise. |
+| `renderer` | `RendererChoice::Cpu` by default, `Auto` in builds with the `gpu` feature: the GPU when it pays, the CPU otherwise. |
 | `show_damage` | Tints what each frame repainted. |
 
 ## Examples in the repository

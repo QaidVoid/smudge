@@ -99,6 +99,39 @@ While an input method composes, for example typing pinyin for Chinese or romaji 
 
 Copy, cut and paste use the system clipboard on the desktop. On Wayland that needs a compositor with the data-control protocol, or Xwayland; without either, the input falls back to an in-memory clipboard inside the application. The web build has no system clipboard yet: copy and paste work only inside the application.
 
+A paste into a single-line input flattens line breaks into spaces, so multi-line clipboard content stays one line. A paste into a text area keeps the breaks.
+
+## Text area
+
+```rust
+let draft = RwSignal::new(String::from("Dear reader,\n"));
+
+let field = text_area(draft.clone())
+    .width(px(360.0))
+    .min_lines(4)
+    .placeholder("Write your reply")
+    .border(1.0)
+    .border_color(ColorToken::BORDER);
+```
+
+`text_area(signal)` edits multi-line text bound to a `RwSignal<String>`, through the same editing machinery as the single-line input: the same undo, IME composition, clipboard and pointer behavior, now across paragraphs. Enter and Shift+Enter insert a line break and are handled, so they do not reach a parent's key handler; Enter with Ctrl, Cmd or Alt bubbles, so a parent can make it a submit shortcut. Paste keeps line breaks, and Windows line breaks become plain ones.
+
+The area is at least one line tall, and `min_lines(n)` raises that floor to `n` lines of the ambient text style, so a field of a few lines holds its size while the text is short and grows with it. Without an explicit height the area measures its whole text; with one it clips and scrolls, and the wheel scrolls it without moving the caret.
+
+### Area keys
+
+| Input | Action |
+|---|---|
+| Up, Down | Move one visual line, keeping the caret's horizontal position across lines. Shift extends the selection. |
+| Page Up, Page Down | Move several lines at a time. |
+| Enter | Insert a line break. |
+| Home, End | Move to the start or end of the visual line. Shift extends the selection. |
+| Ctrl or Cmd with Home, End | Move to the start or end of the whole text. |
+| Left, Right, Backspace, Delete | As in the single-line input. Left and Right cross line breaks. |
+| Ctrl or Cmd with A, C, X, V, Z | Select all, copy, cut, paste, undo. |
+
+Text wider than the area wraps at the width its parent gives it. When the text is taller than the area, the view scrolls just enough to keep the caret visible after every edit and caret move.
+
 ## Pointer and keyboard events
 
 Any element can handle input:
@@ -125,6 +158,28 @@ let canvas = panel()
     .on_key(|event| {
         if event.pressed && event.key == Key::Escape {
             println!("cancel");
+            return Handled::Yes;
+        }
+        Handled::No
+    });
+```
+
+### Keyboard focus
+
+Three builders cover the focus an application drives itself:
+
+- `autofocus()` gives the node the keyboard focus on the first frame it is laid out visible, so a form's first field is ready to type into, and a field inside a hidden panel takes the focus when the panel shows.
+- `trap_focus()` keeps Tab and Shift+Tab inside the node's subtree, which is how a modal dialog holds the keyboard while it is up. While a trap is active, a key pressed with the focus outside it, or with no focus, starts at the trap, so the dialog hears it first. The trap mounted last wins, and removing it restores the trap mounted before it and gives the focus back to the node that held it when the trap mounted.
+- A key that no node handles bubbles to the application's top element, so an `on_key` there is the application-wide shortcut handler, for example an Escape that closes a dialog.
+
+```rust
+use smudge::core::input::{Handled, Key};
+
+let dialog = panel()
+    .autofocus()
+    .trap_focus()
+    .on_key(|event| {
+        if event.key == Key::Escape {
             return Handled::Yes;
         }
         Handled::No

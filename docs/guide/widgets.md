@@ -1,6 +1,6 @@
 # Widgets
 
-<p class="lead">v0.1 ships a small set of widgets, each built from the same panel and label every application can use. They are styled with theme tokens, so a theme switch repaints them with no extra code.</p>
+<p class="lead">Smudge ships a small set of widgets, each built from the same panel and label every application can use. They are styled with theme tokens, so a theme switch repaints them with no extra code.</p>
 
 ## Containers
 
@@ -52,7 +52,20 @@ let field = text_input(name.clone())
     .border_color(ColorToken::BORDER);
 ```
 
-The input is bound both ways: typing writes the signal, and writing the signal from elsewhere replaces the text. Details are in [Text and input](./text-and-input).
+The input is bound both ways: typing writes the signal, and writing the signal from elsewhere replaces the text. A multi-line editor exists too: see [Text and input](./text-and-input) for `text_area`.
+
+## Image
+
+```rust
+use smudge::core::image::Image;
+
+let source = RwSignal::new(None);
+let picture = image(move || source.get()).size(Size { width: 96.0, height: 96.0 });
+```
+
+`image(source)` draws one image inside its content box, with the background, border and padding of any panel around it. The source is an `Option<Image>` and can be bound to a signal, so a picture that is still decoding shows nothing until the pixels arrive. With no size set, the node takes the image's size; with only a width or only a height, it keeps the image's aspect ratio. `corner_radius` rounds the rectangle the image clips to.
+
+Decoding a file is the application's job. `Image::from_straight_rgba(width, height, pixels)` takes the RGBA8 pixels a decoder produces and premultiplies them; `Image::from_premultiplied_rgba` takes pixels whose color channels are already multiplied by alpha. Both return a `Result`, an `ImageError` when the buffer does not hold `width * height * 4` bytes or a side is zero.
 
 ## Scroll view
 
@@ -81,6 +94,18 @@ let top = button("Back to top").on_press(move || to_top.set(0.0));
 
 The view writes the clamped position back to the signal after it paints, so the signal always reads what is on screen.
 
+For a view that keeps up with content growing underneath it, `ScrollExt::follow_end` pins the view to the end:
+
+```rust
+use smudge::widgets::ScrollExt;
+
+let follow = RwSignal::new(true);
+
+let log = scroll(output_lines).follow_end(follow).height(px(300.0));
+```
+
+While the signal is true, the view shows the end of the content and stays there as lines arrive, which is what an output log wants. Scrolling up writes false, so the reader can look back in peace; scrolling back to the end or setting the signal to true pins it again.
+
 ## Virtual list
 
 ```rust
@@ -98,6 +123,31 @@ let list = virtual_list(
 `virtual_list(count, row_height, row)` mounts only the rows near the viewport, so a hundred thousand rows cost the tree and the layout about as much as the twenty on screen. `row` receives the row's index and builds that row the first time it scrolls into view; the row stays mounted, with its state, until the view moves past it. Content that changes while a row is visible must come from signals the row reads. Every row must be exactly `row_height` tall. The count is a binding: when the signals it reads change, the list updates its window of rows.
 
 The list owns its scroll position, so do not call `.offset(...)` on it.
+
+### Rows of their own height
+
+Rows that grow with their content, as a log line does, want `virtual_list_keyed`:
+
+```rust
+use std::rc::Rc;
+
+use smudge::widgets::virtual_list_keyed;
+
+let items: RwSignal<Rc<[u32]>> = RwSignal::new(Rc::from([12, 40, 8, 24]));
+let source = items.clone();
+
+let list = virtual_list_keyed(
+    move || source.get(),
+    |item| *item,
+    24.0,
+    |item| label(format!("Item {item}")),
+)
+.height(px(420.0));
+```
+
+`virtual_list_keyed(items, key, estimate, row)` takes the items themselves and a key per item. Keep the items in a signal of `Rc<[T]>` as above: the list compares the `Rc` it gets back, so a clone of the same `Rc` costs nothing, and appending to the end costs only the new rows. The list starts from the estimate and replaces it with each row's measured height, so rows of different heights all work, and a row's measured height is remembered across list updates. Reordering, filtering or inserting does not confuse it: rows are tracked by key, not by position.
+
+Pick the fixed `virtual_list` when every row is the same height and the items are indexed positions; pick `virtual_list_keyed` when heights differ or the items have identities that survive reordering.
 
 ## Writing your own
 

@@ -26,13 +26,7 @@ fn main() -> Result<(), PlatformError> {
             title: String::from("Counter"),
             size: Size { width: 280.0, height: 140.0 },
             clear_color: Color::rgb(16, 17, 21),
-            repaint: Default::default(),
-            show_damage: false,
-            renderer: RendererChoice::default(),
-            stats: None,
-            on_frame: None,
-            on_event: None,
-            frame_limit: None,
+            ..WindowOptions::default()
         },
         move || {
             column()

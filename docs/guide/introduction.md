@@ -25,17 +25,18 @@ Many machines that run desktop software have no usable GPU: virtual machines, re
 
 When a real GPU is present, the optional GPU renderer takes over automatically, because it is faster when large parts of the window change at once. When the only adapter is a software rasterizer, Smudge stays on the CPU renderer. [Windows and renderers](./rendering) covers the choice.
 
-## What is in v0.1
+## What is in it
 
-- Containers (`row`, `column`, `stack`, `spacer`), a button, a label, a single-line text input, a vertical scroll view and a virtual list for very long lists.
+- Containers (`row`, `column`, `stack`, `spacer`), a button, a label that can end in an ellipsis, an image, a single-line text input, a multi-line text area, a vertical scroll view that can follow its end, and virtual lists for very long lists, with fixed or varying row heights.
 - Flexbox and block layout, with lengths in pixels or percent.
 - Styling with colors, borders, corner radii, theme tokens, and hover, focus, pressed and disabled variants.
-- Keyboard focus, pointer and wheel input, input methods for composing languages, and the system clipboard on the desktop.
+- Keyboard focus with autofocus and focus traps, app-wide key handlers, pointer and wheel input, input methods for composing languages, and the system clipboard on the desktop.
+- Messages from other threads, timers, and window commands and cursors for a custom title bar.
 - A CPU renderer, and a GPU renderer behind the `gpu` feature.
 - Screen reader support on the desktop.
 - A web build that runs the CPU renderer in a browser canvas.
 
-Smudge is young. The API will change between minor versions while it settles, and [Known limits](/reference/limits) lists what v0.1 does not do yet.
+Smudge is young. The API will change between minor versions while it settles, and [Known limits](/reference/limits) lists what it does not do yet.
 
 ## Where to go next
 

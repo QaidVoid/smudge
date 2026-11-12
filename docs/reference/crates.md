@@ -6,14 +6,14 @@
 |---|---|---|
 | [`smudge`](https://crates.io/crates/smudge) | The facade: re-exports, the prelude, and the examples. | [docs.rs](https://docs.rs/smudge) |
 | [`smudge-core`](https://crates.io/crates/smudge-core) | The widget tree, reactive signals, style, layout, paint, damage tracking and the headless `App`. No window, GPU or rasterizer dependency. | [docs.rs](https://docs.rs/smudge-core) |
-| [`smudge-text`](https://crates.io/crates/smudge-text) | Fonts, text layout, the label and the text input. | [docs.rs](https://docs.rs/smudge-text) |
-| [`smudge-widgets`](https://crates.io/crates/smudge-widgets) | Containers, the button, the scroll view and the virtual list. | [docs.rs](https://docs.rs/smudge-widgets) |
+| [`smudge-text`](https://crates.io/crates/smudge-text) | Fonts, text layout, the label, the text input and the text area. | [docs.rs](https://docs.rs/smudge-text) |
+| [`smudge-widgets`](https://crates.io/crates/smudge-widgets) | Containers, the button, the image, the scroll view and the virtual lists. | [docs.rs](https://docs.rs/smudge-widgets) |
 | [`smudge-cpu`](https://crates.io/crates/smudge-cpu) | The CPU renderer, which repaints only damaged regions. | [docs.rs](https://docs.rs/smudge-cpu) |
 | [`smudge-gpu`](https://crates.io/crates/smudge-gpu) | The GPU renderer. | [docs.rs](https://docs.rs/smudge-gpu) |
 | [`smudge-platform`](https://crates.io/crates/smudge-platform) | Windows, input, presentation, renderer choice, and the web build. | [docs.rs](https://docs.rs/smudge-platform) |
 | [`smudge-a11y`](https://crates.io/crates/smudge-a11y) | The bridge from the widget tree's semantics to the platform accessibility APIs. | [docs.rs](https://docs.rs/smudge-a11y) |
 
-The repository also holds two crates that are not published: `smudge-bench`, the benchmark tool, and `smudge-test`, shared test helpers.
+The repository also holds three crates that are not published: `smudge-bench`, the benchmark tool, `smudge-test`, shared test helpers, and `docs-check`, which compiles the guide's samples.
 
 ## How they fit
 

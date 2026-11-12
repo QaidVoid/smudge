@@ -115,8 +115,30 @@ provide_context(Settings { compact: true });
 let compact = use_context::<Settings>().map_or(false, |s| s.compact);
 ```
 
+## Messages from other threads
+
+Signals live on the thread that runs the window, so a network reply, a line of subprocess output or a file notification cannot write one. `channel` hands the other side a `UiSender` instead. Create it inside the build closure, move the sender to the thread, and the handler runs on the application's thread and writes signals like any other code:
+
+```rust
+use smudge::core::channel::channel;
+
+let lines = RwSignal::new(Vec::<String>::new());
+
+let build = move || {
+    let apply = channel(move |incoming: Vec<String>| {
+        lines.update(|all| all.extend(incoming));
+    });
+    std::thread::spawn(move || {
+        let _ = apply.send(load_lines());
+    });
+    log_view()
+};
+```
+
+`send` queues the value and, on the first value of a burst, wakes the window so a frame applies it; the frame drains the whole queue before anything else. A sender whose subtree was removed answers `Err`, so a worker can stop sending when the view that wanted the data is gone. Nothing polls: with no message, no frame runs.
+
 ## Rules of thumb
 
 - Read a signal inside the closure that should rerun, not outside it. A value read outside a closure is captured once and never updates.
 - Keep bindings small. A closure per property updates less than one closure that rebuilds a whole subtree.
-- Write signals from the thread that runs the window. Signals are single-threaded.
+- Write signals from the thread that runs the window. Signals are single-threaded, and a thread that has work for them sends a message instead.

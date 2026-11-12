@@ -12,6 +12,7 @@ members = [
   "crates/smudge-test",
   "crates/smudge-text",
   "crates/smudge-widgets",
+  "docs/check",
 ]
 
 [workspace.package]
