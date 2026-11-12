@@ -15,9 +15,10 @@ use smudge_core::geometry::{Color, Size};
 use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
 use smudge_core::style::px;
+use smudge_core::theme::Theme;
 use smudge_core::widget::panel;
 use smudge_core::window::{self, Cursor, ResizeEdge};
-use smudge_platform::{WindowOptions, run};
+use smudge_platform::{WindowOptions, run_with};
 use smudge_text::label;
 use smudge_widgets::{button, column, row, spacer};
 
@@ -52,7 +53,7 @@ fn main() -> ExitCode {
             .child(bottom_strip())
     };
 
-    let result = run(
+    let result = run_with(
         WindowOptions {
             title: String::from("Smudge chrome"),
             size: Size {
@@ -65,6 +66,7 @@ fn main() -> ExitCode {
             ..WindowOptions::default()
         },
         build,
+        |app| app.set_theme(Theme::dark()),
     );
 
     match result {

@@ -56,7 +56,7 @@ fn main() -> Result<(), PlatformError> {
     let press = count.clone();
     let shown = count.clone();
 
-    run(
+    run_with(
         WindowOptions {
             title: String::from("Counter"),
             size: Size { width: 280.0, height: 140.0 },
@@ -81,6 +81,7 @@ fn main() -> Result<(), PlatformError> {
                 )
                 .child(label(move || format!("Clicked {} times", shown.get())))
         },
+        |app| app.set_theme(Theme::dark()),
     )
 }
 ```

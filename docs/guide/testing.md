@@ -31,6 +31,7 @@ fn a_press_repaints_the_button_and_the_label_only() {
                 .child(label(move || format!("Clicked {} times", shown.get())))
         },
     );
+    app.set_theme(Theme::dark());
     app.frame();
 
     let at = Point { x: 40.0, y: 36.0 };

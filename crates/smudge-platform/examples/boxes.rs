@@ -19,6 +19,7 @@ use smudge_core::app::RepaintMode;
 use smudge_core::geometry::{Color, Size};
 use smudge_core::reactive::{self, prelude::*};
 use smudge_core::style::{Align, Length, px};
+use smudge_core::theme::Theme;
 use smudge_core::widget::panel;
 use smudge_platform::{PresentStatsHandle, RendererChoice, WindowOptions, run_with};
 
@@ -136,6 +137,7 @@ fn main() -> ExitCode {
         },
         build,
         move |app| {
+            app.set_theme(Theme::dark());
             let mut next = 0usize;
             let mut frames = 0_u64;
             let mut damage_presents = 0_u64;

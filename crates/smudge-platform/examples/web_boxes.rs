@@ -15,6 +15,7 @@ use std::rc::Rc;
 use smudge_core::geometry::{Color, Size};
 use smudge_core::reactive::{self, RwSignal, prelude::*};
 use smudge_core::style::{Align, Length, px};
+use smudge_core::theme::Theme;
 use smudge_core::widget::panel;
 use smudge_platform::{PlatformError, PresentStatsHandle, WindowOptions, run_with};
 use smudge_text::{LabelExt, label};
@@ -153,6 +154,7 @@ fn run() -> Result<(), PlatformError> {
         },
         build,
         move |app| {
+            app.set_theme(Theme::dark());
             let mut next = 0usize;
             let mut frames = 0_u64;
             app.set_tick(move |_| {

@@ -8,7 +8,7 @@
 use smudge::prelude::*;
 
 fn main() -> Result<(), PlatformError> {
-    run(
+    run_with(
         WindowOptions {
             title: String::from("Notes"),
             size: Size { width: 640.0, height: 480.0 },
@@ -22,6 +22,7 @@ fn main() -> Result<(), PlatformError> {
             frame_limit: None,
         },
         || label("Hello"),
+        |app| app.set_theme(Theme::dark()),
     )
 }
 ```

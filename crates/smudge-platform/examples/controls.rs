@@ -12,8 +12,9 @@ use smudge_core::geometry::{Color, Size};
 use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
 use smudge_core::style::{Align, Length, px};
+use smudge_core::theme::Theme;
 use smudge_core::widget::panel;
-use smudge_platform::{WindowOptions, run};
+use smudge_platform::{WindowOptions, run_with};
 use smudge_text::TextInputExt;
 use smudge_text::label;
 use smudge_text::text_input;
@@ -85,7 +86,7 @@ fn main() -> ExitCode {
             )
     };
 
-    let result = run(
+    let result = run_with(
         WindowOptions {
             title: String::from("Smudge controls"),
             size: Size {
@@ -96,6 +97,7 @@ fn main() -> ExitCode {
             ..WindowOptions::default()
         },
         build,
+        |app| app.set_theme(Theme::dark()),
     );
 
     match result {

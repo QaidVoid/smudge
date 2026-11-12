@@ -81,3 +81,47 @@ fn consulting_the_theme_does_not_make_two_themes_unequal() {
 
     assert_eq!(consulted, Theme::light(), "equality compares token values");
 }
+
+/// Returns the WCAG contrast ratio between two opaque colors, where 1.0 is
+/// no contrast and 21.0 is black on white.
+fn contrast_ratio(a: Color, b: Color) -> f64 {
+    fn luminance(color: Color) -> f64 {
+        fn channel(value: u8) -> f64 {
+            let value = f64::from(value) / 255.0;
+            if value <= 0.03928 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+    }
+    let (lighter, darker) = (luminance(a), luminance(b));
+    let (lighter, darker) = if lighter >= darker {
+        (lighter, darker)
+    } else {
+        (darker, lighter)
+    };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+#[test]
+fn text_tokens_contrast_with_the_surface_in_both_themes() {
+    // The ratios the WCAG 2.x level AA body-text and large-text bars name.
+    // Both built-in themes clear them with room to spare, so a token change
+    // that makes default text hard to read on the default surface fails
+    // here.
+    for (name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+        let surface = theme.color(ColorToken::SURFACE);
+        let ratio = contrast_ratio(theme.color(ColorToken::TEXT), surface);
+        assert!(
+            ratio >= 4.5,
+            "TEXT on SURFACE contrasts {ratio:.2} under {name}"
+        );
+        let muted = contrast_ratio(theme.color(ColorToken::TEXT_MUTED), surface);
+        assert!(
+            muted >= 3.0,
+            "TEXT_MUTED on SURFACE contrasts {muted:.2} under {name}"
+        );
+    }
+}

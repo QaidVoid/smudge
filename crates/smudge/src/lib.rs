@@ -16,7 +16,7 @@
 //!     let press = count.clone();
 //!     let shown = count.clone();
 //!
-//!     run(
+//!     run_with(
 //!         WindowOptions {
 //!             title: String::from("Counter"),
 //!             size: Size {
@@ -41,6 +41,7 @@
 //!                 )
 //!                 .child(label(move || format!("Clicked {} times", shown.get())))
 //!         },
+//!         |app| app.set_theme(Theme::dark()),
 //!     )
 //! }
 //! ```

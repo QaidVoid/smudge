@@ -22,7 +22,7 @@ fn main() -> Result<(), PlatformError> {
     let submit_email = email.clone();
     let shown_submitted = submitted.clone();
 
-    run(
+    run_with(
         WindowOptions {
             title: String::from("Smudge form"),
             size: Size {
@@ -78,5 +78,6 @@ fn main() -> Result<(), PlatformError> {
                     text => text.to_owned(),
                 }))
         },
+        |app| app.set_theme(Theme::dark()),
     )
 }

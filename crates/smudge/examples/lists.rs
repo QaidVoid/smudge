@@ -20,7 +20,7 @@ const FIELD_HEIGHT: f32 = 32.0;
 fn main() -> Result<(), PlatformError> {
     let filter = RwSignal::new(String::new());
 
-    run(
+    run_with(
         WindowOptions {
             title: String::from("Smudge lists"),
             size: Size {
@@ -79,6 +79,7 @@ fn main() -> Result<(), PlatformError> {
                     .height(px(VIEW_HEIGHT)),
                 )
         },
+        |app| app.set_theme(Theme::dark()),
     )
 }
 
