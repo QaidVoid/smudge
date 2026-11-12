@@ -192,6 +192,7 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::Button => AccessKitRole::Button,
         Role::Label => AccessKitRole::Label,
         Role::TextInput => AccessKitRole::TextInput,
+        Role::MultilineTextInput => AccessKitRole::MultilineTextInput,
         Role::ScrollView => AccessKitRole::ScrollView,
         Role::List => AccessKitRole::List,
         Role::ListItem => AccessKitRole::ListItem,

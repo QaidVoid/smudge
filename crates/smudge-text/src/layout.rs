@@ -124,29 +124,49 @@ impl TextLayout {
     /// when called from inside another `with` call on the same thread.
     pub fn new(text: &str, style: &TextStyle, max_width: Option<f32>) -> TextLayout {
         TextSystem::with(|system| {
-            // Layout units are logical pixels; scaling to a device happens in
-            // the renderer, not here. Coordinates stay fractional so that a
-            // renderer can quantize them itself.
-            #[cfg(test)]
-            SHAPES.with(|shapes| shapes.set(shapes.get() + 1));
-            let mut builder = system
-                .layouts
-                .ranged_builder(&mut system.fonts, text, 1.0, false);
-            builder.push_default(StyleProperty::FontFamily(style.family.clone()));
-            builder.push_default(StyleProperty::FontSize(style.size));
-            builder.push_default(StyleProperty::FontWeight(style.weight));
-            builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
-                style.line_height,
-            )));
-
-            let mut layout = builder.build(text);
-            layout.break_all_lines(max_width);
-            TextLayout {
-                layout,
-                truncation: None,
-                fallback_ellipsis: None,
-            }
+            Self::build(
+                text,
+                style,
+                max_width,
+                &mut system.fonts,
+                &mut system.layouts,
+            )
         })
+    }
+
+    /// Lays out `text` with `style` against `max_width` using the font and
+    /// layout contexts the caller already holds.
+    ///
+    /// [`TextLayout::new`] is this over the current thread's [`TextSystem`].
+    /// The editor keeps one `with` call open across its work and builds its
+    /// paragraph layouts through this, which a nested `with` would panic on.
+    pub(crate) fn build(
+        text: &str,
+        style: &TextStyle,
+        max_width: Option<f32>,
+        fonts: &mut parley::FontContext,
+        layouts: &mut parley::LayoutContext<()>,
+    ) -> TextLayout {
+        // Layout units are logical pixels; scaling to a device happens in
+        // the renderer, not here. Coordinates stay fractional so that a
+        // renderer can quantize them itself.
+        #[cfg(test)]
+        SHAPES.with(|shapes| shapes.set(shapes.get() + 1));
+        let mut builder = layouts.ranged_builder(fonts, text, 1.0, false);
+        builder.push_default(StyleProperty::FontFamily(style.family.clone()));
+        builder.push_default(StyleProperty::FontSize(style.size));
+        builder.push_default(StyleProperty::FontWeight(style.weight));
+        builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
+            style.line_height,
+        )));
+
+        let mut layout = builder.build(text);
+        layout.break_all_lines(max_width);
+        TextLayout {
+            layout,
+            truncation: None,
+            fallback_ellipsis: None,
+        }
     }
 
     /// Re-wraps the laid out text at `max_width` without shaping it again.

@@ -3147,6 +3147,7 @@ dependencies = [
 name = "smudge-text"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "fontique",
  "insta",
  "parley",

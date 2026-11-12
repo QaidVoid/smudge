@@ -31,6 +31,8 @@ pub enum Role {
     Label,
     /// A single-line editable text field.
     TextInput,
+    /// A multi-line editable text field.
+    MultilineTextInput,
     /// A viewport that clips and scrolls its content.
     ScrollView,
     /// A container whose children are list items.

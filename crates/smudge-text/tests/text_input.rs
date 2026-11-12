@@ -585,6 +585,20 @@ fn a_paste_flattens_line_breaks_into_spaces() {
 }
 
 #[test]
+fn a_paste_flattens_every_mandatory_break_into_one_space() {
+    let (mut harness, value, mut clipboard) = mounted_with_clipboard("");
+    focus(&mut harness);
+
+    clipboard.set(String::from("a\u{0B}b\u{0C}c\u{85}d\u{2028}e\u{2029}f"));
+    harness.press_key_with(Key::Character(String::from("v")), command());
+    assert_eq!(
+        value.get(),
+        "a b c d e f",
+        "vertical tab, form feed, next line and the line and paragraph separators become spaces"
+    );
+}
+
+#[test]
 fn a_paste_is_an_undo_step_of_its_own() {
     let (mut harness, value, mut clipboard) = mounted_with_clipboard("");
     focus(&mut harness);
@@ -973,6 +987,169 @@ fn an_outside_write_replaces_the_text_and_moves_the_caret_to_the_end() {
     assert_eq!(editor.selection(), 5..5, "the caret is at the new end");
 }
 
+#[test]
+fn deleting_a_line_break_cuts_its_paragraphs_into_one() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+    editor.set_text("ab\n");
+
+    editor.move_to_start();
+    editor.move_right();
+    editor.move_right();
+    editor.delete();
+    assert_eq!(editor.text(), "ab", "the delete took the line break");
+
+    // The paragraph the break ended is one with the empty one that
+    // followed, so another delete finds no break past the caret.
+    editor.delete();
+    assert_eq!(editor.text(), "ab", "nothing is left after the caret");
+
+    editor.move_down();
+    editor.insert("X");
+    assert_eq!(
+        editor.text(),
+        "abX",
+        "the caret stays at the end of the one paragraph"
+    );
+}
+
+#[test]
+fn a_word_delete_at_a_paragraph_end_takes_the_break_and_the_next_word() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+    editor.set_text("\nab cd");
+
+    editor.move_to_start();
+    editor.delete_word();
+    assert_eq!(
+        editor.text(),
+        "cd",
+        "the delete reached from the empty first paragraph across \
+         the break and through the word and its trailing space"
+    );
+}
+
+#[test]
+fn a_word_backspace_at_a_paragraph_start_reaches_the_previous_word() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+    editor.set_text("ab\ncd");
+
+    editor.move_to_start();
+    editor.move_right();
+    editor.move_right();
+    editor.move_right();
+    editor.backspace_word();
+    assert_eq!(
+        editor.text(),
+        "cd",
+        "the backspace reached from the start of the second line \
+         back through the word on the first"
+    );
+}
+
+#[test]
+fn a_preedit_update_that_shrinks_keeps_the_paragraphs_in_bounds() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+
+    editor.compose("あいう", None);
+    editor.compose("あ", None);
+    editor.move_down();
+    assert_eq!(
+        editor.raw_text(),
+        "あ",
+        "the paragraphs the smaller preedit left still reach the text"
+    );
+}
+
+#[test]
+fn a_backspace_after_an_emoji_takes_the_emoji_and_not_the_line_break() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+    editor.set_text("ab\u{1F600}\ncd");
+
+    editor.move_to_start();
+    editor.move_right();
+    editor.move_right();
+    editor.move_right();
+    editor.backspace();
+    assert_eq!(
+        editor.text(),
+        "ab\ncd",
+        "the emoji goes whole, the break after it stays"
+    );
+}
+
+#[test]
+fn a_backspace_over_a_carriage_return_takes_the_whole_break() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+    editor.set_text("ab\r\ncd");
+
+    editor.move_to_start();
+    editor.move_right();
+    editor.move_right();
+    editor.move_right();
+    editor.backspace();
+    assert_eq!(
+        editor.text(),
+        "abcd",
+        "the carriage return and the line break it starts go together"
+    );
+}
+
+#[test]
+fn a_preedit_of_only_a_line_break_anchors_the_ime_area() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+
+    editor.compose("\n", None);
+    let area = editor.ime_area();
+    assert!(
+        area.y1 > area.y0 && area.x1 >= area.x0,
+        "the area falls back to the caret when the preedit holds no glyphs"
+    );
+}
+
+#[test]
+fn a_preedit_cursor_inside_a_character_snaps_to_a_boundary() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+
+    editor.compose("あいう", Some((5, 2)));
+    let raw = editor.raw_text();
+    assert_eq!(
+        editor.selection(),
+        0..3,
+        "the preedit cursor snapped back to the boundaries of the \
+         characters it was inside, of {raw:?}"
+    );
+}
+
+#[test]
+fn an_insert_of_several_lines_leaves_the_caret_on_the_last_line() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+    editor.insert("one\ntwo");
+
+    let line = TextStyle::default().size * TextStyle::default().line_height;
+    let caret = editor.cursor_geometry(1.0).expect("the editor has a caret");
+    assert!(
+        caret.y0 >= line - 1.0,
+        "the caret sits on the second line, not the first: {caret:?}"
+    );
+}
+
 /// Returns the rectangles and glyph runs of the current display list.
 ///
 /// The frame that builds the list changes nothing when the harness has
@@ -1089,6 +1266,32 @@ fn alt_gr_types_its_character_and_control_does_not() {
         "@a",
         "AltGr types even the letter Control selects everything with, and a \
          Control shortcut types nothing"
+    );
+}
+
+#[test]
+fn an_input_is_one_line_tall_without_a_height() {
+    let value = RwSignal::new(String::new());
+    let bound = value.clone();
+    let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        panel()
+            .column()
+            .child(text_input(bound.clone()).width(px(VIEWPORT.0)))
+    });
+    harness.frame();
+    harness.settle();
+
+    let line = TextStyle::default().size * TextStyle::default().line_height;
+    let mut height = None;
+    harness.app().visit_nodes(|_depth, type_name, rect| {
+        if type_name.rsplit("::").next() == Some("TextInput") {
+            height = Some(rect.height());
+        }
+    });
+    let height = height.expect("the input lays out");
+    assert!(
+        (height - line).abs() < 0.5,
+        "the input measures one line tall: {height} against {line}"
     );
 }
 

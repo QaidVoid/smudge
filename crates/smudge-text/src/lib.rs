@@ -27,13 +27,16 @@
 //! assert!(layout.size().width > 0.0);
 //! ```
 
+mod chrome;
 mod fonts;
 mod glyphs;
 mod input;
 mod label;
 mod layout;
+mod line_breaks;
 mod style;
 mod system;
+mod text_area;
 mod text_input;
 
 pub use input::Editor;
@@ -44,4 +47,5 @@ pub use parley::FontWeight;
 pub use parley::GenericFamily;
 pub use style::{TextStyle, current_text_style, provide_text_style};
 pub use system::TextSystem;
+pub use text_area::{TextArea, TextAreaExt, text_area};
 pub use text_input::{TextInput, TextInputExt, text_input};

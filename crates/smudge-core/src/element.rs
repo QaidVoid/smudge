@@ -143,6 +143,12 @@ impl From<Option<u32>> for Value<Option<u32>> {
     }
 }
 
+impl From<u32> for Value<u32> {
+    fn from(value: u32) -> Value<u32> {
+        Value::Static(value)
+    }
+}
+
 impl From<String> for Value<String> {
     fn from(text: String) -> Value<String> {
         Value::Static(text)
