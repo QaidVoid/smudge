@@ -41,8 +41,8 @@ const THUMB_RIGHT_INSET: f32 = 2.0;
 /// keeps a thumb that can still be seen.
 const MIN_THUMB_LENGTH: f32 = 24.0;
 
-/// How far from the end of the content a wheel step may land, in logical
-/// pixels, and still count as being at the end.
+/// How far from the end of the content a wheel step down may land, in
+/// logical pixels, and still engage following.
 const FOLLOW_SLACK: f32 = 4.0;
 
 /// The heights a scroll view measures when it paints.
@@ -67,6 +67,10 @@ struct ScrollChrome {
     following: RefCell<Option<RwSignal<bool>>>,
     /// The height of the content, once the content has painted.
     content_height: RwSignal<Option<f32>>,
+    /// The height the content takes in the coming layout, when the view's
+    /// owner knows it before the content paints. It stands in for
+    /// `content_height`, which lags it by a frame.
+    content_extent: Option<RwSignal<f32>>,
     /// The heights of the view, once the view has painted.
     viewport: RwSignal<Option<Viewport>>,
     /// The visible height of the view, once the view has painted, reported to
@@ -84,9 +88,19 @@ impl ScrollChrome {
     /// Returns the furthest the view can scroll, or `None` before both the
     /// view and its content have painted. Reading it tracks both heights.
     fn max_offset(&self) -> Option<f32> {
-        let content = self.content_height.get()?;
+        let content = self.content()?;
         let viewport = self.viewport.get()?;
         Some((content - viewport.visible).max(0.0))
+    }
+
+    /// Returns the height of the content: the extent the owner gave, or the
+    /// painted height, which is `None` before the content has painted.
+    /// Reading it tracks the signal it comes from.
+    fn content(&self) -> Option<f32> {
+        match &self.content_extent {
+            Some(extent) => Some(finite(extent.get()).max(0.0)),
+            None => self.content_height.get(),
+        }
     }
 
     /// Returns the follow signal, when [`ScrollExt::follow_end`] set one.
@@ -203,7 +217,7 @@ fn clamp_offset(desired: f32, max: f32) -> f32 {
 /// Before that, it applies any offset that is not negative as it is, which
 /// lets a view mount at a remembered position.
 pub fn scroll(content: impl IntoElement) -> Element<ScrollView> {
-    scroll_with_visible_height(content, RwSignal::new(None))
+    scroll_with_visible_height(content, RwSignal::new(None), None)
 }
 
 /// Creates a view like [`scroll`] that reports the visible height of its
@@ -213,14 +227,21 @@ pub fn scroll(content: impl IntoElement) -> Element<ScrollView> {
 /// The height is a measurement only the view has, because it follows the
 /// style and the layout around it, so the virtual list reads it from this
 /// signal instead of asking for a fixed viewport.
+///
+/// A list that sizes its content itself passes that size as
+/// `content_extent`, and the view clamps its offset with it instead of the
+/// content height it painted last frame. Otherwise an offset the list moves
+/// in the frame that grows the content would be clamped to the old end.
 pub(crate) fn scroll_with_visible_height(
     content: impl IntoElement,
     visible_height: RwSignal<Option<f32>>,
+    content_extent: Option<RwSignal<f32>>,
 ) -> Element<ScrollView> {
     let chrome = Rc::new(ScrollChrome {
         offset: RefCell::new(RwSignal::new(0.0)),
         following: RefCell::new(None),
         content_height: RwSignal::new(None),
+        content_extent,
         viewport: RwSignal::new(None),
         visible_height,
     });
@@ -254,15 +275,20 @@ pub(crate) fn scroll_with_visible_height(
         } else {
             clamp_offset(signal.read(|offset| *offset), max)
         };
-        let next = clamp_offset(current + finite(delta.y), max);
+        let step = finite(delta.y);
+        let next = clamp_offset(current + step, max);
         if next != current {
             signal.set(next);
         }
-        let at_end = next >= max - FOLLOW_SLACK;
-        if let Some(signal) = &follow_signal
-            && following != at_end
-        {
-            signal.set(at_end);
+        // Any step that moves the view up releases the pin, so small steps
+        // add up instead of each one snapping back. The slack applies only
+        // to a step down, which engages the pin when it lands near the end.
+        if let Some(signal) = &follow_signal {
+            if following && next < current {
+                signal.set(false);
+            } else if !following && step > 0.0 && next >= max - FOLLOW_SLACK {
+                signal.set(true);
+            }
         }
     })
     .scroll_offset(move || {
@@ -333,10 +359,10 @@ pub trait ScrollExt: Sized {
     /// on screen and catches up one frame after a frame that grew the
     /// content.
     ///
-    /// The signal is also where the view reports where the user is: a wheel
-    /// step that leaves the end by more than four logical pixels writes
-    /// `false`, and a step that comes back to within four pixels of it
-    /// writes `true`. Writing `true` from the application jumps to the end.
+    /// The signal is also where the view reports where the user is: any
+    /// wheel step that moves the view up from the end writes `false`, and a
+    /// step down that lands within four logical pixels of the end writes
+    /// `true`. Writing `true` from the application jumps to the end.
     /// A view that starts following with content shorter than itself stays
     /// at offset zero until the content grows past it.
     ///
@@ -453,7 +479,7 @@ struct Track {
 /// the view has painted, when the thumb is hidden.
 fn thumb_track(chrome: &ScrollChrome) -> Option<Track> {
     let max_offset = chrome.max_offset()?;
-    let content = chrome.content_height.get()?;
+    let content = chrome.content()?;
     let viewport = chrome.viewport.get()?;
     if max_offset <= 0.0 || viewport.track <= 0.0 {
         return None;

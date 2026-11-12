@@ -3,7 +3,8 @@
 //! A scene is a tree of panels plus a driver that writes the same state for
 //! the same frame index, so every repeat of a run measures identical work.
 //! A window run mounts once, so a scene whose state outlives a repeat resets
-//! it at the start of the next.
+//! it at the start of the next, or documents the exception when the state is
+//! not the driver's to reset.
 //! The driver's step runs before the frame and receives the app, so the
 //! scenes that script input deliver it through the same
 //! [`App::handle_event`](smudge_core::app::App::handle_event) path a real
@@ -22,7 +23,7 @@ use smudge_core::reactive::{self, prelude::*};
 use smudge_core::style::{Align, px};
 use smudge_core::widget::{Panel, panel};
 use smudge_text::{TextInputExt, label, text_input};
-use smudge_widgets::{column, row, scroll, virtual_list};
+use smudge_widgets::{column, row, scroll, virtual_list, virtual_list_keyed};
 
 /// The columns and rows of the box grid the first two scenes share.
 const GRID: (usize, usize) = (30, 20);
@@ -49,6 +50,7 @@ const S1_SEED: u64 = 0x5EED_0001;
 const S2_SEED: u64 = 0x5EED_0002;
 const S3_SEED: u64 = 0x5EED_0003;
 const S5_SEED: u64 = 0x5EED_0005;
+const S7_SEED: u64 = 0x5EED_0007;
 
 /// The viewport of the scenes added for this round, in logical pixels.
 const VIEWPORT: (f32, f32) = (1280.0, 800.0);
@@ -61,6 +63,24 @@ const SCROLL_ROWS: usize = 1000;
 
 /// How many rows the fixed list scene's list holds.
 const LIST_ROWS: usize = 100_000;
+
+/// How many rows the keyed list scene's list holds.
+const KEYED_ROWS: usize = 100_000;
+
+/// The height the keyed list scene's index starts from, about the seeded
+/// average row height.
+const KEYED_ESTIMATE: f32 = 110.0;
+
+/// How far one wheel event of the keyed list scene scrolls, about the seeded
+/// average row height, so the window shifts about one row per frame.
+const KEYED_WHEEL_STEP: f32 = 110.0;
+
+/// How many frames one direction of the keyed list scene's wheel script
+/// lasts.
+const KEYED_SWEEP_FRAMES: u64 = 150;
+
+/// The tallest height a seeded row of the keyed list scene can have.
+const KEYED_MAX_ROW_HEIGHT: f32 = 200.0;
 
 /// The height of one row of the scroll scene and one row of the fixed list
 /// scene, in logical pixels.
@@ -193,8 +213,10 @@ impl Scene {
 /// lays out and repaints 300 labels whose text changes every frame. The
 /// fifth and sixth scroll long content with scripted wheel events: a
 /// thousand mixed rows, and a virtual list of a hundred thousand rows. The
-/// last types into a focused text field, one keystroke per frame.
-static SCENES: [Scene; 7] = [
+/// seventh scrolls a keyed list of a hundred thousand rows of seeded
+/// heights. The last types into a focused text field, one keystroke per
+/// frame.
+static SCENES: [Scene; 8] = [
     Scene {
         key: "s1",
         viewport: Size {
@@ -248,6 +270,15 @@ static SCENES: [Scene; 7] = [
         },
         mount: mount_fixed_list,
         step: step_fixed_list,
+    },
+    Scene {
+        key: "s7",
+        viewport: Size {
+            width: VIEWPORT.0,
+            height: VIEWPORT.1,
+        },
+        mount: mount_keyed_list,
+        step: step_keyed_list,
     },
     Scene {
         key: "s9",
@@ -388,7 +419,7 @@ fn mount_scroll(_driver: &mut Driver) -> Element<Panel> {
 /// same, from the top at the start of every repeat.
 fn step_scroll(driver: &Shared, app: &mut App, frame: u64) {
     if frame == 0 {
-        start_scroll_repeat(app, SCROLL_ROWS);
+        start_scroll_repeat(app, SCROLL_ROWS as f32 * ROW_HEIGHT);
     }
     let down = (frame / SWEEP_FRAMES).is_multiple_of(2);
     let delta = if down { WHEEL_STEP } else { -WHEEL_STEP };
@@ -414,7 +445,7 @@ fn mount_fixed_list(_driver: &mut Driver) -> Element<Panel> {
 /// Scrolls the fixed list scene one row height per frame.
 fn step_fixed_list(_driver: &Shared, app: &mut App, frame: u64) {
     if frame == 0 {
-        start_scroll_repeat(app, LIST_ROWS);
+        start_scroll_repeat(app, LIST_ROWS as f32 * ROW_HEIGHT);
     }
     app.handle_event(InputEvent::Wheel {
         delta: Point {
@@ -424,13 +455,71 @@ fn step_fixed_list(_driver: &Shared, app: &mut App, frame: u64) {
     });
 }
 
-/// Starts one repeat of a scrolling scene whose content holds `rows` rows.
+/// Mounts the keyed list scene: a hundred thousand rows of seeded heights.
+///
+/// The items and the heights are fixed, so the closure that reads the items
+/// hands back the same `Rc` every frame and the list skips walking it.
+///
+/// A window run mounts once, so its first repeat carries the rows' first
+/// measurements and the later repeats reuse them; headless repeats mount
+/// fresh and measure identical work.
+fn mount_keyed_list(_driver: &mut Driver) -> Element<Panel> {
+    let heights: Rc<[f32]> = keyed_heights().into();
+    let items: Rc<[u64]> = (0..KEYED_ROWS as u64).collect();
+    panel().child(
+        virtual_list_keyed(
+            move || items.clone(),
+            |item| *item,
+            KEYED_ESTIMATE,
+            move |item| {
+                panel()
+                    .height(px(heights[*item as usize]))
+                    .child(label(format!("Item {item:06}")))
+            },
+        )
+        .width(px(VIEWPORT.0))
+        .height(px(VIEWPORT.1)),
+    )
+}
+
+/// Scrolls the keyed list scene for one sweep down and one up.
+///
+/// One repeat starts with the sweep down for [`KEYED_SWEEP_FRAMES`] frames
+/// and continues with the same sweep up, from the top at the start of every
+/// repeat.
+fn step_keyed_list(_driver: &Shared, app: &mut App, frame: u64) {
+    if frame == 0 {
+        // The tallest seeded row bounds the content height, so this rewind
+        // passes the top from anywhere in the list.
+        start_scroll_repeat(app, KEYED_ROWS as f32 * KEYED_MAX_ROW_HEIGHT);
+    }
+    let down = (frame / KEYED_SWEEP_FRAMES).is_multiple_of(2);
+    let delta = if down {
+        KEYED_WHEEL_STEP
+    } else {
+        -KEYED_WHEEL_STEP
+    };
+    app.handle_event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: delta },
+    });
+}
+
+/// The seeded height of every row of the keyed list scene, between 20 and
+/// 200.
+fn keyed_heights() -> Vec<f32> {
+    let mut rng = Xorshift::new(S7_SEED);
+    (0..KEYED_ROWS)
+        .map(|_| 20.0 + (rng.next() % 181) as f32)
+        .collect()
+}
+
+/// Starts one repeat of a scrolling scene by rewinding `distance` pixels.
 ///
 /// It places the pointer over the view, because a wheel event goes to the
 /// chain under the pointer, and scrolls back past the top. A window run
 /// mounts once, so without the rewind a repeat would start where the last
 /// one ended and show other rows.
-fn start_scroll_repeat(app: &mut App, rows: usize) {
+fn start_scroll_repeat(app: &mut App, distance: f32) {
     app.handle_event(InputEvent::PointerMoved {
         position: Point {
             x: VIEWPORT.0 / 2.0,
@@ -440,7 +529,7 @@ fn start_scroll_repeat(app: &mut App, rows: usize) {
     app.handle_event(InputEvent::Wheel {
         delta: Point {
             x: 0.0,
-            y: -(rows as f32 * ROW_HEIGHT),
+            y: -distance,
         },
     });
 }

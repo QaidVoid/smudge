@@ -17,18 +17,19 @@ counts, and on the window backend the present's statistics.
 | `s4` | 300 labels in a wrapped grid, every label's text changes every frame | 1280 by 800 | The layout-heavy case: a text layout for every label, every frame |
 | `s5` | 1,000 rows of a box and a label in a scroll view, scrolled by scripted wheel events | 1280 by 800 | Scroll without layout: the content moves and the display list rebuilds |
 | `s6` | A 100,000-row virtual list, scrolled one row height per frame | 1280 by 800 | The mounted window of a fixed-height list moving through a long list |
+| `s7` | A 100,000-row keyed list of heights between 20 and 200 pixels, started from a 110-pixel estimate, scrolled one average row height per frame | 1280 by 800 | The keyed list measuring rows and re-aiming its anchor while its mounted window moves |
 | `s9` | One text field, emptied and focused by a scripted click at the start of each repeat, given one keystroke per frame | 1280 by 800 | Input latency: the time from an event to the pixel it changes |
 
 Scene variation comes from an in-crate xorshift generator seeded per scene.
 Frame `n` always produces the same state, so a repeat is reproducible. The
 scenes that script input deliver every event through
-`App::handle_event`, the path a real event takes, and mark when they injected
-it, which is what `latency_us` measures.
+`App::handle_event`, the path a real event takes, and the scenes that
+measure `latency_us` mark when they injected their event.
 
 ## Flags
 
 ```sh
-smudge-bench --scene s1|s2|s3|s4|s5|s6|s9 [--mode damage|full] [--backend headless|window]
+smudge-bench --scene s1|s2|s3|s4|s5|s6|s7|s9 [--mode damage|full] [--backend headless|window]
              [--renderer cpu|gpu]
              [--warmup 30] [--frames 300] [--repeats 3] [--scale 1.0]
              [--label <text>] [--out <path>]

@@ -1137,3 +1137,39 @@ fn a_hover_patch_the_pin_picks_up_settles_at_the_end_in_the_same_frame() {
     harness.settle();
     harness.assert_matches_full_repaint();
 }
+
+#[test]
+fn small_wheel_steps_up_release_following_and_add_up() {
+    let following = RwSignal::new(true);
+    let heights = RwSignal::new(vec![60, 61, 62]);
+    let mut harness = following_view(following.clone(), heights.clone());
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+
+    for _ in 0..3 {
+        wheel(&mut harness, -2.0);
+        harness.frame();
+        harness.settle();
+    }
+
+    assert!(
+        !following.read(|value| *value),
+        "an upward step releases following, however small"
+    );
+    let rows = follow_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: -77.0 }),
+        "the three two-pixel steps add up to six pixels above the end, at {:?}",
+        rows[0]
+    );
+
+    heights.update(|rows| rows.push(80));
+    harness.frame();
+    harness.settle();
+    let rows = follow_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: -77.0 }),
+        "an append after the release leaves the view where it was, at {:?}",
+        rows[0]
+    );
+    harness.assert_matches_full_repaint();
+}

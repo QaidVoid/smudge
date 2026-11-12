@@ -5,6 +5,11 @@
 //! part. The rows hang, absolutely positioned, from a spacer panel as tall as
 //! the whole list, which is what keeps the scrollbar and the wheel geometry
 //! honest while the mounted window moves.
+//!
+//! This list is the fixed-height one: every row is `row_height` tall and the
+//! list measures nothing. When the rows differ in height or the item list
+//! edits in the middle, use [`virtual_list_keyed`](crate::virtual_list_keyed),
+//! which measures rows and anchors the view across edits.
 
 use std::rc::Rc;
 
@@ -117,5 +122,5 @@ pub fn virtual_list<E: IntoElement>(
         .height(move || px(height_count() as f32 * row_height))
         .child(rows);
 
-    scroll_with_visible_height(content, visible).offset(offset)
+    scroll_with_visible_height(content, visible, None).offset(offset)
 }
