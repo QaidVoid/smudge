@@ -265,12 +265,14 @@ impl App {
     /// [`App::release_press`] ends it, so its node hears `on_pointer_up`
     /// before it goes and the release that follows reaches no handler. The
     /// hover, the focus traps and the autofocus requests of the old tree are
-    /// dropped, and the next frame hovers the new node under the pointer.
+    /// dropped, and the remount hovers the new node under the pointer
+    /// before it returns.
     /// The focus moves to the node that sits at the same child indices from
     /// the root as the focused node did, when that node is focusable, can
     /// hold the focus and lies inside the active focus trap, if any. Its
-    /// `on_focus` hears `true`, the next frame scrolls it into view as
-    /// [`Element::on_reveal`](crate::element::Element::on_reveal) describes,
+    /// `on_focus` hears `true`, the remount scrolls it into view before it
+    /// returns, as [`Element::on_reveal`](crate::element::Element::on_reveal)
+    /// describes,
     /// and the autofocus requests of the new build's
     /// visible nodes are dropped, so the restored focus stays. A request
     /// whose node is hidden waits as usual. Without a restored focus, an
@@ -304,7 +306,8 @@ impl App {
     /// Panics when `build` panics, or when code the remount runs for the
     /// application panics: a cleanup function, the `on_pointer_up` handler of
     /// a held press, an `on_hover` handler of the old tree when that press
-    /// ends, an `on_focus` handler or a widget's bind function.
+    /// ends or of the new tree under the pointer, an `on_focus` handler, an
+    /// `on_reveal` handler or a widget's bind function.
     ///
     /// # Examples
     ///
