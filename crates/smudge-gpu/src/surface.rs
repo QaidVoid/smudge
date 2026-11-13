@@ -190,7 +190,7 @@ impl GpuSurface {
             surface,
             config,
             renderer,
-            encoder: Encoder::new(),
+            encoder: Encoder::new(limit),
             blitter,
             target,
             reconfigure: false,

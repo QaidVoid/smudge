@@ -200,7 +200,7 @@ impl GpuRenderer {
             height,
             target,
             renderer,
-            encoder: Encoder::new(),
+            encoder: Encoder::new(limit),
         }
     }
 

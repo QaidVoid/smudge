@@ -16,7 +16,7 @@
 - **Clip edges are whole pixels.** At a fractional clip edge, a child may draw into a pixel the edge only partly covers.
 - **No color emoji on the CPU renderer.** A glyph from a color font draws as its plain outline, which for most emoji is nothing. The GPU renderer draws color glyphs.
 - **No variable font instances, no synthetic bold or italic.** A variable font draws at its default instance, and a weight the font has no face for draws without bolding.
-- **Large images on the GPU.** The GPU renderer packs images into one atlas of at most 8192 by 8192 pixels, and the device's largest texture can lower that. An image that does not fit is skipped by the GPU renderer, while the CPU renderer draws it. Scale a large image down before you hand it over.
+- **Large images are softer on the GPU.** The GPU renderer packs images into one atlas of at most 8192 by 8192 pixels, and the device's largest texture can lower that. An image with a longer side is downscaled once to fit, keeping its aspect ratio, so the GPU renderer draws it at a lower resolution than the CPU renderer does. The atlas holds all of a frame's images together, so several images near the limit in one frame can still leave one out.
 - **The GPU renderer redraws the whole frame.** Damage tracking still decides whether a frame is needed at all, but a GPU frame draws everything.
 
 ## Text

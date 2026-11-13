@@ -303,6 +303,88 @@ fn an_evicted_image_uploads_again_and_renders_identically() {
     );
 }
 
+#[test]
+fn an_image_wider_than_the_gpu_atlas_draws_downscaled() {
+    let Some((device, queue, adapter)) = headless_device() else {
+        eprintln!("skipping: no GPU adapter available for the headless renderer");
+        return;
+    };
+    eprintln!("parity adapter: {adapter}");
+
+    // 9000 pixels is past the largest side vello's image atlas can hold,
+    // so the GPU renderer must draw a downscaled copy. The left half is red
+    // and the right half blue, so the copy must keep the picture, not only
+    // cover the rectangle.
+    let (source_width, source_height) = (9000u32, 400u32);
+    let mut pixels = Vec::with_capacity(source_width as usize * source_height as usize * 4);
+    for _ in 0..source_height {
+        for x in 0..source_width {
+            let color = if x < source_width / 2 {
+                [220, 30, 30, 255]
+            } else {
+                [30, 30, 220, 255]
+            };
+            pixels.extend_from_slice(&color);
+        }
+    }
+    let wide =
+        smudge_core::image::Image::from_premultiplied_rgba(source_width, source_height, pixels)
+            .expect("the halves fill the buffer");
+    let config = AppConfig {
+        viewport: VIEWPORT,
+        scale: 1.0,
+        clear_color: Color::WHITE,
+        repaint: RepaintMode::Full,
+    };
+    let mut app = App::new(config, move || {
+        panel().child(
+            image(Some(wide))
+                .absolute()
+                .width(px(180.0))
+                .height(px(8.0))
+                .inset(Edges {
+                    left: Length::px(10.0),
+                    top: Length::px(10.0),
+                    right: Length::auto(),
+                    bottom: Length::auto(),
+                }),
+        )
+    });
+    let (width, height) = app.surface_size();
+    let frame = app.frame();
+    let mut gpu = GpuRenderer::new(device, queue, width, height);
+    gpu.render(&frame);
+    let gpu_pixels = gpu.read_pixels();
+    let mut cpu = CpuRenderer::new(width, height);
+    cpu.render(&frame);
+    let mut cpu_pixels = cpu.pixels().to_vec();
+    unpremultiply(&mut cpu_pixels);
+
+    let at = |pixels: &[u8], x: u32, y: u32| {
+        let start = (y * width + x) as usize * 4;
+        [
+            pixels[start],
+            pixels[start + 1],
+            pixels[start + 2],
+            pixels[start + 3],
+        ]
+    };
+    assert_eq!(at(&gpu_pixels, 50, 14), [220, 30, 30, 255], "the red half");
+    assert_eq!(
+        at(&gpu_pixels, 150, 14),
+        [30, 30, 220, 255],
+        "the blue half"
+    );
+    let metrics = compare(&cpu_pixels, &gpu_pixels);
+    for (channel, metrics) in ["r", "g", "b", "a"].iter().zip(metrics) {
+        assert!(
+            metrics.mean < 0.1,
+            "channel {channel} differs from the CPU by {:.4} on average",
+            metrics.mean
+        );
+    }
+}
+
 /// Requests an adapter the way [`GpuRenderer::headless`] does and returns its
 /// device, queue and a readable name, or `None` when no adapter works.
 fn headless_device() -> Option<(Device, Queue, String)> {

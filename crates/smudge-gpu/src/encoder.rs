@@ -24,11 +24,8 @@ pub(crate) struct Encoder {
     /// The font data handed to vello, keyed by the paint operation's font id
     /// and face index, or `None` for a face that does not parse.
     fonts: HashMap<(u64, u32), Option<FontData>>,
-    /// The images handed to vello, keyed by the smudge image's id, each
-    /// stamped with the generation it was last used at.
-    images: HashMap<u64, (ImageBrush, u64)>,
-    /// How many frames this encoder has encoded, for the image stamps.
-    generation: u64,
+    /// The images handed to vello.
+    images: ImageCache,
     /// Scratch for the outline of a border ring, reused across operations.
     ring: BezPath,
     /// The transform of each open offset scope, reused across frames.
@@ -36,13 +33,17 @@ pub(crate) struct Encoder {
 }
 
 impl Encoder {
-    /// Creates an empty encoder.
-    pub(crate) fn new() -> Encoder {
+    /// Creates an empty encoder for a device whose textures may be
+    /// `max_texture_side` pixels on a side.
+    pub(crate) fn new(max_texture_side: u32) -> Encoder {
         Encoder {
             scene: Scene::new(),
             fonts: HashMap::new(),
-            images: HashMap::new(),
-            generation: 0,
+            images: ImageCache {
+                brushes: HashMap::new(),
+                generation: 0,
+                max_side: max_texture_side.clamp(1, ATLAS_SIDE),
+            },
             ring: BezPath::new(),
             offsets: Vec::new(),
         }
@@ -55,9 +56,11 @@ impl Encoder {
         // start of the third frame after their last use. That releases only
         // this cache's reference: vello's atlas keeps its own until it
         // needs the space for another image.
-        self.generation += 1;
-        let generation = self.generation;
-        self.images.retain(|_, (_, stamp)| generation - *stamp <= 2);
+        self.images.generation += 1;
+        let generation = self.images.generation;
+        self.images
+            .brushes
+            .retain(|_, (_, stamp)| generation - *stamp <= 2);
         let transform = Affine::scale(f64::from(frame.scale));
         // The display list is balanced by construction, but a stray `PopClip`
         // in a release build would pop a vello layer that was never pushed,
@@ -75,7 +78,6 @@ impl Encoder {
                     &mut self.fonts,
                     &mut self.ring,
                     &mut self.images,
-                    self.generation,
                     transform * offset,
                     op,
                 ),
@@ -123,8 +125,7 @@ fn encode_op(
     scene: &mut Scene,
     fonts: &mut HashMap<(u64, u32), Option<FontData>>,
     ring: &mut BezPath,
-    images: &mut HashMap<u64, (ImageBrush, u64)>,
-    generation: u64,
+    images: &mut ImageCache,
     transform: Affine,
     op: &PaintOp,
 ) {
@@ -187,9 +188,9 @@ fn encode_op(
             if !(rect.width() > 0.0 && rect.height() > 0.0) {
                 return;
             }
-            let brush = image_brush(images, image, generation);
-            let sx = f64::from(rect.width()) / f64::from(image.width());
-            let sy = f64::from(rect.height()) / f64::from(image.height());
+            let brush = images.brush(image);
+            let sx = f64::from(rect.width()) / f64::from(brush.image.width);
+            let sy = f64::from(rect.height()) / f64::from(brush.image.height);
             let local = transform
                 * Affine::translate((f64::from(rect.x0), f64::from(rect.y0)))
                 * Affine::scale_non_uniform(sx, sy);
@@ -213,34 +214,115 @@ fn rounded(rect: Rect, radius: Corners) -> RoundedRect {
     RoundedRect::from_rect(kurbo_rect(rect), kurbo_radii(radius))
 }
 
-/// Returns the vello image for `image`, uploading its pixels once and
-/// stamping the generation it was last used at.
+/// The longest side vello's image atlas can hold.
 ///
-/// The stamp is what drops the entries an application stopped drawing: the
-/// encoder drops an image at the start of the third frame after the last
-/// frame that drew it. The brush is kept across frames because vello keys
-/// its atlas by the blob's identity, and a fresh blob per frame would upload
-/// every image again each frame. The blob shares the image's pixels rather
-/// than copying them.
-fn image_brush<'a>(
-    images: &'a mut HashMap<u64, (ImageBrush, u64)>,
-    image: &smudge_core::image::Image,
+/// Vello packs every image of a frame into one atlas texture that grows to
+/// at most this many pixels on a side, and skips an image that does not fit.
+const ATLAS_SIDE: u32 = 8192;
+
+/// The images handed to vello, kept across frames.
+///
+/// A brush is kept because vello keys its atlas by the blob's identity, and
+/// a fresh blob per frame would upload every image again each frame.
+struct ImageCache {
+    /// The brushes, keyed by the smudge image's id, each stamped with the
+    /// generation it was last used at.
+    brushes: HashMap<u64, (ImageBrush, u64)>,
+    /// How many frames the encoder has encoded, for the stamps.
     generation: u64,
-) -> &'a ImageBrush {
-    let entry = images.entry(image.id()).or_insert_with(|| {
-        (
-            ImageBrush::new(ImageData {
-                data: Blob::new(Arc::new(SharedPixels(image.clone()))),
+    /// The longest side an image is handed to vello at. A longer image is
+    /// downscaled once to fit, because vello skips an image its atlas
+    /// cannot hold.
+    max_side: u32,
+}
+
+impl ImageCache {
+    /// Returns the vello image for `image`, building it the first time and
+    /// stamping the current generation on it.
+    ///
+    /// The stamp is what drops the entries an application stopped drawing:
+    /// the encoder drops an image at the start of the third frame after the
+    /// last frame that drew it. The blob shares the image's pixels rather
+    /// than copying them, unless a side is longer than `max_side`: then the
+    /// brush holds a copy downscaled to fit, made once per image.
+    fn brush(&mut self, image: &smudge_core::image::Image) -> &ImageBrush {
+        let max_side = self.max_side;
+        let entry = self.brushes.entry(image.id()).or_insert_with(|| {
+            let (width, height) = fitted_size(image.width(), image.height(), max_side);
+            let data = if (width, height) == (image.width(), image.height()) {
+                Blob::new(Arc::new(SharedPixels(image.clone())))
+            } else {
+                Blob::new(Arc::new(downscale(
+                    image.pixels(),
+                    image.width(),
+                    image.height(),
+                    width,
+                    height,
+                )))
+            };
+            let brush = ImageBrush::new(ImageData {
+                data,
                 format: ImageFormat::Rgba8,
                 alpha_type: ImageAlphaType::AlphaPremultiplied,
-                width: image.width(),
-                height: image.height(),
-            }),
-            generation,
-        )
-    });
-    entry.1 = generation;
-    &entry.0
+                width,
+                height,
+            });
+            (brush, 0)
+        });
+        entry.1 = self.generation;
+        &entry.0
+    }
+}
+
+/// Returns the size a `width` by `height` image is handed to vello at: its
+/// own when both sides fit within `max_side`, otherwise the size whose
+/// longer side is `max_side` and whose shorter side keeps the aspect ratio,
+/// rounded to the nearest pixel and never below one.
+fn fitted_size(width: u32, height: u32, max_side: u32) -> (u32, u32) {
+    if width <= max_side && height <= max_side {
+        return (width, height);
+    }
+    let scaled = |short: u32, long: u32| {
+        let side = (u64::from(short) * u64::from(max_side) + u64::from(long) / 2) / u64::from(long);
+        u32::try_from(side).unwrap_or(max_side).clamp(1, max_side)
+    };
+    if width >= height {
+        (max_side, scaled(height, width))
+    } else {
+        (scaled(width, height), max_side)
+    }
+}
+
+/// Shrinks premultiplied RGBA8 pixels from `width` by `height` to `to_width`
+/// by `to_height`, each no larger than the source, by averaging the block of
+/// source pixels every target pixel covers.
+///
+/// Premultiplied channels average without weighting by alpha. The blocks
+/// partition the source, so the work is one pass over its pixels, and the
+/// returned buffer is the only allocation.
+fn downscale(pixels: &[u8], width: u32, height: u32, to_width: u32, to_height: u32) -> Vec<u8> {
+    let (width, height) = (u64::from(width), u64::from(height));
+    let (to_width, to_height) = (u64::from(to_width), u64::from(to_height));
+    let mut out = Vec::with_capacity((to_width * to_height * 4) as usize);
+    for ty in 0..to_height {
+        let (y0, y1) = (ty * height / to_height, (ty + 1) * height / to_height);
+        for tx in 0..to_width {
+            let (x0, x1) = (tx * width / to_width, (tx + 1) * width / to_width);
+            let mut sums = [0u64; 4];
+            for y in y0..y1 {
+                let row = (y * width) as usize * 4;
+                let block = &pixels[row + x0 as usize * 4..row + x1 as usize * 4];
+                for pixel in block.as_chunks::<4>().0 {
+                    for (sum, &channel) in sums.iter_mut().zip(pixel) {
+                        *sum += u64::from(channel);
+                    }
+                }
+            }
+            let count = (x1 - x0) * (y1 - y0);
+            out.extend(sums.map(|sum| ((sum + count / 2) / count) as u8));
+        }
+    }
+    out
 }
 
 /// An image's pixels handed to vello as blob data, shared with the image
