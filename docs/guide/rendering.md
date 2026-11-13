@@ -134,8 +134,9 @@ The window creates its GPU device itself. A program that renders through `smudge
 
 - `smudge::gpu::instance()` returns the wgpu instance to request the adapter from. It enables the primary backends only (Vulkan, Metal and DX12), and the `WGPU_BACKEND` environment variable still picks the backends when it is set.
 - `smudge::gpu::device_limits(&adapter)` returns the limits to request the device with. They raise the storage binding and buffer size limits to what the adapter offers. A device created with the default limits fails validation on a large scene, which wgpu reports as a panic.
+- `smudge::gpu::device_features(&adapter)` returns the features to request the device with. On a Vulkan adapter they enable the application pipeline cache, and the renderer then loads vello's compiled pipelines from one file per adapter in your cache directory instead of compiling them on every start. An adapter without cache support gets no features, and the renderer compiles its pipelines as before.
 
-`GpuRenderer::headless` does both for an offscreen renderer.
+`GpuRenderer::headless` does all of it for an offscreen renderer.
 
 ::: tip Why software GPUs are avoided
 A software rasterizer pretending to be a GPU redraws the whole window on the CPU every frame. On a virtual machine without GPU passthrough, the GPU renderer on such an adapter was between 2.5 and over 200 times slower than the CPU renderer on every measured scene. `Auto` therefore never picks one.

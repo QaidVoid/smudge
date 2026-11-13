@@ -134,9 +134,12 @@ impl GpuSurface {
     ///
     /// The device's texture limit must fit the surface; a larger surface
     /// returns [`GpuError::SurfaceTooLarge`] instead of a renderer. Request
-    /// the device with [`device_limits`](crate::device_limits): with the
-    /// default limits a large scene fails validation, which wgpu reports as
-    /// a panic.
+    /// the device with [`device_limits`](crate::device_limits) and
+    /// [`device_features`](crate::device_features): with the default limits a
+    /// large scene fails validation, which wgpu reports as a panic, and
+    /// without [`wgpu::Features::PIPELINE_CACHE`] vello's pipelines are
+    /// compiled on every start instead of loaded from the user's pipeline
+    /// cache.
     ///
     /// # Errors
     ///
@@ -180,8 +183,13 @@ impl GpuSurface {
             view_formats: Vec::new(),
         };
         surface.configure(&device, &config);
-        let renderer = vello::Renderer::new(&device, crate::renderer::vello_options())
-            .expect("the device cannot create the vello pipelines");
+        let cache = crate::pipeline_cache::open(&device);
+        let renderer =
+            vello::Renderer::new(&device, crate::renderer::vello_options(cache.as_ref()))
+                .expect("the device cannot create the vello pipelines");
+        if let Some(cache) = &cache {
+            crate::pipeline_cache::save(&device, cache);
+        }
         let blitter = TextureBlitter::new(&device, format);
         let target = create_target(&device, width, height);
         Ok(GpuSurface {

@@ -3016,6 +3016,7 @@ version = "0.2.0"
 dependencies = [
  "futures-executor",
  "parley",
+ "rustix 1.1.5",
  "skrifa",
  "smudge-core",
  "smudge-cpu",

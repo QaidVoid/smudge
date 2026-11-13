@@ -17,9 +17,24 @@ use smudge_text::{TextSystem, label};
 /// The size of the test surface, in physical pixels.
 const SIZE: u32 = 64;
 
+/// Returns a renderer like [`GpuRenderer::headless`], on a device requested
+/// without the pipeline cache feature, so the tests write no cache file.
+fn headless_renderer(width: u32, height: u32) -> Option<GpuRenderer> {
+    use futures_executor::block_on;
+    use smudge_gpu::{device_limits, instance, wgpu};
+    let adapter =
+        block_on(instance().request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: device_limits(&adapter),
+        ..Default::default()
+    }))
+    .ok()?;
+    Some(GpuRenderer::new(device, queue, width, height))
+}
+
 /// Renders `ops` onto a white surface and returns the pixels.
 fn rendered(ops: &[PaintOp], scale: f32) -> Vec<u8> {
-    let mut renderer = GpuRenderer::headless(SIZE, SIZE)
+    let mut renderer = headless_renderer(SIZE, SIZE)
         .unwrap_or_else(|| panic!("the GPU adapter disappeared between tests"));
     let mut list = DisplayList::new();
     list.extend_ops(ops);
@@ -42,7 +57,7 @@ fn pixel_at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
 
 #[test]
 fn a_filled_rect_covers_its_center_and_leaves_the_clear_color_outside() {
-    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+    let Some(_) = headless_renderer(SIZE, SIZE) else {
         eprintln!("skipping: no GPU adapter available for the headless renderer");
         return;
     };
@@ -63,7 +78,7 @@ fn a_filled_rect_covers_its_center_and_leaves_the_clear_color_outside() {
 
 #[test]
 fn the_scale_factor_maps_logical_rects_to_physical_pixels() {
-    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+    let Some(_) = headless_renderer(SIZE, SIZE) else {
         eprintln!("skipping: no GPU adapter available for the headless renderer");
         return;
     };
@@ -84,7 +99,7 @@ fn the_scale_factor_maps_logical_rects_to_physical_pixels() {
 
 #[test]
 fn a_stroke_draws_inside_its_rectangle() {
-    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+    let Some(_) = headless_renderer(SIZE, SIZE) else {
         eprintln!("skipping: no GPU adapter available for the headless renderer");
         return;
     };
@@ -107,7 +122,7 @@ fn a_stroke_draws_inside_its_rectangle() {
 
 #[test]
 fn a_pushed_clip_limits_what_after_it_draws() {
-    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+    let Some(_) = headless_renderer(SIZE, SIZE) else {
         eprintln!("skipping: no GPU adapter available for the headless renderer");
         return;
     };
@@ -120,7 +135,7 @@ fn a_pushed_clip_limits_what_after_it_draws() {
     });
     list.pop_clip();
     list.finish();
-    let mut renderer = GpuRenderer::headless(SIZE, SIZE)
+    let mut renderer = headless_renderer(SIZE, SIZE)
         .unwrap_or_else(|| panic!("the GPU adapter disappeared between tests"));
     renderer.render(&FrameOutput {
         list: &list,
@@ -136,7 +151,7 @@ fn a_pushed_clip_limits_what_after_it_draws() {
 
 #[test]
 fn an_offset_moves_what_after_it_draws() {
-    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+    let Some(_) = headless_renderer(SIZE, SIZE) else {
         eprintln!("skipping: no GPU adapter available for the headless renderer");
         return;
     };
@@ -154,7 +169,7 @@ fn an_offset_moves_what_after_it_draws() {
         color: Color::rgb(30, 40, 200),
     });
     list.finish();
-    let mut renderer = GpuRenderer::headless(SIZE, SIZE)
+    let mut renderer = headless_renderer(SIZE, SIZE)
         .unwrap_or_else(|| panic!("the GPU adapter disappeared between tests"));
     renderer.render(&FrameOutput {
         list: &list,
@@ -180,7 +195,7 @@ fn an_offset_moves_what_after_it_draws() {
 
 #[test]
 fn an_offset_is_in_logical_pixels_at_any_scale() {
-    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+    let Some(_) = headless_renderer(SIZE, SIZE) else {
         eprintln!("skipping: no GPU adapter available for the headless renderer");
         return;
     };
@@ -193,7 +208,7 @@ fn an_offset_is_in_logical_pixels_at_any_scale() {
     });
     list.pop_offset();
     list.finish();
-    let mut renderer = GpuRenderer::headless(SIZE, SIZE)
+    let mut renderer = headless_renderer(SIZE, SIZE)
         .unwrap_or_else(|| panic!("the GPU adapter disappeared between tests"));
     renderer.render(&FrameOutput {
         list: &list,
@@ -216,7 +231,7 @@ fn an_offset_is_in_logical_pixels_at_any_scale() {
 
 #[test]
 fn a_clip_under_an_offset_clips_where_the_offset_puts_it() {
-    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+    let Some(_) = headless_renderer(SIZE, SIZE) else {
         eprintln!("skipping: no GPU adapter available for the headless renderer");
         return;
     };
@@ -231,7 +246,7 @@ fn a_clip_under_an_offset_clips_where_the_offset_puts_it() {
     list.pop_clip();
     list.pop_offset();
     list.finish();
-    let mut renderer = GpuRenderer::headless(SIZE, SIZE)
+    let mut renderer = headless_renderer(SIZE, SIZE)
         .unwrap_or_else(|| panic!("the GPU adapter disappeared between tests"));
     renderer.render(&FrameOutput {
         list: &list,
@@ -283,7 +298,7 @@ fn ink_bounds(pixels: &[u8], width: usize) -> Option<(usize, usize, usize, usize
 
 #[test]
 fn text_lands_where_the_cpu_renderer_draws_it() {
-    let Some(mut gpu) = GpuRenderer::headless(320, 80) else {
+    let Some(mut gpu) = headless_renderer(320, 80) else {
         eprintln!("skipping: no GPU adapter available for the headless renderer");
         return;
     };
@@ -319,7 +334,7 @@ fn text_lands_where_the_cpu_renderer_draws_it() {
 
 #[test]
 fn a_run_in_a_font_that_does_not_parse_draws_nothing() {
-    let Some(_) = GpuRenderer::headless(SIZE, SIZE) else {
+    let Some(_) = headless_renderer(SIZE, SIZE) else {
         eprintln!("skipping: no GPU adapter available for the headless renderer");
         return;
     };

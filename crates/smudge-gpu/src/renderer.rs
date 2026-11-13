@@ -7,12 +7,14 @@ use smudge_core::renderer::Renderer;
 use vello::RenderParams;
 use vello::wgpu;
 use vello::wgpu::{
-    Adapter, Device, DeviceType, Extent3d, Instance, InstanceDescriptor, Limits, MapMode, PollType,
-    Queue, RequestAdapterOptions, TexelCopyBufferInfo, Texture, TextureDescriptor,
-    TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
+    Adapter, Device, DeviceType, Extent3d, Instance, InstanceDescriptor, Limits, MapMode,
+    PipelineCache, PollType, Queue, RequestAdapterOptions, TexelCopyBufferInfo, Texture,
+    TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    TextureViewDescriptor,
 };
 
 use crate::encoder::{Encoder, peniko_color};
+use crate::pipeline_cache;
 
 /// Returns the device limits a renderer's device should be created with.
 ///
@@ -56,12 +58,31 @@ pub fn instance() -> Instance {
 /// Only area antialiasing is compiled, because it is the only mode the
 /// renderers draw with. Compiling all three modes, vello's default, cost
 /// 950 ms of CPU and 49 MB at startup on a GTX 1060; area alone cost 580 ms
-/// and 42 MB.
-pub(crate) fn vello_options() -> vello::RendererOptions {
+/// and 42 MB. The pipeline cache, when the device supports one, keeps the
+/// compiled pipelines in the user's cache between runs.
+pub(crate) fn vello_options(cache: Option<&PipelineCache>) -> vello::RendererOptions {
     vello::RendererOptions {
         antialiasing_support: vello::AaSupport::area_only(),
+        pipeline_cache: cache.cloned(),
         ..vello::RendererOptions::default()
     }
+}
+
+/// Returns the features a renderer's device should be created with.
+///
+/// The device gets [`wgpu::Features::PIPELINE_CACHE`] when the adapter
+/// offers it, so that [`GpuRenderer::new`] and
+/// [`GpuSurface::new`](crate::GpuSurface::new) can keep vello's compiled
+/// pipelines in the user's pipeline cache between runs. On
+/// the backends without wgpu's application cache, and on adapters that do
+/// not offer the feature, the device is created with no features, exactly as
+/// before the cache existed.
+pub fn device_features(adapter: &Adapter) -> wgpu::Features {
+    let mut features = wgpu::Features::empty();
+    if adapter.features().contains(wgpu::Features::PIPELINE_CACHE) {
+        features.insert(wgpu::Features::PIPELINE_CACHE);
+    }
+    features
 }
 
 /// How many bytes one row of a readback buffer is aligned to.
@@ -94,12 +115,25 @@ const ROW_ALIGNMENT: u32 = 256;
 /// use smudge_core::geometry::{Color, Corners, Rect};
 /// use smudge_core::paint::{DisplayList, PaintOp};
 /// use smudge_core::renderer::Renderer;
-/// use smudge_gpu::GpuRenderer;
+/// use smudge_gpu::{GpuRenderer, device_limits, instance, wgpu};
+/// use futures_executor::block_on;
 ///
-/// // On a machine without a GPU adapter this draws nothing.
-/// let Some(mut renderer) = GpuRenderer::headless(64, 64) else {
+/// let adapter = block_on(instance().request_adapter(&wgpu::RequestAdapterOptions::default()))
+///     .ok();
+/// let Some(adapter) = adapter else {
 ///     return;
 /// };
+/// // This example requests no pipeline cache feature, so running it writes
+/// // no cache file. An application asks for `device_features` too.
+/// let device = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+///     required_limits: device_limits(&adapter),
+///     ..Default::default()
+/// }))
+/// .ok();
+/// let Some((device, queue)) = device else {
+///     return;
+/// };
+/// let mut renderer = GpuRenderer::new(device, queue, 64, 64);
 /// let mut list = DisplayList::new();
 /// list.push_op(PaintOp::FillRect {
 ///     rect: Rect::new(0.0, 0.0, 64.0, 64.0),
@@ -178,8 +212,11 @@ impl GpuRenderer {
     ///
     /// A surface with a zero extent holds no texture, and
     /// [`GpuRenderer::render`] and [`GpuRenderer::read_pixels`] then do
-    /// nothing. Request the device with [`device_limits`]: with the default
-    /// limits a large scene fails validation, which wgpu reports as a panic.
+    /// nothing. Request the device with [`device_limits`] and
+    /// [`device_features`]: with the default limits a large scene fails
+    /// validation, which wgpu reports as a panic, and without
+    /// [`wgpu::Features::PIPELINE_CACHE`] vello's pipelines are compiled on
+    /// every start instead of loaded from the user's pipeline cache.
     ///
     /// # Panics
     ///
@@ -193,8 +230,12 @@ impl GpuRenderer {
             width <= limit && height <= limit,
             "a {width}x{height} surface exceeds the device's texture limit of {limit}"
         );
-        let renderer = vello::Renderer::new(&device, vello_options())
+        let cache = pipeline_cache::open(&device);
+        let renderer = vello::Renderer::new(&device, vello_options(cache.as_ref()))
             .expect("the device cannot create the vello pipelines");
+        if let Some(cache) = &cache {
+            pipeline_cache::save(&device, cache);
+        }
         let target = create_target(&device, width, height);
         GpuRenderer {
             device,
@@ -222,8 +263,10 @@ impl GpuRenderer {
     /// # Panics
     ///
     /// Panics under the conditions of [`GpuRenderer::new`]. The device has
-    /// the limits of [`device_limits`], which allow 8192 pixels on each side
-    /// and the adapter's maximum storage buffer binding size.
+    /// the limits of [`device_limits`] and the features of
+    /// [`device_features`], which allow 8192 pixels on each side, the
+    /// adapter's maximum storage buffer binding size, and the application
+    /// pipeline cache where the adapter offers one.
     pub fn headless(width: u32, height: u32) -> Option<GpuRenderer> {
         // The environment override matches the window path, so one set of
         // variables picks the backend for both.
@@ -231,6 +274,7 @@ impl GpuRenderer {
             block_on(instance().request_adapter(&RequestAdapterOptions::default())).ok()?;
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_limits: device_limits(&adapter),
+            required_features: device_features(&adapter),
             ..Default::default()
         }))
         .ok()?;

@@ -124,6 +124,7 @@ impl GpuPath {
         }
         let (device, queue) = match block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_limits: smudge_gpu::device_limits(&adapter),
+            required_features: smudge_gpu::device_features(&adapter),
             ..Default::default()
         })) {
             Ok(device) => device,

@@ -6,10 +6,11 @@
 //! Offset scopes in the display list move the operations and clips they wrap.
 
 mod encoder;
+mod pipeline_cache;
 mod renderer;
 mod surface;
 
-pub use renderer::{AdapterSummary, GpuRenderer, device_limits, instance};
+pub use renderer::{AdapterSummary, GpuRenderer, device_features, device_limits, instance};
 pub use surface::{GpuError, GpuSurface};
 
 /// The wgpu that vello renders through, re-exported so a caller can build its
