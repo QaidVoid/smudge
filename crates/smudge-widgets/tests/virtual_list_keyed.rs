@@ -763,3 +763,65 @@ fn an_append_touches_only_the_new_rows_of_the_index() {
         "an append to 10,000 rows cloned {clones} keys, so it rebuilt the index"
     );
 }
+
+/// Panics when two mounted rows overlap on screen.
+fn assert_no_overlap(rows: &[(f32, f32)], frame: &str) {
+    for pair in rows.windows(2) {
+        assert!(
+            pair[0].0 + pair[0].1 <= pair[1].0,
+            "{frame}: a row overlaps the row below it: {pair:?}"
+        );
+    }
+}
+
+#[test]
+fn no_frame_shows_overlapping_rows_while_rows_grow() {
+    TextSystem::bundled_only().install();
+    let items = RwSignal::new((0..60).collect::<Vec<u64>>());
+    let heights = height_signals_for(60, 0);
+    let mut harness = keyed_harness(items, heights.clone(), ESTIMATE);
+    harness.frame();
+    settle(&mut harness);
+    harness.move_to(POINTER);
+    wheel(&mut harness, top_of(9, 0));
+    harness.frame();
+    settle(&mut harness);
+    let before = rows_by_position(&harness);
+    let in_view = |rows: &[(f32, f32)]| -> Vec<(f32, f32)> {
+        rows.iter().filter(|row| row.0 >= 0.0).copied().collect()
+    };
+
+    // Key 8 ends exactly at the top of the viewport. Growing it must not
+    // reach into the view, not even in the frame before its measurement
+    // lands in the index.
+    heights[8].update(|height| *height += 40.0);
+    harness.frame();
+    let rows = rows_by_position(&harness);
+    assert_no_overlap(&rows, "the frame a row above the anchor grew");
+    assert_eq!(
+        in_view(&rows),
+        in_view(&before),
+        "the rows in view moved in the frame a row above them grew"
+    );
+    settle(&mut harness);
+
+    // The anchored row streams: it grows every frame, and every frame shows
+    // the rows below it pushed down by exactly its growth.
+    for step in 1..=5 {
+        heights[9].update(|height| *height += 12.0);
+        harness.frame();
+        let rows = rows_by_position(&harness);
+        assert_no_overlap(&rows, &format!("streaming frame {step}"));
+        let anchored = rows
+            .iter()
+            .find(|row| row.0 == 0.0)
+            .expect("the anchored row keeps its top");
+        assert_eq!(
+            anchored.1,
+            heights[9].get(),
+            "frame {step} shows the new height"
+        );
+    }
+    settle(&mut harness);
+    harness.assert_matches_full_repaint();
+}

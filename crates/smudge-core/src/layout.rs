@@ -97,6 +97,9 @@ impl WidgetTree {
         if rects_changed && self.pointer_inside && self.pressed.is_none() {
             self.refresh_hover();
         }
+        // A pinned child goes back to its place with the sizes this pass
+        // gave its siblings, so no frame shows a grown child over the next.
+        self.resolve_pins();
         // A following node pins its offset here, after the pass laid its
         // content out and before the frame paints, so a frame that grows the
         // content never shows the end out of view. The painted heights the
@@ -116,6 +119,7 @@ impl WidgetTree {
             // the hover it refreshes stays stale until the pointer moves or a
             // later pass changes rects, so the passes a frame runs stay
             // bounded at two.
+            self.resolve_pins();
             self.resolve_follow();
         }
         true
@@ -194,6 +198,91 @@ impl WidgetTree {
                 self.following.push(id);
             }
             node.follow = Some(signal);
+        }
+    }
+
+    /// Sets the flowing child that `id` keeps in place, by index, and how far
+    /// below the top of its content box it sits.
+    ///
+    /// The element's builders call this. Outside a pending layout pass the
+    /// children move at once, with the sizes the last pass gave them, so a
+    /// pin that changes on a frame that lays nothing out still applies. A
+    /// stale id does nothing.
+    pub(crate) fn set_pin(&mut self, id: WidgetId, pin: Option<(usize, f32)>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        if !self.pinned.contains(&id) {
+            self.pinned.push(id);
+        }
+        node.pin = pin;
+        if !self.layout_dirty {
+            self.apply_pin(id);
+        }
+    }
+
+    /// Moves the children of every pinning node so each pinned child sits
+    /// where its pin says, with the sizes the last pass gave the children.
+    fn resolve_pins(&mut self) {
+        let nodes = &self.nodes;
+        self.pinned.retain(|id| nodes.contains_key(*id));
+        for at in 0..self.pinned.len() {
+            let id = self.pinned[at];
+            self.apply_pin(id);
+        }
+    }
+
+    /// Moves the children of `id` so its pinned child sits where the pin
+    /// says, through the node's scroll offset.
+    ///
+    /// A hidden node, a missing pin, an index past the last child and an
+    /// absolutely positioned child leave the children where they are.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the node or the pinned child has no live layout node,
+    /// which is an internal invariant for ids the caller took from the tree.
+    fn apply_pin(&mut self, id: WidgetId) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        let Some((index, y)) = node.pin else {
+            return;
+        };
+        if node.resolved.layout.hidden {
+            return;
+        }
+        let Some(child) = node
+            .children
+            .get(index)
+            .and_then(|child| self.nodes.get(*child))
+        else {
+            return;
+        };
+        if child.resolved.layout.position == Position::Absolute {
+            return;
+        }
+        let layout = self
+            .taffy
+            .layout(node.taffy)
+            .expect("every node has a live layout node");
+        let top = layout.border.top + layout.padding.top;
+        let child_top = self
+            .taffy
+            .layout(child.taffy)
+            .expect("every node has a live layout node")
+            .location
+            .y;
+        let current = node.scroll_offset;
+        let offset = child_top - top - y;
+        if offset.is_finite() {
+            self.set_scroll_offset(
+                id,
+                Point {
+                    x: current.x,
+                    y: offset,
+                },
+            );
         }
     }
 

@@ -237,6 +237,7 @@ enum Prop {
     ScrollOffset,
     Disabled,
     Cursor,
+    Pin,
 }
 
 impl Binding {
@@ -330,6 +331,23 @@ impl Binding {
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
                         tree.set_scroll_offset(id, value);
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that writes which flowing child the node pins, and where.
+    fn pin_child(get: Rc<dyn Fn() -> Option<(usize, f32)>>) -> Binding {
+        Binding {
+            prop: Some(Prop::Pin),
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_pin(id, value);
                     }));
                 })
             }),
@@ -770,6 +788,41 @@ impl<W: Widget> Element<W> {
             Value::Static(offset) => self.scroll_offset = offset,
             Value::Dynamic(get) => self.bindings.push(Binding::scroll_offset(get)),
         }
+        self
+    }
+
+    /// Keeps one flowing child at a fixed place inside the node, whatever
+    /// the heights of the children before it.
+    ///
+    /// While `pin` returns `Some((index, y))`, every layout pass ends with
+    /// the top of the flowing child at `index` sitting `y` logical pixels
+    /// below the top of the node's content box. The children keep their
+    /// order and the sizes the pass gave them, so the ones before the pinned
+    /// child stack upward from it and the ones after it stack downward,
+    /// edge to edge. A child that grows therefore pushes its neighbours away
+    /// from the pinned child in the frame it grows, and never overlaps them.
+    ///
+    /// The pin moves the children the way [`Element::scroll_offset`] does,
+    /// outside the layout engine, so do not give the node a scroll offset
+    /// too. `None`, or an index past the last child, leaves the children
+    /// where they are. A change of the pin alone moves them without a
+    /// layout pass.
+    ///
+    /// ```
+    /// use smudge_core::element::Element;
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::{Panel, panel};
+    ///
+    /// // The second row stays 100 pixels down, however tall the first is.
+    /// let rows = Element::new(Panel)
+    ///     .column()
+    ///     .pin_child(|| Some((1, 100.0)))
+    ///     .child(panel().height(px(30.0)))
+    ///     .child(panel().height(px(30.0)));
+    /// ```
+    pub fn pin_child(mut self, pin: impl Fn() -> Option<(usize, f32)> + 'static) -> Self {
+        self.replace_binding(Prop::Pin);
+        self.bindings.push(Binding::pin_child(Rc::new(pin)));
         self
     }
 
@@ -1243,9 +1296,10 @@ impl<W: Widget> Element<W> {
     /// therefore takes over from the one around it. Removing a trap, which
     /// is what unmounting a [`show`] child does, restores the trap mounted
     /// before it, and returns the focus to the node that held it when the
-    /// trap mounted, when that node is still mounted and can take it. A trap that cannot hold the focus, because it became
-    /// disabled or hidden or sits under a hidden ancestor, yields to an
-    /// earlier one while it stays mounted.
+    /// trap mounted, when that node is still mounted and can take it. A trap
+    /// that cannot hold the focus, because it became disabled or hidden or
+    /// sits under a hidden ancestor, yields to an earlier one while it stays
+    /// mounted.
     pub fn trap_focus(mut self) -> Self {
         self.trap_focus = true;
         self

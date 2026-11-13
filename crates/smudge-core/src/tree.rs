@@ -181,6 +181,10 @@ struct Node {
     /// While it does, [`WidgetTree::layout`] pins the offset after each pass;
     /// see the resolution in the layout pass module.
     follow: Option<RwSignal<bool>>,
+    /// The flowing child the node keeps in place, by index, and how far
+    /// below the top of its content box, set by the element's builders.
+    /// [`WidgetTree::layout`] applies it after each pass.
+    pin: Option<(usize, f32)>,
     /// The node's interaction state: hovered, pressed, disabled and focus.
     interaction: Interaction,
     /// The cursor the node's element set for the pointer over it, or `None`
@@ -297,6 +301,10 @@ pub(crate) struct WidgetTree {
     /// a layout pass visits them alone instead of every node. A removed node
     /// leaves a stale id here until the next resolution drops it.
     following: Vec<WidgetId>,
+    /// The nodes that pin a child, so the pin resolution after a layout
+    /// pass visits them alone. A removed node leaves a stale id here until
+    /// the next resolution drops it.
+    pinned: Vec<WidgetId>,
     /// The theme that paint-time token resolution reads.
     theme: Theme,
     /// The nodes whose projected accessibility state may have changed, in the
@@ -334,6 +342,7 @@ impl WidgetTree {
             pending_autofocus: Vec::new(),
             focus_traps: Vec::new(),
             following: Vec::new(),
+            pinned: Vec::new(),
             theme: Theme::light(),
             a11y_dirty: Vec::new(),
             a11y_reset: false,
@@ -399,6 +408,7 @@ impl WidgetTree {
             clip: Rect::default(),
             scroll_offset: Point::default(),
             follow: None,
+            pin: None,
             interaction: Interaction::default(),
             cursor: None,
             handlers: Handlers::default(),

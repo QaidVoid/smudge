@@ -14,7 +14,7 @@
 //! anchor, the list recomputes its scroll offset from the anchor, so the
 //! content in view does not jump.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
@@ -22,7 +22,7 @@ use std::rc::Rc;
 use smudge_core::element::{Element, IntoElement, for_each};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{Memo, RenderEffect, RwSignal, prelude::*};
-use smudge_core::style::{Edges, Length, px};
+use smudge_core::style::px;
 use smudge_core::widget::{PaintCx, Widget, panel};
 
 use crate::height_index::HeightIndex;
@@ -97,14 +97,18 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// the first time its key enters the window, and it stays mounted, with its
 /// reactive state, until the key leaves the window. Content that changes
 /// while a row stays mounted must come from the signals that row reads: the
-/// list does not rebuild a mounted row when its item's data changes. A row's
-/// position is a binding, so an edit that shifts the rows moves the mounted
-/// ones without rebuilding them.
+/// list does not rebuild a mounted row when its item's data changes. The
+/// mounted rows flow edge to edge, so an edit that shifts them moves them
+/// without rebuilding them.
 ///
 /// The list learns a row's height when the row is mounted: the laid-out
 /// height lands in the index one frame after the row is laid out, following
-/// the one-frame rule. An item that never mounted keeps its estimate, so
-/// `estimate` should be close to the typical row height.
+/// the one-frame rule. The screen never waits for it: the anchored row is
+/// pinned where the index puts it and the mounted rows stack from it with
+/// their laid-out heights, so a row that grows pushes its neighbours away
+/// in the frame it grows instead of covering them. An item that never
+/// mounted keeps its estimate, so `estimate` should be close to the typical
+/// row height.
 ///
 /// `estimate` must be positive and finite. Anything else mounts no rows, and
 /// a list built that way shows an empty view. However small the rows
@@ -167,8 +171,8 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
     let offset = RwSignal::new(0.0);
     let visible: RwSignal<Option<f32>> = RwSignal::new(None);
     let total = RwSignal::new(0.0);
-    let version = RwSignal::new(0u64);
     let window: RwSignal<Vec<K>> = RwSignal::new(Vec::new());
+    let pin: RwSignal<Option<(usize, f32)>> = RwSignal::new(None);
     let reported = RwSignal::new(0u64);
     let pending: Rc<RefCell<Vec<(K, f32)>>> = Rc::new(RefCell::new(Vec::new()));
 
@@ -184,8 +188,8 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
         let offset = offset.clone();
         let visible = visible.clone();
         let total = total.clone();
-        let version = version.clone();
         let window = window.clone();
+        let pin = pin.clone();
         let reported = reported.clone();
         let pending = Rc::clone(&pending);
         RenderEffect::new(move || {
@@ -278,57 +282,62 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                 offset.set(wanted);
             }
 
-            {
+            let anchor_at = {
                 let mut state = state.borrow_mut();
-                if state.index.is_empty() {
+                let anchor_at = if state.index.is_empty() {
                     state.anchor = None;
+                    None
                 } else {
                     let at = state.index.index_at(wanted);
-                    let within = wanted - state.index.offset_of(at);
-                    state.anchor = Some((state.index.key(at).clone(), within));
-                }
+                    let top = state.index.offset_of(at);
+                    state.anchor = Some((state.index.key(at).clone(), wanted - top));
+                    Some((at, top))
+                };
                 let end = state.index.total();
                 if total.read(|value| *value) != end {
                     total.set(end);
                 }
-                if geometry_changed {
-                    version.set(version.read(|value| *value) + 1);
-                }
-            }
+                anchor_at
+            };
 
-            let next = window_keys(&state, viewport, estimate, wanted);
+            let (start, next) = window_keys(&state, viewport, estimate, wanted);
+            // The anchored row sits where the index puts it, and the rows
+            // around it stack from it with their laid-out heights, so a row
+            // that grows before its measurement reaches the index pushes its
+            // neighbours away instead of covering them.
+            let next_pin = anchor_at
+                .filter(|_| !next.is_empty())
+                .map(|(at, top)| (at - start, top));
             if window.read(|value| *value != next) {
                 window.set(next);
+            }
+            if pin.read(|value| *value != next_pin) {
+                pin.set(next_pin);
             }
         });
     }
 
     // The rows are keyed by the item key, so a row survives an edit that
-    // keeps it in the window and moves through its own position binding.
+    // keeps it in the window. They flow edge to edge in window order, and
+    // the pin places the anchored one, so an edit or a scroll moves the
+    // mounted rows without rebuilding them.
     let rows = {
         let state = Rc::clone(&state);
         let window = window.clone();
-        let version = version.clone();
         let row = Rc::clone(&row);
         for_each(
             move || window.get(),
             |item_key| item_key.clone(),
             move |item_key| {
-                let (top, content) = {
+                let content = {
                     let state = state.borrow();
                     let at = state.index.position(&item_key);
-                    let top = at.map(|at| state.index.offset_of(at)).unwrap_or(0.0);
                     let snapshot = state.items.borrow();
-                    let content = match at.and_then(|at| snapshot.get(at)) {
+                    match at.and_then(|at| snapshot.get(at)) {
                         Some(item) => row(item).into_any(),
                         None => panel().into_any(),
-                    };
-                    (top, content)
+                    }
                 };
-                let last_top = Cell::new(top);
-                let position_state = Rc::clone(&state);
-                let position_version = version.clone();
-                let position_key = item_key.clone();
                 let report_state = Rc::clone(&state);
                 let report_key = item_key.clone();
                 let report_signal = reported.clone();
@@ -343,28 +352,13 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                 Element::new(MeasureRow {
                     report: Rc::new(report),
                 })
-                .absolute()
-                .inset(move || {
-                    position_version.get();
-                    let top = {
-                        let state = position_state.borrow();
-                        state
-                            .index
-                            .position(&position_key)
-                            .map(|at| state.index.offset_of(at))
-                            .unwrap_or_else(|| last_top.get())
-                    };
-                    last_top.set(top);
-                    Edges {
-                        top: px(top),
-                        right: px(0.0),
-                        bottom: Length::Auto,
-                        left: px(0.0),
-                    }
-                })
+                .shrink(0.0)
                 .child(content)
             },
         )
+        .column()
+        .shrink(0.0)
+        .pin_child(move || pin.get())
     };
 
     let content = panel()
@@ -381,17 +375,18 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
     scroll_with_visible_height(content, visible, Some(total)).offset(offset)
 }
 
-/// Returns the keys of the rows the window mounts: the rows the viewport
-/// shows, plus the overscan on both sides.
+/// Returns the position of the first row the window mounts, and the keys
+/// of those rows: the rows the viewport shows, plus the overscan on both
+/// sides.
 fn window_keys<T: 'static, K: Eq + Hash + Clone>(
     state: &RefCell<KeyedList<T, K>>,
     viewport: Option<f32>,
     estimate: f32,
     offset: f32,
-) -> Vec<K> {
+) -> (usize, Vec<K>) {
     let state = state.borrow();
     if viewport.is_none() || estimate == 0.0 || state.index.is_empty() {
-        return Vec::new();
+        return (0, Vec::new());
     }
     let viewport = viewport.unwrap_or(0.0);
     let first = state.index.index_at(offset);
@@ -403,7 +398,7 @@ fn window_keys<T: 'static, K: Eq + Hash + Clone>(
     let end = (last + OVERSCAN)
         .min(state.index.len() - 1)
         .min(start.saturating_add(cap - 1));
-    state.index.keys()[start..=end].to_vec()
+    (start, state.index.keys()[start..=end].to_vec())
 }
 
 /// A row wrapper that reports its laid-out height when it paints, the way the

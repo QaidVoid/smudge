@@ -892,3 +892,102 @@ fn a_following_view_mounted_after_another_was_removed_still_pins() {
     );
     tree.debug_assert_consistent();
 }
+
+/// A column of three growable children 20 tall, under a root, with the
+/// middle child pinned 50 below the column's top. Laid out once.
+fn pinned_column() -> (WidgetTree, WidgetId, [WidgetId; 3], [Rc<Cell<f32>>; 3]) {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(200.0, 100.0));
+    let mut column_style = Style::default();
+    column_style.layout.direction = Direction::Column;
+    let column = tree.insert(Some(root), Box::new(Empty), column_style);
+    let heights = [(); 3].map(|_| Rc::new(Cell::new(20.0)));
+    let children = [0, 1, 2].map(|at| {
+        tree.insert(
+            Some(column),
+            Box::new(Growable(Rc::clone(&heights[at]))),
+            Style::default(),
+        )
+    });
+    tree.set_pin(column, Some((1, 50.0)));
+    tree.layout(SCROLL_VIEWPORT);
+    (tree, column, children, heights)
+}
+
+#[test]
+fn a_pinned_child_keeps_its_place_while_a_child_before_it_grows() {
+    let (mut tree, _, children, heights) = pinned_column();
+    assert_eq!(
+        tree.rect(children[0]),
+        Some(Rect::new(0.0, 30.0, 200.0, 50.0))
+    );
+    assert_eq!(
+        tree.rect(children[1]),
+        Some(Rect::new(0.0, 50.0, 200.0, 70.0))
+    );
+
+    heights[0].set(45.0);
+    tree.mark(children[0], Dirty::Layout);
+    tree.layout(SCROLL_VIEWPORT);
+    assert_eq!(
+        tree.rect(children[1]),
+        Some(Rect::new(0.0, 50.0, 200.0, 70.0)),
+        "the pinned child stays where the pin puts it"
+    );
+    assert_eq!(
+        tree.rect(children[0]),
+        Some(Rect::new(0.0, 5.0, 200.0, 50.0)),
+        "the grown child stacks upward from it, edge to edge"
+    );
+    assert_eq!(
+        tree.rect(children[2]),
+        Some(Rect::new(0.0, 70.0, 200.0, 90.0))
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn a_pinned_child_that_grows_pushes_the_children_after_it() {
+    let (mut tree, _, children, heights) = pinned_column();
+    heights[1].set(32.0);
+    tree.mark(children[1], Dirty::Layout);
+    tree.layout(SCROLL_VIEWPORT);
+    assert_eq!(
+        tree.rect(children[1]),
+        Some(Rect::new(0.0, 50.0, 200.0, 82.0))
+    );
+    assert_eq!(
+        tree.rect(children[2]),
+        Some(Rect::new(0.0, 82.0, 200.0, 102.0)),
+        "the next child starts where the grown one ends"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn a_new_pin_moves_the_children_without_a_layout_pass() {
+    let (mut tree, column, children, _) = pinned_column();
+    let runs = tree.layout_runs();
+    tree.set_pin(column, Some((2, 10.0)));
+    assert_eq!(
+        tree.rect(children[2]),
+        Some(Rect::new(0.0, 10.0, 200.0, 30.0))
+    );
+    assert_eq!(
+        tree.rect(children[0]),
+        Some(Rect::new(0.0, -30.0, 200.0, -10.0))
+    );
+    assert!(
+        !tree.layout(SCROLL_VIEWPORT),
+        "nothing asks for a layout pass"
+    );
+    assert_eq!(tree.layout_runs(), runs);
+
+    tree.set_pin(column, Some((7, 0.0)));
+    assert_eq!(
+        tree.rect(children[2]),
+        Some(Rect::new(0.0, 10.0, 200.0, 30.0)),
+        "an index past the last child leaves the children where they are"
+    );
+    tree.debug_assert_consistent();
+}
