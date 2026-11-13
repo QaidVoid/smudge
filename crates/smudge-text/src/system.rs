@@ -49,12 +49,14 @@ impl TextSystem {
         system
     }
 
-    /// Creates a system that sees the system fonts plus the bundled ones as a
-    /// fallback.
+    /// Creates a system that sees the system fonts, with the bundled ones as a
+    /// fallback when the `bundled-fonts` feature is on.
     ///
     /// System fonts are discovered only when the `system-fonts` feature is
-    /// enabled, which is impossible on wasm. Without it this behaves like
-    /// [`TextSystem::bundled_only`].
+    /// enabled, and only on Linux, FreeBSD, Windows, Android and Apple
+    /// platforms. Without it this behaves like [`TextSystem::bundled_only`].
+    /// Without `bundled-fonts`, text depends entirely on the faces the host
+    /// has.
     pub fn with_system_fonts() -> TextSystem {
         let mut system = TextSystem {
             fonts: parley::FontContext::default(),

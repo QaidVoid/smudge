@@ -17,7 +17,7 @@ Every widget that has a meaning reports a role, and a name or a value:
 
 Bounds, keyboard focus and the press action are reported too, and each frame sends only what changed since the last one.
 
-The projection is on by default through the `a11y` feature of `smudge-platform`, which reaches the platform accessibility APIs on Windows, macOS and Linux. It has no effect on the web: see [Known limits](/reference/limits).
+The projection is on by default through the `a11y` feature of `smudge`, which forwards to `smudge-platform` and reaches the platform accessibility APIs on Windows, macOS and Linux. Building with the feature off drops the projection, and the screen reader sees nothing. It has no effect on the web: see [Known limits](/reference/limits).
 
 ## Naming your own elements
 

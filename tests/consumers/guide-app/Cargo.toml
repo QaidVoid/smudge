@@ -1,0 +1,23 @@
+[package]
+name = "consumer-guide-app"
+description = "The forwarding manifest of the small-binary guide, built in each documented configuration"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+# The dependency and the features below mirror the forwarding sample in
+# docs/guide/small-binary.md, with a path instead of a version. The docs check
+# fails when the two drift apart, and ../check.sh builds every configuration
+# the guide documents, native and wasm.
+[dependencies]
+smudge = { path = "../../../crates/smudge", default-features = false, features = ["window"] }
+
+[features]
+default = ["a11y", "bundled-fonts"]
+a11y = ["smudge/a11y"]
+bundled-fonts = ["smudge/bundled-fonts"]
+system-fonts = ["smudge/system-fonts"]
+
+# Standalone, so this build's feature unification is the one an ordinary
+# consumer sees.
+[workspace]

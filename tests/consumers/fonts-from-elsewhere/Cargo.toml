@@ -1,0 +1,17 @@
+[package]
+name = "consumer-fonts-from-elsewhere"
+description = "Asserts that a font from another dependency reaches a facade with its font features off"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+# The facade takes no font feature. The direct smudge-text dependency keeps
+# its default `bundled-fonts`, and feature unification hands that font to the
+# facade's text crate too, so this builds and the label draws real glyphs.
+[dependencies]
+smudge = { path = "../../../crates/smudge", default-features = false }
+smudge-text = { path = "../../../crates/smudge-text" }
+
+# Standalone, so this build's feature unification is the one an ordinary
+# consumer sees.
+[workspace]

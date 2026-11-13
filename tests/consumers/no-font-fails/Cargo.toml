@@ -1,0 +1,16 @@
+[package]
+name = "consumer-no-font-fails"
+description = "Must fail to build: no font feature reaches the text crate"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+# The facade with its defaults off and nothing else in the graph providing a
+# font. Building this crate must fail on the text crate's guard, which
+# `../check.sh` asserts, so a build never silently draws no text.
+[dependencies]
+smudge = { path = "../../../crates/smudge", default-features = false, features = ["window"] }
+
+# Standalone, so this build's feature unification is the one an ordinary
+# consumer sees.
+[workspace]

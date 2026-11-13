@@ -1,0 +1,16 @@
+[package]
+name = "consumer-system-fonts-only"
+description = "Asserts that the facade with system fonts and no bundled fonts draws real glyphs"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+# The facade with both opt-out features off and the machine's fonts as the
+# only source, as the small-binary guide documents. The test draws a frame
+# through the ordinary text system and checks for real glyphs.
+[dependencies]
+smudge = { path = "../../../crates/smudge", default-features = false, features = ["system-fonts"] }
+
+# Standalone, so this build's feature unification is the one an ordinary
+# consumer sees.
+[workspace]

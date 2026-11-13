@@ -1,0 +1,15 @@
+[package]
+name = "consumer-headless"
+description = "The headless configuration of the small-binary guide: no window, the bundled fonts"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+# A headless application drives `App` without a window and keeps a font
+# feature, as the small-binary guide documents.
+[dependencies]
+smudge = { path = "../../../crates/smudge", default-features = false, features = ["bundled-fonts"] }
+
+# Standalone, so this build's feature unification is the one an ordinary
+# consumer sees.
+[workspace]

@@ -1,0 +1,20 @@
+[package]
+name = "consumer-library"
+description = "A library on Smudge that leaves the font choice to the application, as the features reference advises"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+# The library pattern from docs/reference/features.md: the defaults are off
+# on Smudge, and the library's own default feature forwards the bundled fonts,
+# so a plain build of the library works and an application can turn it off.
+[dependencies]
+smudge = { path = "../../../crates/smudge", default-features = false }
+
+[features]
+default = ["bundled-fonts"]
+bundled-fonts = ["smudge/bundled-fonts"]
+
+# Standalone, so this build's feature unification is the one an ordinary
+# consumer sees.
+[workspace]

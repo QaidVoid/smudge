@@ -66,6 +66,7 @@ export default defineConfig({
             { text: 'On the web', link: '/guide/web' },
             { text: 'Accessibility', link: '/guide/accessibility' },
             { text: 'Testing headless', link: '/guide/testing' },
+            { text: 'Shipping a small binary', link: '/guide/small-binary' },
           ],
         },
         {
