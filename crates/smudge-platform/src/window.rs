@@ -15,7 +15,7 @@ use std::time::Duration;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
-use winit::event::WindowEvent;
+use winit::event::{Ime, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
@@ -466,6 +466,9 @@ struct WindowState {
     ime_scale: f32,
     /// Whether the window currently accepts input method input.
     ime_allowed: bool,
+    /// Whether the input method stays off until the next frame, after a
+    /// remount replaced the text field a composition belonged to.
+    ime_held: bool,
     /// The cursor icon the window last showed. The window asks for the icon
     /// only when it changes, so a hover that crosses nodes which show the
     /// same look costs no call into the window system.
@@ -622,6 +625,7 @@ where
             ime_area: None,
             ime_scale: scale,
             ime_allowed: false,
+            ime_held: false,
             cursor: CursorIcon::Default,
             #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
             adapter,
@@ -713,7 +717,7 @@ where
                 on_frame(state.app.stats().clone(), stats);
             }
         }
-        state.update_ime();
+        state.update_ime(true);
         #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         state.update_a11y();
         if presented.is_some() && state.below_frame_limit() {
@@ -892,6 +896,17 @@ where
                 }
                 result
             }
+            // A composition event that arrives while the input method is off
+            // belongs to a composition that was dropped, for example one in a
+            // text field a remount replaced, and reaches no editor.
+            WindowEvent::Ime(Ime::Preedit(..) | Ime::Commit(_))
+                if self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.ime_held || !state.ime_allowed) =>
+            {
+                Ok(())
+            }
             other => {
                 if let Some(state) = self.state.as_mut() {
                     let input = state.translator.translate(&other, state.scale);
@@ -901,7 +916,7 @@ where
                             state.window.request_redraw();
                         }
                     }
-                    state.update_ime();
+                    state.update_ime(false);
                 }
                 Ok(())
             }
@@ -1017,7 +1032,35 @@ impl WindowState {
     /// the input method's candidate window where it was. A widget that
     /// reports no area turns the input method off, which is what a window
     /// does while no text field holds the focus.
-    fn update_ime(&mut self) {
+    ///
+    /// After a remount the input method is turned off and held off until
+    /// the redraw it requests, which `after_frame` marks, rather than until
+    /// the next window event: the window system announces the switch with
+    /// an event of its own, and the composition events still on their way
+    /// arrive after it. Composition events that arrive while it is held or
+    /// off are dropped. On Wayland the redraw waits for the compositor, which
+    /// has handled the switch by then, so nothing of the composition reaches
+    /// the replaced text field's successor. On X11 the switch takes effect
+    /// with the next event from the X server, which can come after that
+    /// redraw, so a late composition event can still reach it. macOS keeps
+    /// the composition, so there a following keystroke can bring it back.
+    fn update_ime(&mut self, after_frame: bool) {
+        if self.app.take_ime_reset() {
+            if self.ime_allowed {
+                self.ime_allowed = false;
+                self.window.set_ime_allowed(false);
+            }
+            self.ime_area = None;
+            self.ime_held = true;
+            self.window.request_redraw();
+            return;
+        }
+        if self.ime_held {
+            if !after_frame {
+                return;
+            }
+            self.ime_held = false;
+        }
         let area = self.app.ime_area();
         if area == self.ime_area && self.scale == self.ime_scale {
             return;

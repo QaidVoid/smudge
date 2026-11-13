@@ -161,11 +161,20 @@ pub struct App {
     window: Rc<RefCell<crate::window::WindowBook>>,
     /// Whether the next frame repaints the whole surface.
     force_full: bool,
-    /// The owner that the build closure, the signals it created, every
-    /// node's owner and the theme bindings live under.
+    /// Whether a remount replaced the text fields since the window last
+    /// asked, so the input method's composition belongs to none of them.
+    ime_reset: bool,
+    /// The owner that the build closure, the signals it created and every
+    /// node's owner live under.
     ///
-    /// Held so those stay alive for as long as the app does, and so the
-    /// cleanup at the end stops the theme bindings.
+    /// A child of the root owner. [`App::remount`] cleans it up and replaces
+    /// it, which disposes everything the previous build created.
+    build_owner: Owner,
+    /// The owner that the build owner, the theme bindings and the books of
+    /// timers, channels, window commands and the clipboard live under.
+    ///
+    /// Held so those stay alive for as long as the app does, across every
+    /// remount, and so the cleanup at the end stops the theme bindings.
     _root: Owner,
     /// The clipboard the app's handlers copy and paste through, when one is
     /// installed.
@@ -176,10 +185,11 @@ impl App {
     /// Creates an app and mounts the element that `build` returns.
     ///
     /// Installs the reactive runtime on the calling thread, then runs `build`
-    /// and mounts its element inside an owner that lives as long as the app, so
-    /// every binding sees the context that `build` provides. The mounted tree
-    /// is laid out and painted by the first call to [`App::frame`], which
-    /// repaints the whole surface.
+    /// and mounts its element inside an owner that lives until the app drops
+    /// or [`App::remount`] replaces the tree, so every binding sees the
+    /// context that `build` provides. The mounted tree is laid out and
+    /// painted by the first call to [`App::frame`], which repaints the whole
+    /// surface.
     ///
     /// Timers read the operating system's clock. Use [`App::with_clock`] to
     /// run them on another one.
@@ -213,7 +223,8 @@ impl App {
         let mut tree = WidgetTree::new();
         tree.set_scale(config.scale);
         let queue = UpdateQueue::default();
-        root.with(|| mount(build().into_any(), &mut tree, &queue, None));
+        let build_owner = root.child();
+        build_owner.with(|| mount(build().into_any(), &mut tree, &queue, None));
 
         App {
             tree,
@@ -229,9 +240,122 @@ impl App {
             channels,
             window,
             force_full: true,
+            ime_reset: false,
+            build_owner,
             _root: root,
             clipboard: None,
         }
+    }
+
+    /// Throws the whole tree away and mounts the element that `build` returns
+    /// in its place.
+    ///
+    /// Everything the previous build created goes with its tree: the
+    /// signals, memos and effects, the timers, and the channels, whose
+    /// senders answer every later `send` with an error. The node owners'
+    /// cleanup functions run as they do when a [`show`](crate::element::show)
+    /// child unmounts. What was created outside the build stays: signals
+    /// created before the app or with no owner, the theme and the bindings of
+    /// [`App::bind_theme`], the tick callback, the clipboard, the wake
+    /// callbacks and the window state. So a build that reads its state from
+    /// signals kept outside it draws that state again, through whatever code
+    /// `build` runs now.
+    ///
+    /// The tree's own state starts over. A held press ends as
+    /// [`App::release_press`] ends it, so its node hears `on_pointer_up`
+    /// before it goes and the release that follows reaches no handler. The
+    /// hover, the focus traps and the autofocus requests of the old tree are
+    /// dropped, and the next frame hovers the new node under the pointer.
+    /// The focus moves to the node that sits at the same child indices from
+    /// the root as the focused node did, when that node is focusable, can
+    /// hold the focus and lies inside the active focus trap, if any. Its
+    /// `on_focus` hears `true`, and the autofocus requests of the new build's
+    /// visible nodes are dropped, so the restored focus stays. A request
+    /// whose node is hidden waits as usual. Without a restored focus, an
+    /// autofocus request takes it as on a first mount. The keyboard
+    /// navigation mode is kept.
+    ///
+    /// Updates queued before the call reach no node, because every id they
+    /// name is gone, except a theme that [`App::bind_theme`] queued, which
+    /// still lands. The updates the new build queues at mount are applied
+    /// at once, so the restored focus can find a node that a
+    /// [`show`](crate::element::show) or [`for_each`](crate::element::for_each)
+    /// mounts. The new tree is laid out before this returns, so input that
+    /// arrives before the next frame hits it. The next frame repaints the
+    /// whole surface, and the next
+    /// [`App::take_a11y_changes`] reports a reset, so an accessibility
+    /// backend rebuilds its tree.
+    ///
+    /// The call needs the app itself, so it happens between frames and
+    /// between events, where the windowing layer and a test hold the app.
+    /// A handler, a timer, a channel handler, an effect or the tick callback
+    /// runs while the app is borrowed for a frame or an event and cannot
+    /// reach it, so a remount never interrupts a running frame.
+    ///
+    /// A remount is how a patched build replaces a running one, and it is
+    /// just as useful without that: an action that resets the interface to
+    /// its first state keeps the application's data in signals outside the
+    /// build and remounts the same build.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `build` panics, or when code the remount runs for the
+    /// application panics: a cleanup function, the `on_pointer_up` handler of
+    /// a held press, an `on_hover` handler of the old tree when that press
+    /// ends, an `on_focus` handler or a widget's bind function.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use smudge_core::app::{App, AppConfig, RepaintMode};
+    /// use smudge_core::geometry::{Color, Size};
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let width = RwSignal::new(30.0);
+    /// let build = {
+    ///     let width = width.clone();
+    ///     move || panel().child(panel().width(move || px(width.get())).height(px(10.0)))
+    /// };
+    /// let mut app = App::new(
+    ///     AppConfig {
+    ///         viewport: Size {
+    ///             width: 120.0,
+    ///             height: 80.0,
+    ///         },
+    ///         scale: 1.0,
+    ///         clear_color: Color::WHITE,
+    ///         repaint: RepaintMode::Damage,
+    ///     },
+    ///     build.clone(),
+    /// );
+    /// app.frame();
+    ///
+    /// width.set(50.0);
+    /// app.remount(build);
+    /// assert!(app.frame().full, "a remount repaints the whole surface");
+    ///
+    /// let mut widths = Vec::new();
+    /// app.visit_nodes(|_, _, rect| widths.push(rect.x1 - rect.x0));
+    /// assert_eq!(widths[1], 50.0, "the signal kept outside the build kept its value");
+    /// ```
+    pub fn remount<E: IntoElement>(&mut self, build: impl FnOnce() -> E) {
+        let focus = self.tree.focus_path();
+        self.tree.unmount_root();
+        self.build_owner.cleanup();
+        self.build_owner = self._root.child();
+        self.build_owner
+            .with(|| mount(build().into_any(), &mut self.tree, &self.queue, None));
+        self.queue.apply(&mut self.tree);
+        if let Some(path) = focus {
+            self.tree.restore_focus(&path);
+        }
+        // Input that arrives before the next frame hits the new tree, so it
+        // is laid out now rather than with that frame's layout pass.
+        self.tree.layout(self.config.viewport);
+        self.force_full = true;
+        self.ime_reset = true;
     }
 
     /// Changes the viewport and the scale, and makes the next frame repaint the
@@ -599,6 +723,21 @@ impl App {
     /// it.
     pub fn ime_area(&self) -> Option<Rect> {
         self.tree.ime_area()
+    }
+
+    /// Returns whether the input method has to start over, and clears the
+    /// request.
+    ///
+    /// [`App::remount`] replaces every text field, so a composition the
+    /// operating system still holds belongs to an editor that no longer
+    /// exists, and committing it would write into its replacement. A window
+    /// that reads `true` turns the input method off for a moment and drops
+    /// the composition events that arrive meanwhile, before it reports the
+    /// next [`App::ime_area`]. On Wayland that drops the composition. On
+    /// X11 a late composition event can still arrive after it, and macOS
+    /// keeps the composition when its input method turns off.
+    pub fn take_ime_reset(&mut self) -> bool {
+        std::mem::take(&mut self.ime_reset)
     }
 
     /// Returns the surface size in physical pixels.
