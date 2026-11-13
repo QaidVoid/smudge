@@ -86,6 +86,12 @@ impl WidgetTree {
     /// Panics when a node has no live layout node, which is an internal
     /// invariant: every node in the tree owns exactly one layout node.
     pub(crate) fn layout(&mut self, viewport: Size) -> bool {
+        self.layout_keeping_reveal(viewport, false)
+    }
+
+    /// Runs [`WidgetTree::layout`], and keeps the focus reveal request,
+    /// including one made during the pass, when `keep_reveal` is set.
+    fn layout_keeping_reveal(&mut self, viewport: Size, keep_reveal: bool) -> bool {
         let ran = match self.layout_pass(viewport) {
             Some(rects_changed) => {
                 // A trap that showed records the focus before an autofocus
@@ -142,8 +148,26 @@ impl WidgetTree {
             self.resolve_follow();
             self.resolve_reveal();
         }
-        self.reveal_focus = false;
+        if !keep_reveal {
+            self.reveal_focus = false;
+        }
         ran || settled
+    }
+
+    /// Lays the tree out now, for input that arrives before the next frame,
+    /// and leaves that frame's layout pass and the pending focus reveal to
+    /// run again.
+    ///
+    /// Handlers that this pass and the code before it ran, such as an
+    /// `on_focus` that grows a node above the focused one, write signals
+    /// that land only in the next frame's flush. The follow pin and the
+    /// focus reveal must see their result, so the next frame lays the tree
+    /// out again and reveals the focus after that flush, whether the focus
+    /// was restored before this pass or taken by an autofocus during it. A
+    /// press before that frame drops the reveal as usual.
+    pub(crate) fn layout_ahead(&mut self, viewport: Size) {
+        self.layout_keeping_reveal(viewport, true);
+        self.layout_dirty = true;
     }
 
     /// Sets the scroll offset of `id` and moves its flowing descendants.

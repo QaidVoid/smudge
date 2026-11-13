@@ -1217,3 +1217,39 @@ fn an_offset_written_while_following_is_overwritten_with_the_end() {
     );
     harness.assert_matches_full_repaint();
 }
+
+#[test]
+fn a_following_view_stays_at_the_end_through_a_remount_and_an_offset_write() {
+    let following = RwSignal::new(true);
+    let heights = RwSignal::new(vec![60, 61, 62]);
+    let offset = RwSignal::new(0.0_f32);
+    let build = {
+        let following = following.clone();
+        let heights = heights.clone();
+        let offset = offset.clone();
+        move || {
+            let heights = heights.clone();
+            panel().column().child(
+                scroll(log_rows(move || heights.get()))
+                    .offset(offset.clone())
+                    .follow_end(following.clone())
+                    .height(px(100.0)),
+            )
+        }
+    };
+    let mut harness = Harness::new(120.0, 200.0, 1.0, build.clone());
+    harness.frame();
+    harness.settle();
+
+    harness.app().remount(build);
+    offset.set(0.0);
+    harness.frame();
+
+    let rows = follow_rows(&mut harness);
+    assert!(
+        (rows[2].y1 - 100.0).abs() < 0.01,
+        "the first frame after the remount shows the end, at {:?}",
+        rows[2]
+    );
+    assert!(following.read(|value| *value));
+}
