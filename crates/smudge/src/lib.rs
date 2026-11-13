@@ -75,11 +75,14 @@
 //!   a software rasterizer.
 //! - **Web:** the CPU renderer runs in a browser on `wasm32-unknown-unknown`;
 //!   `crates/smudge-platform/examples/web` holds a buildable web example.
-//! - **Accessibility:** the AccessKit projection runs on desktop only. The
-//!   web target has no accessibility backend in this version.
+//! - **Accessibility:** the AccessKit projection runs on desktop only, with
+//!   the `a11y` feature, which is on by default. The web target has no
+//!   accessibility backend in this version.
 //! - **Text:** Chinese, Japanese, Thai, Lao, Khmer and Burmese break by word
 //!   only with the `complex-scripts` feature, which compiles in the break
-//!   dictionaries at about 3 MB per binary.
+//!   dictionaries at about 3 MB per binary. Text needs a font source: a
+//!   build in which the text crate gets no font feature fails to compile,
+//!   whichever crate the feature is enabled on.
 
 pub mod prelude;
 

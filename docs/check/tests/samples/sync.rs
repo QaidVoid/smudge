@@ -160,3 +160,52 @@ fn every_page_with_rust_samples_is_listed() {
         "pages with Rust samples missing from PAGES: {unlisted:?}"
     );
 }
+
+/// The `[features]` lines of a manifest, without blank lines or indentation.
+fn feature_lines(manifest: &str) -> Vec<&str> {
+    manifest
+        .split("[features]")
+        .nth(1)
+        .unwrap_or("")
+        .lines()
+        .map(str::trim)
+        .take_while(|line| !line.starts_with('['))
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
+}
+
+/// The `smudge = { ... }` dependency line of a manifest, without the
+/// `version` or `path` key, which differ between the guide and the consumer.
+fn smudge_dependency(manifest: &str) -> String {
+    let line = manifest
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("smudge = {"))
+        .unwrap_or("");
+    line.split(", ")
+        .filter(|part| !part.contains("version =") && !part.contains("path ="))
+        .collect::<Vec<_>>()
+        .join(", ")
+        .replace("smudge = { ", "smudge = {")
+}
+
+#[test]
+fn the_small_binary_forwarding_sample_matches_the_built_consumer() {
+    let page = include_str!("../../../guide/small-binary.md");
+    let consumer = include_str!("../../../../tests/consumers/guide-app/Cargo.toml");
+    let sample = page
+        .split("```toml")
+        .find(|block| block.contains("[features]"))
+        .and_then(|block| block.split("```").next())
+        .expect("the page shows a forwarding manifest with a [features] table");
+    assert_eq!(
+        feature_lines(sample),
+        feature_lines(consumer),
+        "the guide's forwarding features differ from tests/consumers/guide-app, which check.sh builds"
+    );
+    assert_eq!(
+        smudge_dependency(sample),
+        smudge_dependency(consumer),
+        "the guide's smudge dependency differs from tests/consumers/guide-app, which check.sh builds"
+    );
+}

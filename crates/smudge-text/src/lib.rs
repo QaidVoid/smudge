@@ -17,6 +17,13 @@
 //! at about 3 MB per binary and about 5 percent more layout time for other
 //! text.
 //!
+//! One font source must reach this crate. A build in which none does fails
+//! to compile, because every glyph would lay out as missing. Enable the
+//! `bundled-fonts` feature, the default, on `smudge`, `smudge-widgets` or
+//! this crate, or the `system-fonts` feature on `smudge` or this crate. The
+//! system fonts count only where they can be found: on Linux, FreeBSD,
+//! Windows, Android and Apple platforms, and not on the web.
+//!
 //! ```
 //! use smudge_text::{TextLayout, TextSystem, TextStyle};
 //!
@@ -28,6 +35,31 @@
 //! ```
 
 mod chrome;
+
+// The build fails when no font source reaches this crate, because text
+// would draw nothing: every glyph would lay out as missing. The system fonts
+// count only on the targets where the font collection can discover them.
+// Elsewhere, the web included, it finds none.
+#[cfg(not(any(
+    feature = "bundled-fonts",
+    all(
+        feature = "system-fonts",
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "windows",
+            target_os = "android",
+            target_vendor = "apple",
+        ),
+    ),
+)))]
+compile_error!(
+    "smudge-text has no font source: enable the `bundled-fonts` feature \
+     (the embedded fonts, on by default) on smudge, smudge-widgets or \
+     smudge-text, or the `system-fonts` feature on smudge or smudge-text \
+     on Linux, FreeBSD, Windows, Android or an Apple platform"
+);
+
 mod fonts;
 mod glyphs;
 mod input;

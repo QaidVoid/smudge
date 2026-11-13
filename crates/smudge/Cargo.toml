@@ -13,14 +13,22 @@ workspace = true
 [dependencies]
 smudge-core = { version = "0.2.0", path = "../smudge-core" }
 smudge-gpu = { version = "0.2.0", path = "../smudge-gpu", optional = true }
-smudge-platform = { version = "0.2.0", path = "../smudge-platform", optional = true }
-smudge-text = { version = "0.2.0", path = "../smudge-text" }
-smudge-widgets = { version = "0.2.0", path = "../smudge-widgets" }
+smudge-platform = { version = "0.2.0", path = "../smudge-platform", optional = true, default-features = false }
+smudge-text = { version = "0.2.0", path = "../smudge-text", default-features = false }
+smudge-widgets = { version = "0.2.0", path = "../smudge-widgets", default-features = false }
 
 [features]
-default = ["window"]
+default = ["window", "a11y", "bundled-fonts"]
 # Windowing, input and presentation through the platform crate.
 window = ["dep:smudge-platform"]
+# The accessibility projection that screen readers read. Implies `window`,
+# which feeds it. It has no effect on the web, which has no accessibility
+# backend.
+a11y = ["window", "smudge-platform/a11y"]
+# Embeds the fonts in the text crate's assets, so text layout never depends
+# on the host. Forwards to the same feature on the widgets crate. On wasm
+# this is the only font source.
+bundled-fonts = ["smudge-text/bundled-fonts", "smudge-widgets/bundled-fonts"]
 # The vello-based GPU renderer, with the window's GPU presentation path, so a
 # window can choose or auto-detect it.
 gpu = ["window", "dep:smudge-gpu", "smudge-platform/gpu"]

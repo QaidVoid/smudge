@@ -9,10 +9,17 @@ version.workspace = true
 
 [dependencies]
 smudge-core = { version = "0.2.0", path = "../smudge-core" }
-smudge-text = { version = "0.2.0", path = "../smudge-text" }
+smudge-text = { version = "0.2.0", path = "../smudge-text", default-features = false }
 
 [lints]
 workspace = true
+
+[features]
+default = ["bundled-fonts"]
+# Embeds the fonts in the text crate's assets, so widgets that lay out text
+# find a font even when no other dependency provides one. An application
+# that turns it off must enable a font feature on the text crate itself.
+bundled-fonts = ["smudge-text/bundled-fonts"]
 
 [dev-dependencies]
 insta = "1.49.0"

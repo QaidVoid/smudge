@@ -1,0 +1,19 @@
+[package]
+name = "consumer-widgets-fonts"
+description = "Asserts that smudge-widgets' default features provide a font"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+# The font source under test is smudge-widgets' own `bundled-fonts` default
+# feature. `smudge-text` is declared without features on purpose, so this is
+# the only edge in the graph that can bring a font in. If feature unification
+# loses it, the test finds no glyphs.
+[dependencies]
+smudge-core = { path = "../../../crates/smudge-core" }
+smudge-text = { path = "../../../crates/smudge-text", default-features = false }
+smudge-widgets = { path = "../../../crates/smudge-widgets" }
+
+# Standalone, so this build's feature unification is the one an ordinary
+# consumer sees.
+[workspace]

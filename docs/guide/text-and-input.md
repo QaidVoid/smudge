@@ -44,7 +44,22 @@ provide_text_style(TextStyle {
 
 ## Fonts
 
-The default build embeds Noto Sans, Noto Sans Bold and Noto Sans Mono, so text looks the same on every machine and nothing is read from the system. Enable the `system-fonts` feature of `smudge` to add the fonts installed on the machine, for scripts and families the bundled fonts do not cover. It is not available on the web. The generic families resolve to the system's choices first and keep the bundled faces as the fallback, so a machine without usable fonts still lays text out.
+The default build embeds Noto Sans, Noto Sans Bold and Noto Sans Mono, so text looks the same on every machine and nothing is read from the system. Enable the `system-fonts` feature of `smudge` to add the fonts installed on the machine, for scripts and families the bundled fonts do not cover. It is not available on the web. The generic families resolve to the system's choices first and, with `bundled-fonts` on as it is by default, keep the bundled faces as the fallback, so a machine without usable fonts still lays text out. [Shipping a small binary](./small-binary) covers turning the bundled faces off.
+
+Turning on `system-fonts` makes the installed fonts available but does not change the default style, which names the bundled sans so text never depends on the host. Name a generic family to use the host's faces, for example its interface font for a subtree:
+
+```rust
+use smudge::prelude::*;
+use smudge::text::{FontFamily, GenericFamily};
+
+fn root() -> Element<Panel> {
+    provide_text_style(TextStyle {
+        family: FontFamily::from(GenericFamily::SystemUi),
+        ..TextStyle::default()
+    });
+    column().child(label("Drawn in the host's interface font"))
+}
+```
 
 ### Scripts without spaces
 

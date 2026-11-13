@@ -24,6 +24,20 @@ fn labels() {
 }
 
 #[test]
+fn system_ui() {
+    use smudge::prelude::*;
+    use smudge::text::{FontFamily, GenericFamily};
+    
+    fn root() -> Element<Panel> {
+        provide_text_style(TextStyle {
+            family: FontFamily::from(GenericFamily::SystemUi),
+            ..TextStyle::default()
+        });
+        column().child(label("Drawn in the host's interface font"))
+    }
+}
+
+#[test]
 fn max_lines() {
     use smudge::prelude::*;
     

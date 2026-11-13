@@ -87,7 +87,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ! grep -q 'source = "git+' Cargo.lock
+tests/consumers/check.sh
 ```
+
+The consumer check builds the crates under `tests/consumers` outside the workspace, from the workspace's lockfile. They pin down the feature unification the font and accessibility features rely on: a direct `smudge-widgets` consumer finds a font, a font from another dependency reaches the facade, a library that forwards the font choice builds on native and wasm, the machine's fonts alone draw text, a headless build needs no window, every configuration the small-binary guide documents builds on native, the bundled-font configurations build on wasm, wasm with system fonts alone fails, and a build with no font source fails to compile.
 
 When a change touches `smudge-core`, `smudge-cpu`, `smudge-platform`, `smudge-text`, `smudge-widgets` or `smudge`, also run:
 
