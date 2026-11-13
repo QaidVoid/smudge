@@ -86,6 +86,7 @@ pub enum ResizeEdge {
 /// [`App::take_window_commands`](crate::App::take_window_commands) hands it
 /// to the windowing layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WindowCommand {
     /// Start an interactive move, as if the user grabbed the window's title
     /// bar with the press that is being handled.
@@ -100,10 +101,29 @@ pub enum WindowCommand {
 }
 
 /// The window state the windowing layer reports to the application.
+///
+/// More fields may follow, so a state is built from the default and the
+/// `with_` methods rather than as a struct literal:
+///
+/// ```
+/// use smudge_core::window::WindowState;
+///
+/// let state = WindowState::default().with_maximized(true);
+/// assert!(state.maximized);
+/// ```
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WindowState {
     /// Whether the window is maximized.
     pub maximized: bool,
+}
+
+impl WindowState {
+    /// Returns this state with its maximized flag set to `maximized`.
+    pub fn with_maximized(mut self, maximized: bool) -> WindowState {
+        self.maximized = maximized;
+        self
+    }
 }
 
 /// The look of the pointer over a node.
@@ -113,6 +133,7 @@ pub struct WindowState {
 /// variants name the direction the resize would pull, so an edge handle
 /// shows the same look the window system uses when it resizes that edge.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Cursor {
     /// The platform default, usually an arrow.
     #[default]
@@ -191,11 +212,7 @@ fn queue(command: WindowCommand) {
 /// created under, because its reruns run with no owner current. Other code,
 /// such as an input handler, names it through the current owner.
 fn running_book() -> Option<Rc<RefCell<WindowBook>>> {
-    let owner = runtime::observer_owner().or_else(|| {
-        runtime::with_runtime(|runtime| runtime.current_owner())
-            .filter(|owner| !owner.cleaned.get())
-    })?;
-    book_of(&owner)
+    book_of(&runtime::running_owner()?)
 }
 
 /// Replaces the window state the application's [`maximized`] reads, but only

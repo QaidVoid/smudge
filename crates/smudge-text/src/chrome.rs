@@ -271,6 +271,12 @@ fn apply_caret_shown(caret: &mut Caret, shown: bool) -> Dirty {
     Dirty::Paint
 }
 
+/// The key of the caret's placed state binding.
+struct CaretPaintKey;
+
+/// The key of the caret's blink state binding.
+struct CaretShownKey;
+
 /// Builds the caret node of one editing widget.
 ///
 /// The node is absolutely positioned and measures nothing: its widget paints
@@ -284,8 +290,13 @@ pub(crate) fn caret_node(chrome: &Rc<InputChrome>) -> Element<Caret> {
         shown: false,
     })
     .absolute()
-    .bind(move || paint_chrome.caret.get(), apply_caret_paint)
     .bind(
+        CaretPaintKey,
+        move || paint_chrome.caret.get(),
+        apply_caret_paint,
+    )
+    .bind(
+        CaretShownKey,
         move || shown_chrome.caret_on.get() && shown_chrome.caret_shown.get(),
         apply_caret_shown,
     )

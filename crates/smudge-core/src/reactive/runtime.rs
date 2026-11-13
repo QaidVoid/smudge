@@ -886,6 +886,18 @@ pub(crate) fn observer_owner() -> Option<Rc<OwnerData>> {
     with_runtime(|runtime| runtime.creation_owner(observer))
 }
 
+/// Returns the owner the running code belongs to: the creation owner of the
+/// running effect or memo, or else the current owner, when it is live.
+///
+/// Code that needs the application of the running code, such as a window
+/// command or a new channel, finds it through here, so it works the same in
+/// a binding's rerun, which runs with no owner current, as in a handler.
+pub(crate) fn running_owner() -> Option<Rc<OwnerData>> {
+    observer_owner().or_else(|| {
+        with_runtime(|runtime| runtime.current_owner()).filter(|owner| !owner.cleaned.get())
+    })
+}
+
 /// Runs the flush loop and returns whether any effect ran.
 ///
 /// Effects queued by writes made while the loop drains run in the same call.

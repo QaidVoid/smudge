@@ -280,9 +280,13 @@ pub fn text_area(value: RwSignal<String>) -> Element<TextArea> {
         .clip(true)
         .cursor(Cursor::Text)
         .min_height(|| line_floor(Value::Static(1)))
-        .bind(current_text_style, apply_ambient_style)
-        .bind(move || outside_write(&value_chrome, &value), apply_value)
-        .bind(move || edits_chrome.edits.get(), apply_edits)
+        .bind(AmbientStyleKey, current_text_style, apply_ambient_style)
+        .bind(
+            ValueKey,
+            move || outside_write(&value_chrome, &value),
+            apply_value,
+        )
+        .bind(EditsKey, move || edits_chrome.edits.get(), apply_edits)
         .on_key(move |event| handle_key(&key_chrome, event))
         .on_pointer_down(move |position| handle_press(&press_chrome, position))
         .on_pointer_move(move |position| handle_move(&move_chrome, position))
@@ -323,14 +327,29 @@ pub trait TextAreaExt: Sized {
     fn min_lines(self, lines: impl Into<Value<u32>>) -> Self;
 }
 
+/// The key of the area's ambient text style binding.
+struct AmbientStyleKey;
+
+/// The key of the area's value binding.
+struct ValueKey;
+
+/// The key of the area's edit counter binding.
+struct EditsKey;
+
+/// The key of the area's placeholder binding.
+struct PlaceholderKey;
+
+/// The key of the area's line floor binding.
+struct MinLinesKey;
+
 impl TextAreaExt for Element<TextArea> {
     fn placeholder(self, text: impl Into<Value<String>>) -> Self {
-        self.bind(text, set_placeholder)
+        self.bind(PlaceholderKey, text, set_placeholder)
     }
 
     fn min_lines(self, lines: impl Into<Value<u32>>) -> Self {
         let lines = lines.into();
-        self.bind(lines.clone(), set_min_lines)
+        self.bind(MinLinesKey, lines.clone(), set_min_lines)
             .min_height(move || line_floor(lines.clone()))
     }
 }

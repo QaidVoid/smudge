@@ -370,12 +370,8 @@ fn a_growing_list_in_a_column_takes_the_space_left_and_mounts_only_what_shows() 
             .height(px(VIEWPORT_HEIGHT))
             .child(panel().height(px(40.0)))
             .child(
-                virtual_list(
-                    || 10_000,
-                    ROW_HEIGHT,
-                    |index| label(format!("Row {index}")),
-                )
-                .grow(1.0),
+                virtual_list(|| 10_000, ROW_HEIGHT, |index| label(format!("Row {index}")))
+                    .grow(1.0),
             )
     });
     harness.frame();

@@ -222,6 +222,7 @@ fn check_size(width: u32, height: u32, found: usize) -> Result<(), ImageError> {
 
 /// Why an [`Image`] could not be built.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ImageError {
     /// The width or the height is zero, so the image has no pixel.
     ZeroSize {

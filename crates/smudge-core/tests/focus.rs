@@ -1226,3 +1226,63 @@ fn a_dialog_trap_hears_keys_before_its_opener_and_returns_the_focus_on_close() {
         "closing the dialog returns the focus to its opener"
     );
 }
+
+#[test]
+fn an_ime_commit_with_the_focus_behind_an_active_trap_starts_at_the_trap() {
+    let area = Rect {
+        x0: 2.0,
+        y0: 3.0,
+        x1: 30.0,
+        y1: 12.0,
+    };
+    let (editor_log, on_editor) = commit_log("editor");
+    let (dialog_log, on_dialog) = commit_log("dialog");
+    let on_dialog = Rc::new(RefCell::new(on_dialog));
+    let open = RwSignal::new(false);
+    let opened = open.clone();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        let on_dialog = Rc::clone(&on_dialog);
+        let open = opened.clone();
+        scene(
+            panel()
+                .column()
+                .child(
+                    Element::new(ImeReporter(Some(area)))
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .focusable()
+                        .on_ime_commit(on_editor),
+                )
+                .child(show(
+                    move || open.get(),
+                    move || {
+                        let on_dialog = Rc::clone(&on_dialog);
+                        panel()
+                            .width(px(40.0))
+                            .height(px(20.0))
+                            .trap_focus()
+                            .on_ime_commit(move |text| (on_dialog.borrow_mut())(text))
+                    },
+                )),
+        )
+    });
+    harness.frame();
+    harness.click(Point { x: 10.0, y: 5.0 });
+    assert_eq!(harness.app().ime_area(), Some(area));
+
+    open.set(true);
+    harness.frame();
+    harness.event(InputEvent::ImeCommit {
+        text: String::from("x"),
+    });
+    assert_eq!(*dialog_log.borrow(), ["dialog:x"]);
+    assert!(
+        editor_log.borrow().is_empty(),
+        "the editor behind the trap hears no text"
+    );
+    assert_eq!(
+        harness.app().ime_area(),
+        None,
+        "the input method does not anchor to the editor behind the trap"
+    );
+}

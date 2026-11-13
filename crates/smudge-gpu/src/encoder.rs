@@ -202,6 +202,8 @@ fn encode_op(
                 scene.pop_layer();
             }
         }
+        // An operation added after this renderer draws nothing here.
+        _ => {}
     }
 }
 

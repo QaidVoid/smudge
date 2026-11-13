@@ -294,8 +294,8 @@ pub fn label(text: impl Into<Value<String>>) -> Element<Label> {
     // The ambient style binding is installed first, so its update runs before
     // the updates of the builder methods and an explicit field wins over it.
     Element::new(Label::new(String::new()))
-        .bind(current_text_style, apply_ambient_style)
-        .bind(text, set_text)
+        .bind(AmbientStyleKey, current_text_style, apply_ambient_style)
+        .bind(TextKey, text, set_text)
 }
 
 /// Builder methods that set the text style of a [`label`] element.
@@ -358,21 +358,39 @@ pub trait LabelExt: Sized {
     fn max_lines(self, max_lines: impl Into<Value<Option<u32>>>) -> Self;
 }
 
+/// The key of a label's ambient text style binding.
+struct AmbientStyleKey;
+
+/// The key of a label's text binding.
+struct TextKey;
+
+/// The key of a label's font size binding.
+struct TextSizeKey;
+
+/// The key of a label's weight binding.
+struct WeightKey;
+
+/// The key of a label's family binding.
+struct FamilyKey;
+
+/// The key of a label's line cap binding.
+struct MaxLinesKey;
+
 impl LabelExt for Element<Label> {
     fn text_size(self, size: impl Into<Value<f32>>) -> Self {
-        self.bind(size, set_text_size)
+        self.bind(TextSizeKey, size, set_text_size)
     }
 
     fn weight(self, weight: FontWeight) -> Self {
-        self.bind(Value::Static(weight), set_weight)
+        self.bind(WeightKey, Value::Static(weight), set_weight)
     }
 
     fn family(self, family: FontFamily<'static>) -> Self {
-        self.bind(Value::Static(family), set_family)
+        self.bind(FamilyKey, Value::Static(family), set_family)
     }
 
     fn max_lines(self, max_lines: impl Into<Value<Option<u32>>>) -> Self {
-        self.bind(max_lines, set_max_lines)
+        self.bind(MaxLinesKey, max_lines, set_max_lines)
     }
 }
 

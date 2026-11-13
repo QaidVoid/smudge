@@ -124,7 +124,7 @@ fn maximized_reruns_a_binding_when_the_state_changes() {
         "the window starts unmaximized, so the node shows"
     );
 
-    app.set_window_state(WindowState { maximized: true });
+    app.set_window_state(WindowState::default().with_maximized(true));
     app.frame();
 
     visible = 0;
@@ -148,11 +148,11 @@ fn an_equal_window_state_report_reruns_no_binding() {
     });
     app.frame();
 
-    app.set_window_state(WindowState { maximized: true });
+    app.set_window_state(WindowState::default().with_maximized(true));
     app.frame();
     let after_change = runs.get();
 
-    app.set_window_state(WindowState { maximized: true });
+    app.set_window_state(WindowState::default().with_maximized(true));
     app.frame();
     assert_eq!(
         runs.get(),
@@ -176,7 +176,7 @@ fn a_memo_that_reads_maximized_follows_every_change() {
 
     let mut visible = 0;
     for maximized in [true, false, true] {
-        app.set_window_state(WindowState { maximized });
+        app.set_window_state(WindowState::default().with_maximized(maximized));
         app.frame();
         visible = 0;
         app.visit_nodes(|_, _, _| visible += 1);
@@ -213,21 +213,37 @@ fn a_window_command_with_no_live_application_does_nothing() {
     );
 }
 
+/// Returns the height of the first node under the root.
+fn header_height(harness: &mut Harness) -> f32 {
+    let mut height = None;
+    harness.app().visit_nodes(|depth, _, rect| {
+        if depth == 1 && height.is_none() {
+            height = Some(rect.height());
+        }
+    });
+    height.expect("the header is visible")
+}
+
 #[test]
 fn releasing_a_press_restores_hover_without_running_on_press() {
     let presses = Rc::new(Cell::new(0_u32));
     let pressed = Rc::clone(&presses);
     let hovered = Rc::new(Cell::new(false));
     let hover = Rc::clone(&hovered);
+    let ups = Rc::new(Cell::new(0_u32));
+    let up = Rc::clone(&ups);
     let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
         let pressed = Rc::clone(&pressed);
         let hover = Rc::clone(&hover);
+        let up = Rc::clone(&up);
         panel()
             .child(
                 panel()
                     .width(px(100.0))
                     .height(px(40.0))
+                    .pressed(|patch| patch.height(px(60.0)))
                     .on_pointer_down(|_| window::start_move())
+                    .on_pointer_up(move |_| up.set(up.get() + 1))
                     .on_press(move || pressed.set(pressed.get() + 1)),
             )
             .child(
@@ -247,9 +263,18 @@ fn releasing_a_press_restores_hover_without_running_on_press() {
         harness.app().take_window_commands(),
         vec![window::WindowCommand::Move]
     );
+    harness.frame();
+    assert_eq!(header_height(&mut harness), 60.0, "the press style shows");
     // The window system took the press for the move, so its release never
     // reaches the app.
     harness.app().release_press();
+    assert_eq!(ups.get(), 1, "the header hears the press end");
+    harness.frame();
+    assert_eq!(
+        header_height(&mut harness),
+        40.0,
+        "the pressed state, and the style it drew, ended with the press"
+    );
     harness.event(InputEvent::PointerLeft);
 
     harness.move_to(Point { x: 120.0, y: 10.0 });
@@ -329,11 +354,11 @@ fn a_bound_cursor_follows_its_signal() {
                 })
                 .height(px(40.0))
                 .cursor(move || {
-                    if wide_for_cursor.get() {
+                    Some(if wide_for_cursor.get() {
                         Cursor::Resize(ResizeEdge::East)
                     } else {
                         Cursor::Pointer
-                    }
+                    })
                 }),
         )
     });
@@ -462,4 +487,74 @@ fn the_cursor_resets_when_the_pointer_leaves() {
     assert_eq!(harness.app().cursor(), Cursor::Pointer);
     harness.event(InputEvent::PointerLeft);
     assert_eq!(harness.app().cursor(), Cursor::Default);
+}
+
+#[test]
+fn a_bound_cursor_of_none_falls_back_to_the_ancestor() {
+    let own = RwSignal::new(true);
+    let own_cursor = own.clone();
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        panel().child(
+            panel()
+                .width(px(120.0))
+                .height(px(40.0))
+                .cursor(Cursor::Text)
+                .child(
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .cursor(move || own_cursor.get().then_some(Cursor::Pointer)),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.move_to(Point { x: 20.0, y: 10.0 });
+    assert_eq!(harness.app().cursor(), Cursor::Pointer);
+
+    own.set(false);
+    harness.frame();
+    assert_eq!(
+        harness.app().cursor(),
+        Cursor::Text,
+        "a binding that sets no cursor leaves the choice to the ancestor"
+    );
+}
+
+#[test]
+fn a_press_keeps_the_cursor_of_a_cursor_only_child_under_the_pointer() {
+    let mut harness = Harness::new(200.0, 200.0, 1.0, || {
+        panel().child(
+            panel()
+                .width(px(120.0))
+                .height(px(40.0))
+                .cursor(Cursor::Text)
+                .on_press(|| {})
+                .child(
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .cursor(Cursor::Pointer),
+                ),
+        )
+    });
+    harness.frame();
+
+    let over_child = Point { x: 20.0, y: 10.0 };
+    harness.move_to(over_child);
+    harness.button_down(over_child);
+    assert_eq!(
+        harness.app().cursor(),
+        Cursor::Pointer,
+        "the press lands on the parent, but the child under the pointer \
+         keeps its cursor"
+    );
+
+    harness.move_to(Point { x: 180.0, y: 180.0 });
+    assert_eq!(
+        harness.app().cursor(),
+        Cursor::Text,
+        "dragged away from the pressed node, its own cursor shows"
+    );
+    harness.button_up(Point { x: 180.0, y: 180.0 });
 }

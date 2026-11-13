@@ -37,6 +37,7 @@
 //!     .child(panel().width(px(20.0)).height(px(20.0)).background(Color::WHITE));
 //! ```
 
+use std::any::TypeId;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
@@ -135,8 +136,19 @@ static_values!(
     Justify,
     Overflow,
     Point,
-    crate::window::Cursor,
 );
+
+impl From<crate::window::Cursor> for Value<Option<crate::window::Cursor>> {
+    fn from(cursor: crate::window::Cursor) -> Value<Option<crate::window::Cursor>> {
+        Value::Static(Some(cursor))
+    }
+}
+
+impl From<Option<crate::window::Cursor>> for Value<Option<crate::window::Cursor>> {
+    fn from(cursor: Option<crate::window::Cursor>) -> Value<Option<crate::window::Cursor>> {
+        Value::Static(cursor)
+    }
+}
 
 impl From<Option<u32>> for Value<Option<u32>> {
     fn from(value: Option<u32>) -> Value<Option<u32>> {
@@ -204,7 +216,18 @@ struct Binding {
     install: Install,
     /// The property the binding writes, when it writes one the element's
     /// builders can set again.
-    prop: Option<Prop>,
+    key: Option<Key>,
+}
+
+/// What a binding writes, so a later write of the same thing can replace an
+/// earlier binding of it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Key {
+    /// A property of the node's style or state.
+    Style(Prop),
+    /// A property of the node's widget, named by the marker type given to
+    /// [`Element::bind`].
+    Widget(TypeId),
 }
 
 /// A property an element's builders write, so a later write of the same
@@ -249,7 +272,7 @@ impl Binding {
         write: fn(&mut LayoutProps, T),
     ) -> Binding {
         Binding {
-            prop: Some(prop),
+            key: Some(Key::Style(prop)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -270,7 +293,7 @@ impl Binding {
         write: fn(&mut PaintProps, T),
     ) -> Binding {
         Binding {
-            prop: Some(prop),
+            key: Some(Key::Style(prop)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -287,7 +310,7 @@ impl Binding {
     /// A binding that writes the node's disabled bit.
     fn disabled(get: Rc<dyn Fn() -> bool>) -> Binding {
         Binding {
-            prop: Some(Prop::Disabled),
+            key: Some(Key::Style(Prop::Disabled)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -304,7 +327,7 @@ impl Binding {
     /// A binding that writes the node's accessible label.
     fn a11y_label(get: Rc<dyn Fn() -> String>) -> Binding {
         Binding {
-            prop: None,
+            key: None,
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -324,7 +347,7 @@ impl Binding {
     /// layout engine, which is what a scroll view does on every wheel tick.
     fn scroll_offset(get: Rc<dyn Fn() -> Point>) -> Binding {
         Binding {
-            prop: Some(Prop::ScrollOffset),
+            key: Some(Key::Style(Prop::ScrollOffset)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -341,7 +364,7 @@ impl Binding {
     /// A binding that writes which flowing child the node pins, and where.
     fn pin_child(get: Rc<dyn Fn() -> Option<(usize, f32)>>) -> Binding {
         Binding {
-            prop: Some(Prop::Pin),
+            key: Some(Key::Style(Prop::Pin)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -356,16 +379,16 @@ impl Binding {
     }
 
     /// A binding that writes the node's cursor.
-    fn cursor(get: Rc<dyn Fn() -> crate::window::Cursor>) -> Binding {
+    fn cursor(get: Rc<dyn Fn() -> Option<crate::window::Cursor>>) -> Binding {
         Binding {
-            prop: Some(Prop::Cursor),
+            key: Some(Key::Style(Prop::Cursor)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
-                        tree.set_cursor(id, Some(value));
+                        tree.set_cursor(id, value);
                     }));
                 })
             }),
@@ -379,11 +402,12 @@ impl Binding {
     /// measures returns [`Dirty::Layout`], which also invalidates the size the
     /// layout engine cached for the node.
     fn widget<W: Widget, T: 'static>(
+        key: Key,
         get: Rc<dyn Fn() -> T>,
         apply: fn(&mut W, T) -> Dirty,
     ) -> Binding {
         Binding {
-            prop: None,
+            key: Some(key),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -558,7 +582,12 @@ impl<W: Widget> Element<W> {
     /// of the same property, fixed or bound, replaces them: the last builder
     /// call for a property wins, as it does between two fixed values.
     fn replace_binding(&mut self, prop: Prop) {
-        self.bindings.retain(|binding| binding.prop != Some(prop));
+        self.drop_bindings(Key::Style(prop));
+    }
+
+    /// Drops the bindings recorded for `key` so far.
+    fn drop_bindings(&mut self, key: Key) {
+        self.bindings.retain(|binding| binding.key != Some(key));
     }
 
     /// Writes one paint property, or records a binding for it.
@@ -815,8 +844,8 @@ impl<W: Widget> Element<W> {
     ///
     /// The pin moves the children the way [`Element::scroll_offset`] does,
     /// outside the layout engine, so do not give the node a scroll offset
-    /// too. `None`, or an index past the last child, leaves the children
-    /// where they are. A change of the pin alone moves them without a
+    /// too. `None`, an index past the last child, or a pinned child that is
+    /// hidden or absolutely positioned leaves the children where they are. A change of the pin alone moves them without a
     /// layout pass.
     ///
     /// ```
@@ -912,7 +941,11 @@ impl<W: Widget> Element<W> {
     ///
     /// A change of hover re-resolves the style: a patch that touches only
     /// paint properties repaints the node, one that touches layout
-    /// properties lays it out again.
+    /// properties lays it out again. Hover also follows a layout that moves
+    /// nodes under a resting pointer, except that a layout never takes the
+    /// hover away from a node whose hover patch changes its layout: such a
+    /// patch can move the node off the pointer, and the node then stays
+    /// hovered until the pointer moves, instead of flickering.
     ///
     /// ```
     /// use smudge_core::geometry::Color;
@@ -1125,9 +1158,11 @@ impl<W: Widget> Element<W> {
     /// A commit can arrive with no key event at all, because composing text
     /// with an input method ends in a commit rather than a key press, so an
     /// editor that takes text needs this handler. The commit goes to the
-    /// deepest handler in the focused chain and does not bubble past it. The
-    /// handler runs inside the node's owner, so it can write the signals the
-    /// element's bindings read.
+    /// deepest handler in the focused chain and does not bubble past it.
+    /// While a focus trap is active and the focus is outside it, the commit
+    /// starts at the trap instead, as a key does. The handler runs inside
+    /// the node's owner, so it can write the signals the element's bindings
+    /// read.
     pub fn on_ime_commit(mut self, handler: impl FnMut(&str) + 'static) -> Self {
         self.handlers.on_ime_commit = Some(Box::new(handler));
         self
@@ -1175,8 +1210,12 @@ impl<W: Widget> Element<W> {
     /// pointer that sets one, so a nested setter wins over an ancestor's.
     /// Setting a cursor does not make the node a target: a press over a node
     /// that sets only a cursor still lands on the nearest ancestor that
-    /// responds, and so does hover. This can be bound to a signal, like the
-    /// style builders.
+    /// responds, and so does hover. This takes a [`Cursor`], or an
+    /// `Option<Cursor>` where `None` leaves the choice to the ancestors, and
+    /// it can be bound to a signal, like the style builders: a binding that
+    /// returns `None` hands the choice back to the ancestors.
+    ///
+    /// [`Cursor`]: crate::window::Cursor
     ///
     /// ```
     /// use smudge_core::geometry::Color;
@@ -1189,10 +1228,10 @@ impl<W: Widget> Element<W> {
     ///     .background(Color::rgb(40, 40, 48))
     ///     .cursor(Cursor::Pointer);
     /// ```
-    pub fn cursor(mut self, cursor: impl Into<Value<crate::window::Cursor>>) -> Self {
+    pub fn cursor(mut self, cursor: impl Into<Value<Option<crate::window::Cursor>>>) -> Self {
         self.replace_binding(Prop::Cursor);
         match cursor.into() {
-            Value::Static(cursor) => self.cursor = Some(cursor),
+            Value::Static(cursor) => self.cursor = cursor,
             Value::Dynamic(get) => self.bindings.push(Binding::cursor(get)),
         }
         self
@@ -1307,10 +1346,14 @@ impl<W: Widget> Element<W> {
     /// therefore takes over from the one around it. Removing a trap, which
     /// is what unmounting a [`show`] child does, restores the trap mounted
     /// before it, and returns the focus to the node that held it when the
-    /// trap mounted, when that node is still mounted and can take it. A trap
+    /// trap became active, when that node is still mounted and can take it.
+    /// A trap becomes active when it mounts visible or shows again. A trap
     /// that cannot hold the focus, because it became disabled or hidden or
     /// sits under a hidden ancestor, yields to an earlier one while it stays
-    /// mounted.
+    /// mounted, and a trap that hides gives the focus back the way removing
+    /// it does, when the focus was inside it or nowhere. A hidden or
+    /// disabled state counts once a layout pass has run, which every frame
+    /// that changes the hidden state does.
     pub fn trap_focus(mut self) -> Self {
         self.trap_focus = true;
         self
@@ -1451,6 +1494,13 @@ impl<W: Widget> Element<W> {
 
     /// Binds one property of the element's own widget.
     ///
+    /// The first argument names the property: pass a value of a marker type, usually a
+    /// unit struct, that stands for it and for nothing else. The last call
+    /// for a key wins, fixed or bound, the way it does for the style
+    /// builders: a later call drops the binding an earlier call with a key
+    /// of the same type recorded. Bindings with different key types all
+    /// stay, and they apply in the order they were made.
+    ///
     /// `apply` writes the value into the widget and returns how much of the
     /// node the write invalidated. A write that changes what the widget
     /// measures returns [`Dirty::Layout`], and the node is laid out and painted
@@ -1469,21 +1519,27 @@ impl<W: Widget> Element<W> {
     ///     fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
     /// }
     ///
-    /// let element = Element::new(Dot(0.0)).bind(3.0, |dot, value| {
+    /// /// The key of the dot's radius.
+    /// struct Radius;
+    ///
+    /// let element = Element::new(Dot(0.0)).bind(Radius, 3.0, |dot, value| {
     ///     dot.0 = value;
     ///     Dirty::Paint
     /// });
     /// ```
-    pub fn bind<T: 'static>(
+    pub fn bind<K: 'static, T: 'static>(
         mut self,
+        _key: K,
         value: impl Into<Value<T>>,
         apply: fn(&mut W, T) -> Dirty,
     ) -> Self {
+        let key = Key::Widget(TypeId::of::<K>());
+        self.drop_bindings(key);
         match value.into() {
             Value::Static(value) => {
                 apply(&mut self.widget, value);
             }
-            Value::Dynamic(get) => self.bindings.push(Binding::widget(get, apply)),
+            Value::Dynamic(get) => self.bindings.push(Binding::widget(key, get, apply)),
         }
         self
     }
@@ -1706,7 +1762,7 @@ pub fn show<E: IntoElement>(
     let build: Rc<dyn Fn() -> AnyElement> = Rc::new(move || build().into_any());
     let mut element = Element::new(Slot);
     element.bindings.push(Binding {
-        prop: None,
+        key: None,
         install: Box::new(move |id, queue| {
             let queue = queue.clone();
             let mounted: Rc<RefCell<Option<(WidgetId, Owner)>>> = Rc::new(RefCell::new(None));
@@ -1791,7 +1847,7 @@ where
     let row: Rc<dyn Fn(T) -> AnyElement> = Rc::new(move |item| row(item).into_any());
     let mut element = Element::new(Slot);
     element.bindings.push(Binding {
-        prop: None,
+        key: None,
         install: Box::new(move |slot, queue| {
             let queue = queue.clone();
             let mounted: Rc<RefCell<HashMap<K, (WidgetId, Owner)>>> =

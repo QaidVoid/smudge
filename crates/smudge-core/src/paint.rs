@@ -94,6 +94,7 @@ pub struct GlyphRun {
 /// A single drawing operation in paint coordinates, which leave out the
 /// scroll offsets of enclosing views (see [`crate::widget::Widget::paint`]).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum PaintOp {
     /// A filled rectangle with optional rounded corners.
     FillRect {

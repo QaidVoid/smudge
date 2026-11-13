@@ -64,10 +64,7 @@ impl WidgetTree {
         // An active trap holds the keyboard: a key that would start outside
         // it starts at the trap, so the trap's own handlers hear it before
         // the shortcuts above it, and a control behind it never does.
-        let start = match self.active_focus_trap() {
-            Some(trap) if start.is_none_or(|start| !self.is_within(start, trap)) => Some(trap),
-            _ => start,
-        };
+        let start = self.confine_to_trap(start);
         self.drop_invalid_focus();
         let handled = self.route_key(start, event);
         if !event.pressed {
@@ -84,6 +81,16 @@ impl WidgetTree {
                 self.set_keyboard_nav(true);
             }
             _ => {}
+        }
+    }
+
+    /// Returns the active focus trap when `start` lies outside it or is
+    /// `None`, and `start` otherwise, so routed input never starts behind an
+    /// active trap.
+    fn confine_to_trap(&self, start: Option<WidgetId>) -> Option<WidgetId> {
+        match self.active_focus_trap() {
+            Some(trap) if start.is_none_or(|start| !self.is_within(start, trap)) => Some(trap),
+            _ => start,
         }
     }
 
@@ -185,7 +192,10 @@ impl WidgetTree {
     ///
     /// The event starts at the node that held the focus when it arrived. A
     /// focused node that became disabled or hidden delivers nothing, but the
-    /// event keeps bubbling past it, like a key does.
+    /// event keeps bubbling past it, like a key does. While a focus trap is
+    /// active, an event that would start outside it starts at the trap, as a
+    /// key does, so text typed while a dialog is open never reaches an
+    /// editor behind it.
     fn route_from_focus(&mut self, mut deliver: impl FnMut(&mut Self, WidgetId) -> bool) {
         let start = match self.focused {
             Some(focused) => Some(focused),
@@ -194,6 +204,7 @@ impl WidgetTree {
                 .take()
                 .and_then(|anchor| self.nodes.get(anchor)?.parent),
         };
+        let start = self.confine_to_trap(start);
         self.drop_invalid_focus();
         let mut next = start;
         while let Some(id) = next {
@@ -327,9 +338,16 @@ impl WidgetTree {
     /// The widget paints in paint coordinates, so the rectangle it reports is
     /// in paint coordinates too, and this translates it back into window
     /// coordinates with the node's shift. A focused node that has since
-    /// become disabled or hidden reports none, as it would hear no key.
+    /// become disabled or hidden reports none, as it would hear no key, and
+    /// so does one outside an active focus trap, which hears no text.
     pub(crate) fn ime_area(&self) -> Option<Rect> {
         let focused = self.focused.filter(|&id| self.can_hold_focus(id))?;
+        if self
+            .active_focus_trap()
+            .is_some_and(|trap| !self.is_within(focused, trap))
+        {
+            return None;
+        }
         let node = self.nodes.get(focused)?;
         let shift = node.paint_shift;
         let widget: &dyn Widget = node.widget.as_ref();
@@ -489,12 +507,48 @@ impl WidgetTree {
     /// confined to its subtree, keys start there when the focus is outside
     /// it, and a press outside it does not move the focus out. Removing the
     /// node ends the trap, restores the one mounted before it, and returns
-    /// the focus to the node that held it when the trap mounted.
+    /// the focus to the node that held it when the trap became active.
+    /// Hiding the trap returns the focus the same way, and showing it again
+    /// records the focus anew; see [`WidgetTree::resolve_focus_traps`].
     pub(crate) fn push_focus_trap(&mut self, id: WidgetId) {
+        let active = self.can_hold_focus(id);
         self.focus_traps.push(FocusTrap {
             node: id,
-            restore: self.focused,
+            restore: if active { self.focused } else { None },
+            active,
         });
+    }
+
+    /// Records the focus of every trap that became able to hold it since the
+    /// last look, and gives it back for every trap that stopped being able
+    /// to.
+    ///
+    /// A trap that shows, or whose disabled state or hidden ancestor no
+    /// longer keeps it from the focus, records the node that holds the focus
+    /// now. A trap that hides, or becomes disabled, returns the focus to the
+    /// node it recorded, when the focus sits inside the trap or nowhere and
+    /// that node can still take it. The layout pass calls this, because that
+    /// is where a hidden state lands, before an autofocus request inside a
+    /// trap that just showed moves the focus in.
+    pub(super) fn resolve_focus_traps(&mut self) {
+        for at in 0..self.focus_traps.len() {
+            let trap = self.focus_traps[at];
+            let active = self.can_hold_focus(trap.node);
+            if active == trap.active {
+                continue;
+            }
+            self.focus_traps[at].active = active;
+            if active {
+                self.focus_traps[at].restore = self.focused;
+                continue;
+            }
+            let focus_inside = self
+                .focused
+                .is_none_or(|focused| self.is_within(focused, trap.node));
+            if focus_inside && let Some(restore) = trap.restore {
+                self.request_focus(restore);
+            }
+        }
     }
 
     /// Returns the trap that keyboard movement is confined to, when one is

@@ -85,6 +85,9 @@ impl WidgetTree {
         let Some(rects_changed) = self.layout_pass(viewport) else {
             return false;
         };
+        // A trap that showed records the focus before an autofocus inside it
+        // moves the focus in, and a trap that hid gives the focus back.
+        self.resolve_focus_traps();
         // A node that mounted for this frame with autofocus takes the focus
         // here: after the pass laid it out, so the styles the pass resolved
         // say whether it can hold the focus, and before the frame paints, so
@@ -116,9 +119,8 @@ impl WidgetTree {
             // the way a hover variant its own pin picked up can. Pin again so
             // the frame still ends at the end. The offset it writes usually
             // equals the one already applied and does nothing. When it moves,
-            // the hover it refreshes stays stale until the pointer moves or a
-            // later pass changes rects, so the passes a frame runs stay
-            // bounded at two.
+            // the hover it refreshes may carry a layout patch that waits for
+            // a later pass, so the passes a frame runs stay bounded at two.
             self.resolve_pins();
             self.resolve_follow();
         }
@@ -235,8 +237,9 @@ impl WidgetTree {
     /// Moves the children of `id` so its pinned child sits where the pin
     /// says, through the node's scroll offset.
     ///
-    /// A hidden node, a missing pin, an index past the last child and an
-    /// absolutely positioned child leave the children where they are.
+    /// A hidden node, a missing pin, an index past the last child, and an
+    /// absolutely positioned or hidden child leave the children where they
+    /// are.
     ///
     /// # Panics
     ///
@@ -259,7 +262,7 @@ impl WidgetTree {
         else {
             return;
         };
-        if child.resolved.layout.position == Position::Absolute {
+        if child.resolved.layout.position == Position::Absolute || child.resolved.layout.hidden {
             return;
         }
         let layout = self
@@ -603,9 +606,50 @@ impl WidgetTree {
     /// The layout pass and a scroll offset change both move nodes under a
     /// pointer that stays still, and no pointer event announces the move, so
     /// both rebuild the chain the same way.
+    ///
+    /// A rebuild never takes the hover away from a node whose hover patch
+    /// changes its layout. Such a patch can move the node off the pointer,
+    /// by narrowing it for example, and dropping the hover would put the
+    /// node back under the pointer, so the hover would flip with every frame
+    /// that lays out, and which state a frame showed would depend on how
+    /// many passes ran before it. The node keeps the hover until a pointer
+    /// event moves it, which makes the hover a function of the layout and
+    /// the pointer events alone.
     fn refresh_hover(&mut self) {
         let target = self.hover_target(self.pointer);
+        if target == self.hovered {
+            return;
+        }
+        let mut next = self.hovered;
+        while let Some(id) = next {
+            let Some(node) = self.nodes.get(id) else {
+                break;
+            };
+            let stays = target.is_some_and(|target| self.is_within(target, id));
+            if !stays && self.hover_moves_layout(id) {
+                return;
+            }
+            next = node.parent;
+        }
         self.set_hover_target(target);
+    }
+
+    /// Returns whether the hover patch of `id` changes the layout of its
+    /// base style.
+    fn hover_moves_layout(&self, id: WidgetId) -> bool {
+        let Some(node) = self.nodes.get(id) else {
+            return false;
+        };
+        let Some(patch) = node
+            .variants
+            .as_ref()
+            .and_then(|variants| variants.hovered.as_ref())
+        else {
+            return false;
+        };
+        let mut style = node.base.clone();
+        patch.apply(&mut style);
+        style.layout != node.base.layout
     }
 }
 

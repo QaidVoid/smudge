@@ -262,9 +262,13 @@ pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
         .clip(true)
         .cursor(Cursor::Text)
         .min_height(one_line)
-        .bind(current_text_style, apply_ambient_style)
-        .bind(move || outside_write(&value_chrome, &value), apply_value)
-        .bind(move || edits_chrome.edits.get(), apply_edits)
+        .bind(AmbientStyleKey, current_text_style, apply_ambient_style)
+        .bind(
+            ValueKey,
+            move || outside_write(&value_chrome, &value),
+            apply_value,
+        )
+        .bind(EditsKey, move || edits_chrome.edits.get(), apply_edits)
         .on_key(move |event| handle_key(&key_chrome, event))
         .on_pointer_down(move |position| handle_press(&press_chrome, position))
         .on_pointer_move(move |position| handle_move(&move_chrome, position))
@@ -294,9 +298,21 @@ pub trait TextInputExt: Sized {
     fn placeholder(self, text: impl Into<Value<String>>) -> Self;
 }
 
+/// The key of the input's ambient text style binding.
+struct AmbientStyleKey;
+
+/// The key of the input's value binding.
+struct ValueKey;
+
+/// The key of the input's edit counter binding.
+struct EditsKey;
+
+/// The key of the input's placeholder binding.
+struct PlaceholderKey;
+
 impl TextInputExt for Element<TextInput> {
     fn placeholder(self, text: impl Into<Value<String>>) -> Self {
-        self.bind(text, set_placeholder)
+        self.bind(PlaceholderKey, text, set_placeholder)
     }
 }
 

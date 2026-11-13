@@ -34,8 +34,11 @@ use smudge_core::widget::{MeasureInput, PaintCx, Panel, Widget};
 /// let picture = image(move || source.get());
 /// ```
 pub fn image(source: impl Into<Value<Option<Image>>>) -> Element<ImageView> {
-    Element::new(ImageView { source: None }).bind(source.into(), set_source)
+    Element::new(ImageView { source: None }).bind(SourceKey, source.into(), set_source)
 }
+
+/// The key of an image's source binding.
+struct SourceKey;
 
 /// The stretch-one-image widget.
 pub struct ImageView {

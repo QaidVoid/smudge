@@ -110,3 +110,82 @@ fn the_handler_runs_inside_the_owner_that_created_the_channel() {
         "the handler read the context of its own owner"
     );
 }
+
+#[test]
+fn dropping_every_sender_frees_the_handler_once_its_values_are_delivered() {
+    let (received, set_received) = signal_local(0u32);
+    let dropped = Rc::new(Cell::new(false));
+    let mut app = App::new(config(), panel);
+    let child = app.root().child();
+    let canary = Canary(Rc::clone(&dropped));
+    let sender = child.with(|| {
+        channel::channel(move |value: u32| {
+            let _alive = &canary;
+            set_received.set(value);
+        })
+    });
+    let clone = sender.clone();
+    drop(sender);
+    clone.send(5).unwrap();
+    drop(clone);
+    assert!(!dropped.get(), "a value still waits for the handler");
+
+    app.frame();
+    assert_eq!(received.get(), 5, "the value sent before the drop arrives");
+    assert!(
+        dropped.get(),
+        "with no sender left the handler is freed while its owner lives on"
+    );
+    assert!(!app.needs_frame());
+}
+
+#[test]
+fn a_live_sender_keeps_the_handler() {
+    let dropped = Rc::new(Cell::new(false));
+    let mut app = App::new(config(), panel);
+    let child = app.root().child();
+    let canary = Canary(Rc::clone(&dropped));
+    let sender = child.with(|| {
+        channel::channel(move |_: u32| {
+            let _alive = &canary;
+        })
+    });
+    app.frame();
+    app.frame();
+    assert!(!dropped.get(), "an idle channel with a sender stays open");
+    sender.send(1).unwrap();
+}
+
+#[test]
+fn a_channel_opened_in_a_binding_rerun_belongs_to_the_binding_owner() {
+    let (trigger, set_trigger) = signal_local(0u32);
+    let (received, set_received) = signal_local(0u32);
+    let holder: Rc<RefCell<Option<channel::UiSender<u32>>>> = Rc::new(RefCell::new(None));
+    let slot = Rc::clone(&holder);
+    let mut app = App::new(config(), move || {
+        let slot = Rc::clone(&slot);
+        crate::reactive::RenderEffect::new(move || {
+            if trigger.get() > 0 {
+                let set_received = set_received.clone();
+                slot.replace(Some(channel::channel(move |value: u32| {
+                    set_received.set(value);
+                })));
+            }
+        });
+        panel()
+    });
+    app.frame();
+    set_trigger.set(1);
+    app.frame();
+
+    let sender = holder.borrow().clone().expect("the rerun opened a channel");
+    sender.send(8).unwrap();
+    app.frame();
+    assert_eq!(received.get(), 8);
+
+    drop(app);
+    assert!(
+        sender.send(9).is_err(),
+        "the channel closed with the owner the binding was created under"
+    );
+}

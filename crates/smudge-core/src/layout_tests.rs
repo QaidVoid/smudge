@@ -991,3 +991,20 @@ fn a_new_pin_moves_the_children_without_a_layout_pass() {
     );
     tree.debug_assert_consistent();
 }
+
+#[test]
+fn a_hidden_pinned_child_leaves_the_children_where_they_are() {
+    let (mut tree, _, children, _) = pinned_column();
+    tree.apply_layout(children[1], |layout| layout.hidden = true);
+    tree.layout(SCROLL_VIEWPORT);
+    assert_eq!(
+        tree.rect(children[0]),
+        Some(Rect::new(0.0, 30.0, 200.0, 50.0)),
+        "a hidden pinned child has no place to keep, so the offset stays"
+    );
+    assert_eq!(
+        tree.rect(children[2]),
+        Some(Rect::new(0.0, 50.0, 200.0, 70.0))
+    );
+    tree.debug_assert_consistent();
+}

@@ -231,13 +231,17 @@ fn children_differ_in_order(before: &[WidgetId], after: &[WidgetId]) -> bool {
 /// projection rebuilds from scratch instead.
 const A11Y_DIRTY_CAP: usize = 4096;
 
-/// A mounted focus trap, and the focus to restore when it is removed.
+/// A mounted focus trap, and the focus to restore when it ends.
 #[derive(Clone, Copy)]
 struct FocusTrap {
     /// The node whose subtree keeps the keyboard.
     node: WidgetId,
-    /// The node that held the focus when the trap mounted.
+    /// The node that held the focus when the trap last became able to hold
+    /// it, by mounting visible or by showing again.
     restore: Option<WidgetId>,
+    /// Whether the trap could hold the focus when it was last looked at, so
+    /// a change between showing and hiding is seen once.
+    active: bool,
 }
 
 /// The retained tree of widgets.
@@ -484,12 +488,13 @@ impl WidgetTree {
         // A removed node keeps neither its autofocus request nor its trap:
         // the request is dropped, and the trap mounted before it, if any,
         // takes over. The focus goes back to where it was when the oldest
-        // removed trap mounted, since every later one mounted inside it.
+        // removed active trap became active, since every later one became
+        // active inside it. A hidden trap already gave its focus back.
         self.pending_autofocus.retain(|id| !order.contains(id));
         let restore = self
             .focus_traps
             .iter()
-            .find(|trap| order.contains(&trap.node))
+            .find(|trap| trap.active && order.contains(&trap.node))
             .and_then(|trap| trap.restore)
             .filter(|restore| !order.contains(restore));
         self.focus_traps.retain(|trap| !order.contains(&trap.node));

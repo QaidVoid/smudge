@@ -987,6 +987,8 @@ impl WindowState {
                         event_loop.exit();
                     }
                 }
+                // A command added after this layer is not applied.
+                _ => {}
             }
         }
     }
@@ -1001,8 +1003,9 @@ impl WindowState {
     /// reports the settled value.
     fn report_maximized(&mut self) {
         let maximized = self.window.is_maximized();
-        self.app
-            .set_window_state(smudge_core::window::WindowState { maximized });
+        self.app.set_window_state(
+            smudge_core::window::WindowState::default().with_maximized(maximized),
+        );
     }
 
     /// Shows the cursor the app asks for, when it changed.
@@ -1404,6 +1407,8 @@ fn cursor_icon(cursor: Cursor) -> CursorIcon {
         Cursor::Pointer => CursorIcon::Pointer,
         Cursor::Text => CursorIcon::Text,
         Cursor::Resize(edge) => CursorIcon::from(resize_direction(edge)),
+        // A cursor added after this layer shows the default.
+        _ => CursorIcon::Default,
     }
 }
 

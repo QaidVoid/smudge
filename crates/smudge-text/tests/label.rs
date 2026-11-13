@@ -328,3 +328,27 @@ fn a_label_with_a_literal_text_color_ignores_a_theme_switch() {
     expected.frame();
     harness.assert_matches(&expected);
 }
+
+#[test]
+fn a_fixed_text_size_after_a_bound_one_wins() {
+    TextSystem::bundled_only().install();
+    let (size, set_size) = signal_local(40.0f32);
+    let mut replaced = Harness::new(320.0, 240.0, 1.0, move || {
+        panel()
+            .column()
+            .child(label("Hi").text_size(move || size.get()).text_size(10.0))
+    });
+    let mut fixed = Harness::new(320.0, 240.0, 1.0, || {
+        panel().column().child(label("Hi").text_size(10.0))
+    });
+    replaced.frame();
+    fixed.frame();
+    set_size.set(60.0);
+    replaced.frame();
+
+    assert_eq!(
+        node_rects(&mut replaced)[1].height(),
+        node_rects(&mut fixed)[1].height(),
+        "the later fixed size replaced the earlier binding"
+    );
+}

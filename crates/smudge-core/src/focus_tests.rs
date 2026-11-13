@@ -831,3 +831,74 @@ fn removing_a_trap_after_its_restore_node_left_leaves_the_focus_empty() {
     assert_eq!(tree.focused(), None);
     tree.debug_assert_consistent();
 }
+
+#[test]
+fn hiding_a_trap_returns_the_focus_held_when_it_last_showed() {
+    let viewport = Size {
+        width: 100.0,
+        height: 100.0,
+    };
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let first = focusable_child(&mut tree, root);
+    let second = focusable_child(&mut tree, root);
+    let mut hidden = fixed(40.0, 100.0);
+    hidden.layout.hidden = true;
+    assert!(tree.layout(viewport));
+    assert!(tree.request_focus(first));
+    let trap = tree.insert(Some(root), Box::new(Empty), hidden);
+    tree.push_focus_trap(trap);
+    let field = focusable_child(&mut tree, trap);
+    assert!(tree.layout(viewport));
+    assert!(tree.request_focus(second));
+
+    tree.apply_layout(trap, |layout| layout.hidden = false);
+    assert!(tree.layout(viewport));
+    press_tab(&mut tree, false);
+    assert_eq!(tree.focused(), Some(field));
+
+    tree.apply_layout(trap, |layout| layout.hidden = true);
+    assert!(tree.layout(viewport));
+    assert_eq!(
+        tree.focused(),
+        Some(second),
+        "the focus goes back to where it was when the trap showed, not \
+         where it was when the trap mounted"
+    );
+
+    tree.apply_layout(trap, |layout| layout.hidden = false);
+    assert!(tree.layout(viewport));
+    press_tab(&mut tree, false);
+    assert_eq!(tree.focused(), Some(field));
+    tree.remove(trap);
+    assert_eq!(
+        tree.focused(),
+        Some(second),
+        "removing a trap that showed again returns the focus too"
+    );
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn hiding_a_trap_leaves_a_focus_outside_it_alone() {
+    let viewport = Size {
+        width: 100.0,
+        height: 100.0,
+    };
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), fixed(100.0, 100.0));
+    let first = focusable_child(&mut tree, root);
+    let second = focusable_child(&mut tree, root);
+    assert!(tree.layout(viewport));
+    assert!(tree.request_focus(first));
+    let trap = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 100.0));
+    tree.push_focus_trap(trap);
+    focusable_child(&mut tree, trap);
+    assert!(tree.layout(viewport));
+    assert!(tree.request_focus(second));
+
+    tree.apply_layout(trap, |layout| layout.hidden = true);
+    assert!(tree.layout(viewport));
+    assert_eq!(tree.focused(), Some(second));
+    tree.debug_assert_consistent();
+}

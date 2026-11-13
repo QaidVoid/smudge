@@ -12,8 +12,10 @@
 //! The receiving side lives as long as that owner: a row that unmounts, a
 //! view that hides or an application that closes stops its channels, and
 //! every later `send` returns the value in a [`Closed`]. A handler that
-//! panics closes its channel the same way. Creating a channel
-//! where no application is above the current owner is a programming error:
+//! panics closes its channel the same way. Once every sender is dropped and
+//! the values sent before are delivered, the receiving side goes away on its
+//! own, so a channel opened per request does not pile up. Creating a channel
+//! where no application is above the running code is a programming error:
 //! debug builds assert, and the sender that comes back delivers nothing.
 //!
 //! # Examples
@@ -66,9 +68,9 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak as ArcWeak};
 
-use crate::reactive::Owner;
 use crate::reactive::runtime::{self, CurrentOwnerGuard, OwnerData};
 
 /// The callback that asks the platform for the frame that drains a channel.
@@ -85,13 +87,15 @@ const WAKER_POISONED: &str = "a channel waker lock is poisoned, although it \
 
 /// Opens a channel from any thread to the application's user interface.
 ///
-/// The channel must be created where an application is above the current
-/// owner, which is the case inside a build closure, inside a `show` child or
-/// inside a `for_each` row. The receiving side is tied to the owner that is
-/// current when `channel` runs: the handler runs inside it, and cleaning it
-/// up stops the channel. With no application above the current owner the
-/// call is a programming error: debug builds panic, and release builds get a
-/// sender whose every `send` returns [`Closed`].
+/// The channel must be created where an application is above the running
+/// code, which is the case inside a build closure, a `show` child, a
+/// `for_each` row, an input handler or a binding. The receiving side is tied
+/// to the owner of that code: the owner that is current, or, inside a
+/// binding or memo, the owner it was created under, the way the
+/// [`window`](crate::window) functions find their application. The handler
+/// runs inside that owner, and cleaning it up stops the channel. Dropping
+/// every sender also ends the channel once the values already sent are
+/// delivered, which frees the handler.
 ///
 /// The handler runs on the application's thread at the start of the next
 /// frame, once per value, in send order. A frame delivers at most the values
@@ -142,9 +146,14 @@ const WAKER_POISONED: &str = "a channel waker lock is poisoned, although it \
 /// app.frame();
 /// assert_eq!(seen.get(), 7);
 /// ```
+///
+/// # Panics
+///
+/// Debug builds panic when no application is above the running code,
+/// because no frame would ever run the handler. Release builds return a
+/// sender whose every `send` returns [`Closed`] instead.
 pub fn channel<T: Send + 'static>(handler: impl FnMut(T) + 'static) -> UiSender<T> {
-    let owner = runtime::with_runtime(|runtime| runtime.current_owner())
-        .filter(|owner| !owner.cleaned.get());
+    let owner = runtime::running_owner();
     let book = owner.as_ref().and_then(book_of);
     let Some((owner, book)) = owner.zip(book) else {
         debug_assert!(
@@ -158,6 +167,7 @@ pub fn channel<T: Send + 'static>(handler: impl FnMut(T) + 'static) -> UiSender<
             shared: Arc::new(Shared {
                 queue: Mutex::new(Queue::Closed),
                 waker: Mutex::new(None),
+                senders: AtomicUsize::new(1),
             }),
         };
     };
@@ -165,6 +175,7 @@ pub fn channel<T: Send + 'static>(handler: impl FnMut(T) + 'static) -> UiSender<
     let shared = Arc::new(Shared {
         queue: Mutex::new(Queue::Open(VecDeque::new())),
         waker: Mutex::new(book.borrow().waker.clone()),
+        senders: AtomicUsize::new(1),
     });
 
     let mut handler = Box::new(handler) as Box<dyn FnMut(T)>;
@@ -199,13 +210,26 @@ pub fn channel<T: Send + 'static>(handler: impl FnMut(T) + 'static) -> UiSender<
     };
 
     let weak_book = Rc::downgrade(&book);
-    let closing: Arc<dyn ErasedChannel> = shared.clone();
-    Owner::on_cleanup(move || {
-        closing.close();
-        if let Some(book) = weak_book.upgrade() {
-            book.borrow_mut().receivers.retain(|other| other.id != id);
+    // Weak, so a channel whose senders and receiver are gone frees its
+    // queue even while the owner lives on.
+    let closing: ArcWeak<dyn ErasedChannel> = Arc::downgrade(&shared) as ArcWeak<dyn ErasedChannel>;
+    // Registered on the owner found above rather than the current one,
+    // because a binding's rerun runs with no owner current.
+    owner.state.borrow_mut().cleanups.push(Box::new(move || {
+        if let Some(closing) = closing.upgrade() {
+            closing.close();
         }
-    });
+        if let Some(book) = weak_book.upgrade() {
+            // Removed under the borrow and dropped after it, because the
+            // handler may reach the book as it drops.
+            let removed = {
+                let mut book = book.borrow_mut();
+                let at = book.receivers.iter().position(|other| other.id == id);
+                at.map(|at| book.receivers.remove(at))
+            };
+            drop(removed);
+        }
+    }));
 
     UiSender { shared }
 }
@@ -214,7 +238,8 @@ pub fn channel<T: Send + 'static>(handler: impl FnMut(T) + 'static) -> UiSender<
 ///
 /// Cloning is cheap and every clone sends into the same queue. A sender is
 /// [`Send`] and [`Sync`] when the value type is, so a thread that owns one
-/// can hand clones to its workers.
+/// can hand clones to its workers. Dropping the last clone ends the channel
+/// once the values it sent are delivered.
 #[must_use = "a channel delivers only through its sender, so a dropped \
               sender delivers nothing"]
 pub struct UiSender<T> {
@@ -224,9 +249,18 @@ pub struct UiSender<T> {
 
 impl<T> Clone for UiSender<T> {
     fn clone(&self) -> Self {
+        self.shared.senders.fetch_add(1, Ordering::Relaxed);
         UiSender {
             shared: Arc::clone(&self.shared),
         }
+    }
+}
+
+impl<T> Drop for UiSender<T> {
+    fn drop(&mut self) {
+        // Release orders every send of this sender before the count the
+        // application's thread reads, so a zero count never hides a value.
+        self.shared.senders.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -305,6 +339,8 @@ struct Shared<T> {
     /// application's platform sets it; a headless app has none, and its
     /// next `frame` call finds the values on its own.
     waker: Mutex<Option<RemoteWaker>>,
+    /// How many senders are alive.
+    senders: AtomicUsize,
 }
 
 /// The parts of a channel the book uses without knowing the value type.
@@ -321,6 +357,10 @@ trait ErasedChannel {
     /// Runs the waker, without holding the queue lock, for values that a
     /// drain in progress left behind.
     fn wake(&self);
+
+    /// Returns whether no sender is left and no value waits, so nothing can
+    /// ever reach the handler again.
+    fn finished(&self) -> bool;
 }
 
 impl<T> ErasedChannel for Shared<T> {
@@ -347,6 +387,13 @@ impl<T> ErasedChannel for Shared<T> {
             waker();
         }
     }
+
+    fn finished(&self) -> bool {
+        // The count is read first: a sender's last send happens before its
+        // drop lowers the count, so a zero count means the queue already
+        // holds every value that will ever arrive.
+        self.senders.load(Ordering::Acquire) == 0 && self.pending() == 0
+    }
 }
 
 /// One channel's receiving side, as the book holds it.
@@ -369,9 +416,10 @@ type Drain = Box<dyn FnMut(usize)>;
 /// The receiving sides of one application's channels.
 ///
 /// The application owns the book and drains it at the start of every frame.
-/// A channel registers its receiver here and the cleanup of the owner that
-/// created it removes it, so the book holds only channels whose owner still
-/// exists.
+/// A channel registers its receiver here, and the cleanup of the owner that
+/// created it removes it, as does a drain that finds every sender dropped
+/// and the queue empty, so the book holds only channels that can still
+/// deliver.
 #[derive(Default)]
 pub(crate) struct ChannelBook {
     /// The waker that channels created from now on start with.
@@ -379,7 +427,8 @@ pub(crate) struct ChannelBook {
     /// The id the next receiver gets.
     next_id: u64,
     /// The receivers, in creation order, so a frame drains the channels in
-    /// the order the application created them.
+    /// the order the application created them. Their ids therefore rise
+    /// along the list.
     receivers: Vec<Rc<Receiver>>,
 }
 
@@ -388,10 +437,27 @@ pub(crate) struct ChannelBook {
 /// Each receiver whose owner still exists delivers the values the queue held
 /// when the drain reached it, in send order, inside that owner. A value that
 /// lands while the drain runs waits for the next frame, and the drain asks
-/// for that frame through the waker once it ends.
+/// for that frame through the waker once it ends. Receivers whose senders
+/// are all gone and whose queues are empty leave the book afterwards.
+///
+/// A handler may create or end channels while the drain runs, so the drain
+/// walks the book by receiver id rather than by position, and allocates
+/// nothing.
 pub(crate) fn drain_all(book: &Rc<RefCell<ChannelBook>>) {
-    let round: Vec<_> = book.borrow().receivers.clone();
-    for receiver in round {
+    let mut reached: Option<u64> = None;
+    loop {
+        let receiver = {
+            let book = book.borrow();
+            let at = match reached {
+                Some(id) => book.receivers.partition_point(|other| other.id <= id),
+                None => 0,
+            };
+            match book.receivers.get(at) {
+                Some(receiver) => Rc::clone(receiver),
+                None => break,
+            }
+        };
+        reached = Some(receiver.id);
         let Some(owner) = receiver
             .owner
             .upgrade()
@@ -422,6 +488,23 @@ pub(crate) fn drain_all(book: &Rc<RefCell<ChannelBook>>) {
         if receiver.channel.pending() > 0 {
             receiver.channel.wake();
         }
+    }
+    // A finished receiver drops its handler, and what the handler captured
+    // may reach the book as it drops, so each one leaves the book before it
+    // is dropped.
+    loop {
+        let finished = {
+            let mut book = book.borrow_mut();
+            let at = book
+                .receivers
+                .iter()
+                .position(|receiver| receiver.channel.finished());
+            at.map(|at| book.receivers.remove(at))
+        };
+        let Some(finished) = finished else {
+            break;
+        };
+        drop(finished);
     }
 }
 

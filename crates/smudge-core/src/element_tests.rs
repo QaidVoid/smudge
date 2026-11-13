@@ -168,12 +168,16 @@ fn a_widget_binding_updates_the_widget_and_marks_it() {
     /// A widget with one property of its own.
     struct Dot(u8);
 
+    /// The key of the dot's property.
+    struct DotKey;
+
     impl Widget for Dot {
         fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
     }
 
     let (value, set_value) = signal_local(1u8);
     let (mut tree, queue, root) = mount_root(Element::new(Dot(0)).bind(
+        DotKey,
         move || value.get(),
         |dot, value| {
             dot.0 = value;
@@ -510,4 +514,69 @@ fn a_fixed_width_after_a_bound_size_keeps_the_bound_height() {
     assert_eq!(style.layout.width, Length::px(12.0));
     assert_eq!(style.layout.height, Length::px(60.0));
     assert_eq!(style.layout.direction, crate::style::Direction::Row);
+}
+
+/// A widget with two properties of its own, for the binding key tests.
+#[derive(Default)]
+struct Pair {
+    first: u8,
+    second: u8,
+}
+
+impl Widget for Pair {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+}
+
+/// The key of a [`Pair`]'s first property.
+struct First;
+
+/// The key of a [`Pair`]'s second property.
+struct Second;
+
+fn set_first(pair: &mut Pair, value: u8) -> Dirty {
+    pair.first = value;
+    Dirty::Paint
+}
+
+fn set_second(pair: &mut Pair, value: u8) -> Dirty {
+    pair.second = value;
+    Dirty::Paint
+}
+
+#[test]
+fn a_fixed_widget_value_after_a_binding_of_the_same_key_wins() {
+    let (value, set_value) = signal_local(1u8);
+    let second = value.clone();
+    let (mut tree, queue, root) = mount_root(
+        Element::new(Pair::default())
+            .bind(First, move || value.get(), set_first)
+            .bind(Second, move || second.get(), set_second)
+            .bind(First, crate::element::Value::Static(9), set_first),
+    );
+    settle(&mut tree, &queue);
+    set_value.set(2);
+    settle(&mut tree, &queue);
+
+    let pair = tree.widget_mut::<Pair>(root).expect("the root is a pair");
+    assert_eq!(pair.first, 9, "the later fixed value replaced the binding");
+    assert_eq!(pair.second, 2, "a binding of another key stays");
+}
+
+#[test]
+fn a_widget_binding_after_a_binding_of_the_same_key_replaces_it() {
+    let (early, set_early) = signal_local(1u8);
+    let (late, _set_late) = signal_local(5u8);
+    let (mut tree, queue, root) = mount_root(
+        Element::new(Pair::default())
+            .bind(First, move || early.get(), set_first)
+            .bind(First, move || late.get(), set_first),
+    );
+    settle(&mut tree, &queue);
+    set_early.set(7);
+    settle(&mut tree, &queue);
+
+    assert_eq!(
+        tree.widget_mut::<Pair>(root).map(|pair| pair.first),
+        Some(5)
+    );
 }

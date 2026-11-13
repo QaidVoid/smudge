@@ -481,3 +481,65 @@ fn a_layout_change_after_the_pointer_left_hovers_nothing() {
         "no pointer is in the window to hover with"
     );
 }
+
+/// Returns the width of the node at depth 2 that comes first in paint order.
+fn first_width(harness: &mut Harness) -> f32 {
+    let mut width = None;
+    harness.app().visit_nodes(|depth, _name, rect| {
+        if depth == 2 && width.is_none() {
+            width = Some(rect.width());
+        }
+    });
+    width.expect("the scene shows a node at depth 2")
+}
+
+#[test]
+fn a_hover_style_that_moves_its_node_off_a_resting_pointer_does_not_flicker() {
+    let (tick, set_tick) = reactive::signal_local(0.0f32);
+    let mut harness = Harness::new(200.0, 60.0, 1.0, move || {
+        panel().child(
+            panel()
+                .row()
+                .child(
+                    panel()
+                        .width(px(100.0))
+                        .height(px(20.0))
+                        .background(Color::BLACK)
+                        .hover(|p| p.width(px(20.0))),
+                )
+                .child(
+                    panel()
+                        .width(move || px(10.0 + tick.get()))
+                        .height(px(20.0)),
+                ),
+        )
+    });
+    harness.frame();
+    park_pointer(&mut harness);
+    harness.move_to(Point { x: 60.0, y: 10.0 });
+    harness.frame();
+    assert_eq!(
+        first_width(&mut harness),
+        20.0,
+        "the pointer hovers the node, whose patch narrows it off the pointer"
+    );
+
+    // Later frames lay out for reasons of their own while the pointer rests.
+    for step in 1..=4 {
+        set_tick.set(step as f32);
+        harness.frame();
+        assert_eq!(
+            first_width(&mut harness),
+            20.0,
+            "frame {step}: the hover holds until the pointer moves"
+        );
+    }
+
+    harness.move_to(Point { x: 150.0, y: 10.0 });
+    harness.frame();
+    assert_eq!(
+        first_width(&mut harness),
+        100.0,
+        "a pointer move away from the node drops the hover"
+    );
+}

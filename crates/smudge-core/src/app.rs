@@ -570,8 +570,8 @@ impl App {
     /// focus, and Tab moves it. While a focus trap is mounted, a press
     /// outside the trap leaves the focus where it is, and Tab moves it within
     /// the trap only. Removing the focused node clears the focus, and
-    /// removing a trap returns the focus to the node that held it when the
-    /// trap mounted.
+    /// removing or hiding a trap returns the focus to the node that held it
+    /// when the trap mounted or last showed.
     pub fn focused(&self) -> Option<WidgetId> {
         self.tree.focused()
     }
@@ -590,7 +590,8 @@ impl App {
     /// window coordinates, when it reports one.
     ///
     /// This is [`None`] while no widget reports an area, which is the default,
-    /// and while nothing is focused. A window presents the area to the
+    /// while nothing is focused, and while the focused node sits outside an
+    /// active focus trap. A window presents the area to the
     /// operating system so the input method can anchor its candidate window to
     /// it.
     pub fn ime_area(&self) -> Option<Rect> {

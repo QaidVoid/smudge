@@ -394,9 +394,15 @@ pub trait ScrollExt: Sized {
     fn follow_end(self, signal: RwSignal<bool>) -> Self;
 }
 
+/// The key of a view's offset signal binding.
+struct OffsetKey;
+
+/// The key of a view's follow signal binding.
+struct FollowKey;
+
 impl ScrollExt for Element<ScrollView> {
     fn offset(self, signal: RwSignal<f32>) -> Self {
-        self.bind(Value::Static(signal), use_offset_signal)
+        self.bind(OffsetKey, Value::Static(signal), use_offset_signal)
     }
 
     fn follow_end(self, signal: RwSignal<bool>) -> Self {
@@ -404,7 +410,7 @@ impl ScrollExt for Element<ScrollView> {
         // a call to `follow_end` on a view element reaches this one, which
         // pairs the node's pin with the chrome's wheel handling.
         self.follow(signal.clone())
-            .bind(Value::Static(signal), use_follow_signal)
+            .bind(FollowKey, Value::Static(signal), use_follow_signal)
     }
 }
 

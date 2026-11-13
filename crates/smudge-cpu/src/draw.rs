@@ -290,6 +290,8 @@ impl Canvas<'_> {
                 radius,
                 ref image,
             } => self.draw_image(maybe_translated(rect, offset), radius, image, area),
+            // An operation added after this renderer draws nothing here.
+            _ => {}
         }
     }
 

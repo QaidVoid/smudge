@@ -110,6 +110,9 @@ impl Widget for Writer {
     fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
 }
 
+/// The key of the value a [`Writer`] is bound to.
+struct WriterKey;
+
 /// Builds an app whose two slots mount in turn and each one's build closure
 /// flips the flag the other one reads, so the queue never settles.
 fn cycling_app() -> App {
@@ -288,6 +291,7 @@ fn a_bind_function_that_writes_its_own_signal_hits_the_round_cap() {
     let mut app = App::new(config(RepaintMode::Damage), move || {
         let set = Rc::new(move |next: u32| set_value.set(next));
         panel().child(Element::new(Writer(set)).bind(
+            WriterKey,
             move || value.get(),
             |writer, seen| {
                 (writer.0)(seen.wrapping_add(1));

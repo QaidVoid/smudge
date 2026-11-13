@@ -159,6 +159,7 @@ pub enum Display {
 
 /// What happens to children that do not fit inside their parent.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Overflow {
     /// Children paint outside the parent's bounds.
     Visible,

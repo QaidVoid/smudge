@@ -350,14 +350,22 @@ impl WidgetTree {
     ///
     /// The walk starts at the deepest node the pointer hits, not at the hover
     /// target, so a node that sets only a cursor shows it without becoming a
-    /// target. While a press is held it starts at the captured node instead,
-    /// because hover stays with the capture during a drag. A pointer outside
-    /// the window shows the default.
+    /// target. While a press is held, the walk starts there only when that
+    /// node lies inside the captured node, and at the captured node
+    /// otherwise, because hover stays with the capture during a drag. A
+    /// pointer outside the window shows the default, unless a press is held.
     pub(crate) fn cursor(&self) -> crate::window::Cursor {
+        let hit = if self.pointer_inside {
+            self.root.and_then(|root| self.hit(root, self.pointer))
+        } else {
+            None
+        };
         let mut next = match self.pressed {
-            Some(pressed) => Some(pressed),
-            None if self.pointer_inside => self.root.and_then(|root| self.hit(root, self.pointer)),
-            None => None,
+            Some(pressed) => Some(
+                hit.filter(|&hit| self.is_within(hit, pressed))
+                    .unwrap_or(pressed),
+            ),
+            None => hit,
         };
         while let Some(id) = next {
             let Some(node) = self.nodes.get(id) else {

@@ -20,6 +20,7 @@ use crate::tree::WidgetId;
 /// here is left out of the projection, and its children attach to the nearest
 /// projected ancestor.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Role {
     /// The window the tree fills. The backend adds this as the root.
     Window,
