@@ -1734,3 +1734,119 @@ fn only_the_focused_field_shows_its_selection() {
     );
     harness.assert_matches_full_repaint();
 }
+
+/// Returns whether the next frame paints a caret, telling it apart from
+/// other fills by its width.
+fn paints_caret(harness: &mut Harness) -> bool {
+    harness.settle();
+    let output = harness.app().frame();
+    output.list.items().iter().any(|item| {
+        matches!(item, DisplayItem::Op(PaintOp::FillRect { rect, .. }) if rect.width() == 1.0)
+    })
+}
+
+#[test]
+fn a_window_in_the_background_hides_the_selection_and_stops_the_blink() {
+    let (mut harness, _value) = mounted("some text");
+    focus(&mut harness);
+    harness.press_key_with(Key::Character(String::from("a")), command());
+    assert!(!selection_rows(&mut harness).is_empty());
+
+    harness.event(InputEvent::WindowFocus(false));
+    assert_eq!(selection_rows(&mut harness), Vec::<f32>::new());
+    harness.settle();
+    assert!(
+        !harness.app().needs_frame(),
+        "no caret blink wakes a window in the background"
+    );
+    assert_eq!(
+        harness.app().next_deadline(),
+        None,
+        "no blink timer is left to wake the window"
+    );
+    assert_eq!(harness.advance(BLINK * 3).nodes_painted, 0);
+
+    harness.event(InputEvent::WindowFocus(true));
+    assert!(
+        !selection_rows(&mut harness).is_empty(),
+        "the selection shows again when the window comes back"
+    );
+    assert_eq!(
+        harness.advance(BLINK).nodes_painted,
+        1,
+        "the caret blinks again when the window comes back"
+    );
+}
+
+#[test]
+fn the_caret_hides_in_a_background_window_and_shows_at_once_on_return() {
+    let (mut harness, _value) = mounted("some text");
+    focus(&mut harness);
+    assert!(paints_caret(&mut harness));
+
+    harness.event(InputEvent::WindowFocus(false));
+    assert!(
+        !paints_caret(&mut harness),
+        "the caret hides in the background"
+    );
+    harness.event(InputEvent::WindowFocus(true));
+    assert!(paints_caret(&mut harness));
+
+    harness.advance(BLINK);
+    assert!(!paints_caret(&mut harness), "the blink hid the caret");
+    harness.event(InputEvent::WindowFocus(false));
+    harness.settle();
+    harness.event(InputEvent::WindowFocus(true));
+    assert!(
+        paints_caret(&mut harness),
+        "the caret shows at once when the window comes back"
+    );
+}
+
+#[test]
+fn the_caret_shows_after_the_window_leaves_and_returns_within_one_frame() {
+    let (mut harness, _value) = mounted("some text");
+    focus(&mut harness);
+    harness.advance(BLINK);
+    assert!(!paints_caret(&mut harness), "the blink hid the caret");
+
+    harness.event(InputEvent::WindowFocus(false));
+    harness.event(InputEvent::WindowFocus(true));
+
+    assert!(
+        paints_caret(&mut harness),
+        "the caret shows at once although no frame ran in the background"
+    );
+}
+
+#[test]
+fn the_caret_shows_after_the_focus_leaves_and_returns_within_one_frame() {
+    let first = RwSignal::new(String::from("first"));
+    let second = RwSignal::new(String::from("second"));
+    let (one, two) = (first.clone(), second.clone());
+    let mut harness = Harness::new(200.0, 100.0, 1.0, move || {
+        panel()
+            .column()
+            .child(text_input(one.clone()).width(px(200.0)).height(px(32.0)))
+            .child(text_input(two.clone()).width(px(200.0)).height(px(32.0)))
+    });
+    harness.frame();
+    harness.click(Point { x: 60.0, y: 16.0 });
+    harness.settle();
+    harness.advance(BLINK);
+    assert!(!paints_caret(&mut harness), "the blink hid the caret");
+
+    harness.press_key(Key::Tab);
+    harness.press_key_with(
+        Key::Tab,
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
+
+    assert!(
+        paints_caret(&mut harness),
+        "the caret shows at once on the field the focus came back to"
+    );
+}

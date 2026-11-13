@@ -20,7 +20,10 @@
 //! [`maximized`] reports whether the window is maximized. It is a reactive
 //! read: a binding that reads it reruns when the windowing layer reports a
 //! new state through
-//! [`App::set_window_state`](crate::App::set_window_state).
+//! [`App::set_window_state`](crate::App::set_window_state). [`focused`]
+//! reports whether the window holds the operating system's input focus, and
+//! reruns its readers when the windowing layer reports a
+//! [`WindowFocus`](crate::input::InputEvent::WindowFocus) event.
 //!
 //! [`Cursor`] chooses the pointer's look over a node, set with the
 //! [`cursor`](crate::element::Element::cursor) builder. The cursor shows
@@ -29,7 +32,7 @@
 //!
 //! Code that runs with no live application above it, such as an owner whose
 //! application was dropped, queues nothing: the commands do nothing there,
-//! and [`maximized`] reads `false`.
+//! [`maximized`] reads `false` and [`focused`] reads `true`.
 //!
 //! On the web target the windowing layer applies no commands and reports the
 //! state as never maximized, so these functions queue and read without
@@ -198,6 +201,38 @@ pub fn maximized() -> bool {
     book.borrow().maximized.get()
 }
 
+/// Returns whether the window holds the operating system's input focus, as
+/// the windowing layer last reported it.
+///
+/// This is a reactive read, like [`maximized`], so a binding or an effect
+/// that calls it reruns when the window comes to the front or goes to the
+/// background. The keyboard focus inside the window does not move with it,
+/// so a node can hold the focus while the window is in the background. A
+/// windowing layer that reports nothing, such as a headless test, leaves it
+/// at `true`, and so does code with no live application above it.
+///
+/// # Examples
+///
+/// A banner that shows only while the window is in the background:
+///
+/// ```
+/// use smudge_core::geometry::Color;
+/// use smudge_core::style::px;
+/// use smudge_core::widget::panel;
+/// use smudge_core::window;
+///
+/// let banner = panel()
+///     .height(px(24.0))
+///     .background(Color::rgb(64, 64, 72))
+///     .hidden(|| window::focused());
+/// ```
+pub fn focused() -> bool {
+    let Some(book) = running_book() else {
+        return true;
+    };
+    book.borrow().focused.get()
+}
+
 /// Appends `command` to the command queue of the application the running
 /// code belongs to, or drops it when no live application is above the code.
 fn queue(command: WindowCommand) {
@@ -224,18 +259,30 @@ pub(crate) fn set_state(book: &Rc<RefCell<WindowBook>>, state: WindowState) {
     }
 }
 
+/// Records whether the window holds the input focus for the application's
+/// [`focused`], but only when it changed, so an equal report wakes no
+/// binding.
+pub(crate) fn set_focused(book: &Rc<RefCell<WindowBook>>, focused: bool) {
+    let signal = book.borrow().focused.clone();
+    if signal.get() != focused {
+        signal.set(focused);
+    }
+}
+
 /// Takes every command queued so far, in the order they were queued.
 pub(crate) fn take_commands(book: &Rc<RefCell<WindowBook>>) -> Vec<WindowCommand> {
     std::mem::take(&mut book.borrow_mut().commands)
 }
 
-/// Creates the book of a new application, whose [`maximized`] signal is
-/// created under the application's root owner so it dies with it.
+/// Creates the book of a new application, whose [`maximized`] and
+/// [`focused`] signals are created under the application's root owner so
+/// they die with it.
 pub(crate) fn new_book(root: &Owner) -> Rc<RefCell<WindowBook>> {
-    let maximized = root.with(|| RwSignal::new(false));
+    let (maximized, focused) = root.with(|| (RwSignal::new(false), RwSignal::new(true)));
     Rc::new(RefCell::new(WindowBook {
         commands: Vec::new(),
         maximized,
+        focused,
     }))
 }
 
@@ -247,8 +294,11 @@ pub(crate) fn new_book(root: &Owner) -> Rc<RefCell<WindowBook>> {
 pub(crate) struct WindowBook {
     /// The commands queued since the windowing layer last took them.
     commands: Vec<WindowCommand>,
-    /// The state the windowing layer last reported.
+    /// The maximized state the windowing layer last reported.
     maximized: RwSignal<bool>,
+    /// Whether the window held the input focus when the windowing layer
+    /// last reported it.
+    focused: RwSignal<bool>,
 }
 
 /// Returns the window book of the application `owner` belongs to, walking up

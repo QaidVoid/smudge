@@ -13,6 +13,7 @@ use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{self, RwSignal, prelude::*};
 use smudge_core::style::px;
 use smudge_core::widget::{PaintCx, Widget, panel};
+use smudge_core::window;
 use smudge_test::Harness;
 
 /// A counter shared with a handler.
@@ -1284,5 +1285,85 @@ fn an_ime_commit_with_the_focus_behind_an_active_trap_starts_at_the_trap() {
         harness.app().ime_area(),
         None,
         "the input method does not anchor to the editor behind the trap"
+    );
+}
+
+#[test]
+fn window_activation_leaves_the_focus_and_runs_no_focus_handler() {
+    let log: FocusLog = Rc::new(RefCell::new(Vec::new()));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, {
+        let log = Rc::clone(&log);
+        move || {
+            let first = Rc::clone(&log);
+            let second = Rc::clone(&log);
+            scene(
+                panel()
+                    .child(
+                        panel()
+                            .width(px(20.0))
+                            .height(px(20.0))
+                            .focusable()
+                            .on_focus(move |focused| first.borrow_mut().push(("a", focused))),
+                    )
+                    .child(
+                        panel()
+                            .width(px(20.0))
+                            .height(px(20.0))
+                            .focusable()
+                            .on_focus(move |focused| second.borrow_mut().push(("b", focused))),
+                    ),
+            )
+        }
+    });
+    harness.frame();
+    harness.press_key(Key::Tab);
+    let focused = harness.app().focused();
+
+    harness.event(InputEvent::WindowFocus(false));
+    harness.frame();
+    harness.event(InputEvent::WindowFocus(true));
+    harness.frame();
+    assert_eq!(harness.app().focused(), focused, "the node keeps the focus");
+    assert_eq!(*log.borrow(), [("a", true)], "no handler hears the window");
+
+    harness.event(InputEvent::WindowFocus(false));
+    harness.press_key(Key::Tab);
+    assert_eq!(
+        *log.borrow(),
+        [("a", true), ("a", false), ("b", true)],
+        "a focus move in the background is told at once"
+    );
+}
+
+#[test]
+fn window_focused_reruns_its_readers_on_a_real_change() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, {
+        let seen = Rc::clone(&seen);
+        move || {
+            let seen = Rc::clone(&seen);
+            let _reader = reactive::RenderEffect::new(move || {
+                seen.borrow_mut().push(window::focused());
+            });
+            panel()
+        }
+    });
+    harness.frame();
+    assert_eq!(
+        *seen.borrow(),
+        [true],
+        "an app with no report counts as focused"
+    );
+
+    harness.event(InputEvent::WindowFocus(false));
+    harness.frame();
+    harness.event(InputEvent::WindowFocus(false));
+    harness.frame();
+    harness.event(InputEvent::WindowFocus(true));
+    harness.frame();
+    assert_eq!(
+        *seen.borrow(),
+        [true, false, true],
+        "each change reruns the reader once, and a repeated report does not"
     );
 }

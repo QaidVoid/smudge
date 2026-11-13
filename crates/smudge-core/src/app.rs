@@ -629,10 +629,13 @@ impl App {
     /// Key events are routed to the focused node and bubble to its ancestors
     /// until a handler takes them, starting at the root when nothing anchors
     /// the key and at the active focus trap when the key would otherwise
-    /// start outside it, and an unhandled Tab or Shift+Tab moves the focus, staying
-    /// inside the active focus trap when one is mounted. Handlers run at
-    /// once, inside their node's owner, and a handler that writes a signal
-    /// makes the change visible with the next call to [`App::frame`]. The app
+    /// start outside it, and an unhandled Tab or Shift+Tab moves the focus,
+    /// staying inside the active focus trap when one is mounted. A change of
+    /// the window's input focus clears a composition and updates what
+    /// [`window::focused`](crate::window::focused) reads, while the focused
+    /// node keeps the focus and hears no `on_focus`. Handlers run at once,
+    /// inside their node's owner, and a handler that writes a signal makes
+    /// the change visible with the next call to [`App::frame`]. The app
     /// also records the pointer position from pointer events and the keyboard
     /// modifiers from key and modifiers events.
     pub fn handle_event(&mut self, event: InputEvent) {
@@ -665,6 +668,7 @@ impl App {
                 if !focused {
                     self.tree.ime_preedit("", None);
                 }
+                crate::window::set_focused(&self.window, focused);
             }
         }
     }

@@ -7,10 +7,12 @@
 //! test that runs the app on a [`VirtualClock`] advances time by hand and
 //! observes the exact timers it expects, without sleeping.
 //!
-//! A timer is registered under the owner that is current when it is created,
-//! which is what makes the app find it: every owner chain leads to a root,
-//! and the root holds the timer book. Code that runs with no current owner,
-//! such as a bare test, creates no timer at all.
+//! A timer is registered under the owner the creating code belongs to, which
+//! is what makes the app find it: every owner chain leads to a root, and the
+//! root holds the timer book. That is the current owner, or, when none is
+//! current, as in a binding's rerun, the owner the running effect or memo
+//! was created under. Code that belongs to no owner, such as a bare test,
+//! creates no timer at all.
 //!
 //! ```
 //! use std::time::Duration;
@@ -223,15 +225,16 @@ impl TimerBook {
 /// Registers a timer that fires after `delay` and, when `period` is given,
 /// again every period after that.
 ///
-/// Returns the entry, or `None` when there is no current owner, the current
-/// owner has already been cleaned up, or no app holds a timer book above the
-/// owner.
+/// Returns the entry, or `None` when the running code belongs to no owner,
+/// its owner has already been cleaned up, or no app holds a timer book above
+/// the owner.
 fn register(
     period: Option<Duration>,
     delay: Duration,
     run: Box<dyn FnMut()>,
 ) -> Option<Rc<TimerEntry>> {
-    let owner = runtime::with_runtime(|runtime| runtime.current_owner())?;
+    let owner = runtime::with_runtime(|runtime| runtime.current_owner())
+        .or_else(runtime::observer_owner)?;
     if owner.cleaned.get() {
         return None;
     }
@@ -339,11 +342,15 @@ fn book_of(owner: &Rc<OwnerData>) -> Option<Rc<RefCell<TimerBook>>> {
 /// Returns the current time of the clock of the app that owns the code
 /// running right now, or the system time when no app does.
 ///
+/// Code that runs with no current owner, such as an effect's rerun, belongs
+/// to the effect's owner, as it does when it creates a timer.
+///
 /// Handlers run inside the owner of their node, so input handlers read the
 /// app's time this way, which makes double click detection and other timing
 /// testable with a virtual clock.
 pub fn now() -> Instant {
-    let owner = runtime::with_runtime(|runtime| runtime.current_owner());
+    let owner =
+        runtime::with_runtime(|runtime| runtime.current_owner()).or_else(runtime::observer_owner);
     match owner.as_ref().and_then(book_of) {
         Some(book) => book.borrow().clock.now(),
         None => Instant::now(),
@@ -352,11 +359,12 @@ pub fn now() -> Instant {
 
 /// Runs `fun` once, after `duration` has passed on the app's clock.
 ///
-/// The timer is created under the current owner and stops when that owner is
+/// The timer is created under the owner the calling code belongs to, as the
+/// [module documentation](self) describes, and stops when that owner is
 /// cleaned up or when `fun` has run, whichever comes first. The closure runs
 /// at the start of a frame, inside the owner it was created under, so it can
-/// write the signals that owner's bindings read. Code with no current owner,
-/// or with no app above it, creates no timer and drops `fun`.
+/// write the signals that owner's bindings read. Code that belongs to no
+/// owner, or has no app above it, creates no timer and drops `fun`.
 ///
 /// A duration of zero fires at the start of the next frame.
 pub fn after(duration: Duration, fun: impl FnMut() + 'static) {

@@ -105,7 +105,7 @@ let form = column()
 | Ctrl or Cmd with A, C, X, V | Select all, copy, cut, paste. |
 | Ctrl or Cmd with Z | Undo, a typed word at a time. Add Shift to redo, or use Ctrl with Y outside macOS. |
 
-The caret is its own node, so a blink repaints the caret's thin rectangle and nothing else.
+The caret is its own node, so a blink repaints the caret's thin rectangle and nothing else. While the window is in the background, the focused field hides its caret and its selection and stops blinking, so it wakes nothing until the window comes back.
 
 ### Input methods
 

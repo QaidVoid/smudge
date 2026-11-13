@@ -21,6 +21,7 @@ use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::timer::{self, TimerHandle};
 use smudge_core::tree::Dirty;
 use smudge_core::widget::{PaintCx, Widget};
+use smudge_core::window;
 use web_time::Instant;
 
 use crate::input::Editor;
@@ -65,9 +66,12 @@ pub(crate) struct InputChrome {
     pub(crate) caret: RwSignal<Option<CaretPaint>>,
     /// The blink phase: `true` while the caret shows.
     pub(crate) caret_on: RwSignal<bool>,
-    /// Whether the widget holds the focus, which is when its caret and its
-    /// selection show at all.
+    /// Whether the widget holds the keyboard focus.
     pub(crate) focused: RwSignal<bool>,
+    /// Whether the caret and the selection show, which they do while the
+    /// widget holds the focus and the window holds the input focus, as
+    /// [`InputChrome::track_active`] last saw it.
+    pub(crate) active: Cell<bool>,
     /// The widget's content box in paint coordinates, the color its caret
     /// drew with and the box's origin relative to the widget's rectangle, as
     /// the last paint left them, or `None` before the first paint.
@@ -97,7 +101,8 @@ pub(crate) struct InputChrome {
     pub(crate) dragging: Cell<bool>,
     /// When and where the last click landed, for double click detection.
     pub(crate) last_click: Cell<Option<(Instant, Point)>>,
-    /// The handle of the blink timer, present only while focused.
+    /// The handle of the blink timer, present only while the widget is
+    /// active, as [`InputChrome::track_active`] last saw it.
     pub(crate) blink: RefCell<Option<TimerHandle>>,
     /// Whether placing the caret scrolls the text to keep it visible. A
     /// wheel turns this off, so the paint after it keeps the scroll the
@@ -126,6 +131,7 @@ impl InputChrome {
             caret: RwSignal::new(None),
             caret_on: RwSignal::new(true),
             focused: RwSignal::new(false),
+            active: Cell::new(false),
             painted: Cell::new(None),
             scroll_x: Cell::new(0.0),
             scroll_y: Cell::new(0.0),
@@ -168,6 +174,31 @@ impl InputChrome {
     /// Stops the blink timer.
     pub(crate) fn stop_blink(&self) {
         *self.blink.borrow_mut() = None;
+    }
+
+    /// Returns whether the caret and the selection show, tracking the
+    /// widget's focus and the window's, and on every run either stops the
+    /// blink or shows the caret and restarts the blink.
+    ///
+    /// The widget's activity binding calls this as its source, so it reruns
+    /// as either focus changes, and the blink timer it starts belongs to the
+    /// widget's node. A window in the background stops the blink, so it
+    /// schedules no frames, and the caret shows at once when the window
+    /// comes back. The window's focus moves no caret and keeps the scroll.
+    ///
+    /// Every rerun that ends active shows the caret and restarts the blink,
+    /// even when the widget was active at the last run: a focus that leaves
+    /// and comes back before a frame reruns this once, and the caret must
+    /// still show at once rather than keep a hidden blink phase.
+    pub(crate) fn track_active(&self) -> bool {
+        let active = self.focused.get() && window::focused();
+        self.active.set(active);
+        self.stop_blink();
+        if active {
+            self.caret_on.set(true);
+            self.start_blink();
+        }
+        active
     }
 
     /// Scrolls the text so the caret stays inside `content`, reports what
@@ -265,8 +296,8 @@ fn blink_timer(on: RwSignal<bool>) -> TimerHandle {
 pub(crate) struct Caret {
     /// What to paint, or `None` before the widget has painted.
     paint: Option<CaretPaint>,
-    /// Whether the caret shows at all: focused and in the visible half of a
-    /// blink.
+    /// Whether the caret shows at all: focused inside a focused window, and
+    /// in the visible half of a blink.
     shown: bool,
 }
 
@@ -326,7 +357,7 @@ pub(crate) fn caret_node(chrome: &Rc<InputChrome>) -> Element<Caret> {
     )
     .bind(
         CaretShownKey,
-        move || shown_chrome.caret_on.get() && shown_chrome.focused.get(),
+        move || shown_chrome.caret_on.get() && shown_chrome.focused.get() && window::focused(),
         apply_caret_shown,
     )
 }
@@ -417,7 +448,11 @@ pub(crate) fn handle_wheel(chrome: &InputChrome, delta: Point) -> Handled {
     Handled::Yes
 }
 
-/// Starts or stops the blink and the caret as the focus moves.
+/// Records the keyboard focus moving into or out of the widget.
+///
+/// Gaining the focus scrolls the text back to the caret, even when the wheel
+/// scrolled it away. The caret, its blink and the selection follow through
+/// [`InputChrome::track_active`].
 pub(crate) fn handle_focus(chrome: &InputChrome, focused: bool) {
     if focused {
         chrome.follow_caret.set(true);
@@ -427,13 +462,13 @@ pub(crate) fn handle_focus(chrome: &InputChrome, focused: bool) {
         chrome.editor.compose("", None);
     }
     chrome.focused.set(focused);
-    if focused {
-        chrome.caret_on.set(true);
-        chrome.start_blink();
-    } else {
-        chrome.stop_blink();
-    }
     chrome.edits.update(|edits| *edits += 1);
+}
+
+/// Repaints an editing widget whose caret and selection were shown or
+/// hidden, for the widget's activity binding.
+pub(crate) fn apply_active<W>(_widget: &mut W, _active: bool) -> Dirty {
+    Dirty::Paint
 }
 
 /// Inserts the text an input method committed.
@@ -456,6 +491,13 @@ pub(crate) fn handle_commit(chrome: &InputChrome, text: &str) {
 /// cancel, and it arrives when the composition is canceled, committed by a
 /// route that sent its own commit, or dropped with the focus.
 pub(crate) fn handle_preedit(chrome: &InputChrome, text: &str, cursor: Option<(usize, usize)>) {
+    // An empty preedit with nothing being composed is the platform clearing
+    // a composition that never started, as it does when the window loses
+    // the focus. It changes nothing, so it must not scroll a view the wheel
+    // moved back to the caret.
+    if text.is_empty() && !chrome.editor.is_composing() {
+        return;
+    }
     chrome.editor.compose(text, cursor);
     chrome.touched();
 }
@@ -580,11 +622,11 @@ pub(crate) fn distance_squared(a: Point, b: Point) -> f32 {
 /// Appends the selection of the editor's text for the lines that meet
 /// `visible`, in text coordinates, as fills in `color` placed at `origin`.
 ///
-/// Only a widget that holds the focus shows its selection, so of several
-/// fields only the one being edited shows one. The editor keeps the
-/// selection while the widget is unfocused, and it shows again when the
-/// focus comes back. The focus change repaints the widget through the edit
-/// counter [`handle_focus`] bumps.
+/// Only a widget that holds the focus inside a focused window shows its
+/// selection, so of several fields only the one being edited shows one, and
+/// none does while the window is in the background. The editor keeps the
+/// selection meanwhile, and it shows again when the focus or the window
+/// comes back, which repaints the widget through its activity binding.
 ///
 /// The rectangles go through the chrome's kept buffer, so a steady paint
 /// allocates nothing.
@@ -595,7 +637,7 @@ pub(crate) fn paint_selection(
     color: Color,
     out: &mut Vec<PaintOp>,
 ) {
-    if !chrome.focused.read(|focused| *focused) {
+    if !chrome.active.get() {
         return;
     }
     let mut rects = chrome.selection.borrow_mut();

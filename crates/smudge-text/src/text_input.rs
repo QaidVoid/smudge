@@ -37,10 +37,10 @@ use smudge_core::widget::{AvailableSpace, MeasureInput, PaintCx, Panel, Widget};
 use smudge_core::window::Cursor;
 
 use crate::chrome::{
-    Direction, InputChrome, ParagraphCache, Placeholder, SELECTION_ALPHA, apply_edit_count,
-    apply_move, apply_outside_write, caret_node, copy_selection, cut_selection, handle_commit,
-    handle_focus, handle_move, handle_preedit, handle_press, handle_release, is_shortcut,
-    outside_write, paint_paragraphs, paint_selection, types_text,
+    Direction, InputChrome, ParagraphCache, Placeholder, SELECTION_ALPHA, apply_active,
+    apply_edit_count, apply_move, apply_outside_write, caret_node, copy_selection, cut_selection,
+    handle_commit, handle_focus, handle_move, handle_preedit, handle_press, handle_release,
+    is_shortcut, outside_write, paint_paragraphs, paint_selection, types_text,
 };
 use crate::style::{TextStyle, current_text_style};
 
@@ -252,7 +252,9 @@ impl Widget for TextInput {
 ///
 /// Only the field that holds the focus shows its selection. A field that
 /// loses the focus keeps the selection and shows it again when the focus
-/// returns.
+/// returns. While the window is in the background, the focused field keeps
+/// the focus but hides its caret and its selection and stops blinking, and
+/// both show again when the window comes back.
 pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
     let chrome = Rc::new(InputChrome::new(value.clone(), false));
 
@@ -261,6 +263,7 @@ pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
     let move_chrome = Rc::clone(&chrome);
     let up_chrome = Rc::clone(&chrome);
     let focus_chrome = Rc::clone(&chrome);
+    let active_chrome = Rc::clone(&chrome);
     let commit_chrome = Rc::clone(&chrome);
     let preedit_chrome = Rc::clone(&chrome);
     let edits_chrome = Rc::clone(&chrome);
@@ -278,6 +281,11 @@ pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
             apply_value,
         )
         .bind(EditsKey, move || edits_chrome.edits.get(), apply_edits)
+        .bind(
+            ActiveKey,
+            move || active_chrome.track_active(),
+            apply_active,
+        )
         .on_key(move |event| handle_key(&key_chrome, event))
         .on_pointer_down(move |position| handle_press(&press_chrome, position))
         .on_pointer_move(move |position| handle_move(&move_chrome, position))
@@ -315,6 +323,9 @@ struct ValueKey;
 
 /// The key of the input's edit counter binding.
 struct EditsKey;
+
+/// The key of the input's binding that shows and hides its caret and selection.
+struct ActiveKey;
 
 /// The key of the input's placeholder binding.
 struct PlaceholderKey;

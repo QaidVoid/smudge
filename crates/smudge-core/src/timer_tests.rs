@@ -204,3 +204,66 @@ fn due_timers_run_between_frames_and_wake_only_when_they_write() {
     assert!(fired.get(), "the timer ran without a frame");
     assert_eq!(wakes.get(), 1, "its write asks for the frame that shows it");
 }
+
+#[test]
+fn an_effect_rerun_creates_its_timer_under_the_effect_owner() {
+    let start = Instant::now();
+    let (fired, set_fired) = signal_local(0u32);
+    let (armed, set_armed) = signal_local(false);
+    let (mut app, clock) = timed(start, || {});
+
+    let holder: Owner = app.root().child();
+    let _effect = holder.with(|| {
+        crate::reactive::RenderEffect::new(move || {
+            if armed.get() {
+                let set_fired = set_fired.clone();
+                timer::after(Duration::from_secs(1), move || {
+                    set_fired.update(|count| *count += 1)
+                });
+            }
+        })
+    });
+
+    set_armed.set(true);
+    app.frame();
+    clock.advance(Duration::from_secs(1));
+    app.frame();
+    assert_eq!(fired.get(), 1, "a rerun with no owner current made a timer");
+
+    set_armed.set(false);
+    set_armed.set(true);
+    app.frame();
+    holder.cleanup();
+    assert_eq!(
+        app.next_deadline(),
+        None,
+        "the timer belongs to the owner the effect was created under"
+    );
+}
+
+#[test]
+fn an_effect_rerun_reads_the_time_of_the_effect_owners_clock() {
+    let start = Instant::now() + Duration::from_secs(10_000);
+    let read = std::rc::Rc::new(std::cell::Cell::new(None));
+    let (armed, set_armed) = signal_local(false);
+    let (mut app, _clock) = timed(start, || {});
+
+    let holder: Owner = app.root().child();
+    let _effect = holder.with(|| {
+        let read = std::rc::Rc::clone(&read);
+        crate::reactive::RenderEffect::new(move || {
+            if armed.get() {
+                read.set(Some(timer::now()));
+            }
+        })
+    });
+
+    set_armed.set(true);
+    app.frame();
+
+    assert_eq!(
+        read.get(),
+        Some(start),
+        "a rerun with no owner current reads the app's clock, not the system time"
+    );
+}
