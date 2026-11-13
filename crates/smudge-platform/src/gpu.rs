@@ -93,8 +93,7 @@ impl GpuPath {
                 "a window without pixels cannot present GPU frames",
             ));
         }
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let instance = smudge_gpu::instance();
         let surface = instance
             .create_surface(Box::new(SharedWindow(Arc::clone(window))))
             .map_err(|error| {

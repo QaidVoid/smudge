@@ -180,7 +180,7 @@ impl GpuSurface {
             view_formats: Vec::new(),
         };
         surface.configure(&device, &config);
-        let renderer = vello::Renderer::new(&device, vello::RendererOptions::default())
+        let renderer = vello::Renderer::new(&device, crate::renderer::vello_options())
             .expect("the device cannot create the vello pipelines");
         let blitter = TextureBlitter::new(&device, format);
         let target = create_target(&device, width, height);

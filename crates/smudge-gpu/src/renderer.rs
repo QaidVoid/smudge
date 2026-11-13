@@ -32,6 +32,35 @@ pub fn device_limits(adapter: &Adapter) -> Limits {
     }
 }
 
+/// Creates the wgpu instance a renderer's adapter should come from.
+///
+/// The instance enables the primary backends only: Vulkan, Metal and DX12.
+/// The renderer needs compute shaders, which the OpenGL backend serves
+/// poorly, and enabling it loads the system's OpenGL and EGL drivers next
+/// to the Vulkan one. A machine without a primary backend is better served
+/// by the CPU renderer. The `WGPU_BACKEND` environment variable still picks
+/// the backends when it is set.
+pub fn instance() -> Instance {
+    let mut descriptor = InstanceDescriptor::new_without_display_handle_from_env();
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        descriptor.backends = wgpu::Backends::PRIMARY;
+    }
+    Instance::new(descriptor)
+}
+
+/// The vello options both renderers are created with.
+///
+/// Only area antialiasing is compiled, because it is the only mode the
+/// renderers draw with. Compiling all three modes, vello's default, cost
+/// 950 ms of CPU and 49 MB at startup on a GTX 1060; area alone cost 580 ms
+/// and 42 MB.
+pub(crate) fn vello_options() -> vello::RendererOptions {
+    vello::RendererOptions {
+        antialiasing_support: vello::AaSupport::area_only(),
+        ..vello::RendererOptions::default()
+    }
+}
+
 /// How many bytes one row of a readback buffer is aligned to.
 ///
 /// wgpu requires the row stride of a texture copy to be a multiple of this.
@@ -161,7 +190,7 @@ impl GpuRenderer {
             width <= limit && height <= limit,
             "a {width}x{height} surface exceeds the device's texture limit of {limit}"
         );
-        let renderer = vello::Renderer::new(&device, vello::RendererOptions::default())
+        let renderer = vello::Renderer::new(&device, vello_options())
             .expect("the device cannot create the vello pipelines");
         let target = create_target(&device, width, height);
         GpuRenderer {
@@ -195,7 +224,7 @@ impl GpuRenderer {
     pub fn headless(width: u32, height: u32) -> Option<GpuRenderer> {
         // The environment override matches the window path, so one set of
         // variables picks the backend for both.
-        let instance = Instance::new(InstanceDescriptor::new_without_display_handle_from_env());
+        let instance = instance();
         let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default())).ok()?;
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_limits: device_limits(&adapter),
