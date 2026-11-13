@@ -12,6 +12,7 @@
 | `gpu` | no | The GPU renderer and its window path, with the Vulkan, Metal and DX12 backends. Implies `window`. Windows still start on the CPU renderer unless `WindowOptions::renderer` or `SMUDGE_RENDERER` asks for `Auto` or `Gpu`. New in 0.3: before, `Auto` was the default with this feature. |
 | `complex-scripts` | no | Word and line break dictionaries for Chinese, Japanese, Thai, Lao, Khmer and Burmese. About 3 MB per binary and about 5 percent slower layout of other text. |
 | `system-fonts` | no | Also finds the fonts installed on the machine, on Linux, FreeBSD, Windows, Android and Apple platforms. The same feature of `smudge-text`, forwarded, so applications can turn it on without adding `smudge-text` themselves. |
+| `hot-reload` | no | Hot reload for applications started with `run_view`, on Linux. Under a patch builder, the application applies each patch the builder sends and remounts its root through the patched view, keeping the state passed to `run_view`. Implies `window`. Elsewhere, and without a builder, `run_view` is a plain `run`. Meant for development builds. With it off, no patching code is compiled in. |
 
 ```toml
 [dependencies]
@@ -58,9 +59,12 @@ bundled-fonts = ["smudge/bundled-fonts"]
 |---|---|---|
 | `a11y` | yes | The accessibility projection for screen readers on the desktop. It has no effect on the web. |
 | `gpu` | no | The GPU renderer. The `smudge` feature of the same name turns this on. |
+| `hot-reload` | no | The hot reload receiver behind `run_view`, on Linux. The `smudge` feature of the same name turns this on. |
 
 ## Runtime switches
 
 | Variable | Values | Effect |
 |---|---|---|
 | `SMUDGE_RENDERER` | `cpu`, `gpu`, `auto` | Overrides `WindowOptions::renderer` when the window opens. |
+| `SMUDGE_HOT_SOCKET` | a socket path | Set by a patch builder. With the `hot-reload` feature on Linux, an application started with `run_view` connects to it and applies the patches it receives. |
+| `SMUDGE_HOT_BUILD` | any id | Set by a patch builder next to `SMUDGE_HOT_SOCKET`. The application sends it back unchanged, so the builder knows which build connected. |

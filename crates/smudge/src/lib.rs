@@ -83,6 +83,10 @@
 //!   dictionaries at about 3 MB per binary. Text needs a font source: a
 //!   build in which the text crate gets no font feature fails to compile,
 //!   whichever crate the feature is enabled on.
+//! - **Hot reload:** with the `hot-reload` feature, on Linux, an application
+//!   started through [`window::run_view`] under a patch builder remounts its
+//!   root through the patched code after every patch, and keeps the state it
+//!   passed in. Everywhere else `run_view` is a plain run.
 
 pub mod prelude;
 

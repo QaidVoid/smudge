@@ -32,6 +32,12 @@ gpu = ["dep:smudge-gpu", "dep:futures-executor"]
 # dependencies live in the non-wasm target table, so this feature is a no-op
 # on wasm, which has no accessibility backend.
 a11y = ["dep:smudge-a11y", "dep:accesskit", "dep:accesskit_winit"]
+# Hot reload for apps started with `run_view`: a receiver applies the patches
+# a patch builder sends, and the window remounts its root through the patched
+# view. The dependency lives in the Linux target table, so this feature is a
+# no-op everywhere else. Never on by default: with it off, no patching code
+# is compiled in.
+hot-reload = ["dep:subsecond"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 accesskit = { version = "0.25.2", default-features = false, optional = true }
@@ -47,6 +53,9 @@ rustix = { version = "1.1.5", default-features = false, features = ["event"] }
 wayland-client = { version = "0.31.15", default-features = false }
 wayland-protocols = { version = "0.32.13", default-features = false, features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3.12", default-features = false, features = ["client"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+subsecond = { version = "=0.7.10", default-features = false, optional = true }
 
 [package.metadata.docs.rs]
 all-features = true

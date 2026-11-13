@@ -1,0 +1,19 @@
+[package]
+name = "consumer-runtime-entry"
+description = "Generic reactive and text code compiled in an application crate, whose IR must not address a thread-local of the core or the text crate"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+# A hot patch is built from the application's crates. Code compiled there
+# must reach the reactive runtime and the text system by calling into the
+# core and the text crate, never by addressing their thread-locals itself,
+# or a patch would carry fresh, empty copies of them. ../check.sh reads the
+# IR of this crate on the dev and the release profile.
+[dependencies]
+smudge-core = { path = "../../../crates/smudge-core" }
+smudge-text = { version = "0.2.0", path = "../../../crates/smudge-text" }
+
+# Standalone, so the generic code below is compiled in this crate, as it is
+# in an application.
+[workspace]
