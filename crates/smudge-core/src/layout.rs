@@ -91,7 +91,13 @@ impl WidgetTree {
 
     /// Runs [`WidgetTree::layout`], and keeps the focus reveal request,
     /// including one made during the pass, when `keep_reveal` is set.
+    ///
+    /// A focus that moves during the pass, as an autofocus or a focus trap
+    /// moves it, also keeps its reveal request for one more frame: the
+    /// `on_focus` handler it ran may have written signals that move the
+    /// focused node, and they land only in the next frame's flush.
     fn layout_keeping_reveal(&mut self, viewport: Size, keep_reveal: bool) -> bool {
+        let focus_before = self.focused;
         let ran = match self.layout_pass(viewport) {
             Some(rects_changed) => {
                 // A trap that showed records the focus before an autofocus
@@ -148,7 +154,7 @@ impl WidgetTree {
             self.resolve_follow();
             self.resolve_reveal();
         }
-        if !keep_reveal {
+        if !keep_reveal && self.focused == focus_before {
             self.reveal_focus = false;
         }
         ran || settled
