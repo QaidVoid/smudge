@@ -27,6 +27,7 @@ fn main() -> ExitCode {
         let first = RwSignal::new(String::new());
         let second = RwSignal::new(String::new());
         panel()
+            .column()
             .padding(px(24.0))
             .gap(Size {
                 width: 0.0,

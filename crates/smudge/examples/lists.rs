@@ -52,6 +52,10 @@ fn main() -> Result<(), PlatformError> {
                     text_input(filter)
                         .width(pct(100.0))
                         .height(px(FIELD_HEIGHT))
+                        .padding_xy(Size {
+                            width: 8.0,
+                            height: 6.0,
+                        })
                         .placeholder("Filter rows")
                         .border(1.0)
                         .border_color(Color::rgb(70, 74, 88)),

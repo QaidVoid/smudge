@@ -38,6 +38,7 @@ fn main() -> ExitCode {
         let read_clicks = clicks.clone();
         let read_typed = typed.clone();
         panel()
+            .column()
             .padding(px(24.0))
             .gap(Size {
                 width: 0.0,

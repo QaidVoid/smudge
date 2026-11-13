@@ -41,6 +41,7 @@ fn field() {
     let field = text_input(name.clone())
         .width(pct(100.0))
         .height(px(32.0))
+        .padding_xy(Size { width: 8.0, height: 6.0 })
         .placeholder("Your name")
         .border(1.0)
         .border_color(ColorToken::BORDER);
