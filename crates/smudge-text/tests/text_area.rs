@@ -1022,3 +1022,45 @@ fn an_area_with_a_height_keeps_it_and_scrolls() {
         "an explicit height wins over the text's"
     );
 }
+
+#[test]
+fn an_area_paints_its_own_background_and_border() {
+    let value = RwSignal::new(String::new());
+    let bound = value.clone();
+    let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        smudge_core::widget::panel().child(
+            text_area(bound.clone())
+                .width(px(200.0))
+                .min_lines(2)
+                .background(smudge_core::geometry::Color::rgb(30, 31, 36))
+                .border(1.0)
+                .border_color(smudge_core::geometry::Color::rgb(70, 74, 88)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+
+    let output = harness.app().frame();
+    let mut background = false;
+    let mut border = false;
+    for item in output.list.items() {
+        match item {
+            smudge_core::paint::DisplayItem::Op(smudge_core::paint::PaintOp::FillRect {
+                color,
+                ..
+            }) => {
+                background |= *color == smudge_core::geometry::Color::rgb(30, 31, 36);
+            }
+            smudge_core::paint::DisplayItem::Op(smudge_core::paint::PaintOp::StrokeRect {
+                color,
+                width,
+                ..
+            }) => {
+                border |= *color == smudge_core::geometry::Color::rgb(70, 74, 88) && *width == 1.0;
+            }
+            _ => {}
+        }
+    }
+    assert!(background, "the area painted no background");
+    assert!(border, "the area painted no border");
+}
