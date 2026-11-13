@@ -180,8 +180,9 @@ fn settle(harness: &mut Harness) {
 
 /// The screen top and height of every mounted row, from the layout dump.
 ///
-/// Each row is one `MeasureRow` wrapper, absolutely positioned at the top
-/// the index says and as tall as its content.
+/// Each row is one `MeasureRow` wrapper, as tall as its content. The rows
+/// flow edge to edge from the anchored one, which sits where the index
+/// puts it.
 fn row_rects(harness: &Harness) -> Vec<(f32, f32)> {
     harness
         .layout_dump()
@@ -716,8 +717,8 @@ thread_local! {
     static KEY_CLONES: Cell<u64> = const { Cell::new(0) };
 }
 
-/// A key that counts its clones, so a test can tell an edit that walks the
-/// whole index from one that touches only the new rows.
+/// A key that counts its clones, so a test can tell a frame that copies the
+/// window's keys from one that keeps them.
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct CountedKey(u64);
 
@@ -729,9 +730,81 @@ impl Clone for CountedKey {
 }
 
 #[test]
-fn an_append_touches_only_the_new_rows_of_the_index() {
+fn an_append_keys_each_item_once_and_keeps_the_index() {
     TextSystem::bundled_only().install();
     let items = RwSignal::new(Rc::<[u64]>::from((0..10_000).collect::<Vec<u64>>()));
+    let key_calls = Rc::new(Cell::new(0u64));
+    let mut harness = Harness::new(WINDOW.width, WINDOW.height, 1.0, {
+        let items = items.clone();
+        let key_calls = Rc::clone(&key_calls);
+        move || {
+            let key_calls = Rc::clone(&key_calls);
+            panel().column().child(
+                virtual_list_keyed(
+                    move || items.get(),
+                    move |item| {
+                        key_calls.set(key_calls.get() + 1);
+                        CountedKey(*item)
+                    },
+                    ESTIMATE,
+                    |item| panel().height(px(row_height(*item, 0))),
+                )
+                .height(px(VIEWPORT_HEIGHT)),
+            )
+        }
+    });
+    harness.frame();
+    settle(&mut harness);
+
+    key_calls.set(0);
+    KEY_CLONES.with(|clones| clones.set(0));
+    items.update(|list| {
+        let mut grown = list.to_vec();
+        grown.extend([10_000, 10_001]);
+        *list = Rc::from(grown);
+    });
+    harness.frame();
+    settle(&mut harness);
+    let calls = key_calls.get();
+    assert_eq!(calls, 10_002, "an append keys each item exactly once");
+    // A rebuild clones every key into the index's positions; the window
+    // and the anchor clone a few dozen at most.
+    let clones = KEY_CLONES.with(Cell::get);
+    assert!(
+        clones < 1_000,
+        "an append to 10,000 rows cloned {clones} keys, so it rebuilt the index"
+    );
+}
+
+#[test]
+fn an_edit_in_the_middle_with_an_append_rebuilds_the_index() {
+    TextSystem::bundled_only().install();
+    let items = RwSignal::new((0..40).collect::<Vec<u64>>());
+    let mut harness = keyed_harness(items.clone(), height_signals_for(41, 0), ESTIMATE);
+    harness.frame();
+    settle(&mut harness);
+
+    // Swapping two items in view and appending one in the same update must
+    // show the swapped rows where the new order puts them.
+    items.update(|list| {
+        list.swap(1, 2);
+        list.push(40);
+    });
+    harness.frame();
+    settle(&mut harness);
+
+    let keys: Vec<u64> = items.get();
+    assert_eq!(
+        rows_by_position(&harness),
+        expected_rows(&keys, |key| row_height(key, 0), 0.0),
+        "the rows do not follow the edited order"
+    );
+}
+
+#[test]
+fn a_scroll_inside_the_mounted_rows_copies_no_window() {
+    TextSystem::bundled_only().install();
+    let items = RwSignal::new(Rc::<[u64]>::from((0..1_000).collect::<Vec<u64>>()));
     let mut harness = Harness::new(WINDOW.width, WINDOW.height, 1.0, {
         let items = items.clone();
         move || {
@@ -748,19 +821,60 @@ fn an_append_touches_only_the_new_rows_of_the_index() {
     });
     harness.frame();
     settle(&mut harness);
+    harness.move_to(POINTER);
 
+    // Key 0 is 20 pixels tall, so steps of one pixel stay inside it and the
+    // window keeps the same rows.
+    let window = row_rects(&harness).len() as u64;
+    let steps = 5;
     KEY_CLONES.with(|clones| clones.set(0));
-    items.update(|list| {
-        let mut grown = list.to_vec();
-        grown.push(10_000);
-        *list = Rc::from(grown);
-    });
-    harness.frame();
-    settle(&mut harness);
+    for _ in 0..steps {
+        wheel(&mut harness, 1.0);
+        harness.frame();
+        settle(&mut harness);
+    }
     let clones = KEY_CLONES.with(Cell::get);
     assert!(
-        clones < 1_000,
-        "an append to 10,000 rows cloned {clones} keys, so it rebuilt the index"
+        clones < steps * window,
+        "{steps} scroll frames over {window} mounted rows cloned {clones} keys, so \
+         each frame copied the window"
+    );
+}
+
+#[test]
+fn a_leading_run_of_empty_rows_shows_again_when_it_grows() {
+    TextSystem::bundled_only().install();
+    let items = RwSignal::new((0..60).collect::<Vec<u64>>());
+    let heights = height_signals_for(60, 0);
+    let empty = 0..10usize;
+    for key in empty.clone() {
+        heights[key].set(0.0);
+    }
+    let mut harness = keyed_harness(items, heights.clone(), ESTIMATE);
+    harness.frame();
+    settle(&mut harness);
+
+    // The ten empty rows measured nothing at the top of the list. When they
+    // grow back, the list must still hold them, so their new heights land
+    // and the top of the list shows them again.
+    for key in empty.clone() {
+        heights[key].set(30.0);
+    }
+    harness.frame();
+    settle(&mut harness);
+
+    let keys: Vec<u64> = (0..60).collect();
+    let height = |key: u64| {
+        if empty.contains(&(key as usize)) {
+            30.0
+        } else {
+            row_height(key, 0)
+        }
+    };
+    assert_eq!(
+        rows_by_position(&harness),
+        expected_rows(&keys, height, 0.0),
+        "the rows that grew back at the top of the list are not shown"
     );
 }
 

@@ -17,11 +17,14 @@ use smudge_core::widget::{MeasureInput, PaintCx, Panel, Widget};
 /// Creates an image that stretches its source over the rectangle its style
 /// gives it.
 ///
-/// Without a size from its style it measures as the image's pixel size
-/// divided by the window's scale factor, so one image pixel is one logical
-/// pixel. With one axis fixed the other keeps the image's aspect ratio, and
-/// with both fixed the image stretches. The image fills the content box,
-/// inside any padding and border, and the style's `corner_radius` rounds it.
+/// Without a fixed size it measures as the image's pixel size divided by the
+/// window's scale factor, so one image pixel is one logical pixel. With one
+/// axis fixed the other keeps the image's aspect ratio, and with both fixed
+/// the image stretches. A container that stretches its children, as a
+/// column does across its width by default, fixes that axis too, so the
+/// image scales to it; give the container any `align_items` but stretch to
+/// keep the image's pixel size. The image fills the content box, inside any
+/// padding and border, and the style's `corner_radius` rounds it.
 /// An empty source paints no image, only the style's background and border.
 ///
 /// The source can be bound to a signal:
@@ -70,11 +73,13 @@ impl Widget for ImageView {
     /// Measures as the image's pixel size divided by the scale factor, so
     /// one image pixel is one logical pixel.
     ///
-    /// When the style fixes one axis, the other follows from the image's
-    /// aspect ratio. When it fixes both, the image stretches to them.
+    /// When one axis of the content box is fixed, by the style or by a
+    /// container that stretches the image, the other follows from the
+    /// image's aspect ratio. When both are, the image stretches to them.
     ///
-    /// The answer depends on the source alone, so it is the same on every
-    /// call with the same input, which the engine's caching relies on.
+    /// The answer depends on the source and the input alone, so it is the
+    /// same on every call with the same input, which the engine's caching
+    /// relies on.
     fn measure(&mut self, input: MeasureInput) -> Option<Size> {
         let image = self.source.as_ref()?;
         let (width, height) = (image.width() as f32, image.height() as f32);

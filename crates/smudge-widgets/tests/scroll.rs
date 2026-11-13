@@ -1173,3 +1173,47 @@ fn small_wheel_steps_up_release_following_and_add_up() {
     );
     harness.assert_matches_full_repaint();
 }
+
+#[test]
+fn an_offset_written_while_following_is_overwritten_with_the_end() {
+    let following = RwSignal::new(true);
+    let offset = RwSignal::new(0.0);
+    let heights = RwSignal::new(vec![60u64, 61, 62]);
+    let mut harness = Harness::new(120.0, 200.0, 1.0, {
+        let following = following.clone();
+        let offset = offset.clone();
+        move || {
+            panel().column().child(
+                scroll(log_rows(move || heights.get()))
+                    .offset(offset)
+                    .follow_end(following)
+                    .height(px(100.0)),
+            )
+        }
+    });
+    harness.frame();
+    harness.settle();
+    let thumb_at_end = thumb(&mut harness).expect("the content overflows, so the thumb shows");
+
+    offset.set(0.0);
+    harness.frame();
+    harness.settle();
+
+    assert_eq!(
+        offset.read(|value| *value),
+        83.0,
+        "the view still follows, so the signal reads the end again"
+    );
+    let rows = follow_rows(&mut harness);
+    assert!(
+        same_point(rows[0].origin(), Point { x: 0.0, y: -83.0 }),
+        "the view stays at the end, at {:?}",
+        rows[0]
+    );
+    assert_eq!(
+        thumb(&mut harness),
+        Some(thumb_at_end),
+        "the thumb stays at the end with the view"
+    );
+    harness.assert_matches_full_repaint();
+}

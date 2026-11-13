@@ -34,7 +34,6 @@ mod virtual_list_keyed;
 
 pub use button::{ButtonExt, button};
 pub use containers::{column, row, spacer, stack};
-pub use height_index::HeightIndex;
 pub use image::{ImageView, image};
 pub use scroll::{ScrollExt, ScrollView, scroll};
 pub use virtual_list::virtual_list;

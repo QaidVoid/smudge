@@ -75,12 +75,15 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// is a panel as tall as the height index says the rows are.
 ///
 /// `items` runs inside a memo of its own, so an edit to the signals it reads
-/// remeasures the list and a scroll never runs it. An edit that only appends
-/// items pushes their keys onto the index in O(log n) each. Any other edit
-/// rebuilds the index in O(n): it takes the items' keys in the new order,
-/// keeps each surviving key's measured height and estimates the rest.
-/// Either way the list recomputes the scroll offset from the anchor, which
-/// is the key of the first visible row plus the offset into it. A row that grows above the anchor therefore pushes the view down
+/// remeasures the list and a scroll never runs it. Every update calls `key`
+/// once for each item, so prefer a cheap key such as an integer id: a key
+/// that builds a `String` allocates on every call. An update whose old keys
+/// all sit where they were only appends, and pushes each new key onto the
+/// index in O(log n) without rebuilding it. Any other edit rebuilds the
+/// index in O(n): it takes the items' keys in the new order, keeps each
+/// surviving key's measured height and estimates the rest. Either way the list recomputes the scroll offset from the
+/// anchor, which is the key of the first visible row plus the offset into
+/// it. A row that grows above the anchor therefore pushes the view down
 /// instead of moving the content on screen, and the anchored row itself grows
 /// downward. An anchor key that an edit removed leaves the offset where it
 /// was, clamped to the new end.
@@ -90,8 +93,11 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// it, so an unrelated wake of the closure skips the walk over the items.
 ///
 /// The item keys must be unique, like the keys of [`for_each`] are: a
-/// duplicate key trips a debug assertion in a debug build, and a release
-/// build mounts one row for both items while the index counts them twice.
+/// duplicate key trips a debug assertion in a debug build when the list
+/// takes it in. A release build keeps one position for the key, the last
+/// one, while the index counts both items: the anchor and the measurement
+/// of that key follow the last item, so the view can jump to it, and rows
+/// near the two items can sit out of place.
 ///
 /// The rows are built by `row`, which receives the item. A row is built once,
 /// the first time its key enters the window, and it stays mounted, with its
@@ -123,6 +129,10 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// The list owns its scroll offset; do not call
 /// [`ScrollExt::offset`](crate::ScrollExt::offset) on the returned view,
 /// because the anchor would fight the signal the call installs.
+/// [`ScrollExt::follow_end`](crate::ScrollExt::follow_end) works, with one
+/// limit: the end it pins to is the end the index knows, so a row that
+/// mounts at the end taller than its estimate shows its bottom one frame
+/// later, once its measurement lands.
 ///
 /// Pick this list over [`virtual_list`](crate::virtual_list) when the rows
 /// differ in height or the item list edits in the middle: insertions,
@@ -214,7 +224,7 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                 // compensates around where the view is now, not where it
                 // was last frame.
                 if !state.index.is_empty() {
-                    let at = state.index.index_at(wanted);
+                    let at = anchor_row(&state.index, wanted, viewport);
                     let within = wanted - state.index.offset_of(at);
                     state.anchor = Some((state.index.key(at).clone(), within));
                 }
@@ -228,8 +238,12 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                         let list = &mut *state;
                         let items = Rc::clone(&*list.items.borrow());
                         let old_len = list.index.len();
+                        // Every old key is compared in place against the one
+                        // the index stores, so an edit anywhere in the old
+                        // items rebuilds, and an append keys each item once
+                        // without copying a stored key.
                         let appended = items.len() >= old_len
-                            && items
+                            && items[..old_len]
                                 .iter()
                                 .zip(list.index.keys())
                                 .all(|(item, old)| key(item) == *old);
@@ -288,7 +302,7 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                     state.anchor = None;
                     None
                 } else {
-                    let at = state.index.index_at(wanted);
+                    let at = anchor_row(&state.index, wanted, viewport);
                     let top = state.index.offset_of(at);
                     state.anchor = Some((state.index.key(at).clone(), wanted - top));
                     Some((at, top))
@@ -300,16 +314,29 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                 anchor_at
             };
 
-            let (start, next) = window_keys(&state, viewport, estimate, wanted);
+            let state = state.borrow();
+            let range = match (viewport, anchor_at) {
+                (Some(viewport), Some((at, _))) if estimate > 0.0 => {
+                    Some(window_range(&state.index, viewport, wanted, at))
+                }
+                _ => None,
+            };
+            let next = range.map_or(&[][..], |(start, end)| &state.index.keys()[start..=end]);
             // The anchored row sits where the index puts it, and the rows
             // around it stack from it with their laid-out heights, so a row
             // that grows before its measurement reaches the index pushes its
             // neighbours away instead of covering them.
             let next_pin = anchor_at
-                .filter(|_| !next.is_empty())
-                .map(|(at, top)| (at - start, top));
-            if window.read(|value| *value != next) {
-                window.set(next);
+                .zip(range)
+                .map(|((at, top), (start, _))| (at - start, top));
+            // A scroll inside the mounted rows keeps the window, so the keys
+            // are compared before anything is copied, and a new window
+            // reuses the buffer of the old one.
+            if window.read(|value| value.as_slice() != next) {
+                window.update(|value| {
+                    value.clear();
+                    value.extend_from_slice(next);
+                });
             }
             if pin.read(|value| *value != next_pin) {
                 pin.set(next_pin);
@@ -375,30 +402,67 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
     scroll_with_visible_height(content, visible, Some(total)).offset(offset)
 }
 
-/// Returns the position of the first row the window mounts, and the keys
-/// of those rows: the rows the viewport shows, plus the overscan on both
-/// sides.
-fn window_keys<T: 'static, K: Eq + Hash + Clone>(
-    state: &RefCell<KeyedList<T, K>>,
-    viewport: Option<f32>,
-    estimate: f32,
+/// Returns the most rows the window mounts for a viewport `viewport`
+/// logical pixels tall, the overscan included.
+///
+/// Rows a pixel tall or more show at most one per pixel plus a partial one,
+/// so a full viewport is never cut.
+fn window_cap(viewport: f32) -> usize {
+    MIN_WINDOW_CAP.max((viewport.ceil() as usize).saturating_add(1)) + 2 * OVERSCAN
+}
+
+/// Returns the row the list anchors on at `offset`: the row that holds the
+/// pixel at `offset`, or, when `offset` is that row's top, the first of the
+/// zero-height rows right before it, which share that top.
+///
+/// Rows that measure nothing at the top of the viewport therefore stay in
+/// the window below the anchor, and one that grows again pushes the rows
+/// after it down in view. Stacked above the anchor it would grow above the
+/// viewport, where it never paints, so its new height would never land.
+/// The walk back takes no more rows than the window cap leaves after the
+/// visible ones.
+///
+/// # Panics
+///
+/// Panics when the index is empty.
+fn anchor_row<K: Eq + Hash + Clone>(
+    index: &HeightIndex<K>,
     offset: f32,
-) -> (usize, Vec<K>) {
-    let state = state.borrow();
-    if viewport.is_none() || estimate == 0.0 || state.index.is_empty() {
-        return (0, Vec::new());
+    viewport: Option<f32>,
+) -> usize {
+    let at = index.index_at(offset);
+    if index.offset_of(at) != offset {
+        return at;
     }
     let viewport = viewport.unwrap_or(0.0);
-    let first = state.index.index_at(offset);
-    let last = state.index.index_at(offset + viewport);
+    let last = index.index_at(offset + viewport);
+    let spare = window_cap(viewport).saturating_sub(2 * OVERSCAN + (last - at) + 1);
+    let mut first = at;
+    while first > 0 && at - first < spare && index.height(first - 1) == 0.0 {
+        first -= 1;
+    }
+    first
+}
+
+/// Returns the first and the last position of the rows the window mounts:
+/// from the anchored row `first` to the last row the viewport shows, plus
+/// the overscan on both sides, and at most the window cap.
+///
+/// # Panics
+///
+/// Panics when the index is empty.
+fn window_range<K: Eq + Hash + Clone>(
+    index: &HeightIndex<K>,
+    viewport: f32,
+    offset: f32,
+    first: usize,
+) -> (usize, usize) {
+    let last = index.index_at(offset + viewport);
     let start = first.saturating_sub(OVERSCAN);
-    // Rows a pixel tall or more show at most one per pixel plus a partial
-    // one, so a full viewport is never cut.
-    let cap = MIN_WINDOW_CAP.max((viewport.ceil() as usize).saturating_add(1)) + 2 * OVERSCAN;
     let end = (last + OVERSCAN)
-        .min(state.index.len() - 1)
-        .min(start.saturating_add(cap - 1));
-    (start, state.index.keys()[start..=end].to_vec())
+        .min(index.len() - 1)
+        .min(start.saturating_add(window_cap(viewport) - 1));
+    (start, end)
 }
 
 /// A row wrapper that reports its laid-out height when it paints, the way the

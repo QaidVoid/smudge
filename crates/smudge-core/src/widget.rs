@@ -29,15 +29,21 @@ pub enum AvailableSpace {
 /// What one measure call offers a widget.
 #[derive(Clone, Copy, Debug)]
 pub struct MeasureInput {
-    /// The width the layout engine treats as fixed for this call.
+    /// The width of the content box the layout engine treats as fixed for
+    /// this call, inside the node's padding and border.
     ///
-    /// It can be absent even when the node's style fixes a width: the
-    /// engine's final layout pass passes no fixed size at all.
+    /// A fixed size comes from the node's style or from a container that
+    /// stretches the node across this axis. It can be absent even when the
+    /// node's style fixes a width: the engine's final layout pass passes no
+    /// fixed size at all.
     pub known_width: Option<f32>,
-    /// The height the layout engine treats as fixed for this call.
+    /// The height of the content box the layout engine treats as fixed for
+    /// this call, inside the node's padding and border.
     ///
-    /// It can be absent even when the node's style fixes a height: the
-    /// engine's final layout pass passes no fixed size at all.
+    /// A fixed size comes from the node's style or from a container that
+    /// stretches the node across this axis. It can be absent even when the
+    /// node's style fixes a height: the engine's final layout pass passes no
+    /// fixed size at all.
     pub known_height: Option<f32>,
     /// The space offered on the x axis, inside the node's padding and border.
     pub available_width: AvailableSpace,

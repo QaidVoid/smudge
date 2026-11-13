@@ -6,7 +6,9 @@
 //! pixels, which is the engine's default, so a layout rectangle never carries a
 //! fraction of a pixel.
 
-use taffy::{AvailableSpace as TaffySpace, LayoutInput, LayoutOutput, Size as TaffySize};
+use taffy::{
+    AvailableSpace as TaffySpace, LayoutInput, LayoutOutput, ResolveOrZero, Size as TaffySize,
+};
 
 use crate::geometry::{Point, Rect, Size};
 use crate::reactive::{Read, RwSignal};
@@ -402,10 +404,16 @@ impl WidgetTree {
                  -> LayoutOutput {
                     let node = context.and_then(|id| nodes.get_mut(*id));
                     // The leaf algorithm resolves the node's own size, limits,
-                    // padding and border before it measures, so the widget is
-                    // offered the content box. Its result is used only for an
-                    // axis the style leaves open, but the engine calls it on
-                    // the final pass regardless.
+                    // padding and border before it measures, and offers the
+                    // space inside them. The sizes it treats as fixed are the
+                    // node's outer ones, so they lose the same insets here and
+                    // the widget is offered the content box on every axis. Its
+                    // result is used only for an axis the style leaves open,
+                    // but the engine calls it on the final pass regardless.
+                    let parent_width = inputs.parent_size.width;
+                    let inset = (style.padding.resolve_or_zero(parent_width, |_, _| 0.0)
+                        + style.border.resolve_or_zero(parent_width, |_, _| 0.0))
+                    .sum_axes();
                     taffy::compute_leaf_layout(
                         inputs,
                         style,
@@ -413,8 +421,12 @@ impl WidgetTree {
                         |known, available| {
                             let measured = node.and_then(|node| {
                                 node.widget.measure(MeasureInput {
-                                    known_width: known.width,
-                                    known_height: known.height,
+                                    known_width: known
+                                        .width
+                                        .map(|width| (width - inset.width).max(0.0)),
+                                    known_height: known
+                                        .height
+                                        .map(|height| (height - inset.height).max(0.0)),
                                     available_width: from_engine(available.width),
                                     available_height: from_engine(available.height),
                                     scale: self.scale,

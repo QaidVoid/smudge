@@ -183,3 +183,46 @@ fn the_image_measures_against_the_window_scale() {
     );
     harness.assert_matches_full_repaint();
 }
+
+#[test]
+fn one_fixed_axis_keeps_the_aspect_ratio_of_the_content_box() {
+    // The fixed width includes the padding and the border, so the content
+    // box is 100 less 2 * (10 + 2) = 76 wide, and the image's 2:1 ratio
+    // makes it 38 tall inside 24 pixels of insets.
+    let wide = Image::from_premultiplied_rgba(40, 20, vec![255; 40 * 20 * 4])
+        .expect("the pixels fill the buffer");
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        panel().align_items(Align::Start).child(
+            image(Some(wide))
+                .width(px(100.0))
+                .padding(px(10.0))
+                .border(2.0),
+        )
+    });
+    harness.frame();
+    let dump = harness.layout_dump();
+    assert!(
+        dump.contains("ImageView [0, 0, 100, 62]"),
+        "the padded content box keeps the image's aspect ratio:\n{dump}"
+    );
+}
+
+#[test]
+fn an_image_in_a_stretching_column_keeps_its_aspect_ratio() {
+    // A column stretches its children across its width by default. The
+    // stretched width counts as fixed, so the height follows the ratio
+    // instead of staying at the image's pixel height.
+    let wide = Image::from_premultiplied_rgba(40, 20, vec![255; 40 * 20 * 4])
+        .expect("the pixels fill the buffer");
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        panel()
+            .column()
+            .child(panel().column().width(px(120.0)).child(image(Some(wide))))
+    });
+    harness.frame();
+    let dump = harness.layout_dump();
+    assert!(
+        dump.contains("ImageView [0, 0, 120, 60]"),
+        "the stretched image keeps its aspect ratio:\n{dump}"
+    );
+}

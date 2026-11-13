@@ -63,7 +63,7 @@ let source = RwSignal::new(None);
 let picture = image(move || source.get()).size(Size { width: 96.0, height: 96.0 });
 ```
 
-`image(source)` draws one image inside its content box, with the background, border and padding of any panel around it. The source is an `Option<Image>` and can be bound to a signal, so a picture that is still decoding shows nothing until the pixels arrive. With no size set, the node takes the image's size; with only a width or only a height, it keeps the image's aspect ratio. `corner_radius` rounds the rectangle the image clips to.
+`image(source)` draws one image inside its content box, with the background, border and padding of any panel around it. The source is an `Option<Image>` and can be bound to a signal, so a picture that is still decoding shows nothing until the pixels arrive. With no size set, the node takes the image's size; with only a width or only a height, it keeps the image's aspect ratio. A container that stretches its children fixes that axis too, as a column does across its width by default, so the image scales to it with its aspect ratio kept. Give the container `align_items(Align::Start)`, or any alignment but stretch, to keep the image's own size. `corner_radius` rounds the rectangle the image clips to.
 
 Decoding a file is the application's job. `Image::from_straight_rgba(width, height, pixels)` takes the RGBA8 pixels a decoder produces and premultiplies them; `Image::from_premultiplied_rgba` takes pixels whose color channels are already multiplied by alpha. Both return a `Result`, an `ImageError` when the buffer does not hold `width * height * 4` bytes or a side is zero.
 
@@ -145,7 +145,7 @@ let list = virtual_list_keyed(
 .height(px(420.0));
 ```
 
-`virtual_list_keyed(items, key, estimate, row)` takes the items themselves and a key per item. Keep the items in a signal of `Rc<[T]>` as above: the list compares the `Rc` it gets back, so a clone of the same `Rc` costs nothing, and appending to the end costs only the new rows. The list starts from the estimate and replaces it with each row's measured height, so rows of different heights all work, and a row's measured height is remembered across list updates. Reordering, filtering or inserting does not confuse it: rows are tracked by key, not by position.
+`virtual_list_keyed(items, key, estimate, row)` takes the items themselves and a key per item. Keep the items in a signal of `Rc<[T]>` as above: the list compares the `Rc` it gets back, so a clone of the same `Rc` costs nothing. Every update calls the key closure once per item, so prefer a cheap key such as an integer id; a key that builds a `String` allocates on every call. An update that only adds items after the end skips rebuilding the list's height index, and any other change rebuilds it. The list starts from the estimate and replaces it with each row's measured height, so rows of different heights all work, and a row's measured height is remembered across list updates. Reordering, filtering or inserting does not confuse it: rows are tracked by key, not by position.
 
 Pick the fixed `virtual_list` when every row is the same height and the items are indexed positions; pick `virtual_list_keyed` when heights differ or the items have identities that survive reordering.
 

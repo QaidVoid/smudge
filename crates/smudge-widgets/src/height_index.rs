@@ -14,9 +14,8 @@ use std::hash::Hash;
 ///
 /// The tree answers `offset_of` and `index_at` and applies `set_height` in
 /// O(log n), and `push` in O(log n), which is the hot path of a list that
-/// grows at the end. `insert` and `remove` rebuild the tree and the key
-/// positions in O(n); that cost is documented and expected to stay rare next
-/// to appends.
+/// grows at the end. Any other edit builds a new index with `from_heights`
+/// in O(n), which is expected to stay rare next to appends.
 ///
 /// The heights are stored as given, and the tree sums them in f64, so a
 /// long list keeps whole-pixel offsets where f32 sums would round them, and
@@ -27,9 +26,10 @@ use std::hash::Hash;
 /// after it. The keyed list never stores either: it reports laid-out
 /// rectangles, which are never negative, and guards its estimate.
 ///
-/// Keys must be unique. A duplicate key keeps the last position, like the
+/// Keys must be unique. A duplicate key trips a debug assertion in a debug
+/// build. A release build keeps the last position for it, like the
 /// keyed-children helper keeps the last row for a duplicate.
-pub struct HeightIndex<K: Eq + Hash + Clone> {
+pub(crate) struct HeightIndex<K: Eq + Hash + Clone> {
     /// The keys in list order.
     keys: Vec<K>,
     /// The heights, parallel to `keys`.
@@ -46,7 +46,7 @@ pub struct HeightIndex<K: Eq + Hash + Clone> {
 
 impl<K: Eq + Hash + Clone> HeightIndex<K> {
     /// Creates an empty index.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         HeightIndex {
             keys: Vec::new(),
             heights: Vec::new(),
@@ -60,7 +60,14 @@ impl<K: Eq + Hash + Clone> HeightIndex<K> {
     ///
     /// This is the O(n) rebuild the keyed list runs when the item list
     /// changes, carrying the measured heights of the keys that survive.
-    pub fn from_heights(keys: impl IntoIterator<Item = K>, height: impl Fn(&K) -> f32) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// Panics in a debug build when `keys` holds a key twice.
+    pub(crate) fn from_heights(
+        keys: impl IntoIterator<Item = K>,
+        height: impl Fn(&K) -> f32,
+    ) -> Self {
         let keys: Vec<K> = keys.into_iter().collect();
         let heights: Vec<f32> = keys.iter().map(height).collect();
         let mut index = HeightIndex {
@@ -75,8 +82,16 @@ impl<K: Eq + Hash + Clone> HeightIndex<K> {
     }
 
     /// Appends `key` with `height` in O(log n).
-    pub fn push(&mut self, key: K, height: f32) {
-        self.positions.insert(key.clone(), self.keys.len());
+    ///
+    /// # Panics
+    ///
+    /// Panics in a debug build when the index already holds `key`.
+    pub(crate) fn push(&mut self, key: K, height: f32) {
+        let duplicate = self.positions.insert(key.clone(), self.keys.len());
+        debug_assert!(
+            duplicate.is_none(),
+            "the height index found a duplicate key, but its keys must be unique"
+        );
         self.keys.push(key);
         self.heights.push(height);
         let count = self.keys.len();
@@ -94,38 +109,12 @@ impl<K: Eq + Hash + Clone> HeightIndex<K> {
         self.total = self.prefix(count);
     }
 
-    /// Inserts `key` with `height` at `index`, shifting the rows after it.
-    ///
-    /// This rebuilds the tree and the key positions in O(n).
-    ///
-    /// # Panics
-    ///
-    /// Panics when `index` is past the end, that is above `len`.
-    pub fn insert(&mut self, index: usize, key: K, height: f32) {
-        self.keys.insert(index, key);
-        self.heights.insert(index, height);
-        self.rebuild();
-    }
-
-    /// Removes the row at `index`, shifting the rows after it.
-    ///
-    /// This rebuilds the tree and the key positions in O(n).
-    ///
-    /// # Panics
-    ///
-    /// Panics when `index` is past the last row.
-    pub fn remove(&mut self, index: usize) {
-        self.keys.remove(index);
-        self.heights.remove(index);
-        self.rebuild();
-    }
-
     /// Sets the height of the row at `index` in O(log n).
     ///
     /// # Panics
     ///
     /// Panics when `index` is past the last row.
-    pub fn set_height(&mut self, index: usize, height: f32) {
+    pub(crate) fn set_height(&mut self, index: usize, height: f32) {
         let delta = f64::from(height) - f64::from(self.heights[index]);
         self.heights[index] = height;
         let count = self.keys.len();
@@ -137,7 +126,7 @@ impl<K: Eq + Hash + Clone> HeightIndex<K> {
     /// the list.
     ///
     /// An index past the last row returns the total height.
-    pub fn offset_of(&self, index: usize) -> f32 {
+    pub(crate) fn offset_of(&self, index: usize) -> f32 {
         self.prefix(index.min(self.keys.len())) as f32
     }
 
@@ -148,7 +137,7 @@ impl<K: Eq + Hash + Clone> HeightIndex<K> {
     /// own top, so `index_at(offset_of(i))` is `i` again for one. A
     /// zero-height row shares its top with the rows after it, so the search
     /// names the last row of such a run.
-    pub fn index_at(&self, offset: f32) -> usize {
+    pub(crate) fn index_at(&self, offset: f32) -> usize {
         if self.keys.is_empty() {
             return 0;
         }
@@ -173,23 +162,32 @@ impl<K: Eq + Hash + Clone> HeightIndex<K> {
         pos.min(self.keys.len() - 1)
     }
 
+    /// Returns the height of the row at `index`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `index` is past the last row.
+    pub(crate) fn height(&self, index: usize) -> f32 {
+        self.heights[index]
+    }
+
     /// Returns the sum of all heights.
-    pub fn total(&self) -> f32 {
+    pub(crate) fn total(&self) -> f32 {
         self.total as f32
     }
 
     /// Returns how many rows the index holds.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.keys.len()
     }
 
     /// Returns whether the index holds no rows.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
 
     /// Returns the keys in list order.
-    pub fn keys(&self) -> &[K] {
+    pub(crate) fn keys(&self) -> &[K] {
         &self.keys
     }
 
@@ -198,13 +196,13 @@ impl<K: Eq + Hash + Clone> HeightIndex<K> {
     /// # Panics
     ///
     /// Panics when `index` is past the last row.
-    pub fn key(&self, index: usize) -> &K {
+    pub(crate) fn key(&self, index: usize) -> &K {
         &self.keys[index]
     }
 
     /// Returns the position of `key`, or `None` when the index does not hold
     /// it.
-    pub fn position(&self, key: &K) -> Option<usize> {
+    pub(crate) fn position(&self, key: &K) -> Option<usize> {
         self.positions.get(key).copied()
     }
 
@@ -236,6 +234,10 @@ impl<K: Eq + Hash + Clone> HeightIndex<K> {
             .enumerate()
             .map(|(at, key)| (key.clone(), at))
             .collect();
+        debug_assert!(
+            self.positions.len() == self.keys.len(),
+            "the height index found a duplicate key, but its keys must be unique"
+        );
         let count = self.keys.len();
         self.tree = vec![0.0; count + 1];
         for at in 1..=count {

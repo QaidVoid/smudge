@@ -298,9 +298,10 @@ pub(crate) fn scroll_with_visible_height(
             // While the view follows, the end is the offset, whatever the
             // signal held: the core pins the node with the heights the last
             // layout pass wrote, which the painted ones the signal
-            // round-trips through lag by a frame.
+            // round-trips through lag by a frame. The read is tracked, so a
+            // write from the application is overwritten in the next flush.
             Some(max) if following => {
-                if signal.read(|offset| *offset) != max {
+                if signal.get() != max {
                     signal.set(max);
                 }
                 max
