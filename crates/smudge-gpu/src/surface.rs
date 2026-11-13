@@ -133,7 +133,10 @@ impl GpuSurface {
     /// Configures `surface` for `adapter` and returns a presenter for it.
     ///
     /// The device's texture limit must fit the surface; a larger surface
-    /// returns [`GpuError::SurfaceTooLarge`] instead of a renderer.
+    /// returns [`GpuError::SurfaceTooLarge`] instead of a renderer. Request
+    /// the device with [`device_limits`](crate::device_limits): with the
+    /// default limits a large scene fails validation, which wgpu reports as
+    /// a panic.
     ///
     /// # Errors
     ///

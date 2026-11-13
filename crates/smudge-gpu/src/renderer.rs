@@ -7,12 +7,30 @@ use smudge_core::renderer::Renderer;
 use vello::RenderParams;
 use vello::wgpu;
 use vello::wgpu::{
-    Device, DeviceType, Extent3d, Instance, InstanceDescriptor, MapMode, PollType, Queue,
-    RequestAdapterOptions, TexelCopyBufferInfo, Texture, TextureDescriptor, TextureDimension,
-    TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
+    Adapter, Device, DeviceType, Extent3d, Instance, InstanceDescriptor, Limits, MapMode, PollType,
+    Queue, RequestAdapterOptions, TexelCopyBufferInfo, Texture, TextureDescriptor,
+    TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
 };
 
 use crate::encoder::{Encoder, peniko_color};
+
+/// Returns the device limits a renderer's device should be created with.
+///
+/// Vello's internal storage buffers can outgrow the default limits of 128
+/// MiB for one storage binding and 256 MiB for one buffer on large scenes,
+/// and a device created with the defaults then fails validation. The
+/// request raises both to what the adapter offers and leaves every other
+/// limit at its default. A device for [`GpuRenderer::new`] or
+/// [`GpuSurface::new`](crate::GpuSurface::new) should be requested with
+/// these limits.
+pub fn device_limits(adapter: &Adapter) -> Limits {
+    let offered = adapter.limits();
+    Limits {
+        max_storage_buffer_binding_size: offered.max_storage_buffer_binding_size,
+        max_buffer_size: offered.max_buffer_size,
+        ..Limits::default()
+    }
+}
 
 /// How many bytes one row of a readback buffer is aligned to.
 ///
@@ -128,7 +146,8 @@ impl GpuRenderer {
     ///
     /// A surface with a zero extent holds no texture, and
     /// [`GpuRenderer::render`] and [`GpuRenderer::read_pixels`] then do
-    /// nothing.
+    /// nothing. Request the device with [`device_limits`]: with the default
+    /// limits a large scene fails validation, which wgpu reports as a panic.
     ///
     /// # Panics
     ///
@@ -171,14 +190,18 @@ impl GpuRenderer {
     /// # Panics
     ///
     /// Panics under the conditions of [`GpuRenderer::new`]. The device has
-    /// the default limits, which allow 8192 pixels on each side.
+    /// the limits of [`device_limits`], which allow 8192 pixels on each side
+    /// and the adapter's maximum storage buffer binding size.
     pub fn headless(width: u32, height: u32) -> Option<GpuRenderer> {
         // The environment override matches the window path, so one set of
         // variables picks the backend for both.
         let instance = Instance::new(InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default())).ok()?;
-        let (device, queue) =
-            block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: device_limits(&adapter),
+            ..Default::default()
+        }))
+        .ok()?;
         Some(GpuRenderer::new(device, queue, width, height))
     }
 

@@ -116,13 +116,15 @@ impl GpuPath {
         if !explicit && adapter_is_software(&adapter.get_info()) {
             return Ok(None);
         }
-        let (device, queue) =
-            match block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
-                Ok(device) => device,
-                Err(error) => {
-                    return fail(format!("the adapter could not provide a device: {error}"));
-                }
-            };
+        let (device, queue) = match block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: smudge_gpu::device_limits(&adapter),
+            ..Default::default()
+        })) {
+            Ok(device) => device,
+            Err(error) => {
+                return fail(format!("the adapter could not provide a device: {error}"));
+            }
+        };
         let surface = match GpuSurface::new(surface, &adapter, device, queue, width, height) {
             Ok(surface) => surface,
             Err(error) => return fail(format!("the window cannot present GPU frames: {error}")),
