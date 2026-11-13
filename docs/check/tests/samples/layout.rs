@@ -64,3 +64,14 @@ fn badge() {
         .corner_radius(6.0)
         .background(Color::rgb(255, 64, 64));
 }
+
+#[test]
+fn pinned() {
+    let anchor = RwSignal::new(Some((1, 100.0)));
+    let pinned = anchor.clone();
+    
+    let rows = column()
+        .pin_child(move || pinned.get())
+        .child(label("Grows as it wraps"))
+        .child(label("Stays 100 pixels down"));
+}

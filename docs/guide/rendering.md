@@ -45,7 +45,7 @@ run_with(options, build, |app| {
 | `renderer` | Which renderer draws. See below. |
 | `decorations` | Whether the window system draws the title bar and borders. A window that draws its own header turns this off and starts a move itself. |
 | `min_size` | The smallest content area the user can resize the window to, in logical pixels. |
-| `app_id` | The identifier desktop environments use to group and pin the window. |
+| `app_id` | The identifier desktop environments use to group and pin the window. It applies on Linux and the BSDs, as the Wayland app id and the X11 class, and has no effect elsewhere. |
 | `stats` | A `PresentStatsHandle` to read what the latest present did. |
 | `on_frame` | A hook called after every presented frame with its statistics. |
 | `on_event` | A hook that can inject input before every frame but the first. |
@@ -55,7 +55,7 @@ The last three exist for measurement and automated runs. An application leaves t
 
 ## Window commands and cursors
 
-A window without decorations needs a way to be moved, resized and closed. The functions in `smudge::core::window` queue one command, which the window system applies against the press that is being handled:
+A window without decorations needs a way to be moved, resized and closed. The functions in `smudge::commands` queue one command, which the window system applies against the press that is being handled. The module is the core's `window` module, also reachable as `smudge::core::window`, under a name that does not clash with `smudge::window`, the windowing layer:
 
 | Function | Effect |
 |---|---|
@@ -64,27 +64,27 @@ A window without decorations needs a way to be moved, resized and closed. The fu
 | `toggle_maximize()` | Maximize the window, or restore it. |
 | `close()` | Close the window and end the run. |
 
+`maximized()` reads whether the window is maximized, and a binding that reads it reruns when that changes, so a header can swap its maximize icon or hide its resize handles. On the web every command does nothing and `maximized()` stays `false`, as [the web guide](/guide/web) explains.
+
 Call them from a pointer-down handler, because the window system honors a move or a resize only while the press that started it is being handled:
 
 ```rust
-use smudge::core::window::start_move;
+use smudge::commands::start_move;
 
 let header = panel()
     .height(px(40.0))
     .on_pointer_down(|_| start_move());
 ```
 
-Any element can set the pointer cursor over itself with `cursor`:
+Any element can set the pointer cursor over itself with `cursor`. `Cursor` is in the prelude:
 
 ```rust
-use smudge::core::window::Cursor;
-
 let link = label("Open the docs")
     .cursor(Cursor::Pointer)
     .on_press(open_docs);
 ```
 
-The cursor of the deepest enabled node under the pointer that sets one wins, and the platform default applies when none does. Setting a cursor does not change where a press lands: a press on a node that only sets a cursor reaches the nearest ancestor with a handler. `Cursor::Resize(edge)` names the direction a handle would resize in, so an edge handle shows the same look the window system uses for that edge.
+The cursor of the deepest enabled node under the pointer that sets one wins, and the platform default applies when none does. Setting a cursor does not change where a press lands: a press on a node that only sets a cursor reaches the nearest ancestor with a handler. `Cursor::Resize(edge)` names the direction a handle would resize in, with an edge from `smudge::commands::ResizeEdge`, so an edge handle shows the same look the window system uses for that edge.
 
 ## The two renderers
 
@@ -110,6 +110,15 @@ The `SMUDGE_RENDERER` environment variable, set to `cpu`, `gpu` or `auto`, overr
 ```sh
 SMUDGE_RENDERER=cpu ./my-app
 ```
+
+### Drawing into your own device
+
+The window creates its GPU device itself. A program that renders through `smudge::gpu` on a device of its own, with `GpuRenderer::new` or `GpuSurface::new`, should create it the same way:
+
+- `smudge::gpu::instance()` returns the wgpu instance to request the adapter from. It enables the primary backends only (Vulkan, Metal, DX12 and WebGPU), because the renderer needs compute shaders, and the `WGPU_BACKEND` environment variable still picks the backends when it is set.
+- `smudge::gpu::device_limits(&adapter)` returns the limits to request the device with. They raise the storage binding and buffer size limits to what the adapter offers. A device created with the default limits fails validation on a large scene, which wgpu reports as a panic.
+
+`GpuRenderer::headless` does both for an offscreen renderer.
 
 ::: tip Why software GPUs are avoided
 A software rasterizer pretending to be a GPU redraws the whole window on the CPU every frame. On a virtual machine without GPU passthrough, the GPU renderer on such an adapter was between 2.5 and over 200 times slower than the CPU renderer on every measured scene. `Auto` therefore never picks one.

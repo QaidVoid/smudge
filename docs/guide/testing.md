@@ -82,6 +82,37 @@ let png = renderer.encode_png();     // for snapshot files
 
 The renderer repaints only each frame's damage onto the previous pixels, exactly like the window does, so rendering every frame in order gives the same image a window would show. The surface size is in physical pixels: multiply the viewport by the scale.
 
+## Window commands
+
+Headless, nothing applies the window commands a handler queues, so they wait in the app for a test to take. `App::take_window_commands` returns them in the order the handlers queued them and empties the queue:
+
+```rust
+use smudge::commands::{self, WindowCommand};
+
+#[test]
+fn the_close_button_asks_to_close_the_window() {
+    TextSystem::bundled_only().install();
+
+    let mut app = App::new(
+        AppConfig {
+            viewport: Size { width: 200.0, height: 100.0 },
+            scale: 1.0,
+            clear_color: Color::rgb(16, 17, 21),
+            repaint: RepaintMode::Damage,
+        },
+        || column().padding(px(8.0)).child(button("Close").on_press(commands::close)),
+    );
+    app.frame();
+
+    let at = Point { x: 20.0, y: 20.0 };
+    app.handle_event(InputEvent::PointerDown { position: at, button: PointerButton::Primary });
+    app.handle_event(InputEvent::PointerUp { position: at, button: PointerButton::Primary });
+    assert_eq!(app.take_window_commands(), vec![WindowCommand::Close]);
+}
+```
+
+`App::set_window_state` plays the window's part the other way: it reports a maximized state, and every binding that reads `commands::maximized()` reruns at the next frame.
+
 ## Animation and time
 
 `app.set_tick(|now| ...)` installs a closure that runs at the start of every frame with the frame's time, the same hook a window drives once per display refresh. In a test, call `app.frame()` as many times as the animation needs.

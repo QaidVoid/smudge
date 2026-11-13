@@ -3,15 +3,15 @@
 <p class="lead">Every frame, windowed or headless, runs the same pipeline. Each stage does work only for what changed, and the output is a display list plus the rectangles of pixels that differ from the last frame.</p>
 
 ```text
- tick ─► flush ─► layout ─► paint ─► display list ─► damage ─► raster ─► present
-         and      only if   only     replays          old vs    only the   only the
-         apply    a size    marked   cached ops       new       damaged    damaged
-                  changed   nodes                     bounds    rects      region
+ messages ─► flush ─► layout ─► paint ─► display list ─► damage ─► raster ─► present
+ timers      and      only if   only     replays          old vs    only the   only the
+ tick        apply    a size    marked   cached ops       new       damaged    damaged
+                      changed   nodes                     bounds    rects      region
 ```
 
-## 1. Tick
+## 1. Messages, timers and the tick
 
-If the app installed a tick with `App::set_tick`, it runs first with the frame's time. Animations write signals here.
+The frame first delivers the values other threads sent through the app's channels. Each channel's handler runs inside the owner that created the channel, and delivers at most what the queue held when the frame reached it. The timers that are due on the app's clock fire next. Last, if the app installed a tick with `App::set_tick`, it runs with the frame's time. Animations write signals here, and so can the handlers and timers before it.
 
 ## 2. Flush and apply
 

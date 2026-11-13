@@ -81,3 +81,26 @@ fn pixels() {
     let pixels = renderer.pixels();      // premultiplied RGBA8, row-major
     let png = renderer.encode_png();     // for snapshot files
 }
+
+use smudge::commands::{self, WindowCommand};
+
+#[test]
+fn the_close_button_asks_to_close_the_window() {
+    TextSystem::bundled_only().install();
+
+    let mut app = App::new(
+        AppConfig {
+            viewport: Size { width: 200.0, height: 100.0 },
+            scale: 1.0,
+            clear_color: Color::rgb(16, 17, 21),
+            repaint: RepaintMode::Damage,
+        },
+        || column().padding(px(8.0)).child(button("Close").on_press(commands::close)),
+    );
+    app.frame();
+
+    let at = Point { x: 20.0, y: 20.0 };
+    app.handle_event(InputEvent::PointerDown { position: at, button: PointerButton::Primary });
+    app.handle_event(InputEvent::PointerUp { position: at, button: PointerButton::Primary });
+    assert_eq!(app.take_window_commands(), vec![WindowCommand::Close]);
+}

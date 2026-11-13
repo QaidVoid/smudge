@@ -62,7 +62,7 @@ cargo run --release
 ## What happens
 
 1. `RwSignal::new(0)` creates the state. Cloning a signal handle is cheap and every clone names the same signal, so one clone moves into the button's handler and one into the label.
-2. `run_with` opens the window with these options and calls the build closure once. The `column` and its children are mounted and stay mounted. The last closure sets the app up before the first frame; here it picks the dark theme, so the text contrasts with the dark clear color. `run` is the shorter form with default options and no setup.
+2. `run_with` opens the window with these options and calls the build closure once. The `column` and its children are mounted and stay mounted. The last closure sets the app up before the first frame; here it picks the dark theme, so the text contrasts with the dark clear color. `run` is the shorter form that takes the options and the build closure, with no setup closure.
 3. The label gets a closure instead of a string. Smudge runs it once to get the first text, and records that it read `shown`.
 4. A press calls `press.update(...)`, which changes the value and marks the label's closure to run again. Nothing is drawn yet.
 5. The window schedules a frame. The closure runs, the label lays out its new text, and only the label's rectangle and the button's pressed state are repainted and presented.

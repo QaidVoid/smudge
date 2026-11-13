@@ -13,7 +13,7 @@
 
 ```toml
 [dependencies]
-smudge = { version = "0.1", features = ["gpu"] }
+smudge = { version = "0.2", features = ["gpu"] }
 ```
 
 ## `smudge-text`
@@ -28,7 +28,7 @@ An application that depends on `smudge` turns these on through the `smudge` feat
 
 ```toml
 [dependencies]
-smudge = { version = "0.1", features = ["system-fonts"] }
+smudge = { version = "0.2", features = ["system-fonts"] }
 ```
 
 ## `smudge-platform`

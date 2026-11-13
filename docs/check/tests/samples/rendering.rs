@@ -39,7 +39,7 @@ fn bind_theme() -> Result<(), PlatformError> {
 }
 
 fn start_move() {
-    use smudge::core::window::start_move;
+    use smudge::commands::start_move;
     
     let header = panel()
         .height(px(40.0))
@@ -49,8 +49,6 @@ fn start_move() {
 fn open_docs() {}
 #[test]
 fn pointer_cursor() {
-    use smudge::core::window::Cursor;
-    
     let link = label("Open the docs")
         .cursor(Cursor::Pointer)
         .on_press(open_docs);

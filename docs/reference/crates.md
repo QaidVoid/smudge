@@ -37,6 +37,7 @@ The diagram shows the main paths; most crates also depend on `smudge-core` direc
 | `smudge::core` | `smudge-core` |
 | `smudge::text` | `smudge-text` |
 | `smudge::widgets` | `smudge-widgets` |
+| `smudge::commands` | The window commands, the window state and the cursors, which is `smudge::core::window` under a name apart from `smudge::window` |
 | `smudge::window` | `smudge-platform`, with the `window` feature (on by default) |
 | `smudge::gpu` | `smudge-gpu`, with the `gpu` feature |
 

@@ -93,11 +93,11 @@ cargo run --release --example lists -p smudge
 
 ## Status
 
-v0.1 is the first release. It is built and tested on Linux, and the window layer supports Windows and macOS. The API will change between minor versions while it settles. The [known limits](docs/reference/limits.md) list what is not there yet, such as rich text spans, horizontal scrolling and popups.
+Version 0.2 adds the multi-line text area, images, the keyed virtual list, a scroll view that follows its end, messages from other threads, focus traps and autofocus, label line caps, and window commands and cursors for a custom title bar. It is built and tested on Linux, and the window layer supports Windows and macOS. The API will change between minor versions while it settles, and 0.2 changes some 0.1 APIs, which the changelog marks as breaking. The [known limits](docs/reference/limits.md) list what is not there yet, such as rich text spans, horizontal scrolling and popups.
 
 ## Documentation
 
-The guide lives in [`docs/`](docs) and is built with VitePress:
+The guide lives in [`docs/`](docs) as Markdown pages, which a static site generator turns into a site. To preview it:
 
 ```sh
 cd docs

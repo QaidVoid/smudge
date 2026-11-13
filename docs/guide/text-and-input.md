@@ -52,7 +52,7 @@ Chinese and Japanese wrap between characters out of the box. Thai, Lao, Khmer an
 
 ```toml
 [dependencies]
-smudge = { version = "0.1", features = ["complex-scripts"] }
+smudge = { version = "0.2", features = ["complex-scripts"] }
 ```
 
 It also makes double-click and word movement select whole words in Chinese and Japanese. It adds about 3 MB to every binary and about 5 percent to the layout time of other text, which is why it is off by default.

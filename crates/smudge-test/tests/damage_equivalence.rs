@@ -46,7 +46,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use proptest::prelude::*;
-use proptest::test_runner::FileFailurePersistence;
+use proptest::strategy::ValueTree;
+use proptest::test_runner::{FileFailurePersistence, RngAlgorithm, TestRng, TestRunner};
 use smudge_core::element::{AnyElement, Element, IntoElement, for_each, show};
 use smudge_core::geometry::{Color, Point, Size};
 use smudge_core::image::Image;
@@ -99,14 +100,17 @@ const MAX_EDITS_PER_FRAME: usize = 4;
 /// The proptest configuration the gate runs.
 ///
 /// `PROPTEST_CASES` overrides the case count, so a longer run needs no change
-/// to this file. A failure is written to `tests/proptest-regressions/`, beside
-/// the test that found it, and that file is kept under version control.
+/// to this file. A failure is written to
+/// `tests/proptest-regressions/damage_equivalence_cases.txt`, which is kept
+/// under version control. The older `damage_equivalence.txt` holds seeds
+/// recorded under an earlier case strategy, which [`recorded_config`]
+/// replays through it.
 fn config() -> ProptestConfig {
     ProptestConfig {
         cases: DEFAULT_CASES,
         failure_persistence: Some(Box::new(FileFailurePersistence::Direct(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/proptest-regressions/damage_equivalence.txt"
+            "/tests/proptest-regressions/damage_equivalence_cases.txt"
         )))),
         ..ProptestConfig::default()
     }
@@ -356,7 +360,19 @@ impl SceneData {
     /// never mounted through one or hidden, because the harness builds it
     /// directly, and it always paints a panel, because the keyed list and the
     /// scroll views mount only under one.
-    fn new(mut nodes: Vec<NodeSpec>) -> SceneData {
+    fn new(nodes: Vec<NodeSpec>) -> SceneData {
+        let mut data = SceneData::with_any_root(nodes);
+        data.nodes[0].text = false;
+        data
+    }
+
+    /// Builds a scene the way [`SceneData::new`] does, except that the root
+    /// may paint text, in which case neither the keyed list nor the scroll
+    /// views mount.
+    ///
+    /// These are the rules the seeds of the regression file were recorded
+    /// under, so [`any_recorded_case`] replays them through this.
+    fn with_any_root(mut nodes: Vec<NodeSpec>) -> SceneData {
         nodes[0].children = nodes[0].children.max(1);
 
         let mut children = vec![Vec::new(); nodes.len()];
@@ -385,7 +401,6 @@ impl SceneData {
         nodes[0].bind_width = true;
         nodes[0].bind_background = true;
         nodes[0].bind_radius = true;
-        nodes[0].text = false;
         nodes[0].image = false;
         nodes[0].hover_variant = false;
         nodes[0].pressed_variant = false;
@@ -1815,11 +1830,10 @@ fn any_event_frames(counts: SignalCounts) -> impl Strategy<Value = Vec<Vec<Edit>
 /// A generated case: a scene, the edits of its geometry segment, and the edits
 /// and events of its event segment, one group per frame.
 ///
-/// The image flags and the image edits are drawn after everything else, so
-/// the seeds the regression file kept from before images existed still
-/// generate the scenes and edits they recorded, now with images added.
-fn any_case() -> impl Strategy<Value = (SceneData, Vec<Vec<Edit>>, Vec<Vec<Edit>>)> {
-    (any_base_case(), any_image_plan()).prop_map(
+/// The root always paints a panel, and the image flags and the image edits
+/// are drawn after the rest of the case.
+fn any_case() -> impl Strategy<Value = Case> {
+    (any_base_case(SceneData::new), any_image_plan()).prop_map(
         |((data, mut geometry, events), (flags, image_edits))| {
             let data = data.with_images(&flags);
             let images = data.signal_counts().images;
@@ -1833,10 +1847,11 @@ fn any_case() -> impl Strategy<Value = (SceneData, Vec<Vec<Edit>>, Vec<Vec<Edit>
     )
 }
 
-/// A case without images: a scene, its geometry edits and its event frames.
-fn any_base_case() -> impl Strategy<Value = (SceneData, Vec<Vec<Edit>>, Vec<Vec<Edit>>)> {
+/// A case without images, its scene built from the generated nodes by
+/// `scene`: the scene, its geometry edits and its event frames.
+fn any_base_case(scene: fn(Vec<NodeSpec>) -> SceneData) -> impl Strategy<Value = Case> {
     prop::collection::vec(any_spec(), 2..=MAX_NODES)
-        .prop_map(SceneData::new)
+        .prop_map(scene)
         .prop_flat_map(|data| {
             let counts = data.signal_counts();
             (
@@ -1989,6 +2004,29 @@ fn check_scene(scale: f32, data: &SceneData, geometry: &[Vec<Edit>], events: &[V
     }
 }
 
+/// A case as the seeds of the regression file were recorded: no images, and
+/// a root that may paint text.
+///
+/// Adding the image plan and the panel root to [`any_case`] changed what
+/// these seeds generate, so they replay through this strategy instead,
+/// which draws exactly what the case strategy drew when they were found.
+fn any_recorded_case() -> impl Strategy<Value = Case> {
+    any_base_case(SceneData::with_any_root)
+}
+
+/// The proptest configuration that replays the regression file's seeds
+/// through [`any_recorded_case`] and generates no new case.
+fn recorded_config() -> ProptestConfig {
+    ProptestConfig {
+        cases: 0,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/proptest-regressions/damage_equivalence.txt"
+        )))),
+        ..ProptestConfig::default()
+    }
+}
+
 /// Declares the damage equivalence property test once per scale factor.
 macro_rules! damage_equivalence_tests {
     ($($name:ident at $scale:expr;)*) => {
@@ -2009,6 +2047,17 @@ damage_equivalence_tests! {
     damage_matches_full_repaint_at_scale_one_and_a_quarter at 1.25;
     damage_matches_full_repaint_at_scale_one_and_a_half at 1.5;
     damage_matches_full_repaint_at_scale_two at 2.0;
+}
+
+proptest! {
+    #![proptest_config(recorded_config())]
+
+    #[test]
+    fn the_recorded_seeds_match_a_full_repaint((data, geometry, events) in any_recorded_case()) {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            check_scene(scale, &data, &geometry, &events);
+        }
+    }
 }
 
 /// A scene, the edits of its geometry segment and those of its event segment.
@@ -2186,4 +2235,53 @@ fn the_first_image_strategy_cases_match_a_full_repaint() {
             check_scene(scale, &data, &geometry, &events);
         }
     }
+}
+
+/// Each seed of the regression file: its text, its bytes, and the comment
+/// proptest wrote after it.
+fn recorded_seeds() -> Vec<(&'static str, [u8; 32], &'static str)> {
+    include_str!("proptest-regressions/damage_equivalence.txt")
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("cc ")?;
+            let (hex, comment) = rest.split_once(' ').unwrap_or((rest, ""));
+            let mut seed = [0u8; 32];
+            for (byte, pair) in seed.iter_mut().zip(hex.as_bytes().chunks(2)) {
+                *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+            }
+            Some((hex, seed, comment))
+        })
+        .collect()
+}
+
+#[test]
+fn a_recorded_seed_regenerates_the_text_root_it_recorded() {
+    let mut checked = 0;
+    for (hex, seed, comment) in recorded_seeds() {
+        // Shrinking only turns a flag off, so a root the comment records as
+        // text was generated as text.
+        let Some((_, nodes)) = comment.split_once("nodes: [") else {
+            continue;
+        };
+        let Some((_, root_text)) = nodes.split_once(", text: ") else {
+            continue;
+        };
+        if !root_text.starts_with("true") {
+            continue;
+        }
+        let mut runner = TestRunner::new_with_rng(
+            ProptestConfig::default(),
+            TestRng::from_seed(RngAlgorithm::ChaCha, &seed),
+        );
+        let (data, _, _) = any_recorded_case()
+            .new_tree(&mut runner)
+            .expect("the strategy generates a case")
+            .current();
+        assert!(
+            data.nodes[0].text,
+            "the seed {hex} regenerates a panel root"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "a recorded seed has a text root");
 }

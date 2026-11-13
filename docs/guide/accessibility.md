@@ -11,6 +11,7 @@ Every widget that has a meaning reports a role, and a name or a value:
 | `button` | Button | Its label text |
 | `label` | Label | Its text, reported as the value |
 | `text_input` | Text input | Its placeholder, with the current text as its value |
+| `text_area` | Multi-line text input | Its placeholder, with the current text as its value |
 | `scroll` | Scroll view | None by default |
 | The window | Window | The window title |
 
@@ -46,7 +47,7 @@ let toggle = panel()
     .accessible_label(move || if named.get() { "Unmute" } else { "Mute" }.to_owned());
 ```
 
-The roles are `Window`, `Group`, `Button`, `Label`, `TextInput`, `ScrollView`, `List` and `ListItem`.
+The roles are `Window`, `Group`, `Button`, `Label`, `TextInput`, `MultilineTextInput`, `ScrollView`, `List` and `ListItem`.
 
 ## Keyboard
 

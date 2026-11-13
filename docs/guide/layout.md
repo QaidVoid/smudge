@@ -84,6 +84,22 @@ let badge = panel()
     .background(Color::rgb(255, 64, 64));
 ```
 
+## Pinning a child
+
+`pin_child` keeps one flowing child at a fixed place in its parent, whatever the heights of the children before it. The closure returns the child's index and how far below the top of the content box its top sits, or `None` to leave the children alone. Every layout pass then moves the children together, outside the layout engine: the ones before the pinned child stack upward from it, the ones after it stack downward, edge to edge, so a child that grows pushes its neighbours away in the same frame. This is what keeps the keyed virtual list's anchored row still while rows above it change height.
+
+```rust
+let anchor = RwSignal::new(Some((1, 100.0)));
+let pinned = anchor.clone();
+
+let rows = column()
+    .pin_child(move || pinned.get())
+    .child(label("Grows as it wraps"))
+    .child(label("Stays 100 pixels down"));
+```
+
+The pin moves the children the way a scroll offset does, so do not give the same node a scroll offset as well. A change of the pin alone moves the children without a layout pass.
+
 ## Clipping and hiding
 
 `clip(true)` clips children to the panel's padding box. `overflow(Overflow::Scroll)` clips the same way and also makes the panel a scroll container: as a flex item it shrinks to the space it is given instead of growing to its content, which is what the scroll view and the virtual lists use, so a list with `grow(1.0)` in a column fills what is left of it. `hidden(true)` removes a node from layout and paint while keeping it mounted, so its state survives; bind it to a signal to toggle visibility cheaply. To mount and unmount instead, use [`show`](./dynamic-content).

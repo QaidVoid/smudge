@@ -43,7 +43,13 @@ pub fn image(source: impl Into<Value<Option<Image>>>) -> Element<ImageView> {
 /// The key of an image's source binding.
 struct SourceKey;
 
-/// The stretch-one-image widget.
+/// The widget behind [`image`]: it paints a panel's background and border,
+/// then one image stretched over its content box.
+///
+/// Build one with [`image`], which binds its source. The widget measures as
+/// the source's pixel size over the scale factor, so a source that appears,
+/// disappears or changes pixel size lays the node out again, and a swap
+/// between sources of the same size only repaints it.
 pub struct ImageView {
     /// The pixels to draw, or `None` while there is nothing to show.
     source: Option<Image>,
