@@ -280,6 +280,10 @@ pub(crate) struct WidgetTree {
     pointer_inside: bool,
     /// The node a primary press captured, while the button is held.
     pressed: Option<WidgetId>,
+    /// Whether a press was released without its release, so a primary
+    /// release that arrives with no press held belongs to that press and
+    /// reaches no handler. The next primary press clears it.
+    released_early: bool,
     /// The node that holds the keyboard focus, when one does.
     focused: Option<WidgetId>,
     /// The node the focus fell off of because it became disabled or hidden.
@@ -340,6 +344,7 @@ impl WidgetTree {
             pointer: Point::default(),
             pointer_inside: false,
             pressed: None,
+            released_early: false,
             focused: None,
             stale_focus: None,
             keyboard_nav: false,

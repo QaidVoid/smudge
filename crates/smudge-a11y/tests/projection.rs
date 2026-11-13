@@ -141,6 +141,55 @@ fn a_full_update_carries_the_window_and_every_projected_node() {
     assert_eq!(update.nodes.len(), 4);
 }
 
+/// A text field that reports `role` and holds `value`.
+struct Field(Role, &'static str);
+
+impl Widget for Field {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+
+    fn semantics(&self) -> Option<Semantics> {
+        Some(Semantics {
+            role: self.0,
+            label: None,
+            value: Some(self.1.to_owned()),
+        })
+    }
+}
+
+#[test]
+fn a_multi_line_text_field_projects_as_a_multi_line_input() {
+    let mut app = app_with(|| {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(Element::new(Field(Role::TextInput, "one line")))
+            .child(Element::new(Field(
+                Role::MultilineTextInput,
+                "first\nsecond",
+            )))
+    });
+    let mut projection = Projection::new("Smudge");
+
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let area = node_with_role(&update, AccessKitRole::MultilineTextInput);
+    assert_eq!(area.value(), Some("first\nsecond"));
+    let field = node_with_role(&update, AccessKitRole::TextInput);
+    assert_eq!(field.value(), Some("one line"));
+
+    // The platform adapters read the multi-line state from the role.
+    let tree = Tree::new(update, true);
+    let group = tree
+        .state()
+        .root()
+        .children()
+        .next()
+        .expect("the window holds the group");
+    let multiline: Vec<_> = group
+        .children()
+        .map(|node| (node.is_text_input(), node.is_multiline()))
+        .collect();
+    assert_eq!(multiline, [(true, false), (true, true)]);
+}
+
 #[test]
 fn bounds_land_where_the_widgets_draw_at_the_app_scale() {
     let mut app = app_with(|| {

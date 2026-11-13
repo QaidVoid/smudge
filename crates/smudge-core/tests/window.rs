@@ -293,6 +293,81 @@ fn releasing_a_press_restores_hover_without_running_on_press() {
 }
 
 #[test]
+fn the_release_of_a_press_the_window_system_refused_reaches_no_handler() {
+    let ups = Rc::new(Cell::new(0_u32));
+    let up = Rc::clone(&ups);
+    let presses = Rc::new(Cell::new(0_u32));
+    let pressed = Rc::clone(&presses);
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        let up = Rc::clone(&up);
+        let pressed = Rc::clone(&pressed);
+        panel().child(
+            panel()
+                .width(px(100.0))
+                .height(px(40.0))
+                .on_pointer_down(|_| window::start_move())
+                .on_pointer_up(move |_| up.set(up.get() + 1))
+                .on_press(move || pressed.set(pressed.get() + 1)),
+        )
+    });
+    harness.frame();
+
+    let header = Point { x: 20.0, y: 20.0 };
+    harness.move_to(header);
+    harness.button_down(header);
+    harness.app().release_press();
+    assert_eq!(ups.get(), 1, "releasing the press ends it once");
+
+    // The window system refused the move, so the release arrives after all.
+    harness.button_up(header);
+    assert_eq!(
+        ups.get(),
+        1,
+        "the late release does not end the press again"
+    );
+
+    harness.button_down(header);
+    harness.button_up(header);
+    assert_eq!(
+        (ups.get(), presses.get()),
+        (2, 1),
+        "the next press and release count as usual"
+    );
+}
+
+#[test]
+fn a_new_press_after_a_released_press_keeps_its_own_release() {
+    let ups = Rc::new(Cell::new(0_u32));
+    let up = Rc::clone(&ups);
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        let up = Rc::clone(&up);
+        panel().child(
+            panel()
+                .width(px(100.0))
+                .height(px(40.0))
+                .on_pointer_down(|_| window::start_move())
+                .on_pointer_up(move |_| up.set(up.get() + 1)),
+        )
+    });
+    harness.frame();
+
+    let header = Point { x: 20.0, y: 20.0 };
+    harness.move_to(header);
+    harness.button_down(header);
+    harness.app().release_press();
+    assert_eq!(ups.get(), 1);
+
+    // The window system took the press and its release, so the next thing
+    // the app hears is a new press, here on empty space, whose release over
+    // the header must reach the header.
+    let empty = Point { x: 150.0, y: 150.0 };
+    harness.move_to(empty);
+    harness.button_down(empty);
+    harness.button_up(header);
+    assert_eq!(ups.get(), 2, "the new press's release is heard");
+}
+
+#[test]
 fn cursor_follows_the_hovered_chain_and_a_nested_setter_wins() {
     let mut harness = Harness::new(200.0, 200.0, 1.0, || {
         panel().child(

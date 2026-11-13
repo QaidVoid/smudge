@@ -122,8 +122,8 @@ pub struct WindowOptions {
     /// adapter is a real GPU, and falls back to the CPU renderer on a software
     /// rasterizer, without one, or on a window the GPU cannot present to. It
     /// is the default in builds with the `gpu` feature. [`RendererChoice::Gpu`]
-    /// never falls back: it fails the run when the `gpu` feature is off or no
-    /// usable adapter exists.
+    /// never falls back to the CPU renderer: it fails the run when the `gpu`
+    /// feature is off or no backend, OpenGL included, has a usable adapter.
     ///
     /// The [`crate::renderer::RENDERER_ENVIRONMENT`] variable, set to `cpu`,
     /// `gpu` or `auto`, overrides the value here when the window opens, so a
@@ -954,10 +954,12 @@ impl WindowState {
     /// resize only while the press that started it is being reported. A
     /// refused move or resize leaves the window where it is, which is the
     /// behavior of a compositor that offers no interactive move, so the
-    /// errors carry nothing the app could act on. An accepted one hands the
-    /// press to the window system, whose release then never reaches the app,
-    /// so the app's press ends here. On the web a close does nothing, like
-    /// the other commands there.
+    /// errors carry nothing the app could act on. A call that succeeds hands
+    /// the press to the window system, whose release then never reaches the
+    /// app, so the app's press ends here. Some window systems report success
+    /// and refuse the gesture later; the release that then arrives reaches
+    /// no handler, because the app ignores the release of a press it ended.
+    /// On the web a close does nothing, like the other commands there.
     fn apply_window_commands(&mut self, event_loop: &ActiveEventLoop) {
         for command in self.app.take_window_commands() {
             match command {

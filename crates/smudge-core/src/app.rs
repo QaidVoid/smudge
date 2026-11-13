@@ -393,7 +393,10 @@ impl App {
     /// that press never reaches the app, so without this the press would stay
     /// captured and hover would stop following the pointer. The pressed node
     /// loses its pressed state and hears `on_pointer_up`, so a drag it started
-    /// ends. With no press held it does nothing.
+    /// ends. A window system may still refuse the gesture after the call that
+    /// starts it succeeded, and then the release arrives after all: a primary
+    /// release that comes with no press held, before the next primary press,
+    /// reaches no handler. With no press held this does nothing.
     pub fn release_press(&mut self) {
         self.tree.release_press();
     }

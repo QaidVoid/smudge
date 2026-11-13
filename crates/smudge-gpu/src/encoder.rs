@@ -30,6 +30,9 @@ pub(crate) struct Encoder {
     ring: BezPath,
     /// The transform of each open offset scope, reused across frames.
     offsets: Vec<Affine>,
+    /// The visible area outside each open clip, in physical pixels, reused
+    /// across frames.
+    clips: Vec<KurboRect>,
 }
 
 impl Encoder {
@@ -46,11 +49,17 @@ impl Encoder {
             },
             ring: BezPath::new(),
             offsets: Vec::new(),
+            clips: Vec::new(),
         }
     }
 
-    /// Replaces the scene's contents with `frame`'s display list.
-    pub(crate) fn encode(&mut self, frame: &FrameOutput<'_>) {
+    /// Replaces the scene's contents with `frame`'s display list, for a
+    /// surface of `width` by `height` physical pixels.
+    ///
+    /// An image outside the surface or its clips is left out of the scene,
+    /// because vello packs every image of a scene into one atlas, visible or
+    /// not, and skips the images that no longer fit.
+    pub(crate) fn encode(&mut self, frame: &FrameOutput<'_>, width: u32, height: u32) {
         self.scene.reset();
         // Images the last two frames did not use leave the cache at the
         // start of the third frame after their last use. That releases only
@@ -71,6 +80,9 @@ impl Encoder {
         // composes with the scale instead of costing a layer per scope.
         let mut offset = Affine::IDENTITY;
         self.offsets.clear();
+        // The part of the surface the clips around an item leave visible.
+        let mut visible = KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        self.clips.clear();
         for item in frame.list.items() {
             match item {
                 DisplayItem::Op(op) => encode_op(
@@ -79,20 +91,22 @@ impl Encoder {
                     &mut self.ring,
                     &mut self.images,
                     transform * offset,
+                    visible,
                     op,
                 ),
                 DisplayItem::PushClip(rect) => {
                     depth += 1;
-                    self.scene.push_clip_layer(
-                        Fill::NonZero,
-                        transform * offset,
-                        &kurbo_rect(*rect),
-                    );
+                    let clip = kurbo_rect(*rect);
+                    self.scene
+                        .push_clip_layer(Fill::NonZero, transform * offset, &clip);
+                    self.clips.push(visible);
+                    visible = visible.intersect((transform * offset).transform_rect_bbox(clip));
                 }
                 DisplayItem::PopClip => {
                     if depth > 0 {
                         depth -= 1;
                         self.scene.pop_layer();
+                        visible = self.clips.pop().unwrap_or(visible);
                     }
                 }
                 DisplayItem::PushOffset(delta) => {
@@ -120,13 +134,16 @@ impl Encoder {
 /// Encodes one paint operation.
 ///
 /// The transform scales logical coordinates to physical pixels and carries
-/// the translation of the offset scopes around the operation.
+/// the translation of the offset scopes around the operation. `visible` is
+/// the part of the surface the clips around the operation leave, in physical
+/// pixels.
 fn encode_op(
     scene: &mut Scene,
     fonts: &mut HashMap<(u64, u32), Option<FontData>>,
     ring: &mut BezPath,
     images: &mut ImageCache,
     transform: Affine,
+    visible: KurboRect,
     op: &PaintOp,
 ) {
     match *op {
@@ -185,10 +202,18 @@ fn encode_op(
             radius,
             ref image,
         } => {
-            if !(rect.width() > 0.0 && rect.height() > 0.0) {
+            let finite = [rect.x0, rect.y0, rect.x1, rect.y1]
+                .iter()
+                .all(|edge| edge.is_finite());
+            if !(finite && rect.width() > 0.0 && rect.height() > 0.0) {
                 return;
             }
-            let brush = images.brush(image);
+            let drawn = transform.transform_rect_bbox(kurbo_rect(rect));
+            let shown = drawn.intersect(visible);
+            if !(shown.width() > 0.0 && shown.height() > 0.0) {
+                return;
+            }
+            let brush = images.brush(image, drawn.width(), drawn.height());
             let sx = f64::from(rect.width()) / f64::from(brush.image.width);
             let sy = f64::from(rect.height()) / f64::from(brush.image.height);
             let local = transform
@@ -227,53 +252,81 @@ const ATLAS_SIDE: u32 = 8192;
 /// A brush is kept because vello keys its atlas by the blob's identity, and
 /// a fresh blob per frame would upload every image again each frame.
 struct ImageCache {
-    /// The brushes, keyed by the smudge image's id, each stamped with the
-    /// generation it was last used at.
-    brushes: HashMap<u64, (ImageBrush, u64)>,
+    /// The brushes, keyed by the smudge image's id and the longer side of
+    /// the brush, each stamped with the generation it was last used at.
+    brushes: HashMap<(u64, u32), (ImageBrush, u64)>,
     /// How many frames the encoder has encoded, for the stamps.
     generation: u64,
-    /// The longest side an image is handed to vello at. A longer image is
-    /// downscaled once to fit, because vello skips an image its atlas
-    /// cannot hold.
+    /// The longest side an image is handed to vello at, because vello skips
+    /// an image its atlas cannot hold.
     max_side: u32,
 }
 
 impl ImageCache {
-    /// Returns the vello image for `image`, building it the first time and
+    /// Returns the vello image for `image` drawn over `drawn_width` by
+    /// `drawn_height` physical pixels, building it the first time and
     /// stamping the current generation on it.
     ///
     /// The stamp is what drops the entries an application stopped drawing:
     /// the encoder drops an image at the start of the third frame after the
-    /// last frame that drew it. The blob shares the image's pixels rather
-    /// than copying them, unless a side is longer than `max_side`: then the
-    /// brush holds a copy downscaled to fit, made once per image.
-    fn brush(&mut self, image: &smudge_core::image::Image) -> &ImageBrush {
-        let max_side = self.max_side;
-        let entry = self.brushes.entry(image.id()).or_insert_with(|| {
-            let (width, height) = fitted_size(image.width(), image.height(), max_side);
-            let data = if (width, height) == (image.width(), image.height()) {
+    /// last frame that drew it. An image larger than [`fitted_side`] allows
+    /// is handed over as a copy downscaled to fit, because one vello atlas
+    /// holds every image of a frame and a full-size photo fills a quarter of
+    /// it. The copy is made when its entry is built, so an image that leaves
+    /// the cache and comes back is downscaled again. An image that fits
+    /// shares its pixels with the blob rather than copying them.
+    fn brush(
+        &mut self,
+        image: &smudge_core::image::Image,
+        drawn_width: f64,
+        drawn_height: f64,
+    ) -> &ImageBrush {
+        let (width, height) = (image.width(), image.height());
+        let side = fitted_side(width, height, drawn_width, drawn_height, self.max_side);
+        let entry = self.brushes.entry((image.id(), side)).or_insert_with(|| {
+            let (to_width, to_height) = fitted_size(width, height, side);
+            let data = if (to_width, to_height) == (width, height) {
                 Blob::new(Arc::new(SharedPixels(image.clone())))
             } else {
                 Blob::new(Arc::new(downscale(
                     image.pixels(),
-                    image.width(),
-                    image.height(),
                     width,
                     height,
+                    to_width,
+                    to_height,
                 )))
             };
             let brush = ImageBrush::new(ImageData {
                 data,
                 format: ImageFormat::Rgba8,
                 alpha_type: ImageAlphaType::AlphaPremultiplied,
-                width,
-                height,
+                width: to_width,
+                height: to_height,
             });
             (brush, 0)
         });
         entry.1 = self.generation;
         &entry.0
     }
+}
+
+/// Returns the longer side a `width` by `height` image is handed to vello
+/// at when it is drawn over `drawn_width` by `drawn_height` physical pixels.
+///
+/// The side keeps at least one texel per drawn pixel on both axes, rounded
+/// up to a power of two so a small change of the drawn size reuses the same
+/// copy, and is capped at `max_side` and at the image's own longer side.
+fn fitted_side(width: u32, height: u32, drawn_width: f64, drawn_height: f64, max_side: u32) -> u32 {
+    let longer = width.max(height);
+    let ratio = (drawn_width / f64::from(width)).max(drawn_height / f64::from(height));
+    let needed = (f64::from(longer) * ratio).ceil();
+    // A NaN fails the comparison and falls back to the full size.
+    let bucket = if needed < f64::from(max_side) {
+        (needed as u32).max(1).next_power_of_two()
+    } else {
+        max_side
+    };
+    bucket.min(max_side).min(longer)
 }
 
 /// Returns the size a `width` by `height` image is handed to vello at: its

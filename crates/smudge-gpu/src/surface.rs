@@ -323,7 +323,7 @@ impl GpuSurface {
             target,
             ..
         } = self;
-        encoder.encode(frame);
+        encoder.encode(frame, params.width, params.height);
         renderer
             .render_to_texture(device, queue, encoder.scene(), &target.1, &params)
             .map_err(GpuError::Render)?;

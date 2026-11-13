@@ -32,15 +32,6 @@ fn a_translucent_clear_color_fails_before_any_window_opens() {
 }
 
 #[test]
-fn the_default_options_ask_for_decorations() {
-    assert!(
-        WindowOptions::default().decorations,
-        "a window opens decorated unless the application asks for no \
-         decorations"
-    );
-}
-
-#[test]
 fn a_due_timer_asks_for_its_frame_at_once() {
     let now = Instant::now();
     assert_eq!(

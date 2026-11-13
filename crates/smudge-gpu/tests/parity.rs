@@ -385,19 +385,181 @@ fn an_image_wider_than_the_gpu_atlas_draws_downscaled() {
     }
 }
 
-/// Requests an adapter the way [`GpuRenderer::headless`] does and returns its
-/// device, queue and a readable name, or `None` when no adapter works.
+#[test]
+fn a_gallery_of_camera_photos_draws_every_photo() {
+    let Some((device, queue, adapter)) = headless_device() else {
+        eprintln!("skipping: no GPU adapter available for the headless renderer");
+        return;
+    };
+    eprintln!("parity adapter: {adapter}");
+
+    // Five photos of 4032 by 3024 pixels hold about 61 million pixels, and
+    // one 8192 by 8192 image atlas packs only four of them, so the GPU
+    // renderer must hand each over at the size it is drawn at.
+    let photos: Vec<_> = (0..5u8)
+        .map(|index| solid_image(4032, 3024, 30 + index * 40))
+        .collect();
+    let places: Vec<(f32, f32)> = (0..5)
+        .map(|index| (4.0 + index as f32 * 39.0, 10.0))
+        .collect();
+    let scene = {
+        let photos = photos.clone();
+        let places = places.clone();
+        move || {
+            photos
+                .into_iter()
+                .zip(places)
+                .fold(panel(), |gallery, (photo, (left, top))| {
+                    gallery.child(sized_image(photo, left, top, 36.0, 27.0))
+                })
+        }
+    };
+    assert_images_drawn(device, queue, scene, &photos, &places, (36.0, 27.0));
+}
+
+#[test]
+fn thumbnails_clipped_out_of_view_leave_the_visible_ones_drawn() {
+    let Some((device, queue, adapter)) = headless_device() else {
+        eprintln!("skipping: no GPU adapter available for the headless renderer");
+        return;
+    };
+    eprintln!("parity adapter: {adapter}");
+
+    // Eighteen sources of 2048 by 2048 pixels are more than the sixteen one
+    // image atlas holds. They are drawn at full size in a row scrolled to
+    // its end, so only the last two show through the clip, and they come
+    // last in paint order, where an overflowing atlas drops images first.
+    let count = 18u8;
+    let sources: Vec<_> = (0..count)
+        .map(|index| solid_image(2048, 2048, 20 + index * 12))
+        .collect();
+    let side = 70.0;
+    let left_of = move |index: u8| 10.0 + (f32::from(index) - f32::from(count - 2)) * (side + 4.0);
+    let scene = {
+        let sources = sources.clone();
+        move || {
+            let row = sources.into_iter().enumerate().fold(
+                at(10.0, 10.0, 160.0, 80.0).clip(true),
+                |row, (index, source)| {
+                    let index = u8::try_from(index).expect("eighteen sources");
+                    row.child(sized_image(source, left_of(index), 4.0, side, side))
+                },
+            );
+            panel().child(row)
+        }
+    };
+    let visible = &sources[usize::from(count - 2)..];
+    let places: Vec<(f32, f32)> = (count - 2..count)
+        .map(|index| (10.0 + left_of(index), 14.0))
+        .collect();
+    assert_images_drawn(device, queue, scene, visible, &places, (side, side));
+}
+
+/// Renders one frame of `scene` through both renderers and checks that each
+/// of `images`, drawn at its place in `places` with `size`, shows its color
+/// at its center on both.
+fn assert_images_drawn<E: smudge_core::element::IntoElement + 'static>(
+    device: Device,
+    queue: Queue,
+    scene: impl FnOnce() -> E + 'static,
+    images: &[smudge_core::image::Image],
+    places: &[(f32, f32)],
+    (width, height): (f32, f32),
+) {
+    let config = AppConfig {
+        viewport: VIEWPORT,
+        scale: 1.0,
+        clear_color: Color::WHITE,
+        repaint: RepaintMode::Full,
+    };
+    let mut app = App::new(config, scene);
+    let (surface_width, surface_height) = app.surface_size();
+    let frame = app.frame();
+    let mut gpu = GpuRenderer::new(device, queue, surface_width, surface_height);
+    gpu.render(&frame);
+    let gpu_pixels = gpu.read_pixels();
+    let mut cpu = CpuRenderer::new(surface_width, surface_height);
+    cpu.render(&frame);
+    let mut cpu_pixels = cpu.pixels().to_vec();
+    unpremultiply(&mut cpu_pixels);
+
+    let at = |pixels: &[u8], x: u32, y: u32| {
+        let start = (y * surface_width + x) as usize * 4;
+        [
+            pixels[start],
+            pixels[start + 1],
+            pixels[start + 2],
+            pixels[start + 3],
+        ]
+    };
+    for (index, (image, (left, top))) in images.iter().zip(places).enumerate() {
+        let (x, y) = ((left + width / 2.0) as u32, (top + height / 2.0) as u32);
+        let expected = &image.pixels()[..4];
+        assert_eq!(
+            at(&cpu_pixels, x, y),
+            expected,
+            "the CPU draws image {index}"
+        );
+        assert_eq!(
+            at(&gpu_pixels, x, y),
+            expected,
+            "the GPU draws image {index}"
+        );
+    }
+}
+
+/// An image of `width` by `height` pixels of one opaque gray, `shade`.
+fn solid_image(width: u32, height: u32, shade: u8) -> smudge_core::image::Image {
+    let pixels = [shade, shade, shade, 255].repeat(width as usize * height as usize);
+    smudge_core::image::Image::from_premultiplied_rgba(width, height, pixels)
+        .expect("the shade fills the buffer")
+}
+
+/// `source` drawn at `left`, `top` with `width` and `height`, out of the
+/// flow.
+fn sized_image(
+    source: smudge_core::image::Image,
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+) -> Element<smudge_widgets::ImageView> {
+    image(Some(source))
+        .absolute()
+        .width(px(width))
+        .height(px(height))
+        .inset(Edges {
+            left: Length::px(left),
+            top: Length::px(top),
+            right: Length::auto(),
+            bottom: Length::auto(),
+        })
+}
+
+/// Requests an adapter the way [`GpuRenderer::headless`] does, from
+/// [`smudge_gpu::instance`] and then from every backend, with the limits of
+/// [`smudge_gpu::device_limits`], and returns its device, queue and a
+/// readable name, or `None` when no adapter works.
 fn headless_device() -> Option<(Device, Queue, String)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = futures_executor::block_on(
-        instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-    )
-    .ok()?;
+    let options = wgpu::RequestAdapterOptions::default();
+    let adapter = match futures_executor::block_on(smudge_gpu::instance().request_adapter(&options))
+    {
+        Ok(adapter) => adapter,
+        Err(_) => {
+            let every = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            futures_executor::block_on(every.request_adapter(&options)).ok()?
+        }
+    };
     let info = adapter.get_info();
     let name = format!("{} on {:?}", info.name, info.backend);
     let (device, queue) =
-        futures_executor::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .ok()?;
+        futures_executor::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: smudge_gpu::device_limits(&adapter),
+            ..Default::default()
+        }))
+        .ok()?;
     Some((device, queue, name))
 }
 

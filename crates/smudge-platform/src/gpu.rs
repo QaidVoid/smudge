@@ -51,6 +51,23 @@ pub(crate) fn adapter_is_software(info: &AdapterInfo) -> bool {
         .any(|marker| name.contains(marker) || driver.contains(marker))
 }
 
+/// Creates a surface for `window` on `instance` and requests an adapter that
+/// can present to it, or says why there is none.
+fn connect(
+    instance: &wgpu::Instance,
+    window: &Arc<Window>,
+) -> Result<(wgpu::Surface<'static>, wgpu::Adapter), String> {
+    let surface = instance
+        .create_surface(Box::new(SharedWindow(Arc::clone(window))))
+        .map_err(|error| format!("the window surface could not be created: {error}"))?;
+    let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        compatible_surface: Some(&surface),
+        ..Default::default()
+    }))
+    .map_err(|error| format!("no adapter can present to the window: {error}"))?;
+    Ok((surface, adapter))
+}
+
 /// The GPU presentation path of a window.
 pub(crate) struct GpuPath {
     /// The presenter that draws the frames onto the surface.
@@ -64,17 +81,20 @@ pub(crate) struct GpuPath {
 impl GpuPath {
     /// Sets the GPU path up for `window`.
     ///
-    /// With `explicit` set, this is the caller's chosen renderer, so any
-    /// failure to set it up fails the run. Otherwise the choice is automatic,
-    /// and every failure of this function returns `None` for the CPU path:
-    /// no adapter, a software rasterizer, a device that cannot be created, a
-    /// surface without a supported format, or a window larger than the
-    /// device's texture limit.
+    /// The adapter comes from [`smudge_gpu::instance`], which enables the
+    /// primary backends only. With `explicit` set, this is the caller's
+    /// chosen renderer: when the primary backends cannot present to the
+    /// window, the setup is retried with every backend, OpenGL included, and
+    /// any failure after that fails the run. Otherwise the choice is
+    /// automatic, and every failure of this function returns `None` for the
+    /// CPU path: no surface or adapter on the primary backends, a software
+    /// rasterizer, a device that cannot be created, a surface without a
+    /// supported format, or a window larger than the device's texture limit.
     ///
     /// # Errors
     ///
     /// Returns [`PlatformError::Renderer`] when `explicit` is set and the
-    /// setup fails, and for surface creation failures of either mode.
+    /// setup fails.
     pub(crate) fn new(
         window: &Arc<Window>,
         width: u32,
@@ -93,22 +113,22 @@ impl GpuPath {
                 "a window without pixels cannot present GPU frames",
             ));
         }
-        let instance = smudge_gpu::instance();
-        let surface = instance
-            .create_surface(Box::new(SharedWindow(Arc::clone(window))))
-            .map_err(|error| {
-                PlatformError::Renderer(format!(
-                    "the window surface could not be created for the GPU renderer: {error}"
-                ))
-            })?;
-        let adapter = match block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        })) {
-            Ok(adapter) => adapter,
-            Err(error) => {
-                return fail(format!("no adapter can present to the window: {error}"));
+        let (surface, adapter) = match connect(&smudge_gpu::instance(), window) {
+            Ok(connected) => connected,
+            Err(primary) if explicit => {
+                let every = wgpu::Instance::new(
+                    wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+                );
+                match connect(&every, window) {
+                    Ok(connected) => connected,
+                    Err(error) => {
+                        return fail(format!(
+                            "{primary} on the primary backends, and {error} on any backend"
+                        ));
+                    }
+                }
             }
+            Err(_) => return Ok(None),
         };
         // The automatic choice inspects the adapter before anything is built
         // on it, so a software rasterizer costs nothing but the request.

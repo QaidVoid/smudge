@@ -188,6 +188,7 @@ impl WidgetTree {
         if button != PointerButton::Primary {
             return;
         }
+        self.released_early = false;
         // A press outside the active focus trap is not a focus gesture: the
         // focus stays wherever the trap holds it, on nothing when it holds
         // nothing.
@@ -225,7 +226,9 @@ impl WidgetTree {
     /// or one of its descendants, and runs its `on_pointer_up` whether or not
     /// the release happened over it, so a drag that ends elsewhere still
     /// hears the button come up. With no press held, the hover target hears
-    /// `on_pointer_up`. Hover follows the pointer again either way.
+    /// `on_pointer_up`, unless the release belongs to a press that
+    /// [`WidgetTree::release_press`] already ended: then no handler runs.
+    /// Hover follows the pointer again either way.
     pub(crate) fn pointer_up(&mut self, position: Point, button: PointerButton) {
         if button != PointerButton::Primary {
             return;
@@ -235,6 +238,9 @@ impl WidgetTree {
         let hovered = self.hover_target(position);
         let Some(captured) = self.pressed.take() else {
             self.set_hover_target(hovered);
+            if std::mem::take(&mut self.released_early) {
+                return;
+            }
             if let Some(hovered) = hovered {
                 self.run_pointer_up(hovered, position);
             }
@@ -253,12 +259,15 @@ impl WidgetTree {
 
     /// Ends the held press without a release: the captured node loses its
     /// pressed bit and hears `on_pointer_up`, so a drag it started ends, but
-    /// not `on_press`. Hover then follows the pointer again. Without a held
-    /// press it does nothing.
+    /// not `on_press`. Hover then follows the pointer again. The press's own
+    /// release, when it still arrives, reaches no handler, because the
+    /// window system may refuse the gesture it was released for. Without a
+    /// held press it does nothing.
     pub(crate) fn release_press(&mut self) {
         let Some(captured) = self.pressed.take() else {
             return;
         };
+        self.released_early = true;
         self.set_bit(captured, Interaction::PRESSED, false);
         self.run_pointer_up(captured, self.pointer);
         let hovered = if self.pointer_inside {

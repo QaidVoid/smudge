@@ -23,14 +23,18 @@ pub enum RendererChoice {
     /// The GPU renderer through vello.
     ///
     /// Needs the `gpu` feature and an adapter that can present to the window.
-    /// A run with this choice fails when either is missing; it never falls
-    /// back on its own.
+    /// The adapter comes from the Vulkan, Metal or DX12 backend first, and
+    /// from any backend, OpenGL included, when none of those can present to
+    /// the window. A run with this choice fails when no adapter is found
+    /// either way; it never falls back to the CPU renderer on its own.
     Gpu,
     /// The GPU renderer when the window's adapter is a real GPU, and the CPU
     /// renderer otherwise: when the adapter is a software rasterizer such as
-    /// llvmpipe or SwiftShader, when no adapter exists, when the window
-    /// surface cannot present GPU frames, or while the damage overlay is on.
-    /// The default in builds with the `gpu` feature.
+    /// llvmpipe or SwiftShader, when no Vulkan, Metal or DX12 adapter exists,
+    /// when the window surface cannot present GPU frames, or while the damage
+    /// overlay is on. This choice never uses OpenGL, which serves the GPU
+    /// renderer's compute shaders poorly. The default in builds with the
+    /// `gpu` feature.
     Auto,
 }
 
