@@ -604,3 +604,109 @@ fn a_click_right_after_a_remount_reaches_the_new_tree() {
         "the click did not clear the restored focus"
     );
 }
+
+#[test]
+fn a_restored_focus_whose_handler_moves_it_is_still_revealed() {
+    let spacer = RwSignal::new(20.0_f32);
+    let offset = RwSignal::new(0.0_f32);
+    let build = {
+        let spacer = spacer.clone();
+        let offset = offset.clone();
+        move || {
+            let write = offset.clone();
+            let read = offset.clone();
+            let height = spacer.clone();
+            let grow = spacer.clone();
+            panel()
+                .column()
+                .height(px(60.0))
+                .overflow(smudge_core::style::Overflow::Scroll)
+                .on_reveal(move |revealed| write.set(revealed.y))
+                .scroll_offset(move || Point {
+                    x: 0.0,
+                    y: read.get(),
+                })
+                .child(panel().height(move || px(height.get())).shrink(0.0))
+                .child(square().shrink(0.0).focusable().on_focus(move |focused| {
+                    if focused {
+                        grow.set(100.0);
+                    }
+                }))
+                .child(panel().height(px(200.0)).shrink(0.0))
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    harness.press_key(smudge_core::input::Key::Tab);
+    harness.frame();
+    assert!(harness.app().focused().is_some());
+    spacer.set(20.0);
+    offset.set(0.0);
+    harness.frame();
+
+    harness.app().remount(build);
+    harness.frame();
+
+    assert_eq!(
+        offset.get(),
+        60.0,
+        "the focused square, moved to 100..120 by its own handler, ends at the bottom edge"
+    );
+}
+
+#[test]
+fn an_autofocus_whose_handler_moves_it_after_a_remount_is_revealed() {
+    let spacer = RwSignal::new(20.0_f32);
+    let offset = RwSignal::new(0.0_f32);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, panel);
+    harness.frame();
+    assert!(
+        harness.app().focused().is_none(),
+        "nothing is focused before"
+    );
+
+    let build = {
+        let spacer = spacer.clone();
+        let offset = offset.clone();
+        move || {
+            let write = offset.clone();
+            let read = offset.clone();
+            let height = spacer.clone();
+            let grow = spacer.clone();
+            panel()
+                .column()
+                .height(px(60.0))
+                .overflow(smudge_core::style::Overflow::Scroll)
+                .on_reveal(move |revealed| write.set(revealed.y))
+                .scroll_offset(move || Point {
+                    x: 0.0,
+                    y: read.get(),
+                })
+                .child(panel().height(move || px(height.get())).shrink(0.0))
+                .child(
+                    square()
+                        .shrink(0.0)
+                        .focusable()
+                        .autofocus()
+                        .on_focus(move |focused| {
+                            if focused {
+                                grow.set(100.0);
+                            }
+                        }),
+                )
+                .child(panel().height(px(200.0)).shrink(0.0))
+        }
+    };
+    harness.app().remount(build);
+    harness.frame();
+
+    assert!(
+        harness.app().focused().is_some(),
+        "the autofocus took the focus"
+    );
+    assert_eq!(
+        offset.get(),
+        60.0,
+        "the autofocused square, moved to 100..120 by its own handler, ends at the bottom edge"
+    );
+}

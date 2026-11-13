@@ -272,9 +272,8 @@ impl App {
     /// hold the focus and lies inside the active focus trap, if any. Its
     /// `on_focus` hears `true`, the remount scrolls it into view before it
     /// returns, as [`Element::on_reveal`](crate::element::Element::on_reveal)
-    /// describes,
-    /// and the autofocus requests of the new build's
-    /// visible nodes are dropped, so the restored focus stays. A request
+    /// describes, and the autofocus requests of the new build's visible
+    /// nodes are dropped, so the restored focus stays. A request
     /// whose node is hidden waits as usual. Without a restored focus, an
     /// autofocus request takes it as on a first mount. The keyboard
     /// navigation mode is kept.
@@ -285,8 +284,11 @@ impl App {
     /// at once, so the restored focus can find a node that a
     /// [`show`](crate::element::show) or [`for_each`](crate::element::for_each)
     /// mounts. The new tree is laid out before this returns, so input that
-    /// arrives before the next frame hits it. The next frame repaints the
-    /// whole surface, and the next
+    /// arrives before the next frame hits it. The next frame lays it out
+    /// again after its flush and scrolls the focused node into view again,
+    /// unless a press comes first, so the signals that handlers wrote during
+    /// the remount move the layout and the scroll before anything paints.
+    /// That frame repaints the whole surface, and the next
     /// [`App::take_a11y_changes`] reports a reset, so an accessibility
     /// backend rebuilds its tree.
     ///
@@ -357,8 +359,8 @@ impl App {
             self.tree.restore_focus(&path);
         }
         // Input that arrives before the next frame hits the new tree, so it
-        // is laid out now rather than with that frame's layout pass.
-        self.tree.layout(self.config.viewport);
+        // is laid out now, and that frame lays it out again after its flush.
+        self.tree.layout_ahead(self.config.viewport);
         self.force_full = true;
         self.ime_reset = true;
     }
