@@ -559,6 +559,7 @@ impl Owner {
             scope,
             cleaned: Cell::new(false),
             state: RefCell::new(OwnerState::default()),
+            dead_children: Cell::new(0),
             timer_book: RefCell::new(None),
             clipboard: RefCell::new(None),
             channel_book: RefCell::new(None),

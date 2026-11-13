@@ -58,6 +58,10 @@ impl Scope {
     }
 }
 
+/// The fewest links an owner holds before it sweeps, so an owner with a few
+/// children never sweeps.
+const MIN_SWEEP: usize = 8;
+
 /// What an owner holds.
 #[derive(Default)]
 pub(crate) struct OwnerState {
@@ -81,6 +85,12 @@ pub(crate) struct OwnerData {
     pub(crate) cleaned: Cell<bool>,
     /// What the owner holds, taken out while cleanup runs user code.
     pub(crate) state: RefCell<OwnerState>,
+    /// How many children were freed since the last sweep, which is at least
+    /// the number of dead links in `state.children`. A child counts itself
+    /// here when it is freed, so the count is a cell that needs no borrow of
+    /// `state`. It can run ahead of the dead links, for a child freed after
+    /// a cleanup took the list, which only makes a sweep come early.
+    pub(crate) dead_children: Cell<usize>,
     /// The timer book of the app this owner tree belongs to, set on the root
     /// owner when the app is created. A timer registers into the book of the
     /// root its owner chain leads to.
@@ -102,11 +112,22 @@ pub(crate) struct OwnerData {
 impl OwnerData {
     /// Links `child` under this owner, so cleaning this owner up cleans the
     /// child up first.
+    ///
+    /// Dead links keep their owner's allocation alive, so the list is swept
+    /// of them, but only once the dead count reaches half its length. A sweep
+    /// then walks at most twice as many links as children died since the
+    /// last one, and every child dies once, so adopting costs constant time
+    /// on average, where sweeping on
+    /// every adopt made mounting many children under one owner quadratic.
+    /// The list holds at most about twice as many links as live children,
+    /// plus a few, however many children came and went before.
     pub(crate) fn adopt(&self, child: &Rc<OwnerData>) {
         let mut state = self.state.borrow_mut();
-        // Dead links would keep every previous child's block alive, so a new
-        // child reclaims the ones that already went.
-        state.children.retain(|child| child.strong_count() > 0);
+        let links = state.children.len();
+        if links >= MIN_SWEEP && self.dead_children.get() * 2 >= links {
+            state.children.retain(|child| child.strong_count() > 0);
+            self.dead_children.set(0);
+        }
         state.children.push(Rc::downgrade(child));
     }
 
@@ -121,6 +142,7 @@ impl OwnerData {
         }
         self.cleaned.set(true);
         let state = std::mem::take(&mut *self.state.borrow_mut());
+        self.dead_children.set(0);
         for child in &state.children {
             if let Some(child) = child.upgrade() {
                 child.cleanup();
@@ -144,6 +166,7 @@ impl OwnerData {
             scope: Rc::clone(&self.scope),
             cleaned: Cell::new(false),
             state: RefCell::new(OwnerState::default()),
+            dead_children: Cell::new(0),
             timer_book: RefCell::new(None),
             clipboard: RefCell::new(None),
             channel_book: RefCell::new(None),
@@ -151,6 +174,16 @@ impl OwnerData {
         });
         self.adopt(&inner);
         Owner { inner }
+    }
+}
+
+impl Drop for OwnerData {
+    /// Counts this owner as a dead link on its parent, so the parent's next
+    /// adopt knows when sweeping its links pays off.
+    fn drop(&mut self) {
+        if let Some(parent) = self.parent.as_ref().and_then(Weak::upgrade) {
+            parent.dead_children.set(parent.dead_children.get() + 1);
+        }
     }
 }
 
