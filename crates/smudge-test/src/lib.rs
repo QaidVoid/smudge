@@ -365,6 +365,17 @@ impl Harness {
         self.frame()
     }
 
+    /// Returns the premultiplied RGBA8 pixel at `x`, `y` in physical pixels
+    /// of the current surface, or `None` outside it.
+    pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+        if x >= self.renderer.width() || y >= self.renderer.height() {
+            return None;
+        }
+        let at = (y as usize * self.renderer.width() as usize + x as usize) * 4;
+        let bytes = self.renderer.pixels().get(at..at + 4)?;
+        Some([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+
     /// Encodes the current surface as a PNG image.
     ///
     /// # Panics

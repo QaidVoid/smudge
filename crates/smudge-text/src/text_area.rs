@@ -113,24 +113,29 @@ impl Widget for TextArea {
         })
     }
 
+    /// Paints the field's background and border, the way a panel does.
+    ///
+    /// The text and the selection paint in [`Widget::paint_inside`], clipped
+    /// to the border, so scrolled or overflowing text never covers it.
+    fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
+        Panel.paint(cx, out);
+    }
+
     /// Appends the selection, the underline under a composing preedit, the
     /// text or the placeholder, in that order, for the paragraphs the
     /// content box shows.
     ///
     /// Painting also records the content box, which the pointer handlers
-    /// and the next edit read, and places the caret against it. An edit has placed the caret already,
-    /// so this only moves it when the box itself changed, which lands one
-    /// frame later like every size-driven change.
+    /// and the next edit read, and places the caret against it. An edit has
+    /// placed the caret already, so this only moves it when the box itself
+    /// changed, which lands one frame later like every size-driven change.
     ///
     /// # Panics
     ///
     /// Panics under the conditions of [`TextSystem::with`](crate::TextSystem::with),
     /// or when the glyph run cache is already borrowed on this thread,
     /// which the paint pass cannot do.
-    fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
-        // The field's own box, its background and border, paints first, the
-        // way a panel paints it, so the text and the selection draw over it.
-        Panel.paint(cx, out);
+    fn paint_inside(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
         let color = self.text_color(cx);
         let inset = Point {
             x: cx.content.x0 - cx.rect.x0,

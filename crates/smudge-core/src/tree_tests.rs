@@ -164,6 +164,8 @@ fn removing_a_painted_node_damages_its_painted_bounds() {
     let clip = Rect::new(0.0, 0.0, 40.0, 30.0);
     let painted = PaintedBounds {
         bounds,
+        inner: Rect::default(),
+        inside: bounds,
         clip,
         shift: Point::default(),
     };

@@ -122,6 +122,14 @@ impl Widget for TextInput {
         })
     }
 
+    /// Paints the field's background and border, the way a panel does.
+    ///
+    /// The text and the selection paint in [`Widget::paint_inside`], clipped
+    /// to the border, so scrolled or overflowing text never covers it.
+    fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
+        Panel.paint(cx, out);
+    }
+
     /// Appends the selection, the underline under a composing preedit, the
     /// text or the placeholder, in that order.
     ///
@@ -138,10 +146,7 @@ impl Widget for TextInput {
     /// Panics under the conditions of [`TextSystem::with`](crate::TextSystem::with),
     /// or when the glyph run cache is already borrowed on this thread,
     /// which the paint pass cannot do.
-    fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
-        // The field's own box, its background and border, paints first, the
-        // way a panel paints it, so the text and the selection draw over it.
-        Panel.paint(cx, out);
+    fn paint_inside(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
         let color = self.text_color(cx);
         let inset = Point {
             x: cx.content.x0 - cx.rect.x0,

@@ -101,6 +101,15 @@ pub trait Widget: Any + type_name::TypeName {
     /// themselves.
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>);
 
+    /// Appends the operations this widget draws inside its own border, in
+    /// the paint coordinates of [`Widget::paint`].
+    ///
+    /// They draw after the operations of [`Widget::paint`] and before the
+    /// children, clipped to the node's rectangle inside its border, so
+    /// content that scrolls or overflows, such as the text of a field, never
+    /// covers the box `paint` drew. The default draws nothing.
+    fn paint_inside(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+
     /// Returns the rectangle the input method should anchor to while this
     /// widget holds the keyboard focus, in the paint coordinates of
     /// [`Widget::paint`].
