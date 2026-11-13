@@ -18,13 +18,17 @@ use super::{WidgetId, WidgetTree};
 impl WidgetTree {
     /// Rebuilds `list` from the tree in paint order.
     ///
-    /// A node contributes its cached operations, then its children in order.
-    /// The children of a node that clips are wrapped in a
+    /// A node contributes its cached operations, then the operations of
+    /// [`Widget::paint_inside`](crate::widget::Widget::paint_inside) inside a
+    /// clip to the area inside its border, then its children in order. The
+    /// children of a node that clips are wrapped in a
     /// [`PushClip`](crate::paint::DisplayItem::PushClip) carrying the area
     /// inside the node's border, in the node's paint coordinates, and a
     /// matching [`PopClip`](crate::paint::DisplayItem::PopClip), so a child
     /// that overflows its parent is cut off by the renderer before it reaches
-    /// the border. The children a node's scroll offset moves are wrapped in a
+    /// the border. A node that clips opens that clip before its inner
+    /// operations and keeps it open for its children, and any other node
+    /// closes it after them. The children a node's scroll offset moves are wrapped in a
     /// [`PushOffset`](crate::paint::DisplayItem::PushOffset) scope of minus
     /// the offset, so a renderer draws them moved by the scroll without the
     /// operations being repainted. A hidden node and its subtree contribute
@@ -55,6 +59,11 @@ impl WidgetTree {
         list.extend_ops(&node.ops);
         if clips {
             list.push_clip(self.inside_border(id));
+            list.extend_ops(&node.inner_ops);
+        } else if !node.inner_ops.is_empty() {
+            list.push_clip(self.inside_border(id));
+            list.extend_ops(&node.inner_ops);
+            list.pop_clip();
         }
         // The runs of children the scroll offset moves share one offset
         // scope, and an absolutely positioned child between them is emitted

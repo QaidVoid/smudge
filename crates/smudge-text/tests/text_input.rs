@@ -1622,3 +1622,45 @@ fn an_input_paints_its_own_background_and_border() {
     assert!(background, "the input painted no background");
     assert!(border, "the input painted no border");
 }
+
+#[test]
+fn scrolled_selected_text_never_covers_the_border() {
+    let border = Color::rgb(200, 30, 30);
+    let value = RwSignal::new("W".repeat(60));
+    let bound = value.clone();
+    let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        panel().padding(px(10.0)).child(
+            text_input(bound.clone())
+                .width(px(120.0))
+                .height(px(32.0))
+                .background(Color::rgb(30, 31, 36))
+                .border(1.0)
+                .border_color(border),
+        )
+    });
+    harness.frame();
+    harness.click(Point { x: 60.0, y: 26.0 });
+    harness.press_key(Key::End);
+    harness.press_key_with(Key::Character(String::from("a")), command());
+    harness.settle();
+    harness.assert_matches_full_repaint();
+
+    let (left, top, right, bottom) = (10, 10, 130, 42);
+    for y in 0..VIEWPORT.1 as u32 {
+        for x in 0..VIEWPORT.0 as u32 {
+            let inside = (left..right).contains(&x) && (top..bottom).contains(&y);
+            let ring = inside && (x == left || x == right - 1 || y == top || y == bottom - 1);
+            let pixel = harness.pixel(x, y).expect("the pixel lies on the surface");
+            if !inside {
+                assert_eq!(pixel, [255; 4], "text drew outside the field at {x}, {y}");
+            } else if ring {
+                let [r, g, b, _] = pixel;
+                assert_eq!(
+                    (r, g, b),
+                    (200, 30, 30),
+                    "text covered the border at {x}, {y}"
+                );
+            }
+        }
+    }
+}

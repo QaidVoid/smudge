@@ -19,6 +19,7 @@
 
 use crate::damage::DamageAccumulator;
 use crate::geometry::Rect;
+use crate::paint::PaintOp;
 use crate::widget::PaintCx;
 
 use super::{Dirty, PaintedBounds, WidgetTree};
@@ -35,7 +36,10 @@ impl WidgetTree {
     /// node's painted bounds are the union of its operations' bounds in the
     /// node's paint coordinates, kept together with the clip the layout pass
     /// gave it and the shift the bounds are relative to, and the two are
-    /// intersected in physical pixels when the damage is finished. A child
+    /// intersected in physical pixels when the damage is finished. The
+    /// operations of [`Widget::paint_inside`](crate::widget::Widget::paint_inside)
+    /// keep a union of their own, which is also intersected with the node's
+    /// rectangle inside its border, again in physical pixels. A child
     /// that overflows a clipping parent therefore damages only the part inside
     /// the clip, including the pixels the clip edge passes through. A node
     /// whose clip is empty, such as a hidden node, keeps no operations and its
@@ -57,7 +61,15 @@ impl WidgetTree {
     /// Returns the number of nodes painted.
     pub(crate) fn paint(&mut self, damage: &mut DamageAccumulator) -> u32 {
         let mut painted = 0u32;
-        for id in self.paint_queue.drain(..) {
+        // The queue is taken out while it is walked, because finding a
+        // node's rectangle inside its border reads the tree, and it is put
+        // back cleared so its capacity is reused.
+        let mut queue = std::mem::take(&mut self.paint_queue);
+        for &id in &queue {
+            if !self.nodes.contains_key(id) {
+                continue;
+            }
+            let inside = self.inside_border(id);
             let Some(node) = self.nodes.get_mut(id) else {
                 continue;
             };
@@ -67,10 +79,11 @@ impl WidgetTree {
 
             let old = node.painted.take();
             if let Some(bounds) = old {
-                damage.add_clipped(bounds.window_bounds(), bounds.clip);
+                bounds.damage(damage);
             }
 
             node.ops.clear();
+            node.inner_ops.clear();
             if !node.clip.is_empty() {
                 self.theme.reset_consulted();
                 let cx = PaintCx {
@@ -80,21 +93,26 @@ impl WidgetTree {
                     theme: &self.theme,
                 };
                 node.widget.paint(&cx, &mut node.ops);
+                node.widget.paint_inside(&cx, &mut node.inner_ops);
                 node.uses_tokens = self.theme.consulted();
             } else {
                 // A node that paints nothing shows no theme value.
                 node.uses_tokens = false;
             }
 
-            let bounds = node
-                .ops
-                .iter()
-                .fold(Rect::default(), |bounds, op| bounds.union(op.bounds()));
-            node.painted = if bounds.is_empty() {
+            let union = |ops: &[PaintOp]| {
+                ops.iter()
+                    .fold(Rect::default(), |bounds, op| bounds.union(op.bounds()))
+            };
+            let bounds = union(&node.ops);
+            let inner = union(&node.inner_ops);
+            node.painted = if bounds.is_empty() && inner.is_empty() {
                 None
             } else {
                 Some(PaintedBounds {
                     bounds,
+                    inner,
+                    inside,
                     clip: node.clip,
                     shift: node.paint_shift,
                 })
@@ -102,14 +120,16 @@ impl WidgetTree {
             if let Some(bounds) = node.painted
                 && node.painted != old
             {
-                damage.add_clipped(bounds.window_bounds(), bounds.clip);
+                bounds.damage(damage);
             }
             node.dirty = Dirty::Clean;
             painted += 1;
         }
+        queue.clear();
+        self.paint_queue = queue;
 
         for bounds in self.pending_damage.drain(..) {
-            damage.add_clipped(bounds.window_bounds(), bounds.clip);
+            bounds.damage(damage);
         }
 
         painted

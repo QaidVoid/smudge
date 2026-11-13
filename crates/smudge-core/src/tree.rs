@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use slotmap::{Key, SlotMap, new_key_type};
 
+use crate::damage::DamageAccumulator;
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RwSignal};
@@ -93,6 +94,12 @@ pub enum Dirty {
 struct PaintedBounds {
     /// The union of the node's paint operation bounds, before clipping.
     bounds: Rect,
+    /// The union of the bounds of the operations the node draws inside its
+    /// border, before clipping.
+    inner: Rect,
+    /// The node's rectangle inside its border, which `inner` is clipped to
+    /// within `clip`.
+    inside: Rect,
     /// The rectangle the node's subtree was clipped to, in window coordinates.
     clip: Rect,
     /// The paint shift the bounds are relative to, so damage can turn them
@@ -101,12 +108,18 @@ struct PaintedBounds {
 }
 
 impl PaintedBounds {
-    /// Returns the bounds in window coordinates.
-    fn window_bounds(&self) -> Rect {
-        self.bounds.translated(Point {
+    /// Adds every pixel these bounds may have drawn to `damage`.
+    fn damage(&self, damage: &mut DamageAccumulator) {
+        let back = Point {
             x: -self.shift.x,
             y: -self.shift.y,
-        })
+        };
+        damage.add_clipped(self.bounds.translated(back), self.clip);
+        damage.add_clipped_inside(
+            self.inner.translated(back),
+            self.clip,
+            self.inside.translated(back),
+        );
     }
 }
 
@@ -200,6 +213,9 @@ struct Node {
     a11y_label: Option<String>,
     /// The node's cached paint output, filled by the paint pass.
     ops: Vec<PaintOp>,
+    /// The node's cached paint output that draws inside its border, clipped
+    /// to it, filled by the paint pass from [`Widget::paint_inside`].
+    inner_ops: Vec<PaintOp>,
     /// The bounds the node painted last frame and the clip it painted under.
     painted: Option<PaintedBounds>,
 }
@@ -424,6 +440,7 @@ impl WidgetTree {
             a11y_role: None,
             a11y_label: None,
             ops: Vec::new(),
+            inner_ops: Vec::new(),
             painted: None,
         };
         let id = self.nodes.insert(node);

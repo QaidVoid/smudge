@@ -60,6 +60,9 @@ struct ClippedRect {
     bounds: Rect,
     /// The rectangle the node was clipped to.
     clip: Rect,
+    /// A second clip nested inside `clip`, such as the rectangle inside a
+    /// node's border that its inner operations draw in.
+    inside: Option<Rect>,
 }
 
 /// Collects logical damage rectangles and turns them into a small set of
@@ -102,7 +105,29 @@ impl DamageAccumulator {
         if bounds.is_empty() || clip.is_empty() {
             return;
         }
-        self.clipped.push(ClippedRect { bounds, clip });
+        self.clipped.push(ClippedRect {
+            bounds,
+            clip,
+            inside: None,
+        });
+    }
+
+    /// Adds the part of `bounds` that a renderer can draw inside both `clip`
+    /// and `inside`, a clip nested within it.
+    ///
+    /// Each clip is rounded outward to physical pixels on its own before the
+    /// intersection, as a renderer applies nested clips, so this covers every
+    /// pixel the nested clips let through. It behaves like
+    /// [`DamageAccumulator::add_clipped`] otherwise.
+    pub(crate) fn add_clipped_inside(&mut self, bounds: Rect, clip: Rect, inside: Rect) {
+        if bounds.is_empty() || clip.is_empty() || inside.is_empty() {
+            return;
+        }
+        self.clipped.push(ClippedRect {
+            bounds,
+            clip,
+            inside: Some(inside),
+        });
     }
 
     /// Marks the whole surface as damaged.
@@ -161,7 +186,13 @@ impl DamageAccumulator {
         }
         for rect in &self.clipped {
             let bounds = PixelRect::from_logical(rect.bounds, scale, surface_width, surface_height);
-            let clip = PixelRect::from_logical(rect.clip, scale, surface_width, surface_height);
+            let mut clip = PixelRect::from_logical(rect.clip, scale, surface_width, surface_height);
+            if let Some(inside) = rect.inside {
+                clip = clip.and_then(|clip| {
+                    PixelRect::from_logical(inside, scale, surface_width, surface_height)
+                        .and_then(|inside| inside.intersect(clip))
+                });
+            }
             if let (Some(bounds), Some(clip)) = (bounds, clip)
                 && let Some(intersection) = bounds.intersect(clip)
             {
