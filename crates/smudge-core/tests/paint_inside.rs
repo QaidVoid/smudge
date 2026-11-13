@@ -2,7 +2,7 @@
 //! border or reach past it, and the damage they leave matches a full repaint.
 
 use smudge_core::element::Element;
-use smudge_core::geometry::{Color, Corners, Rect};
+use smudge_core::geometry::{Color, Corners, Point, Rect};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
@@ -114,6 +114,60 @@ fn content_touching_the_border_edge_at_a_fractional_scale_is_repaired() {
         (255, 255, 255),
         "the clip edge passes through physical row 2, so the content draws there"
     );
+
+    content.set(None);
+    harness.frame();
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn a_border_that_takes_the_whole_box_at_a_fractional_scale_leaves_nothing_behind() {
+    let content = RwSignal::new(Some(Rect::new(0.0, 0.0, 2.0, 20.0)));
+    let bound = content.clone();
+    let mut harness = Harness::new(20.0, 30.0, 1.25, move || {
+        panel().child(
+            spill(bound.clone())
+                .width(px(2.0))
+                .height(px(20.0))
+                .border(1.0),
+        )
+    });
+    harness.frame();
+
+    content.set(None);
+    harness.frame();
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn content_of_a_box_inside_a_scrolled_view_is_repaired() {
+    let content = RwSignal::new(Some(Rect::new(2.0, 2.0, 30.0, 18.0)));
+    let offset = RwSignal::new(Point::default());
+    let bound = content.clone();
+    let scrolled = offset.clone();
+    let mut harness = Harness::new(80.0, 80.0, 1.0, move || {
+        panel()
+            .width(px(60.0))
+            .height(px(60.0))
+            .clip(true)
+            .scroll_offset(move || scrolled.get())
+            .child(
+                spill(bound.clone())
+                    .width(px(40.0))
+                    .height(px(20.0))
+                    .border(1.0),
+            )
+            .child(panel().width(px(40.0)).height(px(100.0)))
+    });
+    harness.frame();
+
+    offset.set(Point { x: 0.0, y: 15.0 });
+    harness.frame();
+    harness.assert_matches_full_repaint();
+
+    content.set(Some(Rect::new(5.0, 3.0, 12.0, 6.0)));
+    harness.frame();
+    harness.assert_matches_full_repaint();
 
     content.set(None);
     harness.frame();
