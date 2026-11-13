@@ -74,4 +74,4 @@ python3 -m http.server 8000
 
 ## Size
 
-A release build of the example is about 5.6 MB of wasm, 1.8 MB gzipped, embedded fonts included. The `complex-scripts` feature adds about 2.2 MB gzipped, so leave it off for the web unless the application shows Thai, Lao, Khmer or Burmese.
+A release build of the example is about 5.5 MB of wasm, 1.8 MB gzipped, embedded fonts included. The `complex-scripts` feature adds about 2.2 MB gzipped, so leave it off for the web unless the application shows Thai, Lao, Khmer or Burmese.
