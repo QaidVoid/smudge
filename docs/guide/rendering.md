@@ -1,6 +1,6 @@
 # Windows and renderers
 
-<p class="lead">`run` opens a window, builds the interface once, and draws frames only when something changed. Two renderers draw the same display list: a CPU renderer that repaints only the damage, and a GPU renderer for real graphics adapters.</p>
+<p class="lead">`run` opens a window, builds the interface once, and draws frames only when something changed. Two renderers draw the same display list: a CPU renderer that repaints only the damage, which is the default, and a GPU renderer for real graphics adapters that an app asks for.</p>
 
 ## Opening a window
 
@@ -101,21 +101,36 @@ Both draw the same display list, and a parity test compares their pixels on the 
 
 `RendererChoice` picks the renderer:
 
-- `RendererChoice::Auto` uses the GPU renderer when the window's adapter is a real GPU. It stays on the CPU renderer when the only adapter is a software rasterizer, when there is no adapter, when the window cannot present GPU frames, or while `show_damage` is on. It is the default in builds with the `gpu` feature.
-- `RendererChoice::Cpu` always uses the CPU renderer. It is the default without the `gpu` feature.
+- `RendererChoice::Cpu` always uses the CPU renderer. It is the default, with or without the `gpu` feature.
+- `RendererChoice::Auto` uses the GPU renderer when the window's adapter is a real GPU. It stays on the CPU renderer when the only adapter is a software rasterizer, when there is no Vulkan, Metal or DX12 adapter, when the window cannot present GPU frames, while `show_damage` is on, or in a build without the `gpu` feature.
 - `RendererChoice::Gpu` always uses the GPU renderer, and fails the run instead of falling back.
+
+Ask for the GPU when most of a large window changes every frame with many shapes, such as an animated chart or canvas. There the CPU renderer's frame grows with the pixels: 600 changing boxes took 3.8 ms at 1280 by 800 and 13.4 ms at 2560 by 1600, against 1.5 and 2.4 ms on the GPU. Most interfaces change a small part of the window per frame, and the CPU renderer draws those faster: a scroll at 2560 by 1600 took 0.5 ms on the CPU renderer and 3.1 ms on the GPU.
+
+```rust
+let options = WindowOptions {
+    renderer: RendererChoice::Auto,
+    ..WindowOptions::default()
+};
+```
+
+The GPU costs startup time and memory. On a desktop with a GTX 1060, a log viewer reached its first frame after 10 to 20 ms of CPU and peaked at 28 MB on the CPU renderer. On the GPU renderer it took 720 to 1,010 ms and 192 to 195 MB. Most of that memory is the graphics driver, which loads as soon as a device exists.
 
 The `SMUDGE_RENDERER` environment variable, set to `cpu`, `gpu` or `auto`, overrides the choice when the window opens, so a user can switch renderer without a rebuild:
 
 ```sh
-SMUDGE_RENDERER=cpu ./my-app
+SMUDGE_RENDERER=auto ./my-app
 ```
+
+### Backends
+
+The GPU renderer is built with the Vulkan, Metal and DX12 backends only. It needs compute shaders, which OpenGL serves poorly, and leaving OpenGL out saves 670 KB of a stripped binary. On a machine whose only GPU driver is OpenGL, `Auto` uses the CPU renderer and `Gpu` fails the run.
 
 ### Drawing into your own device
 
 The window creates its GPU device itself. A program that renders through `smudge::gpu` on a device of its own, with `GpuRenderer::new` or `GpuSurface::new`, should create it the same way:
 
-- `smudge::gpu::instance()` returns the wgpu instance to request the adapter from. It enables the primary backends only (Vulkan, Metal, DX12 and WebGPU), because the renderer needs compute shaders, and the `WGPU_BACKEND` environment variable still picks the backends when it is set.
+- `smudge::gpu::instance()` returns the wgpu instance to request the adapter from. It enables the primary backends only (Vulkan, Metal and DX12), and the `WGPU_BACKEND` environment variable still picks the backends when it is set.
 - `smudge::gpu::device_limits(&adapter)` returns the limits to request the device with. They raise the storage binding and buffer size limits to what the adapter offers. A device created with the default limits fails validation on a large scene, which wgpu reports as a panic.
 
 `GpuRenderer::headless` does both for an offscreen renderer.

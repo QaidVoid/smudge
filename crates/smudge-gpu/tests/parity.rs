@@ -537,21 +537,13 @@ fn sized_image(
 }
 
 /// Requests an adapter the way [`GpuRenderer::headless`] does, from
-/// [`smudge_gpu::instance`] and then from every backend, with the limits of
+/// [`smudge_gpu::instance`] with the limits of
 /// [`smudge_gpu::device_limits`], and returns its device, queue and a
 /// readable name, or `None` when no adapter works.
 fn headless_device() -> Option<(Device, Queue, String)> {
     let options = wgpu::RequestAdapterOptions::default();
-    let adapter = match futures_executor::block_on(smudge_gpu::instance().request_adapter(&options))
-    {
-        Ok(adapter) => adapter,
-        Err(_) => {
-            let every = wgpu::Instance::new(
-                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-            );
-            futures_executor::block_on(every.request_adapter(&options)).ok()?
-        }
-    };
+    let adapter =
+        futures_executor::block_on(smudge_gpu::instance().request_adapter(&options)).ok()?;
     let info = adapter.get_info();
     let name = format!("{} on {:?}", info.name, info.backend);
     let (device, queue) =

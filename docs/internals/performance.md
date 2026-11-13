@@ -46,7 +46,7 @@ The same machine with the `gpu` feature. Headless frames drew on a GTX 1060, win
 | S6 | 686 µs | 518 µs | **294 µs** |
 | S9 | 593 µs | 467 µs | **75 µs** |
 
-On window frames, the GPU wins when most of the window changes (S1, S3) and loses when little does, because it redraws everything. `RendererChoice::Auto` still picks the GPU on a real adapter: at high scale factors, where every frame of a full-window change is millions of pixels, it keeps those frames fast, and a small update stays at about a millisecond or less on either renderer.
+On window frames, the GPU wins when most of the window changes (S1, S3) and loses when little does, because it redraws everything. Creating its device also costs most of an ordinary app's startup and memory, so windows start on the CPU renderer, and an app whose frames repaint most of a large window asks for the GPU with `RendererChoice::Auto`. Headless at scale 2 (2560 by 1600), S1 took 13.4 ms on the CPU renderer and 2.4 ms on the GPU, while a scroll stayed faster on the CPU renderer: 0.48 against 3.1 ms on S5, and 0.25 against 1.5 ms on S6.
 
 ## In a virtual machine without a GPU
 

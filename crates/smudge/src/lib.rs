@@ -70,9 +70,9 @@
 //!
 //! - **Desktop:** the CPU renderer presents through the window's buffer. With
 //!   the `gpu` feature, a vello renderer draws the same display list on the
-//!   GPU, and [`window::RendererChoice::Auto`], the default, uses the GPU
-//!   only when the adapter is a real GPU, falling back to the CPU renderer on
-//!   a software rasterizer.
+//!   GPU. Windows start on the CPU renderer either way, and
+//!   [`window::RendererChoice::Auto`] asks for the GPU when the adapter is a
+//!   real GPU, falling back to the CPU renderer on a software rasterizer.
 //! - **Web:** the CPU renderer runs in a browser on `wasm32-unknown-unknown`;
 //!   `crates/smudge-platform/examples/web` holds a buildable web example.
 //! - **Accessibility:** the AccessKit projection runs on desktop only, with

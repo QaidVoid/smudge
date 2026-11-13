@@ -118,12 +118,13 @@ pub struct WindowOptions {
     pub show_damage: bool,
     /// Which renderer presents the frames.
     ///
-    /// [`RendererChoice::Auto`] uses the GPU renderer only when the window's
-    /// adapter is a real GPU, and falls back to the CPU renderer on a software
-    /// rasterizer, without one, or on a window the GPU cannot present to. It
-    /// is the default in builds with the `gpu` feature. [`RendererChoice::Gpu`]
-    /// never falls back to the CPU renderer: it fails the run when the `gpu`
-    /// feature is off or no backend, OpenGL included, has a usable adapter.
+    /// [`RendererChoice::Cpu`] is the default, with or without the `gpu`
+    /// feature. [`RendererChoice::Auto`] uses the GPU renderer only when the
+    /// window's adapter is a real GPU, and falls back to the CPU renderer on
+    /// a software rasterizer, without one, or on a window the GPU cannot
+    /// present to. [`RendererChoice::Gpu`] never falls back to the CPU
+    /// renderer: it fails the run when the `gpu` feature is off or no Vulkan,
+    /// Metal or DX12 adapter can present to the window.
     ///
     /// The [`crate::renderer::RENDERER_ENVIRONMENT`] variable, set to `cpu`,
     /// `gpu` or `auto`, overrides the value here when the window opens, so a

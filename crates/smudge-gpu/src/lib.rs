@@ -15,4 +15,7 @@ pub use surface::{GpuError, GpuSurface};
 /// The wgpu that vello renders through, re-exported so a caller can build its
 /// instances, adapters and surfaces against the same version the renderers
 /// use.
+///
+/// This crate also depends on wgpu directly, at the version vello uses, only
+/// to choose which backends are compiled: Vulkan, Metal and DX12.
 pub use vello::wgpu;

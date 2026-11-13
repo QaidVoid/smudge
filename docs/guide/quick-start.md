@@ -80,7 +80,7 @@ A window opens with `WindowOptions::default()`, and a sample spells out only the
 | `title` | The title bar text. |
 | `size` | The content area in logical pixels. |
 | `clear_color` | The background behind everything. Must be opaque. |
-| `renderer` | `RendererChoice::Cpu` by default, `Auto` in builds with the `gpu` feature: the GPU when it pays, the CPU otherwise. |
+| `renderer` | `RendererChoice::Cpu` by default. With the `gpu` feature, `Auto` asks for the GPU on a real adapter and the CPU otherwise. |
 | `show_damage` | Tints what each frame repainted. |
 
 ## Examples in the repository
