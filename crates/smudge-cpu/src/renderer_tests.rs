@@ -240,6 +240,24 @@ fn op_inside_a_narrow_clip_keeps_its_own_edges() {
 }
 
 #[test]
+fn a_clip_without_area_draws_nothing_at_a_fractional_scale() {
+    let mut renderer = CpuRenderer::new(40, 40);
+    let mut list = DisplayList::new();
+    list.push_clip(Rect::new(1.0, 0.0, 1.0, 20.0));
+    list.push_op(fill(Rect::new(0.0, 0.0, 20.0, 20.0), Color::BLACK));
+    list.pop_clip();
+    list.finish();
+
+    render(&mut renderer, &list, &[surface(40)], 1.25);
+
+    for y in 0..40 {
+        for x in 0..40 {
+            assert_eq!(pixel(&renderer, x, y), WHITE, "pixel {x}, {y}");
+        }
+    }
+}
+
+#[test]
 fn nested_clips_intersect() {
     let mut renderer = CpuRenderer::new(40, 40);
     let mut list = DisplayList::new();
