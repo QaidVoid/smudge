@@ -76,6 +76,8 @@ let header = panel()
     .on_pointer_down(|_| start_move());
 ```
 
+`focused()` reads whether the window holds the input focus, and a binding or an effect that reads it reruns when the window comes to the front or goes to the background. The keyboard focus inside the window stays where it is either way. An app with no window to report it, such as a headless test, counts as focused.
+
 Any element can set the pointer cursor over itself with `cursor`. `Cursor` is in the prelude:
 
 ```rust

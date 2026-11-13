@@ -1490,6 +1490,11 @@ impl<W: Widget> Element<W> {
     /// can write the signals the element's bindings read. A node that is
     /// removed while focused clears the focus without hearing `on_focus` again,
     /// because its handlers are being torn down with it.
+    ///
+    /// The handler hears only real moves of the keyboard focus. The window
+    /// losing or regaining the operating system's input focus leaves the
+    /// focus where it is and runs no handler, and code that should react to
+    /// it reads [`window::focused`](crate::window::focused).
     pub fn on_focus(mut self, handler: impl FnMut(bool) + 'static) -> Self {
         self.handlers.on_focus = Some(Box::new(handler));
         self

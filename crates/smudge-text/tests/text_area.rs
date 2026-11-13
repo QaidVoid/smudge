@@ -1172,3 +1172,116 @@ fn only_the_focused_area_shows_its_selection() {
     );
     harness.assert_matches_full_repaint();
 }
+
+#[test]
+fn the_window_leaving_and_coming_back_keeps_a_wheel_scroll() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+    for line in 0..12 {
+        harness.type_text(&format!("row{line}"));
+        harness.press_key(Key::Enter);
+    }
+    harness.settle();
+
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+    harness.event(InputEvent::WindowFocus(false));
+    harness.settle();
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: -1000.0 },
+    });
+    harness.settle();
+    harness.event(InputEvent::WindowFocus(true));
+    harness.settle();
+
+    harness.click(Point { x: 100.0, y: 5.0 });
+    harness.settle();
+    harness.type_text("X");
+    assert!(
+        value.get().starts_with("row0X\n"),
+        "the view stayed on the first line: {:?}",
+        value.get()
+    );
+}
+
+#[test]
+fn the_window_losing_the_focus_after_a_wheel_scroll_keeps_it() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+    for line in 0..12 {
+        harness.type_text(&format!("row{line}"));
+        harness.press_key(Key::Enter);
+    }
+    harness.settle();
+
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: -1000.0 },
+    });
+    harness.settle();
+    harness.event(InputEvent::WindowFocus(false));
+    harness.settle();
+    harness.event(InputEvent::WindowFocus(true));
+    harness.settle();
+
+    harness.click(Point { x: 100.0, y: 5.0 });
+    harness.settle();
+    harness.type_text("X");
+    assert!(
+        value.get().starts_with("row0X\n"),
+        "the view stayed on the first line: {:?}",
+        value.get()
+    );
+}
+
+#[test]
+fn tab_into_an_area_the_wheel_scrolled_reveals_the_caret() {
+    use smudge_core::paint::{DisplayItem, PaintOp};
+
+    let value = RwSignal::new(String::new());
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        smudge_core::widget::panel()
+            .column()
+            .child(
+                smudge_core::widget::panel()
+                    .width(px(200.0))
+                    .height(px(20.0))
+                    .focusable(),
+            )
+            .child(text_area(value.clone()).width(px(200.0)).height(px(100.0)))
+    });
+    harness.frame();
+    harness.click(Point { x: 60.0, y: 70.0 });
+    for line in 0..12 {
+        harness.type_text(&format!("row{line}"));
+        harness.press_key(Key::Enter);
+    }
+    harness.settle();
+
+    harness.press_key_with(
+        Key::Tab,
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
+    harness.move_to(Point { x: 60.0, y: 70.0 });
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: -1000.0 },
+    });
+    harness.settle();
+
+    harness.press_key(Key::Tab);
+    harness.settle();
+    let output = harness.app().frame();
+    let caret = output.list.items().iter().find_map(|item| match item {
+        DisplayItem::Op(PaintOp::FillRect { rect, .. }) if rect.width() == 1.0 => Some(*rect),
+        _ => None,
+    });
+    let caret = caret.expect("the focused area paints its caret");
+    let area = area_rect(&mut harness);
+    let middle = (caret.y0 + caret.y1) / 2.0;
+    assert!(
+        middle > area.y0 && middle < area.y1,
+        "the caret {caret:?} shows inside the area {area:?}"
+    );
+}

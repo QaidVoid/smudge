@@ -8,6 +8,7 @@ use smudge_core::app::{App, AppConfig, FrameOutput, FrameStats, RepaintMode};
 use smudge_core::clipboard::{Clipboard, MemoryClipboard};
 use smudge_core::element::IntoElement;
 use smudge_core::geometry::{Color, Rect, Size};
+use smudge_core::input::InputEvent;
 use smudge_core::window::{Cursor, WindowCommand};
 use softbuffer::{Context, Surface};
 use std::time::Duration;
@@ -604,6 +605,9 @@ where
         #[cfg(target_arch = "wasm32")]
         let clipboard: Box<dyn Clipboard> = Box::new(MemoryClipboard::default());
         app.set_clipboard(clipboard);
+        // Some backends send no focus event for a window that starts without
+        // the input focus, so the state is seeded before the first frame.
+        app.handle_event(InputEvent::WindowFocus(window.has_focus()));
 
         let frame_period = frame_period(&window);
         Ok(WindowState {

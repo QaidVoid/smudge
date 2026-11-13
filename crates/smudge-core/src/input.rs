@@ -58,6 +58,10 @@ pub enum InputEvent {
         text: String,
     },
     /// The window gained or lost the input focus of the operating system.
+    ///
+    /// The focused node keeps the keyboard focus and hears no `on_focus`.
+    /// The state reaches the application through
+    /// [`window::focused`](crate::window::focused).
     WindowFocus(
         /// Whether the window is focused.
         bool,
