@@ -24,6 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use smudge_core::app::{App, AppConfig, FrameStats, RepaintMode};
 use smudge_core::geometry::Color;
 use smudge_core::renderer::Renderer;
+use smudge_core::theme::Theme;
 use smudge_cpu::CpuRenderer;
 use smudge_platform::{
     EventHook, FrameHook, PlatformError, PresentStats, PresentStatsHandle, RendererChoice,
@@ -35,7 +36,8 @@ use crate::scenes::Scene;
 use crate::stats::Percentiles;
 
 /// The color the renderer fills the surface with. It must be opaque, because
-/// presentation copies only the color channels.
+/// presentation copies only the color channels. It is dark, so every run uses
+/// the dark theme, whose text reads on it.
 const CLEAR_COLOR: Color = Color::rgb(16, 17, 21);
 
 /// The text of `--help`.
@@ -496,6 +498,7 @@ fn run_headless(args: &Args, repeat: u32) -> Result<(RepeatRun, Option<AdapterRe
     let scene = args.scene;
     let (build, driver) = scene.mount();
     let mut app = App::new(app_config(args), build);
+    app.set_theme(Theme::dark());
     let (width, height) = app.surface_size();
     let (mut renderer, adapter) = headless_renderer(args, width, height)?;
     // The first frame mounts and lays the tree out, so the events the scene
@@ -683,7 +686,7 @@ fn run_window(args: &Args) -> Result<(Vec<RepeatRun>, Option<AdapterRecord>), Pl
             ..WindowOptions::default()
         },
         build,
-        |_| {},
+        |app| app.set_theme(Theme::dark()),
     )?;
 
     let records = records.take();

@@ -45,6 +45,10 @@ fn main() -> Result<(), PlatformError> {
                     text_input(name)
                         .width(pct(100.0))
                         .height(px(FIELD_HEIGHT))
+                        .padding_xy(Size {
+                            width: 8.0,
+                            height: 6.0,
+                        })
                         .placeholder("Name")
                         .border(1.0)
                         .border_color(FIELD_BORDER),
@@ -53,6 +57,10 @@ fn main() -> Result<(), PlatformError> {
                     text_input(email)
                         .width(pct(100.0))
                         .height(px(FIELD_HEIGHT))
+                        .padding_xy(Size {
+                            width: 8.0,
+                            height: 6.0,
+                        })
                         .placeholder("Email")
                         .border(1.0)
                         .border_color(FIELD_BORDER),
