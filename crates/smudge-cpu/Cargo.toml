@@ -8,6 +8,7 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+bytemuck = { version = "1.25.2", default-features = false }
 skrifa = "0.44.0"
 smudge-core = { version = "0.2.0", path = "../smudge-core" }
 tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "png-format"] }

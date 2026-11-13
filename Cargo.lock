@@ -3045,6 +3045,7 @@ dependencies = [
 name = "smudge-cpu"
 version = "0.2.0"
 dependencies = [
+ "bytemuck",
  "insta",
  "skrifa",
  "smudge-core",

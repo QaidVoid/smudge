@@ -1,17 +1,258 @@
-//! Copying the renderer's surface into the window buffer, and choosing how
-//! much of the surface a present has to carry.
+//! Drawing or copying a frame into the window buffer, and choosing how much
+//! of the surface a present has to carry.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use smudge_core::app::FrameOutput;
 use smudge_core::geometry::PixelRect;
+use smudge_cpu::{CpuRenderer, XrgbRenderer};
+use web_time::Instant;
 
 /// How many past frames the damage ring keeps.
 ///
 /// Softbuffer reports ages of at most 3 for the double and triple buffered
 /// backends this library targets, so a longer ring could never be read.
 const HISTORY: usize = 3;
+
+/// How many presents in a row may find a buffer of unknown age before the
+/// platform counts as one that never reports buffer ages.
+///
+/// A surface reports age 0 for each of its buffers after it was created or
+/// resized. A triple-buffered one does so for three presents in a row, so
+/// only a fourth present in a row at age 0 shows that the ages are unknown.
+const UNKNOWN_AGE_PRESENTS: u8 = 4;
+
+/// Where the CPU renderer draws a frame before the window shows it.
+enum CpuTarget {
+    /// Straight into the window buffer, which then holds the only copy of
+    /// the frame.
+    ///
+    /// The buffer's age says which frame it holds, and the rectangles that
+    /// changed since are drawn again from the current frame. This is the
+    /// default wherever the platform reports buffer ages, and it saves the
+    /// memory of a second frame.
+    Direct(XrgbRenderer),
+    /// Into a pixmap that survives between frames, copied into the window
+    /// buffer on every present.
+    ///
+    /// A platform that never reports a buffer's age gives no way to know what
+    /// a buffer misses, so every present there carries the whole frame, and
+    /// copying it from the pixmap is much cheaper than drawing it again. The
+    /// damage overlay uses this target too, so its tint never reaches a
+    /// pixel a later frame keeps.
+    Pixmap(CpuRenderer),
+}
+
+/// The CPU renderer's part of a window's presents: it draws each frame into
+/// the window buffer it is handed, from that buffer's age and the damage of
+/// the frames presented before.
+///
+/// It holds no window or surface. The caller acquires a buffer, passes it to
+/// [`CpuFrames::draw`] with its age, presents it, and then reports the
+/// present with [`CpuFrames::presented`].
+pub(crate) struct CpuFrames {
+    /// How the frames reach the window buffer.
+    target: CpuTarget,
+    /// The surface width in physical pixels.
+    width: u32,
+    /// The surface height in physical pixels.
+    height: u32,
+    /// Whether every present tints the frame's damage in the window buffer.
+    show_damage: bool,
+    /// The damage of the frames the window presented, most recent first.
+    history: DamageHistory,
+    /// The region the last drawn frame presents with damage.
+    region: Vec<PixelRect>,
+    /// How many presents in a row, since the surface took its size, found a
+    /// window buffer of unknown age.
+    unknown_ages: u8,
+    /// Whether the pixmap holds nothing it can keep, because it was just
+    /// created or resized, so the next frame repaints all of it.
+    pixmap_stale: bool,
+}
+
+/// What drawing one frame into a window buffer did.
+pub(crate) struct Drawn {
+    /// Whether the present carries only [`CpuFrames::region`], rather than
+    /// the whole surface.
+    pub(crate) with_damage: bool,
+    /// How long the renderer took to draw the frame.
+    pub(crate) raster: Duration,
+    /// How long copying the frame from the pixmap took, zero when it was
+    /// drawn straight into the buffer.
+    pub(crate) copy: Duration,
+    /// How many bytes were copied from the pixmap.
+    pub(crate) bytes_copied: u64,
+}
+
+impl CpuFrames {
+    /// Creates the renderer for a surface of `width` by `height` physical
+    /// pixels.
+    ///
+    /// Frames are drawn straight into the window buffer until
+    /// [`UNKNOWN_AGE_PRESENTS`] presents in a row find a buffer of unknown
+    /// age, and from then on through a pixmap, as [`CpuTarget`] explains.
+    /// With `show_damage`, they always go through the pixmap.
+    pub(crate) fn new(width: u32, height: u32, show_damage: bool) -> CpuFrames {
+        let target = if show_damage {
+            CpuTarget::Pixmap(CpuRenderer::new(width, height))
+        } else {
+            CpuTarget::Direct(XrgbRenderer::new(width, height))
+        };
+        CpuFrames {
+            target,
+            width,
+            height,
+            show_damage,
+            history: DamageHistory::default(),
+            region: Vec::new(),
+            unknown_ages: 0,
+            pixmap_stale: true,
+        }
+    }
+
+    /// Takes the surface's new size.
+    ///
+    /// The frames presented before are forgotten, because a resized surface's
+    /// buffers hold none of them, so the next presents draw everything until
+    /// new frames are recorded.
+    pub(crate) fn resize(&mut self, width: u32, height: u32) {
+        match &mut self.target {
+            CpuTarget::Direct(renderer) => renderer.resize(width, height),
+            CpuTarget::Pixmap(renderer) => renderer.resize(width, height),
+        }
+        self.width = width;
+        self.height = height;
+        self.unknown_ages = 0;
+        self.pixmap_stale = true;
+        self.history.clear();
+    }
+
+    /// Whether `frame` must skip its present. See [`present_skipped`].
+    pub(crate) fn skips(&self, frame: &FrameOutput<'_>, has_tick: bool) -> bool {
+        present_skipped(frame.damage, has_tick, self.show_damage)
+    }
+
+    /// Returns the region the last drawn frame presents when
+    /// [`Drawn::with_damage`] is set.
+    pub(crate) fn region(&self) -> &[PixelRect] {
+        &self.region
+    }
+
+    /// Draws `frame` into `buffer`, a window buffer whose contents are the
+    /// frame presented `age` presents ago, or unknown at age 0.
+    ///
+    /// The frame's damage and the recorded damage of the frames the buffer
+    /// missed decide what it is missing: when the buffer's age says which
+    /// frame it holds and no full repaint happened since, only their union
+    /// is drawn into the buffer, or copied from the pixmap, and the present
+    /// carries it as damage. Every other case draws or copies the whole
+    /// surface and presents all of it. A frame with no damage is the
+    /// exception on a buffer of known age: it draws only what the buffer
+    /// misses, because the buffer kept its pixels, and presents everything
+    /// to restore a window that lost its contents. While the damage overlay
+    /// is on, every present copies the whole pixmap and blends the tint over
+    /// the frame's damage in the window buffer, so no tint reaches the pixmap
+    /// a later frame repaints from.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `buffer` does not hold one entry per pixel of the surface,
+    /// or when the frame's damage reaches outside it, both of which mean the
+    /// frame was produced for a surface of another size.
+    pub(crate) fn draw(&mut self, frame: &FrameOutput<'_>, age: u8, buffer: &mut [u32]) -> Drawn {
+        let whole = PixelRect {
+            x: 0,
+            y: 0,
+            width: self.width,
+            height: self.height,
+        };
+        self.unknown_ages = if age == 0 {
+            self.unknown_ages.saturating_add(1)
+        } else {
+            0
+        };
+        if matches!(self.target, CpuTarget::Direct(_)) && self.unknown_ages >= UNKNOWN_AGE_PRESENTS
+        {
+            self.target = CpuTarget::Pixmap(CpuRenderer::new(self.width, self.height));
+            self.pixmap_stale = true;
+        }
+        let raster_start = Instant::now();
+        match &mut self.target {
+            CpuTarget::Direct(renderer) => {
+                let with_damage = draw_direct(
+                    renderer,
+                    frame,
+                    age,
+                    &self.history,
+                    &mut self.region,
+                    buffer,
+                );
+                Drawn {
+                    with_damage,
+                    raster: raster_start.elapsed(),
+                    copy: Duration::ZERO,
+                    bytes_copied: 0,
+                }
+            }
+            CpuTarget::Pixmap(renderer) => {
+                if self.pixmap_stale {
+                    renderer.render(&FrameOutput {
+                        damage: &[whole],
+                        ..*frame
+                    });
+                    self.pixmap_stale = false;
+                } else {
+                    renderer.render(frame);
+                }
+                let raster = raster_start.elapsed();
+                let copy_start = Instant::now();
+                debug_assert_eq!(
+                    buffer.len(),
+                    renderer.pixels().len() / 4,
+                    "the window buffer must hold one entry per rendered pixel"
+                );
+                let with_damage = !self.show_damage
+                    && damage_region(
+                        age,
+                        frame.damage,
+                        frame.full,
+                        &self.history,
+                        &mut self.region,
+                    );
+                if !with_damage {
+                    self.region.clear();
+                    self.region.push(whole);
+                }
+                let mut bytes_copied = 0;
+                for &rect in &self.region {
+                    bytes_copied += u64::from(rect.width) * u64::from(rect.height) * 4;
+                    copy_rect(renderer.pixels(), self.width, buffer, rect);
+                }
+                if self.show_damage {
+                    tint_rects(buffer, self.width, frame.damage);
+                }
+                Drawn {
+                    with_damage,
+                    raster,
+                    copy: copy_start.elapsed(),
+                    bytes_copied,
+                }
+            }
+        }
+    }
+
+    /// Records that the buffer [`CpuFrames::draw`] drew `frame` into was
+    /// presented.
+    ///
+    /// A frame that was drawn but never presented must not be recorded,
+    /// because no buffer holds it.
+    pub(crate) fn presented(&mut self, frame: &FrameOutput<'_>) {
+        self.history.push(frame.damage, frame.full);
+    }
+}
 
 /// What the last present did.
 ///
@@ -32,8 +273,10 @@ pub struct PresentStats {
     /// How many surface bytes the present copied from the renderer's pixmap.
     ///
     /// Four bytes per pixel, so a full present of a 100 by 100 surface copies
-    /// 40,000 bytes. The GPU path reports none: it draws straight onto the
-    /// window surface and copies no pixmap.
+    /// 40,000 bytes. The CPU path keeps a pixmap only where the platform
+    /// reports no buffer ages, and while the damage overlay is on. Everywhere
+    /// else it draws straight into the window buffer and, like the GPU path,
+    /// reports none.
     pub bytes_copied: u64,
     /// The width of the presented surface in physical pixels.
     pub surface_width: u32,
@@ -42,8 +285,11 @@ pub struct PresentStats {
     /// How long the renderer took to paint this frame's damage into its
     /// surface.
     ///
-    /// On the GPU path this is the whole draw, whose submission reaches the
-    /// GPU asynchronously.
+    /// When the CPU path draws straight into the window buffer, this covers
+    /// everything the buffer was missing, the rectangles an older buffer
+    /// missed included, and the conversion to the window's pixel format. On
+    /// the GPU path this is the whole draw, whose submission reaches the GPU
+    /// asynchronously.
     pub raster: Duration,
     /// How long the platform waited for a free window buffer before the
     /// present could start.
@@ -53,8 +299,9 @@ pub struct PresentStats {
     /// work.
     pub acquire: Duration,
     /// How long the present took, from holding a free window buffer to handing
-    /// it back to the platform: the copy and the submission, without the wait
-    /// that [`PresentStats::acquire`] holds.
+    /// it back to the platform: the copy, if any, and the submission, without
+    /// the wait that [`PresentStats::acquire`] holds or the drawing that
+    /// [`PresentStats::raster`] holds.
     pub present: Duration,
     /// Which renderer presented the frame, as its name: `cpu` or `gpu`.
     ///
@@ -156,6 +403,48 @@ pub(crate) fn copy_rect(
     }
 }
 
+/// Draws everything a window buffer of `age` is missing for `frame` straight
+/// into `buffer`, and returns whether only `region` needs presenting.
+///
+/// The region is the one [`missing_region`] chooses, and the whole surface
+/// when that region is unknown. The buffer then ends up equal to a full
+/// repaint of the frame, because a rectangle the buffer missed is drawn
+/// again from the frame being presented rather than copied from a kept
+/// surface. The result follows [`damage_region`]: a frame with no damage
+/// presents the whole buffer to restore a window that lost its contents, but
+/// draws only what the buffer misses, because the buffer kept its pixels.
+///
+/// # Panics
+///
+/// Panics when `buffer` or the frame's damage does not match the renderer's
+/// size. See [`XrgbRenderer::render_into`].
+pub(crate) fn draw_direct(
+    renderer: &mut XrgbRenderer,
+    frame: &FrameOutput<'_>,
+    age: u8,
+    history: &DamageHistory,
+    region: &mut Vec<PixelRect>,
+    buffer: &mut [u32],
+) -> bool {
+    let known = missing_region(age, frame.damage, frame.full, history, region);
+    if !known {
+        region.push(PixelRect {
+            x: 0,
+            y: 0,
+            width: renderer.width(),
+            height: renderer.height(),
+        });
+    }
+    renderer.render_into(
+        &FrameOutput {
+            damage: region,
+            ..*frame
+        },
+        buffer,
+    );
+    known && !frame.damage.is_empty()
+}
+
 /// Blends the damage overlay's tint over the frame's damage rectangles.
 ///
 /// `buffer` holds one `0x00RRGGBB` entry per pixel with `surface_width` entries
@@ -243,6 +532,11 @@ impl DamageHistory {
         entry.full = full;
         self.filled = (self.filled + 1).min(HISTORY);
     }
+
+    /// Forgets every recorded frame, keeping the vectors for reuse.
+    pub(crate) fn clear(&mut self) {
+        self.filled = 0;
+    }
 }
 
 /// Whether the frame the last redraw rendered must skip its present.
@@ -258,23 +552,15 @@ pub(crate) fn present_skipped(damage: &[PixelRect], has_tick: bool, show_damage:
     damage.is_empty() && has_tick && !show_damage
 }
 
-/// Chooses the region a present of `age` has to copy, writing it to `out`.
+/// Chooses the region a present of `age` has to draw or copy, writing it to
+/// `out`.
 ///
 /// `current` is the damage of the frame being presented and `current_full`
 /// says whether it repainted the whole surface. Returns `true` when `out`
-/// holds the rectangles to copy and to present with damage, and `false` when
-/// the whole pixmap must be copied and presented instead. The whole-pixmap
-/// cases are an age outside 1 to 3, a full repaint of the current frame, a
-/// current frame with no damage, a full repaint within the frames the region
-/// covers, or history that does not reach back far enough.
-///
-/// A past rectangle that a rectangle already in `out` contains is skipped, so a
-/// region that changes on every frame is copied once rather than once per
-/// frame the buffer missed. Measured on a 1270 by 1388 window at age 2, a frame
-/// whose damage covered the whole surface copied 14.1 MB and took 1525
-/// microseconds to present, against 716 microseconds for a full present.
-/// Rectangles that only partly overlap are both kept, and writing a pixel twice
-/// changes nothing.
+/// holds the rectangles to draw or copy and to present with damage, and
+/// `false` when the whole surface must be drawn or copied and presented
+/// instead. The whole-surface cases are those of [`missing_region`] and a
+/// current frame with no damage.
 ///
 /// A frame with no damage is mostly a redraw the window system asked for,
 /// such as an X11 window being shown again after it was minimized or covered.
@@ -289,18 +575,56 @@ pub(crate) fn damage_region(
     out: &mut Vec<PixelRect>,
 ) -> bool {
     out.clear();
-    if !(1..=HISTORY as u8).contains(&age) || current_full || current.is_empty() {
+    !current.is_empty() && missing_region(age, current, current_full, history, out)
+}
+
+/// Writes to `out` the rectangles a window buffer of `age` is missing, and
+/// returns whether its contents are known well enough to tell.
+///
+/// The region is the damage of the current frame together with the damage
+/// of the frames the buffer missed. It is unknown, and the result `false`,
+/// for an age outside 1 to 3, a full repaint of the current frame, a full
+/// repaint within the frames the region covers, or a history that does not
+/// hold the frame the buffer shows.
+///
+/// A past rectangle that overlaps a rectangle already in `out` is merged into
+/// it when their union holds no more pixels than the two hold together, which
+/// includes a past rectangle the kept one contains. A region that changes on
+/// every frame is then drawn or copied once rather than once per frame the
+/// buffer missed. Measured on a 1270 by 1388 window at age 2, a frame whose
+/// damage covered the whole surface copied 14.1 MB and took 1525
+/// microseconds to present, against 716 microseconds for a full present.
+/// Drawing pays for every rectangle as well as for its pixels, so merging
+/// the overlapping strips of the scroll benchmark scene took its median
+/// raster at age 2 from 247 to 187 microseconds. Other rectangles are kept
+/// apart, and writing a pixel twice changes nothing.
+pub(crate) fn missing_region(
+    age: u8,
+    current: &[PixelRect],
+    current_full: bool,
+    history: &DamageHistory,
+    out: &mut Vec<PixelRect>,
+) -> bool {
+    out.clear();
+    if !(1..=HISTORY as u8).contains(&age) || current_full {
         return false;
     }
     let previous = age as usize - 1;
-    if previous > history.filled || history.entries[..previous].iter().any(|entry| entry.full) {
+    // The buffer shows a recorded frame only when at least `age` frames were
+    // presented since the history was last cleared.
+    if age as usize > history.filled || history.entries[..previous].iter().any(|entry| entry.full) {
         return false;
     }
     out.extend_from_slice(current);
     for entry in &history.entries[..previous] {
         for &rect in &entry.damage {
-            if !out.iter().any(|kept| kept.contains_rect(rect)) {
-                out.push(rect);
+            let overlapping = out.iter_mut().find(|kept| {
+                kept.intersect(rect).is_some()
+                    && kept.union(rect).area() <= kept.area() + rect.area()
+            });
+            match overlapping {
+                Some(kept) => *kept = kept.union(rect),
+                None => out.push(rect),
             }
         }
     }
