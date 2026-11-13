@@ -30,8 +30,6 @@ use winit::raw_window_handle::{
 use winit::window::WindowAttributes;
 use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::clipboard::SystemClipboard;
 use crate::error::PlatformError;
 use crate::events::EventTranslator;
 use crate::present::{CpuFrames, PresentStats, PresentStatsHandle};
@@ -598,10 +596,8 @@ where
         // inside the app either way. The web page has no system clipboard to
         // open, so it always gets the in-memory one.
         #[cfg(not(target_arch = "wasm32"))]
-        let clipboard: Box<dyn Clipboard> = match SystemClipboard::new() {
-            Ok(clipboard) => Box::new(clipboard),
-            Err(_) => Box::new(MemoryClipboard::default()),
-        };
+        let clipboard: Box<dyn Clipboard> =
+            crate::clipboard::open().unwrap_or_else(|| Box::new(MemoryClipboard::default()));
         #[cfg(target_arch = "wasm32")]
         let clipboard: Box<dyn Clipboard> = Box::new(MemoryClipboard::default());
         app.set_clipboard(clipboard);

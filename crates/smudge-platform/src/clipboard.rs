@@ -1,31 +1,54 @@
-//! The system clipboard, backed by arboard.
+//! The system clipboard.
 //!
 //! The window installs one on every app it opens, so cut, copy and paste
 //! reach the operating system's clipboard without the app doing anything.
-//! Where the system clipboard cannot be opened, the window falls back to the
-//! app's in-memory clipboard, which keeps the keys working inside the app.
+//! On a Wayland session whose compositor offers a data-control protocol, the
+//! clipboard talks to the compositor directly. Everywhere else, including a
+//! Wayland session without one where Xwayland runs, it goes through arboard.
+//! Where neither can be opened, the window falls back to the app's in-memory
+//! clipboard, which keeps the keys working inside the app.
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "redox",
+        target_family = "wasm",
+        target_os = "android",
+        target_os = "ios",
+        target_os = "macos"
+    ))
+))]
+mod wayland;
 
 use smudge_core::clipboard::Clipboard;
 
-/// The operating system's clipboard, for the text an app copies and pastes.
-pub(crate) struct SystemClipboard {
+/// Opens the system clipboard, or returns `None` when there is none to open,
+/// for example on a headless display.
+pub(crate) fn open() -> Option<Box<dyn Clipboard>> {
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "redox",
+            target_family = "wasm",
+            target_os = "android",
+            target_os = "ios",
+            target_os = "macos"
+        ))
+    ))]
+    if let Some(clipboard) = wayland::WaylandClipboard::new() {
+        return Some(Box::new(clipboard));
+    }
+    let inner = arboard::Clipboard::new().ok()?;
+    Some(Box::new(ArboardClipboard { inner }))
+}
+
+/// The operating system's clipboard, reached through arboard.
+struct ArboardClipboard {
     /// The arboard clipboard, which talks to the platform.
     inner: arboard::Clipboard,
 }
 
-impl SystemClipboard {
-    /// Opens the system clipboard.
-    ///
-    /// # Errors
-    ///
-    /// Returns the platform's error when the clipboard cannot be opened, for
-    /// example on a headless display.
-    pub(crate) fn new() -> Result<SystemClipboard, arboard::Error> {
-        arboard::Clipboard::new().map(|inner| SystemClipboard { inner })
-    }
-}
-
-impl Clipboard for SystemClipboard {
+impl Clipboard for ArboardClipboard {
     fn get(&mut self) -> Option<String> {
         // A read can fail while another application owns the clipboard, or
         // when what is on it is not text, which is nothing to paste.
