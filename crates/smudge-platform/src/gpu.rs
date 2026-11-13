@@ -64,7 +64,9 @@ fn connect(
         compatible_surface: Some(&surface),
         ..Default::default()
     }))
-    .map_err(|error| format!("no adapter can present to the window: {error}"))?;
+    .map_err(|error| {
+        format!("no Vulkan, Metal or DX12 adapter can present to the window: {error}")
+    })?;
     Ok((surface, adapter))
 }
 
@@ -81,15 +83,13 @@ pub(crate) struct GpuPath {
 impl GpuPath {
     /// Sets the GPU path up for `window`.
     ///
-    /// The adapter comes from [`smudge_gpu::instance`], which enables the
-    /// primary backends only. With `explicit` set, this is the caller's
-    /// chosen renderer: when the primary backends cannot present to the
-    /// window, the setup is retried with every backend, OpenGL included, and
-    /// any failure after that fails the run. Otherwise the choice is
-    /// automatic, and every failure of this function returns `None` for the
-    /// CPU path: no surface or adapter on the primary backends, a software
-    /// rasterizer, a device that cannot be created, a surface without a
-    /// supported format, or a window larger than the device's texture limit.
+    /// The adapter comes from [`smudge_gpu::instance`], which has the
+    /// Vulkan, Metal and DX12 backends only. With `explicit` set, this is the
+    /// caller's chosen renderer, and any failure fails the run. Otherwise the
+    /// choice is automatic, and every failure of this function returns `None`
+    /// for the CPU path: no surface or adapter, a software rasterizer, a
+    /// device that cannot be created, a surface without a supported format,
+    /// or a window larger than the device's texture limit.
     ///
     /// # Errors
     ///
@@ -115,20 +115,7 @@ impl GpuPath {
         }
         let (surface, adapter) = match connect(&smudge_gpu::instance(), window) {
             Ok(connected) => connected,
-            Err(primary) if explicit => {
-                let every = wgpu::Instance::new(
-                    wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-                );
-                match connect(&every, window) {
-                    Ok(connected) => connected,
-                    Err(error) => {
-                        return fail(format!(
-                            "{primary} on the primary backends, and {error} on any backend"
-                        ));
-                    }
-                }
-            }
-            Err(_) => return Ok(None),
+            Err(error) => return fail(error),
         };
         // The automatic choice inspects the adapter before anything is built
         // on it, so a software rasterizer costs nothing but the request.

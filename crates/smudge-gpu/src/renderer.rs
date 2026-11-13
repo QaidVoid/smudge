@@ -34,18 +34,15 @@ pub fn device_limits(adapter: &Adapter) -> Limits {
 
 /// Creates the wgpu instance a renderer's adapter should come from.
 ///
-/// The instance enables the primary backends only: Vulkan, Metal and DX12,
-/// and WebGPU on the web. The renderer needs compute shaders, which the
-/// OpenGL backend serves poorly, and enabling it loads the system's OpenGL
-/// and EGL drivers next to the Vulkan one. A machine without a primary
-/// backend is usually better served by the CPU renderer. The `WGPU_BACKEND`
-/// environment variable still picks the backends when it is set.
-///
-/// When this instance finds no adapter, [`GpuRenderer::headless`] retries
-/// with every backend, OpenGL included, and so does a window that asks for
-/// the GPU renderer explicitly. A caller that requests its own adapter can
-/// do the same with an instance from
-/// [`InstanceDescriptor::new_without_display_handle_from_env`].
+/// Only the primary backends are compiled in: Vulkan, Metal and DX12. The
+/// renderer needs compute shaders, which the OpenGL backend serves poorly,
+/// and leaving that backend out saves 670 KB of a stripped binary. A machine
+/// without a primary backend is better served by the CPU renderer, so a
+/// request on it finds no adapter. The instance also enables the primary
+/// backends alone, so an application whose own wgpu dependency compiles
+/// OpenGL back in still does not load the OpenGL and EGL drivers here. The
+/// `WGPU_BACKEND` environment variable still picks the backends when it is
+/// set.
 pub fn instance() -> Instance {
     let mut descriptor = InstanceDescriptor::new_without_display_handle_from_env();
     if std::env::var_os("WGPU_BACKEND").is_none() {
@@ -216,9 +213,7 @@ impl GpuRenderer {
     /// The adapter comes from [`instance`], whose backends the
     /// `WGPU_BACKEND` variable picks when it is set, exactly as the window
     /// path does. That lets a machine pin the backend without a rebuild, for
-    /// example to measure a software rasterizer. When the primary backends
-    /// find no adapter, the request is retried with every backend, so a
-    /// machine whose only adapter is an OpenGL one still gets a renderer.
+    /// example to measure a software rasterizer.
     ///
     /// Returns `None` when no adapter can be created, or when the chosen
     /// adapter cannot provide a device, which is how a machine without a GPU
@@ -232,15 +227,8 @@ impl GpuRenderer {
     pub fn headless(width: u32, height: u32) -> Option<GpuRenderer> {
         // The environment override matches the window path, so one set of
         // variables picks the backend for both.
-        let options = RequestAdapterOptions::default();
-        let adapter = match block_on(instance().request_adapter(&options)) {
-            Ok(adapter) => adapter,
-            Err(_) => {
-                let every =
-                    Instance::new(InstanceDescriptor::new_without_display_handle_from_env());
-                block_on(every.request_adapter(&options)).ok()?
-            }
-        };
+        let adapter =
+            block_on(instance().request_adapter(&RequestAdapterOptions::default())).ok()?;
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_limits: device_limits(&adapter),
             ..Default::default()
@@ -400,3 +388,7 @@ fn create_target(device: &Device, width: u32, height: u32) -> Option<(Texture, T
     let view = texture.create_view(&TextureViewDescriptor::default());
     Some((texture, view))
 }
+
+#[cfg(test)]
+#[path = "renderer_tests.rs"]
+mod tests;

@@ -9,7 +9,7 @@
 | `window` | yes | Windows, input and presentation through `smudge-platform`, and `run`. A headless build that only uses `App` leaves it out and keeps a font feature: `default-features = false, features = ["bundled-fonts"]`. |
 | `a11y` | yes | The accessibility projection that screen readers read, forwarded to the `a11y` feature of `smudge-platform`. Implies `window`. It has no effect on the web. Building without it drops the whole accessibility stack. New in 0.3: before, `window` alone brought it in, so a build that lists features after `default-features = false` must now name `a11y` to keep screen reader support. |
 | `bundled-fonts` | yes | Embeds Noto Sans, Noto Sans Bold and Noto Sans Mono, so text never depends on the machine. Forwarded to the same feature of `smudge-text` and `smudge-widgets`. On wasm this is the only font source. |
-| `gpu` | no | The GPU renderer and its window path. Implies `window`. With it, `RendererChoice::Auto` becomes the default. |
+| `gpu` | no | The GPU renderer and its window path, with the Vulkan, Metal and DX12 backends. Implies `window`. Windows still start on the CPU renderer unless `WindowOptions::renderer` or `SMUDGE_RENDERER` asks for `Auto` or `Gpu`. New in 0.3: before, `Auto` was the default with this feature. |
 | `complex-scripts` | no | Word and line break dictionaries for Chinese, Japanese, Thai, Lao, Khmer and Burmese. About 3 MB per binary and about 5 percent slower layout of other text. |
 | `system-fonts` | no | Also finds the fonts installed on the machine, on Linux, FreeBSD, Windows, Android and Apple platforms. The same feature of `smudge-text`, forwarded, so applications can turn it on without adding `smudge-text` themselves. |
 

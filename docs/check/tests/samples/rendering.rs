@@ -46,6 +46,13 @@ fn start_move() {
         .on_pointer_down(|_| start_move());
 }
 
+fn ask_for_the_gpu() {
+    let options = WindowOptions {
+        renderer: RendererChoice::Auto,
+        ..WindowOptions::default()
+    };
+}
+
 fn open_docs() {}
 #[test]
 fn pointer_cursor() {

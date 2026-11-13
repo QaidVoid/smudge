@@ -16,38 +16,37 @@ pub const RENDERER_ENVIRONMENT: &str = "SMUDGE_RENDERER";
 /// The CPU renderer keeps a pixmap and repaints only the frame's damage. The
 /// GPU renderer draws the whole frame on every present, with no damage
 /// tracking. Both draw the same display list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// The default is [`RendererChoice::Cpu`], with or without the `gpu`
+/// feature. Creating a GPU device costs an ordinary app most of its startup
+/// and memory: on a desktop with a GTX 1060, a log viewer took 720 to 1,010
+/// ms of CPU to its first frame and 192 to 195 MB of peak memory on the GPU
+/// renderer, against 10 to 20 ms and 28 MB on the CPU renderer. An app that
+/// redraws most of a large window every frame, where the GPU renderer is
+/// several times faster, asks for it with [`RendererChoice::Auto`] or
+/// [`RendererChoice::Gpu`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum RendererChoice {
-    /// The CPU renderer. Always available.
+    /// The CPU renderer. Always available, and the default.
+    #[default]
     Cpu,
     /// The GPU renderer through vello.
     ///
-    /// Needs the `gpu` feature and an adapter that can present to the window.
-    /// The adapter comes from the Vulkan, Metal or DX12 backend first, and
-    /// from any backend, OpenGL included, when none of those can present to
-    /// the window. A run with this choice fails when no adapter is found
-    /// either way; it never falls back to the CPU renderer on its own.
+    /// Needs the `gpu` feature and a Vulkan, Metal or DX12 adapter that can
+    /// present to the window. A run with this choice fails when there is
+    /// none, and it never falls back to the CPU renderer on its own. A
+    /// machine whose only GPU driver is OpenGL has no such adapter, because
+    /// the OpenGL backend is not compiled in.
     Gpu,
     /// The GPU renderer when the window's adapter is a real GPU, and the CPU
     /// renderer otherwise: when the adapter is a software rasterizer such as
     /// llvmpipe or SwiftShader, when no Vulkan, Metal or DX12 adapter exists,
-    /// when the window surface cannot present GPU frames, or while the damage
-    /// overlay is on. This choice never uses OpenGL, which serves the GPU
-    /// renderer's compute shaders poorly. The default in builds with the
-    /// `gpu` feature.
+    /// when the window surface cannot present GPU frames, while the damage
+    /// overlay is on, or in a build without the `gpu` feature.
+    ///
+    /// This is how an app that wants the GPU renderer where it runs well asks
+    /// for it without failing elsewhere.
     Auto,
-}
-
-impl Default for RendererChoice {
-    fn default() -> RendererChoice {
-        // The default depends on the feature: `Auto` with the gpu feature and
-        // `Cpu` without it, which a derive cannot switch by feature.
-        if cfg!(feature = "gpu") {
-            RendererChoice::Auto
-        } else {
-            RendererChoice::Cpu
-        }
-    }
 }
 
 impl RendererChoice {
