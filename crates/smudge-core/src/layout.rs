@@ -647,7 +647,7 @@ impl ChildFrame {
     ) -> ChildFrame {
         ChildFrame {
             origin: paint_rect.origin(),
-            clip: if overflow == Overflow::Clip {
+            clip: if overflow.clips() {
                 clip.intersect(inset(rect, border))
             } else {
                 clip

@@ -25,7 +25,7 @@ use smudge_core::geometry::Point;
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::{Role, Semantics};
-use smudge_core::style::{Edges, Length, px};
+use smudge_core::style::{Edges, Length, Overflow, px};
 use smudge_core::theme::ColorToken;
 use smudge_core::tree::Dirty;
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
@@ -255,7 +255,7 @@ pub(crate) fn scroll_with_visible_height(
         chrome: Rc::clone(&chrome),
     })
     .column()
-    .clip(true)
+    .overflow(Overflow::Scroll)
     .on_wheel(move |delta| {
         let Some(max) = wheel_chrome.max_offset() else {
             return;

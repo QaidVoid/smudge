@@ -133,6 +133,7 @@ static_values!(
     Direction,
     Align,
     Justify,
+    Overflow,
     Point,
     crate::window::Cursor,
 );
@@ -757,6 +758,16 @@ impl<W: Widget> Element<W> {
             } else {
                 Overflow::Visible
             };
+        })
+    }
+
+    /// Sets what happens to children that do not fit inside the node. This
+    /// takes part in layout: [`Overflow::Scroll`] makes the node a scroll
+    /// container, whose automatic minimum size as a flex item is zero, and
+    /// [`Element::clip`] is the shorthand for [`Overflow::Clip`].
+    pub fn overflow(self, overflow: impl Into<Value<Overflow>>) -> Self {
+        self.layout_value(Prop::Overflow, overflow, |layout, overflow| {
+            layout.overflow = overflow;
         })
     }
 

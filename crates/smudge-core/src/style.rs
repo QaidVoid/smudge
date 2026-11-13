@@ -164,6 +164,19 @@ pub enum Overflow {
     Visible,
     /// Children are clipped to the parent's bounds.
     Clip,
+    /// Children are clipped to the parent's bounds, and the parent is a
+    /// scroll container in layout: as a flex item its automatic minimum
+    /// size is zero rather than its content's size, so it shrinks to the
+    /// space it is given and its content scrolls inside it. The scroll view
+    /// and the virtual lists use this.
+    Scroll,
+}
+
+impl Overflow {
+    /// Whether children are clipped to the node's bounds.
+    pub fn clips(self) -> bool {
+        self != Overflow::Visible
+    }
 }
 
 /// The properties that take part in layout.
@@ -272,6 +285,7 @@ impl LayoutProps {
         let overflow = match self.overflow {
             Overflow::Visible => taffy::Overflow::Visible,
             Overflow::Clip => taffy::Overflow::Clip,
+            Overflow::Scroll => taffy::Overflow::Scroll,
         };
         let mut style: taffy::Style = taffy::Style::DEFAULT;
         style.display = match (self.hidden, self.display) {

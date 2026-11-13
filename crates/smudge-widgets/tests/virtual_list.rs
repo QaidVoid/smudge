@@ -360,3 +360,33 @@ proptest! {
         harness.assert_matches(&full);
     }
 }
+
+#[test]
+fn a_growing_list_in_a_column_takes_the_space_left_and_mounts_only_what_shows() {
+    TextSystem::bundled_only().install();
+    let mut harness = Harness::new(WINDOW.width, WINDOW.height, 1.0, move || {
+        panel()
+            .column()
+            .height(px(VIEWPORT_HEIGHT))
+            .child(panel().height(px(40.0)))
+            .child(
+                virtual_list(
+                    || 10_000,
+                    ROW_HEIGHT,
+                    |index| label(format!("Row {index}")),
+                )
+                .grow(1.0),
+            )
+    });
+    harness.frame();
+    harness.settle();
+
+    let mounted = label_rows(&harness).len();
+    let visible = ((VIEWPORT_HEIGHT - 40.0) / ROW_HEIGHT).ceil() as usize;
+    assert!(
+        mounted <= visible + 8,
+        "a list that grows in a column lays out at the height left to it, \
+         not at its content's height, so it mounts about {visible} rows, \
+         not {mounted}"
+    );
+}

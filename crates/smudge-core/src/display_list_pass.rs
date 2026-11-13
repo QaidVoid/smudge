@@ -11,7 +11,7 @@
 
 use crate::geometry::Point;
 use crate::paint::DisplayList;
-use crate::style::{Overflow, Position};
+use crate::style::Position;
 
 use super::{WidgetId, WidgetTree};
 
@@ -49,7 +49,7 @@ impl WidgetTree {
         if style.layout.hidden {
             return;
         }
-        let clips = style.layout.overflow == Overflow::Clip;
+        let clips = style.layout.overflow.clips();
         let node = self.nodes.get(id).expect("the id is a live node");
 
         list.extend_ops(&node.ops);

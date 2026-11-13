@@ -86,7 +86,7 @@ let badge = panel()
 
 ## Clipping and hiding
 
-`clip(true)` clips children to the panel's padding box. `hidden(true)` removes a node from layout and paint while keeping it mounted, so its state survives; bind it to a signal to toggle visibility cheaply. To mount and unmount instead, use [`show`](./dynamic-content).
+`clip(true)` clips children to the panel's padding box. `overflow(Overflow::Scroll)` clips the same way and also makes the panel a scroll container: as a flex item it shrinks to the space it is given instead of growing to its content, which is what the scroll view and the virtual lists use, so a list with `grow(1.0)` in a column fills what is left of it. `hidden(true)` removes a node from layout and paint while keeping it mounted, so its state survives; bind it to a signal to toggle visibility cheaply. To mount and unmount instead, use [`show`](./dynamic-content).
 
 ## What layout costs
 
