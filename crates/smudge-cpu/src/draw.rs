@@ -53,10 +53,12 @@ fn maybe_translated(rect: Rect, offset: Point) -> Rect {
 /// area is its [`PaintOp::bounds`] in physical pixels, intersected with every
 /// clip around it and clamped to the surface, so an operation outside `root`,
 /// outside the surface, or under an empty clip draws nothing and is never
-/// handed over. An offset scope moves the operations and the clips it wraps,
-/// and the offsets it sits inside stack up. The walk visits clips, offsets and
-/// operations once, in list order, so a caller pays one bounds conversion per
-/// operation however many rectangles it repaints.
+/// handed over. A clip whose logical rectangle has no area is empty, even
+/// where rounding its edges outward would cover pixels. An offset scope moves
+/// the operations and the clips it wraps, and the offsets it sits inside
+/// stack up. The walk visits clips, offsets and operations once, in list
+/// order, so a caller pays one bounds conversion per operation however many
+/// rectangles it repaints.
 pub(crate) fn for_each_op(
     mut on_op: impl FnMut(usize, &PaintOp, PixelRect, Point),
     clips: &mut Vec<Option<PixelRect>>,
@@ -88,7 +90,9 @@ pub(crate) fn for_each_op(
                 }
             }
             DisplayItem::PushClip(rect) => {
-                let inner = current.and_then(|outer| {
+                // A clip without area lets nothing through, even where its
+                // edges would round outward to a column or row of pixels.
+                let inner = current.filter(|_| !rect.is_empty()).and_then(|outer| {
                     PixelRect::from_logical(
                         maybe_translated(*rect, offset),
                         surface.scale,
