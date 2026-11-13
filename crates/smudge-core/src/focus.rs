@@ -8,6 +8,7 @@
 
 use crate::geometry::{Point, Rect};
 use crate::input::{Handled, Key, KeyEvent};
+use crate::style::Position;
 use crate::widget::Widget;
 
 use super::interaction::Interaction;
@@ -232,7 +233,8 @@ impl WidgetTree {
     ///
     /// When the walk finds nothing to move to while a node holds the focus,
     /// which happens when the active focus trap holds no focusable node, the
-    /// focus stays where it is.
+    /// focus stays where it is. The node the focus lands on is scrolled into
+    /// view by the next layout.
     fn move_focus(&mut self, backwards: bool) {
         let next = self.next_focusable(self.focused, backwards);
         if next.is_none() && self.focused.is_some() {
@@ -249,13 +251,16 @@ impl WidgetTree {
     /// hears `on_focus` with `true`. A node that already holds the focus keeps
     /// it without hearing `on_focus` again. The keyboard focus bit follows the
     /// keyboard navigation mode. Any change consumes the key anchor a dropped
-    /// focus left behind, because the focus has moved on purpose.
+    /// focus left behind, because the focus has moved on purpose, and drops a
+    /// pending request to scroll the focus into view, which a caller that
+    /// wants the new focus revealed makes again.
     pub(super) fn set_focus(&mut self, id: Option<WidgetId>) {
         if self.focused == id {
             return;
         }
         let old = self.focused;
         self.stale_focus = None;
+        self.reveal_focus = false;
         if let Some(old) = self.focused {
             self.set_bit(old, Interaction::FOCUSED, false);
             self.set_bit(old, Interaction::KEYBOARD_FOCUS, false);
@@ -275,17 +280,20 @@ impl WidgetTree {
         }
     }
 
-    /// Focuses `id` on behalf of an accessibility action, and returns whether
-    /// it took the focus.
+    /// Focuses `id` without a pointer press, as an accessibility action,
+    /// autofocus or a restored focus does, and returns whether it took the
+    /// focus.
     ///
     /// A node that is not focusable, or that cannot hold the focus because it
     /// is disabled or hidden, is left alone and `false` is returned. A node
-    /// that already holds the focus keeps it.
+    /// that already holds the focus keeps it. Either way a node that holds
+    /// the focus afterwards is scrolled into view by the next layout.
     pub(crate) fn request_focus(&mut self, id: WidgetId) -> bool {
         if !self.focusable(id) || !self.can_hold_focus(id) {
             return false;
         }
         self.set_focus(Some(id));
+        self.scroll_focus_into_view();
         true
     }
 
@@ -524,7 +532,6 @@ impl WidgetTree {
                 continue;
             }
             if self.request_focus(id) {
-                self.scroll_focus_into_view();
                 return;
             }
         }
@@ -645,9 +652,119 @@ impl WidgetTree {
         }
     }
 
-    /// Scrolls the nearest scrolling ancestor so the focused node is in view.
+    /// Asks the next layout to scroll the focused node into view.
     ///
-    /// Nothing scrolls yet: scroll offsets arrive with the scroll view, and
-    /// focus movement calls this hook so the behavior has one home.
-    fn scroll_focus_into_view(&mut self) {}
+    /// The request waits for the layout because the rectangles it reads are
+    /// only current once the frame has laid out the move that came with it,
+    /// such as a node an autofocus request just showed. See
+    /// [`WidgetTree::resolve_reveal`].
+    fn scroll_focus_into_view(&mut self) {
+        self.reveal_focus = true;
+    }
+
+    /// Scrolls the ancestors of the focused node that asked for it so the
+    /// node is in view, when a focus move requested it.
+    ///
+    /// The walk goes up from the focused node. Every ancestor with an
+    /// `on_reveal` handler that the node flows in, rather than sits in
+    /// absolutely positioned, moves its vertical offset by the least that
+    /// brings the target inside its content box, or aligns the target's top
+    /// with the box's top when the target is taller, clamped to the range
+    /// its flowing content scrolls. The target starts as the focused node's
+    /// rectangle, and after each such ancestor it becomes the part of the
+    /// moved target that ancestor shows, so the ancestor around it reveals
+    /// that. An ancestor whose offset changes hears its handler with the new
+    /// offset, in its owner. An ancestor that does not move hears nothing.
+    ///
+    /// A focused node that cannot hold the focus, because it or an ancestor
+    /// is hidden or it is disabled, scrolls nothing. The request stays until
+    /// the layout pass clears it, so a settle pass in the same frame can
+    /// apply it again to the geometry it settled.
+    pub(super) fn resolve_reveal(&mut self) {
+        if !self.reveal_focus {
+            return;
+        }
+        let Some(focused) = self.focused.filter(|&id| self.can_hold_focus(id)) else {
+            return;
+        };
+        let mut target = self.nodes[focused].rect;
+        let mut child = focused;
+        let mut next = self.nodes[focused].parent;
+        while let Some(id) = next {
+            let node = &self.nodes[id];
+            next = node.parent;
+            let flows = self.nodes[child].resolved.layout.position != Position::Absolute;
+            child = id;
+            if !flows || node.handlers.on_reveal.is_none() {
+                continue;
+            }
+            let view = node.content;
+            let current = node.scroll_offset;
+            let Some(max) = self.max_scroll_offset(id) else {
+                continue;
+            };
+            // A non-finite offset or extent, which a binding can hand over,
+            // leaves this ancestor where it is rather than panicking in the
+            // clamps below.
+            if !(view.y0.is_finite()
+                && view.y1.is_finite()
+                && current.y.is_finite()
+                && max.is_finite())
+            {
+                continue;
+            }
+            let delta = reveal_delta(target, view);
+            let wanted = (current.y + delta).clamp(0.0, max.max(0.0));
+            if delta != 0.0 && wanted.is_finite() && wanted != current.y {
+                let offset = Point {
+                    x: current.x,
+                    y: wanted,
+                };
+                self.set_scroll_offset(id, offset);
+                self.run_reveal(id, offset);
+                target = target.translated(Point {
+                    x: 0.0,
+                    y: current.y - wanted,
+                });
+            }
+            target = Rect::new(
+                target.x0,
+                target.y0.max(view.y0).min(view.y1),
+                target.x1,
+                target.y1.max(view.y0).min(view.y1),
+            );
+        }
+    }
+
+    /// Runs the `on_reveal` handler of `id` with `offset`, inside the node's
+    /// owner.
+    fn run_reveal(&mut self, id: WidgetId, offset: Point) {
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        owner.with(|| {
+            if let Some(on_reveal) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.on_reveal.as_mut())
+            {
+                on_reveal(offset);
+            }
+        });
+    }
+}
+
+/// Returns how far a view whose visible area is `view` scrolls down to show
+/// `target`, both in window coordinates, negative to scroll up.
+///
+/// A target that fits is brought in by the nearest edge, and one taller than
+/// the view is aligned with its top. A target already inside needs nothing.
+fn reveal_delta(target: Rect, view: Rect) -> f32 {
+    if target.y0 < view.y0 || target.height() > view.height() {
+        target.y0 - view.y0
+    } else if target.y1 > view.y1 {
+        target.y1 - view.y1
+    } else {
+        0.0
+    }
 }

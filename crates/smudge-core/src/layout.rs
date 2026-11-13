@@ -59,9 +59,11 @@ impl WidgetTree {
     /// size set on the root element. After the pass, a node that mounted with
     /// autofocus takes the focus, a node whose follow signal reads `true`
     /// pins its scroll offset to the end of its content with the rectangles
-    /// this pass just wrote, and a focus, hover or follow change that
-    /// carries a layout patch runs the engine once more, so all of them
-    /// settle in this frame.
+    /// this pass just wrote, a focus move that asked for it scrolls the
+    /// focused node into view, and a focus, hover, follow or reveal change
+    /// that carries a layout patch runs the engine once more, so all of them
+    /// settle in this frame. A focus move on a frame that lays nothing out is
+    /// revealed with the rectangles the last pass left.
     ///
     /// Each node ends the pass with an absolute rectangle and clip. A node
     /// whose rectangle in paint coordinates changed, or whose clip became or
@@ -84,49 +86,64 @@ impl WidgetTree {
     /// Panics when a node has no live layout node, which is an internal
     /// invariant: every node in the tree owns exactly one layout node.
     pub(crate) fn layout(&mut self, viewport: Size) -> bool {
-        let Some(rects_changed) = self.layout_pass(viewport) else {
-            return false;
+        let ran = match self.layout_pass(viewport) {
+            Some(rects_changed) => {
+                // A trap that showed records the focus before an autofocus
+                // inside it moves the focus in, and a trap that hid gives the
+                // focus back.
+                self.resolve_focus_traps();
+                // A node that mounted for this frame with autofocus takes the
+                // focus here: after the pass laid it out, so the styles the
+                // pass resolved say whether it can hold the focus, and before
+                // the frame paints, so it never shows a frame without the
+                // focus.
+                self.resolve_autofocus();
+                // A node that the pass moved under a pointer that stays still
+                // keeps a stale hover, because no pointer event announces the
+                // move. The chain is rebuilt from the last pointer position,
+                // unless a held press keeps the hover on its capture.
+                if rects_changed && self.pointer_inside && self.pressed.is_none() {
+                    self.refresh_hover();
+                }
+                // A pinned child goes back to its place with the sizes this
+                // pass gave its siblings, so no frame shows a grown child over
+                // the next.
+                self.resolve_pins();
+                // A following node pins its offset here, after the pass laid
+                // its content out and before the frame paints, so a frame
+                // that grows the content never shows the end out of view. The
+                // painted heights the bindings read are one frame old.
+                self.resolve_follow();
+                true
+            }
+            None => false,
         };
-        // A trap that showed records the focus before an autofocus inside it
-        // moves the focus in, and a trap that hid gives the focus back.
-        self.resolve_focus_traps();
-        // A node that mounted for this frame with autofocus takes the focus
-        // here: after the pass laid it out, so the styles the pass resolved
-        // say whether it can hold the focus, and before the frame paints, so
-        // it never shows a frame without the focus.
-        self.resolve_autofocus();
-        // A node that the pass moved under a pointer that stays still keeps a
-        // stale hover, because no pointer event announces the move. The chain
-        // is rebuilt from the last pointer position, unless a held press keeps
-        // the hover on its capture.
-        if rects_changed && self.pointer_inside && self.pressed.is_none() {
-            self.refresh_hover();
-        }
-        // A pinned child goes back to its place with the sizes this pass
-        // gave its siblings, so no frame shows a grown child over the next.
-        self.resolve_pins();
-        // A following node pins its offset here, after the pass laid its
-        // content out and before the frame paints, so a frame that grows the
-        // content never shows the end out of view. The painted heights the
-        // bindings read are one frame old.
-        self.resolve_follow();
+        // The focused node comes into view after the pins and the follow
+        // pin, so a view that follows its end still shows a focus that moved
+        // inside it, and before the frame paints, so no frame shows the
+        // focus out of view.
+        self.resolve_reveal();
         // The focus autofocus set, the hover the refresh above set, and the
-        // offset a follow pin wrote, whose moved content can pick up a hover,
-        // can carry variant patches that change the layout, and nothing would
-        // ask for another frame to apply them. One more pass settles them all
-        // in this frame.
-        if self.layout_dirty {
-            self.layout_pass(viewport);
+        // offsets a follow pin or a reveal wrote, whose moved content can
+        // pick up a hover, can carry variant patches that change the layout,
+        // and nothing would ask for another frame to apply them. One more
+        // pass settles them all in this frame.
+        let settled = self.layout_dirty && self.layout_pass(viewport).is_some();
+        if settled {
             // The settle pass can change the extent a following view reaches,
             // the way a hover variant its own pin picked up can. Pin again so
-            // the frame still ends at the end. The offset it writes usually
-            // equals the one already applied and does nothing. When it moves,
-            // the hover it refreshes may carry a layout patch that waits for
-            // a later pass, so the passes a frame runs stay bounded at two.
+            // the frame still ends at the end, and reveal again so a focus
+            // style that resized the focused node still ends in view. The
+            // offsets they write usually equal the ones already applied and
+            // do nothing. When one moves, the hover it refreshes may carry a
+            // layout patch that waits for a later pass, so the passes a frame
+            // runs stay bounded at two.
             self.resolve_pins();
             self.resolve_follow();
+            self.resolve_reveal();
         }
-        true
+        self.reveal_focus = false;
+        ran || settled
     }
 
     /// Sets the scroll offset of `id` and moves its flowing descendants.
@@ -321,7 +338,7 @@ impl WidgetTree {
                 continue;
             }
             let current = node.scroll_offset;
-            let Some(max) = self.follow_max(id) else {
+            let Some(max) = self.max_scroll_offset(id) else {
                 continue;
             };
             self.set_scroll_offset(
@@ -338,15 +355,15 @@ impl WidgetTree {
     /// `None` when `id` is stale.
     ///
     /// The extent is measured from the content box, like the heights a
-    /// scroll view reports when it paints are, so the pin and the wheel
-    /// clamp agree on where the end is. Absolutely positioned children do
-    /// not count, because a scroll offset does not move them.
+    /// scroll view reports when it paints are, so the follow pin, a reveal
+    /// and the wheel clamp agree on where the end is. Absolutely positioned
+    /// children do not count, because a scroll offset does not move them.
     ///
     /// # Panics
     ///
     /// Panics when a node in the subtree has no live layout node, which is
     /// an internal invariant for ids the caller took from the tree.
-    fn follow_max(&self, id: WidgetId) -> Option<f32> {
+    pub(super) fn max_scroll_offset(&self, id: WidgetId) -> Option<f32> {
         let node = self.nodes.get(id)?;
         let layout = self
             .taffy

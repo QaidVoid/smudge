@@ -269,7 +269,9 @@ impl App {
     /// The focus moves to the node that sits at the same child indices from
     /// the root as the focused node did, when that node is focusable, can
     /// hold the focus and lies inside the active focus trap, if any. Its
-    /// `on_focus` hears `true`, and the autofocus requests of the new build's
+    /// `on_focus` hears `true`, the next frame scrolls it into view as
+    /// [`Element::on_reveal`](crate::element::Element::on_reveal) describes,
+    /// and the autofocus requests of the new build's
     /// visible nodes are dropped, so the restored focus stays. A request
     /// whose node is hidden waits as usual. Without a restored focus, an
     /// autofocus request takes it as on a first mount. The keyboard
@@ -981,7 +983,9 @@ impl App {
     /// node that already holds the focus keeps it and `true` is returned.
     /// Unlike the autofocus request, an active focus trap does not confine
     /// this one: the trap binds Tab movement and pointer presses, not an
-    /// explicit request that names its node.
+    /// explicit request that names its node. When the node holds the focus
+    /// afterwards, the next frame scrolls it into view as
+    /// [`Element::on_reveal`](crate::element::Element::on_reveal) describes.
     pub fn request_focus(&mut self, id: WidgetId) -> bool {
         self.tree.request_focus(id)
     }

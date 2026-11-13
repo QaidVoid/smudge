@@ -161,6 +161,7 @@ Any element can handle input:
 | `on_wheel(f)` | The scroll delta. Return `Handled::Yes` to take it, `Handled::No` to let it bubble to an outer handler. |
 | `on_key(f)` | A `KeyEvent`. Return `Handled::Yes` to stop it, `Handled::No` to let it bubble. |
 | `on_focus(f)` | `true` when the node gains keyboard focus, `false` when it loses it. |
+| `on_reveal(f)` | The node's new scroll offset, after the node scrolled to show the focused node inside it. Only a node that sets it scrolls for the focus. |
 
 `focusable()` puts a node in the Tab order. A node that captures the pointer with a press keeps receiving moves and the release even when the pointer leaves it, and positions keep following the node if it scrolls.
 
@@ -201,3 +202,5 @@ let dialog = panel()
         Handled::No
     });
 ```
+
+Whenever Tab, `autofocus()`, a focus restored after a remount, a focus trap handing the focus back, or `App::request_focus` moves the focus to a node outside the visible part of a scroll view, the view scrolls just far enough to show it, or shows its top when the node is taller than the view.

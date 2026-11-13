@@ -7,7 +7,9 @@
 //! moves the same way, through the scroll offset of a track it hangs from.
 //! Through [`ScrollExt::follow_end`] the view can also pin itself to the end
 //! of its content while a signal reads `true`, and release itself when a
-//! wheel step leaves the end.
+//! wheel step leaves the end. When the keyboard focus moves to a node inside
+//! the view by any means but a pointer press, the view scrolls to show that
+//! node, as [`Element::on_reveal`] describes.
 //!
 //! The view learns its own height and its content's height when the two
 //! paint, and writes them to signals its bindings read. A size-driven change,
@@ -192,6 +194,13 @@ fn clamp_offset(desired: f32, max: f32) -> f32 {
 /// at the right edge shows the position while the content overflows. The
 /// thumb is a position indicator only: it has no handlers and no dragging.
 ///
+/// When the keyboard focus moves to a node inside the view that is out of
+/// view, the view scrolls to show it, for every move that
+/// [`Element::on_reveal`] lists: the least it takes to bring the node to its
+/// nearest edge, or to align its top when the node is taller than the view.
+/// Nested views each scroll. A pointer press that focuses a node scrolls
+/// nothing.
+///
 /// The offset can be controlled from outside through a signal, with
 /// [`ScrollExt::offset`]:
 ///
@@ -251,6 +260,7 @@ pub(crate) fn scroll_with_visible_height(
     let offset_chrome = Rc::clone(&chrome);
     let content_chrome = Rc::clone(&chrome);
     let track_chrome = Rc::clone(&chrome);
+    let reveal_chrome = Rc::clone(&chrome);
 
     Element::new(ScrollView {
         chrome: Rc::clone(&chrome),
@@ -322,6 +332,21 @@ pub(crate) fn scroll_with_visible_height(
         };
         Point { x: 0.0, y: applied }
     })
+    // The core already moved the view to show the focused node. The signal
+    // takes the offset, so the binding above applies the same one, and a
+    // view pinned to its end lets go of it, because the core only moves a
+    // pinned view up from the end.
+    .on_reveal(move |revealed| {
+        let signal = reveal_chrome.signal();
+        if signal.read(|offset| *offset != revealed.y) {
+            signal.set(revealed.y);
+        }
+        if let Some(following) = reveal_chrome.following()
+            && following.read(|active| *active)
+        {
+            following.set(false);
+        }
+    })
     .child(
         Element::new(ScrollContent {
             chrome: content_chrome,
@@ -349,8 +374,11 @@ pub trait ScrollExt: Sized {
     /// Scrolls with `signal`: the view reads the signal for its offset, so a
     /// write from anywhere moves the content, clamped to the content's size.
     ///
-    /// The wheel writes the same signal, and the view writes the clamped
-    /// offset back to it, so the view, the thumb and the signal stay in step.
+    /// The wheel writes the same signal, and so does a focus move that
+    /// scrolls the view to show the focused node. The view writes the
+    /// clamped offset back to it, so the view, the thumb and the signal stay
+    /// in step. A focus move scrolls the content in the frame it happens and
+    /// moves the thumb in the frame after it.
     fn offset(self, signal: RwSignal<f32>) -> Self;
 
     /// Keeps the view at the end of its content while `signal` reads `true`.
@@ -365,9 +393,10 @@ pub trait ScrollExt: Sized {
     /// content.
     ///
     /// The signal is also where the view reports where the user is: any
-    /// wheel step that moves the view up from the end writes `false`, and a
-    /// step down that lands within four logical pixels of the end writes
-    /// `true`. Writing `true` from the application jumps to the end.
+    /// wheel step that moves the view up from the end writes `false`, and so
+    /// does a focus move that scrolls the view up to show the focused node,
+    /// while a step down that lands within four logical pixels of the end
+    /// writes `true`. Writing `true` from the application jumps to the end.
     /// A view that starts following with content shorter than itself stays
     /// at offset zero until the content grows past it.
     ///
