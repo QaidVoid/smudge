@@ -25,7 +25,7 @@ complex-scripts = ["parley/complex-scripts"]
 fontique = { version = "0.12.0", default-features = false }
 parley = { version = "0.12.0", default-features = false, features = ["std"] }
 skrifa = "0.44.0"
-smudge-core = { version = "0.1.0", path = "../smudge-core" }
+smudge-core = { version = "0.2.0", path = "../smudge-core" }
 web-time = "1.1.0"
 
 [lints]

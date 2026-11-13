@@ -1,4 +1,14 @@
 
+## [0.2.0](https://github.com/QaidVoid/smudge/compare/smudge-cpu-v0.1.0...smudge-cpu-v0.2.0) - 2026-11-13
+
+### ⛰️  Features
+
+- [**breaking**] Add premultiplied images to both renderers - ([8487574](https://github.com/QaidVoid/smudge/commit/8487574d865f84b0915f844e4eaf06339082713a))
+
+### 🐛 Bug Fixes
+
+- *(core)* [**breaking**] Harden focus, channels, cursors and bindings - ([5225d10](https://github.com/QaidVoid/smudge/commit/5225d10210257a22b8bd433b979942f5857fe437))
+
 ## [0.1.0] - 2026-10-28
 
 ### ⛰️  Features

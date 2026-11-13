@@ -11,11 +11,11 @@ version.workspace = true
 workspace = true
 
 [dependencies]
-smudge-core = { version = "0.1.0", path = "../smudge-core" }
-smudge-gpu = { version = "0.1.0", path = "../smudge-gpu", optional = true }
-smudge-platform = { version = "0.1.0", path = "../smudge-platform", optional = true }
-smudge-text = { version = "0.1.0", path = "../smudge-text" }
-smudge-widgets = { version = "0.1.0", path = "../smudge-widgets" }
+smudge-core = { version = "0.2.0", path = "../smudge-core" }
+smudge-gpu = { version = "0.2.0", path = "../smudge-gpu", optional = true }
+smudge-platform = { version = "0.2.0", path = "../smudge-platform", optional = true }
+smudge-text = { version = "0.2.0", path = "../smudge-text" }
+smudge-widgets = { version = "0.2.0", path = "../smudge-widgets" }
 
 [features]
 default = ["window"]

@@ -1,4 +1,22 @@
 
+## [0.2.0](https://github.com/QaidVoid/smudge/compare/smudge-gpu-v0.1.0...smudge-gpu-v0.2.0) - 2026-11-13
+
+### ⛰️  Features
+
+- *(widgets)* Add the image widget - ([f927256](https://github.com/QaidVoid/smudge/commit/f92725662b5dacbd891a0f2f5facf432a57fe628))
+- [**breaking**] Add premultiplied images to both renderers - ([8487574](https://github.com/QaidVoid/smudge/commit/8487574d865f84b0915f844e4eaf06339082713a))
+
+### 🐛 Bug Fixes
+
+- *(core)* [**breaking**] Harden focus, channels, cursors and bindings - ([5225d10](https://github.com/QaidVoid/smudge/commit/5225d10210257a22b8bd433b979942f5857fe437))
+- *(gpu)* Keep every image drawn and retry other backends - ([72f3057](https://github.com/QaidVoid/smudge/commit/72f3057561e50ecfdacb7bc3095971dc68a0dcea))
+- *(gpu)* Downscale images larger than the GPU atlas - ([05749bd](https://github.com/QaidVoid/smudge/commit/05749bdd406c9cc6c7991e3ad993477cf2a9f09f))
+- *(gpu)* Request the adapter maximum storage binding limit - ([efd2ca3](https://github.com/QaidVoid/smudge/commit/efd2ca3a56a71691746f05a628b92d2ecf71f950))
+
+### ⚡ Performance
+
+- *(gpu)* Compile area antialiasing only and skip OpenGL - ([4f141a2](https://github.com/QaidVoid/smudge/commit/4f141a22d6a7bc8c06803ae5ec50e95c7e0e0225))
+
 ## [0.1.0] - 2026-10-28
 
 ### ⛰️  Features
