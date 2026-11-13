@@ -89,7 +89,9 @@ pub enum Dirty {
 /// window coordinates translated by `shift`. The clip is kept beside them,
 /// because damage converts the two to physical pixels separately: a pixel
 /// that a clip edge only partly covers is still drawn, and clipping the
-/// bounds in logical space first would miss it.
+/// bounds in logical space first would miss it. The operations a node draws
+/// inside its border keep a union of their own, with the rectangle inside the
+/// border they are clipped to, both in the same paint coordinates.
 #[derive(Copy, Clone, Debug, PartialEq)]
 struct PaintedBounds {
     /// The union of the node's paint operation bounds, before clipping.
@@ -98,7 +100,8 @@ struct PaintedBounds {
     /// border, before clipping.
     inner: Rect,
     /// The node's rectangle inside its border, which `inner` is clipped to
-    /// within `clip`.
+    /// within `clip`, in paint coordinates like `bounds` and `inner`, while
+    /// `clip` is in window coordinates.
     inside: Rect,
     /// The rectangle the node's subtree was clipped to, in window coordinates.
     clip: Rect,
