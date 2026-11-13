@@ -698,6 +698,10 @@ impl WidgetTree {
     /// Raises the node's dirty flag to `dirty` and queues it for painting the
     /// first time it leaves [`Dirty::Clean`].
     ///
+    /// The node is queued for the accessibility projection too when the
+    /// projection could show the change: on a layout change, and on a
+    /// repaint of a node the projection shows.
+    ///
     /// Marking the node for layout also invalidates the size the layout engine
     /// cached for it and its ancestors, because a widget can change what it
     /// measures without any change to its style.
@@ -713,8 +717,15 @@ impl WidgetTree {
         let was_clean = node.dirty == Dirty::Clean;
         let taffy = node.taffy;
         node.dirty = dirty;
+        // A repaint changes what the projection shows only through the
+        // node's own semantics, so a node the projection leaves out, such as
+        // a blinking caret, queues nothing for it. A layout change can move
+        // the bounds of the projected nodes around it.
+        let projected = dirty == Dirty::Layout || Self::effective_role(node).is_some();
         if was_clean {
             self.paint_queue.push(id);
+        }
+        if projected && (was_clean || dirty == Dirty::Layout) {
             self.push_a11y(id);
         }
         if dirty == Dirty::Layout {
@@ -1120,13 +1131,21 @@ impl WidgetTree {
         role: Role,
         parent: Option<WidgetId>,
     ) -> SemanticsNode {
+        // The widget builds its description, value included, once per
+        // projection, since a text widget copies its whole text into it.
+        let widget: &dyn Widget = node.widget.as_ref();
+        let semantics = widget.semantics();
+        let (label, value) = match semantics {
+            Some(semantics) => (semantics.label, semantics.value),
+            None => (None, None),
+        };
         SemanticsNode {
             id,
             parent,
             children: Vec::new(),
             role,
-            label: Self::effective_label(node),
-            value: Self::effective_value(node),
+            label: node.a11y_label.clone().or(label),
+            value,
             bounds: node.rect,
             focusable: node.interaction.has(Interaction::FOCUSABLE),
             disabled: node.interaction.has(Interaction::DISABLED),
@@ -1166,22 +1185,6 @@ impl WidgetTree {
             let widget: &dyn Widget = node.widget.as_ref();
             widget.semantics().map(|semantics| semantics.role)
         })
-    }
-
-    /// Returns the accessible name the projection reports for the node: the
-    /// one its element set, else the one its widget reports.
-    fn effective_label(node: &Node) -> Option<String> {
-        node.a11y_label.clone().or_else(|| {
-            let widget: &dyn Widget = node.widget.as_ref();
-            widget.semantics().and_then(|semantics| semantics.label)
-        })
-    }
-
-    /// Returns the current value the projection reports for the node, which
-    /// only a widget that reports semantics can provide.
-    fn effective_value(node: &Node) -> Option<String> {
-        let widget: &dyn Widget = node.widget.as_ref();
-        widget.semantics().and_then(|semantics| semantics.value)
     }
 
     /// Panics unless the layout engine's tree and the node store describe the

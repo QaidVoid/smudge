@@ -94,7 +94,8 @@ pub(crate) struct Handlers {
     /// the focus. Returning [`Handled::Yes`] stops the event from bubbling.
     pub(crate) on_key: Option<KeyHandler>,
     /// Runs when the wheel scrolls while the node is in the hovered chain.
-    pub(crate) on_wheel: Option<Box<dyn FnMut(Point)>>,
+    /// Returning [`Handled::Yes`] stops the event from bubbling.
+    pub(crate) on_wheel: Option<Box<dyn FnMut(Point) -> Handled>>,
     /// Runs when a pointer move happens while a press on the node is held,
     /// or, with no press held, when the node is the hover target.
     pub(crate) on_pointer_move: Option<Box<dyn FnMut(Point)>>,
@@ -289,14 +290,16 @@ impl WidgetTree {
     }
 
     /// Routes a wheel scroll to the deepest node in the hovered chain that
-    /// scrolls.
+    /// takes it.
     ///
     /// The hovered chain is the chain of the node under the pointer that can
     /// respond, deepest first, so content inside a scroll view is walked
-    /// before the view itself. The first handler that runs takes the whole
-    /// event, so of two nested scroll views the one under the pointer scrolls
-    /// and the one around it does not. A disabled or hidden node's handler
-    /// never runs, and the event keeps bubbling past it, as key routing does.
+    /// before the view itself. The first handler that returns
+    /// [`Handled::Yes`] takes the whole event, so of two nested scroll views
+    /// the one under the pointer scrolls and the one around it does not, and
+    /// a handler that returns [`Handled::No`] lets the event bubble on. A
+    /// disabled or hidden node's handler never runs, and the event keeps
+    /// bubbling past it, as key routing does.
     pub(crate) fn wheel(&mut self, delta: Point) {
         let Some(target) = self.hover_target(self.pointer) else {
             return;
@@ -310,18 +313,17 @@ impl WidgetTree {
             let Some(owner) = self.owner(id).cloned() else {
                 continue;
             };
-            let mut ran = false;
+            let mut handled = Handled::No;
             owner.with(|| {
                 if let Some(on_wheel) = self
                     .nodes
                     .get_mut(id)
                     .and_then(|node| node.handlers.on_wheel.as_mut())
                 {
-                    on_wheel(delta);
-                    ran = true;
+                    handled = on_wheel(delta);
                 }
             });
-            if ran {
+            if handled == Handled::Yes {
                 return;
             }
         }

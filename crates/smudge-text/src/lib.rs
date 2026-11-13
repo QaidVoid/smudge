@@ -39,7 +39,7 @@ mod system;
 mod text_area;
 mod text_input;
 
-pub use input::Editor;
+pub use input::{Editor, EditorParagraph};
 pub use label::{Label, LabelExt, label};
 pub use layout::TextLayout;
 pub use parley::FontFamily;

@@ -330,6 +330,27 @@ fn a_marked_node_is_taken_once_and_only_once() {
 }
 
 #[test]
+fn a_paint_change_to_an_unprojected_node_queues_nothing() {
+    let (mut tree, _root, child) = described_pair();
+    let caret = tree.insert(Some(child), Box::new(Empty), Style::default());
+    tree.take_a11y_changes();
+    tree.nodes[caret].dirty = Dirty::Clean;
+
+    tree.mark(caret, Dirty::Paint);
+    assert!(
+        !tree.has_a11y_changes(),
+        "repainting a node the projection leaves out changes nothing it shows"
+    );
+
+    tree.mark(caret, Dirty::Layout);
+    assert_eq!(
+        tree.take_a11y_changes().changed,
+        vec![child],
+        "a layout change can move bounds, so the projected parent is rebuilt"
+    );
+}
+
+#[test]
 fn a_stale_id_drops_out_of_the_changes() {
     let (mut tree, root, child) = described_pair();
     tree.remove(child);

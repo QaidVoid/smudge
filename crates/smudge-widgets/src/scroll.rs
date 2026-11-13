@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 use smudge_core::element::{Element, IntoElement, Value};
 use smudge_core::geometry::Point;
+use smudge_core::input::Handled;
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::{Role, Semantics};
@@ -256,9 +257,11 @@ pub(crate) fn scroll_with_visible_height(
     })
     .column()
     .overflow(Overflow::Scroll)
+    // The view takes every wheel event over it, even one it cannot use, so
+    // a page around a view at its end does not scroll in its place.
     .on_wheel(move |delta| {
         let Some(max) = wheel_chrome.max_offset() else {
-            return;
+            return Handled::Yes;
         };
         let follow_signal = wheel_chrome.following();
         // The signal, not the offset the binding last applied, is where a
@@ -290,6 +293,7 @@ pub(crate) fn scroll_with_visible_height(
                 signal.set(true);
             }
         }
+        Handled::Yes
     })
     .scroll_offset(move || {
         let signal = offset_chrome.signal();

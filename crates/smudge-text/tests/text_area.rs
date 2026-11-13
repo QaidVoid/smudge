@@ -16,7 +16,7 @@ use smudge_core::input::{Handled, InputEvent, Key, Modifiers};
 use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
 use smudge_core::semantics::Role;
-use smudge_core::style::px;
+use smudge_core::style::{Length, px};
 use smudge_test::Harness;
 use smudge_text::{Editor, TextAreaExt, TextStyle, text_area};
 
@@ -814,9 +814,12 @@ fn an_app_minimum_height_replaces_the_one_line_floor() {
     let value = RwSignal::new(String::new());
     let bound = value.clone();
     let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        // The fixed height is below one line, which the constructor's
+        // floor would raise and the app's minimum does not.
         smudge_core::widget::panel().column().child(
             text_area(bound.clone())
                 .width(px(VIEWPORT.0))
+                .height(px(4.0))
                 .min_height(px(4.0)),
         )
     });
@@ -827,5 +830,195 @@ fn an_app_minimum_height_replaces_the_one_line_floor() {
     assert!(
         height < TextStyle::default().size,
         "the app's minimum replaces the floor the constructor set: {height}"
+    );
+}
+
+/// The layout stamp of every paragraph of `editor`, top to bottom.
+fn stamps(editor: &Editor) -> Vec<u64> {
+    let mut stamps = Vec::new();
+    editor.paragraphs(|paragraph| stamps.push(paragraph.stamp()));
+    stamps
+}
+
+#[test]
+fn undo_and_redo_keep_the_layouts_of_paragraphs_they_did_not_touch() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+    editor.set_text("one\ntwo\nthree");
+    let before = stamps(&editor);
+
+    editor.insert(" more");
+    editor.undo();
+    assert_eq!(editor.text(), "one\ntwo\nthree");
+    let undone = stamps(&editor);
+    assert_eq!(
+        undone[..2],
+        before[..2],
+        "undo lays out again only the paragraph the step changed"
+    );
+
+    editor.redo();
+    assert_eq!(editor.text(), "one\ntwo\nthree more");
+    assert_eq!(
+        stamps(&editor)[..2],
+        before[..2],
+        "redo lays out again only the paragraph the step changed"
+    );
+}
+
+/// Mounts an area inside a panel that counts the wheel events reaching it,
+/// and returns the harness, the area's signal and the count.
+fn mounted_in_wheel_counter(initial: &str) -> (Harness, RwSignal<String>, Rc<Cell<u32>>) {
+    let hits = Rc::new(Cell::new(0u32));
+    let value = RwSignal::new(String::from(initial));
+    let bound = value.clone();
+    let counted = Rc::clone(&hits);
+    let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        let counted = Rc::clone(&counted);
+        smudge_core::widget::panel()
+            .on_wheel(move |_| {
+                counted.set(counted.get() + 1);
+                Handled::Yes
+            })
+            .child(
+                text_area(bound.clone())
+                    .width(px(VIEWPORT.0))
+                    .height(px(VIEWPORT.1)),
+            )
+    });
+    harness.frame();
+    harness.settle();
+    (harness, value, hits)
+}
+
+#[test]
+fn the_wheel_over_an_area_whose_text_fits_reaches_the_parent() {
+    let (mut harness, _value, hits) = mounted_in_wheel_counter("short");
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: 40.0 },
+    });
+    assert_eq!(hits.get(), 1, "an area with nothing to scroll passes it on");
+}
+
+#[test]
+fn the_wheel_past_an_area_s_scroll_limit_reaches_the_parent() {
+    let lines: Vec<String> = (0..12).map(|line| format!("row{line}")).collect();
+    let (mut harness, _value, hits) = mounted_in_wheel_counter(&lines.join("\n"));
+    harness.move_to(Point { x: 60.0, y: 50.0 });
+
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: 40.0 },
+    });
+    assert_eq!(
+        hits.get(),
+        1,
+        "the caret at the end scrolled the area to the bottom, so down passes on"
+    );
+
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: -40.0 },
+    });
+    harness.settle();
+    assert_eq!(hits.get(), 1, "the area scrolls up itself");
+
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: -1000.0 },
+    });
+    harness.settle();
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: -40.0 },
+    });
+    assert_eq!(hits.get(), 2, "at the top, up passes on again");
+}
+
+#[test]
+fn a_caret_blink_queues_no_accessibility_change() {
+    let (mut harness, _value) = mounted("one\ntwo");
+    focus(&mut harness);
+    harness.settle();
+    harness.app().take_a11y_changes();
+
+    harness.advance(BLINK);
+    let changes = harness.app().take_a11y_changes();
+    assert!(
+        changes.changed.is_empty() && !changes.roots_changed && !changes.reset,
+        "a blink changes nothing the accessibility tree shows: {:?}",
+        changes.changed
+    );
+}
+
+/// The height `text` wraps to at `width` in the default style.
+fn wrapped_height(text: &str, width: f32) -> f32 {
+    let reference = Editor::new(RwSignal::new(String::new()));
+    reference.set_style(&TextStyle::default());
+    reference.set_wrap_width(Some(width));
+    reference.set_text(text);
+    reference.layout_size().height
+}
+
+#[test]
+fn an_area_without_a_height_grows_with_its_wrapped_text() {
+    let paragraph = "word ".repeat(30);
+    let text = [paragraph.trim_end(); 3].join("\n");
+    let expected = wrapped_height(&text, VIEWPORT.0);
+    let line = TextStyle::default().size * TextStyle::default().line_height;
+    assert!(expected > 6.0 * line, "the paragraphs wrap: {expected}");
+
+    let width = RwSignal::new(VIEWPORT.0);
+    let value = RwSignal::new(text.clone());
+    let (bound, sized) = (value.clone(), width.clone());
+    let mut harness = Harness::new(VIEWPORT.0, 1200.0, 1.0, move || {
+        let sized = sized.clone();
+        smudge_core::widget::panel()
+            .column()
+            .child(text_area(bound.clone()).width(move || Length::px(sized.get())))
+    });
+    harness.frame();
+    let height = area_rect(&mut harness).height();
+    assert!(
+        (height - expected).abs() < 0.5,
+        "the first frame lays the area out as tall as its text: {height} \
+         against {expected}"
+    );
+    harness.settle();
+    let steady = harness.frame();
+    assert!(!steady.layout_ran, "a grown area lays out no further");
+
+    width.set(VIEWPORT.0 / 2.0);
+    harness.frame();
+    let narrow = wrapped_height(&text, VIEWPORT.0 / 2.0);
+    let height = area_rect(&mut harness).height();
+    assert!(
+        (height - narrow).abs() < 0.5,
+        "the frame of a width change wraps the text to the new width: \
+         {height} against {narrow}"
+    );
+
+    width.set(VIEWPORT.0);
+    harness.settle();
+    focus(&mut harness);
+    harness.settle();
+    harness.press_key_with(Key::End, command());
+    harness.press_key(Key::Enter);
+    harness.frame();
+    let grown = area_rect(&mut harness).height();
+    assert!(
+        (grown - (expected + line)).abs() < 0.5,
+        "an edit that adds a line shows it in its frame: {grown} against {}",
+        expected + line
+    );
+}
+
+#[test]
+fn an_area_with_a_height_keeps_it_and_scrolls() {
+    let lines: Vec<String> = (0..12).map(|line| format!("row{line}")).collect();
+    let (mut harness, _value) = mounted(&lines.join("\n"));
+    harness.settle();
+    assert_eq!(
+        area_rect(&mut harness).height(),
+        VIEWPORT.1,
+        "an explicit height wins over the text's"
     );
 }

@@ -1,7 +1,7 @@
-//! The paste rule of the single-line input: line breaks become spaces.
+//! The rule of a single-line editor: line breaks become spaces.
 //!
 //! The module depends on nothing but the standard library, so the fuzz
-//! target includes this same file and checks the rule the input applies.
+//! target includes this same file to tell which characters break a line.
 
 /// Returns whether `character` forces a line break: a line feed, a carriage
 /// return, a vertical tab, a form feed, a next line, or the line and

@@ -216,9 +216,25 @@ impl TextLayout {
         width: Option<f32>,
         style: &TextStyle,
     ) {
+        self.truncate_resolving(max_lines, width, style, &mut ellipsis_glyph);
+    }
+
+    /// Cuts the layout as [`TextLayout::truncate`] does, with `own`
+    /// resolving the ellipsis of a run's own font and the style's ellipsis
+    /// standing in where it resolves none.
+    ///
+    /// The style's ellipsis is laid out the first time a cut needs it and
+    /// kept with the shaped text, so later cuts and re-breaks reuse it.
+    pub(crate) fn truncate_resolving(
+        &mut self,
+        max_lines: Option<u32>,
+        width: Option<f32>,
+        style: &TextStyle,
+        own: &mut dyn FnMut(&parley::FontData, f32) -> Option<Ellipsis>,
+    ) {
         let mut fallback = self.fallback_ellipsis.take();
         self.truncate_with(max_lines, width, &mut |font, size| {
-            ellipsis_glyph(font, size).or_else(|| {
+            own(font, size).or_else(|| {
                 fallback
                     .get_or_insert_with(|| style_ellipsis(style))
                     .clone()

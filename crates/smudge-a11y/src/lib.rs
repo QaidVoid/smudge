@@ -14,6 +14,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use smudge_core::app::App;
 use smudge_core::geometry::Rect;
 use smudge_core::semantics::Role;
@@ -39,6 +42,22 @@ pub struct Projection {
     title: String,
     /// The surface size the window root's bounds were last sent with.
     surface: (f64, f64),
+    /// Every node AccessKit holds, as it was last sent: a digest of the
+    /// node, so an incremental update leaves out a node that a frame touched
+    /// without changing anything it projects, such as a text field whose
+    /// caret moved, and its children, so a node AccessKit dropped is
+    /// forgotten and sent again when it returns.
+    sent: HashMap<NodeId, Sent>,
+    /// The roots the window root was last sent with.
+    roots: Vec<NodeId>,
+}
+
+/// What the projection last sent for one node.
+struct Sent {
+    /// The digest of the node.
+    digest: u64,
+    /// The node's children.
+    children: Vec<NodeId>,
 }
 
 impl Projection {
@@ -47,6 +66,8 @@ impl Projection {
         Projection {
             title: title.into(),
             surface: (0.0, 0.0),
+            sent: HashMap::new(),
+            roots: Vec::new(),
         }
     }
 
@@ -60,7 +81,9 @@ impl Projection {
     ///
     /// The update always carries the current focus, even when nothing else
     /// changed, and it always names a node AccessKit knows, because a tree
-    /// update must name a focused node.
+    /// update must name a focused node. An incremental update leaves out a
+    /// changed node whose projection is the same as the one last sent, so a
+    /// large text value is sent again only when the text changed.
     pub fn update(
         &mut self,
         app: &mut App,
@@ -74,17 +97,36 @@ impl Projection {
         let mut update = if full || changes.reset {
             self.build_full(app, surface, scale)
         } else {
-            let mut nodes: Vec<(NodeId, Node)> = changes
+            let mut nodes: Vec<(NodeId, Node)> = Vec::new();
+            for node in changes
                 .changed
                 .iter()
                 .filter_map(|id| app.semantics_node(*id))
-                .map(|node| (NodeId(node.id.as_u64()), build_node(&node, scale)))
-                .collect();
+            {
+                let id = NodeId(node.id.as_u64());
+                let digest = digest(&node, scale);
+                if self.sent.get(&id).is_some_and(|sent| sent.digest == digest) {
+                    continue;
+                }
+                let children = node_ids(&node.children);
+                let previous = self.sent.insert(
+                    id,
+                    Sent {
+                        digest,
+                        children: children.clone(),
+                    },
+                );
+                if let Some(previous) = previous {
+                    self.forget_dropped(&previous.children, &children);
+                }
+                nodes.push((id, build_node(&node, scale)));
+            }
             if changes.roots_changed || surface != self.surface {
-                nodes.push((
-                    WINDOW_ROOT,
-                    self.window_node(app.semantics_roots(), surface),
-                ));
+                let roots = app.semantics_roots();
+                let roots = node_ids(&roots);
+                let previous = std::mem::replace(&mut self.roots, roots.clone());
+                self.forget_dropped(&previous, &roots);
+                nodes.push((WINDOW_ROOT, self.window_node(roots, surface)));
             }
             TreeUpdate {
                 nodes,
@@ -100,17 +142,26 @@ impl Projection {
 
     /// Builds an update that carries the window root and every projected
     /// node.
-    fn build_full(&self, app: &App, surface: (f64, f64), scale: f32) -> TreeUpdate {
+    fn build_full(&mut self, app: &App, surface: (f64, f64), scale: f32) -> TreeUpdate {
         let projected = app.semantics_nodes();
-        let roots = projected
+        let roots: Vec<WidgetId> = projected
             .iter()
             .filter(|node| node.parent.is_none())
             .map(|node| node.id)
             .collect();
         let mut nodes = Vec::with_capacity(projected.len() + 1);
+        let roots = node_ids(&roots);
+        self.roots = roots.clone();
         nodes.push((WINDOW_ROOT, self.window_node(roots, surface)));
+        self.sent.clear();
         for node in &projected {
-            nodes.push((NodeId(node.id.as_u64()), build_node(node, scale)));
+            let id = NodeId(node.id.as_u64());
+            let sent = Sent {
+                digest: digest(node, scale),
+                children: node_ids(&node.children),
+            };
+            self.sent.insert(id, sent);
+            nodes.push((id, build_node(node, scale)));
         }
         let mut tree = TreeInfo::new(WINDOW_ROOT);
         tree.toolkit_name = Some("smudge".to_owned());
@@ -122,8 +173,28 @@ impl Projection {
         }
     }
 
+    /// Forgets every node of `previous` that `current` no longer holds,
+    /// with the nodes below it, since AccessKit drops a node no parent
+    /// holds and it has to be sent whole when it returns.
+    fn forget_dropped(&mut self, previous: &[NodeId], current: &[NodeId]) {
+        if previous == current {
+            return;
+        }
+        let current: HashSet<NodeId> = current.iter().copied().collect();
+        let mut stack: Vec<NodeId> = previous
+            .iter()
+            .filter(|id| !current.contains(id))
+            .copied()
+            .collect();
+        while let Some(id) = stack.pop() {
+            if let Some(sent) = self.sent.remove(&id) {
+                stack.extend(sent.children);
+            }
+        }
+    }
+
     /// Builds the window root, which holds `roots` and fills the surface.
-    fn window_node(&self, roots: Vec<WidgetId>, (width, height): (f64, f64)) -> Node {
+    fn window_node(&self, roots: Vec<NodeId>, (width, height): (f64, f64)) -> Node {
         let mut window = Node::new(AccessKitRole::Window);
         window.set_label(self.title.clone());
         window.set_bounds(AccessKitRect {
@@ -132,9 +203,29 @@ impl Projection {
             x1: width,
             y1: height,
         });
-        window.set_children(node_ids(&roots));
+        window.set_children(roots);
         window
     }
+}
+
+/// Returns a digest of everything [`build_node`] reads from `node` at
+/// `scale`, which tells a node that changed from one that did not.
+fn digest(node: &SemanticsNode, scale: f32) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    node.id.as_u64().hash(&mut hasher);
+    node.parent.map(WidgetId::as_u64).hash(&mut hasher);
+    for child in &node.children {
+        child.as_u64().hash(&mut hasher);
+    }
+    map_role(node.role).hash(&mut hasher);
+    node.label.hash(&mut hasher);
+    node.value.hash(&mut hasher);
+    let bounds = node.bounds;
+    for coordinate in [bounds.x0, bounds.y0, bounds.x1, bounds.y1, scale] {
+        coordinate.to_bits().hash(&mut hasher);
+    }
+    (node.focusable, node.disabled, node.focused, node.pressable).hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Maps one projected node onto an AccessKit node.

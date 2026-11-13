@@ -1,7 +1,7 @@
 use proptest::prelude::*;
 use smudge_core::reactive::prelude::*;
 
-use super::ParagraphTable;
+use super::{Editor, ParagraphTable, SNAPSHOTS};
 
 /// The start and length of every paragraph in the table.
 fn cuts(table: &ParagraphTable) -> Vec<(usize, usize)> {
@@ -203,5 +203,57 @@ fn a_word_step_in_wrapped_mixed_direction_text_returns() {
             .recv_timeout(std::time::Duration::from_secs(30))
             .is_ok(),
         "the edits did not finish within 30 seconds"
+    );
+}
+
+#[test]
+fn an_edit_that_changes_nothing_copies_no_text() {
+    let editor = Editor::new(smudge_core::reactive::RwSignal::new(String::new()));
+    editor.set_style(&crate::TextStyle::default());
+    editor.set_text("hello");
+    editor.move_to_start();
+    let before = SNAPSHOTS.with(std::cell::Cell::get);
+
+    editor.backspace();
+    editor.backspace_word();
+    editor.move_to_end();
+    editor.delete();
+    editor.delete_word();
+    editor.delete_selection();
+    editor.compose("\u{3042}", None);
+    editor.compose("", None);
+    assert_eq!(
+        SNAPSHOTS.with(std::cell::Cell::get),
+        before,
+        "edits that change no text copy no text for undo"
+    );
+
+    editor.insert("x");
+    assert_eq!(
+        SNAPSHOTS.with(std::cell::Cell::get),
+        before + 1,
+        "an edit that opens an undo step copies the text once"
+    );
+}
+
+#[test]
+fn selection_rectangles_outside_the_visible_range_are_left_out() {
+    let editor = Editor::new(smudge_core::reactive::RwSignal::new(String::new()));
+    editor.set_style(&crate::TextStyle::default());
+    editor.set_text(&"line\n".repeat(200));
+    editor.select_all();
+    assert!(editor.selection_geometry().len() >= 200);
+
+    let mut rects = Vec::new();
+    editor.selection_rects((40.0, 80.0), &mut rects);
+    assert!(!rects.is_empty(), "the visible lines show their selection");
+    assert!(
+        rects.len() < 10,
+        "only the lines near the range are kept: {}",
+        rects.len()
+    );
+    assert!(
+        rects.iter().all(|rect| rect.y1 >= 40.0 && rect.y0 <= 80.0),
+        "every kept rectangle meets the range: {rects:?}"
     );
 }

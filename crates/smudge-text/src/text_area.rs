@@ -9,10 +9,10 @@
 //! inside itself so the caret stays visible, and under the wheel.
 //!
 //! Create one with [`text_area`] and shape it with the [`TextAreaExt`]
-//! builder methods. The area is one line tall, or
-//! [`TextAreaExt::min_lines`] lines, by its content and fills the width it
-//! is offered, so give it a height through the style builders when the
-//! layout needs one.
+//! builder methods. The area fills the width it is offered and, without a
+//! height from the style builders, grows with its wrapped text, never
+//! shorter than one line or [`TextAreaExt::min_lines`] lines. Give it a
+//! height to make it clip and scroll instead.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -34,7 +34,7 @@ use crate::chrome::{
     Direction, InputChrome, ParagraphCache, Placeholder, SELECTION_ALPHA, apply_edit_count,
     apply_move, apply_outside_write, caret_node, copy_selection, cut_selection, handle_commit,
     handle_focus, handle_move, handle_preedit, handle_press, handle_release, handle_wheel,
-    is_shortcut, outside_write, paint_paragraphs, types_text,
+    is_shortcut, outside_write, paint_paragraphs, paint_selection, types_text,
 };
 use crate::style::{TextStyle, current_text_style};
 
@@ -52,27 +52,38 @@ pub struct TextArea {
     /// The text style the editor lays out and the area paints with,
     /// resolved from the ambient style at mount.
     style: TextStyle,
-    /// The height floor, in lines, the area measures.
-    min_lines: u32,
-    /// The width the editor was last told to wrap at, so a paint whose
-    /// content box did not change asks the editor for nothing.
-    wrap_width: Cell<Option<f32>>,
     /// The glyph runs of the editor's text, with everything they were built
     /// from.
     runs: RefCell<Option<ParagraphCache>>,
+    /// The height of the wrapped text as the body last measured it.
+    measured: Rc<Cell<f32>>,
+    /// Bumped when an edit changed the height of the wrapped text, which
+    /// lays the body out again in the same frame.
+    relayout: RwSignal<u64>,
 }
 
 impl TextArea {
-    /// Creates an area with an empty placeholder, a one-line floor and the
-    /// default style until the mount reads the ambient one.
-    fn new(chrome: Rc<InputChrome>) -> TextArea {
+    /// Creates an area with an empty placeholder and the default style
+    /// until the mount reads the ambient one, sharing the measured height
+    /// and the relayout counter with its body.
+    fn new(chrome: Rc<InputChrome>, measured: Rc<Cell<f32>>, relayout: RwSignal<u64>) -> TextArea {
         TextArea {
             chrome,
             placeholder: RefCell::new(Placeholder::new()),
             style: TextStyle::default(),
-            min_lines: 1,
-            wrap_width: Cell::new(None),
             runs: RefCell::new(None),
+            measured,
+            relayout,
+        }
+    }
+
+    /// Lays the body out again when the wrapped text no longer has the
+    /// height the body last measured, so an edit that adds or removes a
+    /// line resizes the area in the frame that shows it, and one that does
+    /// not runs no layout.
+    fn relayout_if_resized(&self) {
+        if self.chrome.editor.layout_size().height != self.measured.get() {
+            self.relayout.update(|count| *count += 1);
         }
     }
 
@@ -102,37 +113,12 @@ impl Widget for TextArea {
         })
     }
 
-    /// Returns the size of the area's line floor.
-    ///
-    /// Offered space is filled on the x axis, which is what an editing
-    /// field conventionally does, and the intrinsic width is zero, so an
-    /// area that is not stretched by its parent needs a width or a grow
-    /// factor. The height is the [`TextAreaExt::min_lines`] floor, and does
-    /// not depend on the text, so an edit repaints the area without laying
-    /// it out again and the text scrolls inside whatever height the area
-    /// ended up with.
-    ///
-    /// The floor also rides on the min-height style that
-    /// [`TextAreaExt::min_lines`] sets, because the layout engine measures
-    /// childless nodes only and the area always carries its caret child.
-    fn measure(&mut self, input: MeasureInput) -> Option<Size> {
-        let width = match input.available_width {
-            AvailableSpace::Definite(width) => width.max(0.0),
-            AvailableSpace::MinContent | AvailableSpace::MaxContent => 0.0,
-        };
-        Some(Size {
-            width,
-            height: self.min_lines as f32 * self.style.size * self.style.line_height,
-        })
-    }
-
     /// Appends the selection, the underline under a composing preedit, the
     /// text or the placeholder, in that order, for the paragraphs the
     /// content box shows.
     ///
-    /// Painting also wraps the editor at the content width, records the
-    /// content box, which the pointer handlers and the next edit read, and
-    /// places the caret against it. An edit has placed the caret already,
+    /// Painting also records the content box, which the pointer handlers
+    /// and the next edit read, and places the caret against it. An edit has placed the caret already,
     /// so this only moves it when the box itself changed, which lands one
     /// frame later like every size-driven change.
     ///
@@ -148,11 +134,12 @@ impl Widget for TextArea {
             y: cx.content.y0 - cx.rect.y0,
         };
         self.chrome.painted.set(Some((cx.content, color, inset)));
-        let wrap_width = Some(cx.content.width().max(0.0));
-        if self.wrap_width.get() != wrap_width {
-            self.chrome.editor.set_wrap_width(wrap_width);
-            self.wrap_width.set(wrap_width);
-        }
+        // The body measured the text at this width already; a layout that
+        // gave the body another width than the content box still paints
+        // the text wrapped to the box it shows in.
+        self.chrome
+            .editor
+            .set_wrap_width(Some(cx.content.width().max(0.0)));
         let (scroll_x, scroll_y) = self.chrome.place(cx.content, color);
         self.chrome
             .line_height
@@ -166,18 +153,13 @@ impl Widget for TextArea {
             a: SELECTION_ALPHA,
             ..cx.theme.color(ColorToken::ACCENT)
         };
-        for area in self.chrome.editor.selection_geometry() {
-            out.push(PaintOp::FillRect {
-                rect: Rect::new(
-                    text_origin.x + area.x0,
-                    text_origin.y + area.y0,
-                    text_origin.x + area.x1,
-                    text_origin.y + area.y1,
-                ),
-                radius: Corners::ZERO,
-                color: selection_color,
-            });
-        }
+        paint_selection(
+            &self.chrome,
+            text_origin,
+            (scroll_y, scroll_y + cx.content.height()),
+            selection_color,
+            out,
+        );
 
         // The composing text is underlined so the user can tell it apart
         // from text that is in the area for good.
@@ -258,11 +240,25 @@ impl Widget for TextArea {
 /// bubbles instead and inserts nothing, so a parent can take it as a
 /// shortcut, such as one that submits the text.
 ///
+/// Without a height from the style builders, the area is as tall as its
+/// text wrapped at the area's width, and grows and shrinks with it in the
+/// frame an edit lands, never below its one-line or
+/// [`TextAreaExt::min_lines`] floor. The layout engine measures the text at
+/// the width it gives the area, in the same pass, so the area shows the
+/// right height from its first frame and right after a width change. A
+/// height set with a style builder replaces that: the area keeps the
+/// height, and the text clips and scrolls inside it.
+///
 /// The wheel scrolls the text while the pointer is over the area, and the
-/// area takes the whole wheel event, the way a scroll view does, so a scroll
-/// view around the area does not scroll with it.
+/// area takes a wheel event that moves its text, so a scroll view around the
+/// area does not scroll with it. A wheel that cannot move the text, because
+/// it fits or sits at its limit in the wheel's direction, passes on to the
+/// area's ancestors, so a page around the area keeps scrolling.
 pub fn text_area(value: RwSignal<String>) -> Element<TextArea> {
-    let chrome = Rc::new(InputChrome::new(value.clone()));
+    let chrome = Rc::new(InputChrome::new(value.clone(), true));
+    let measured = Rc::new(Cell::new(0.0));
+    let relayout = RwSignal::new(0u64);
+    let relayout_source = relayout.clone();
 
     let key_chrome = Rc::clone(&chrome);
     let press_chrome = Rc::clone(&chrome);
@@ -276,9 +272,21 @@ pub fn text_area(value: RwSignal<String>) -> Element<TextArea> {
     let caret_chrome = Rc::clone(&chrome);
     let value_chrome = Rc::clone(&chrome);
 
-    Element::new(TextArea::new(Rc::clone(&chrome)))
+    let body = Element::new(Body {
+        chrome: Rc::clone(&chrome),
+        measured: Rc::clone(&measured),
+    })
+    .width(Length::pct(100.0))
+    .bind(
+        RelayoutKey,
+        move || relayout_source.get(),
+        |_, _| Dirty::Layout,
+    );
+
+    Element::new(TextArea::new(Rc::clone(&chrome), measured, relayout))
         .clip(true)
         .cursor(Cursor::Text)
+        .column()
         .min_height(|| line_floor(Value::Static(1)))
         .bind(AmbientStyleKey, current_text_style, apply_ambient_style)
         .bind(
@@ -295,7 +303,56 @@ pub fn text_area(value: RwSignal<String>) -> Element<TextArea> {
         .on_focus(move |focused| handle_focus(&focus_chrome, focused))
         .on_ime_commit(move |text| handle_commit(&commit_chrome, text))
         .on_ime_preedit(move |text, cursor| handle_preedit(&preedit_chrome, text, cursor))
+        .child(body)
         .child(caret_node(&caret_chrome))
+}
+
+/// The childless node inside an area that the layout engine measures.
+///
+/// The area itself carries its body and its caret, and the layout engine
+/// measures childless nodes only, so the body is what tells the engine how
+/// tall the text wraps at the width the area gives it, in the pass that
+/// gives that width. The area paints the text over its own content box;
+/// the body paints nothing.
+struct Body {
+    /// The state the area shares with its handlers and caret.
+    chrome: Rc<InputChrome>,
+    /// The height the last measure answered, which the area compares an
+    /// edit's height against.
+    measured: Rc<Cell<f32>>,
+}
+
+impl Widget for Body {
+    /// Wraps the editor at the offered width and returns the wrapped text's
+    /// width and height.
+    ///
+    /// A definite width re-breaks the text's lines without shaping them
+    /// again, and the same width as before changes nothing. A request for
+    /// the intrinsic width answers zero, since an area fills the width it is
+    /// offered, with the height the text has at the width it last wrapped
+    /// at.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the conditions of [`TextSystem::with`](crate::TextSystem::with).
+    fn measure(&mut self, input: MeasureInput) -> Option<Size> {
+        let offered = input.known_width.or(match input.available_width {
+            AvailableSpace::Definite(width) => Some(width),
+            AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
+        });
+        let editor = &self.chrome.editor;
+        if let Some(width) = offered {
+            editor.set_wrap_width(Some(width.max(0.0)));
+        }
+        let height = editor.layout_size().height;
+        self.measured.set(height);
+        Some(Size {
+            width: offered.unwrap_or(0.0).max(0.0),
+            height,
+        })
+    }
+
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
 }
 
 /// Builder methods on a [`text_area`] element.
@@ -322,8 +379,8 @@ pub trait TextAreaExt: Sized {
     /// this sets it.
     ///
     /// The area measures at least `lines` lines of its style tall, and
-    /// taller when a style builder gives it an explicit height. The text
-    /// scrolls inside whatever height the area ends up with.
+    /// taller when its text or a style builder's height needs more. The
+    /// text scrolls inside whatever height the area ends up with.
     fn min_lines(self, lines: impl Into<Value<u32>>) -> Self;
 }
 
@@ -339,8 +396,8 @@ struct EditsKey;
 /// The key of the area's placeholder binding.
 struct PlaceholderKey;
 
-/// The key of the area's line floor binding.
-struct MinLinesKey;
+/// The key of the body's relayout binding.
+struct RelayoutKey;
 
 impl TextAreaExt for Element<TextArea> {
     fn placeholder(self, text: impl Into<Value<String>>) -> Self {
@@ -349,8 +406,7 @@ impl TextAreaExt for Element<TextArea> {
 
     fn min_lines(self, lines: impl Into<Value<u32>>) -> Self {
         let lines = lines.into();
-        self.bind(MinLinesKey, lines.clone(), set_min_lines)
-            .min_height(move || line_floor(lines.clone()))
+        self.min_height(move || line_floor(lines.clone()))
     }
 }
 
@@ -376,6 +432,7 @@ fn apply_ambient_style(area: &mut TextArea, ambient: TextStyle) -> Dirty {
     area.chrome.editor.set_style(&area.style);
     area.placeholder.borrow_mut().invalidate_style();
     *area.runs.borrow_mut() = None;
+    area.relayout_if_resized();
     Dirty::Layout
 }
 
@@ -383,14 +440,22 @@ fn apply_ambient_style(area: &mut TextArea, ambient: TextStyle) -> Dirty {
 /// when the write was the editor's own.
 fn apply_value(area: &mut TextArea, value: Option<String>) -> Dirty {
     match value {
-        Some(value) => apply_outside_write(&area.chrome, &value),
+        Some(value) => {
+            let dirty = apply_outside_write(&area.chrome, &value);
+            area.relayout_if_resized();
+            dirty
+        }
         None => Dirty::Clean,
     }
 }
 
-/// Applies an editor state change the handlers made.
+/// Applies an editor state change the handlers made, and lays the body out
+/// again when the change resized the text, so an edit that adds or removes
+/// a line resizes the area in the frame that shows it.
 fn apply_edits(area: &mut TextArea, _edits: u64) -> Dirty {
-    apply_edit_count(&area.chrome)
+    let dirty = apply_edit_count(&area.chrome);
+    area.relayout_if_resized();
+    dirty
 }
 
 /// Writes the placeholder into the area.
@@ -401,15 +466,6 @@ fn set_placeholder(area: &mut TextArea, text: String) -> Dirty {
     }
     placeholder.set_text(text);
     Dirty::Paint
-}
-
-/// Writes the height floor into the area.
-fn set_min_lines(area: &mut TextArea, lines: u32) -> Dirty {
-    if area.min_lines == lines {
-        return Dirty::Clean;
-    }
-    area.min_lines = lines;
-    Dirty::Layout
 }
 
 /// The number of lines one page of the area holds, from the content box and

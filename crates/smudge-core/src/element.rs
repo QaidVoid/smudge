@@ -1113,12 +1113,15 @@ impl<W: Widget> Element<W> {
     /// of its descendants.
     ///
     /// The delta is in logical pixels, positive for scrolling right and down.
-    /// The deepest node in the hovered chain that has a wheel handler takes
-    /// the whole event, so of two nested scroll views the one under the
-    /// pointer scrolls and the one around it does not. The handler runs inside
-    /// the node's owner, so it can write the signals the element's bindings
-    /// read.
-    pub fn on_wheel(mut self, handler: impl FnMut(Point) + 'static) -> Self {
+    /// The handlers run from the deepest node in the hovered chain outward,
+    /// and the first that returns [`Handled::Yes`] takes the whole event, so
+    /// of two nested scroll views the one under the pointer scrolls and the
+    /// one around it does not. A handler that cannot use the event, such as
+    /// a view already scrolled to its end in the wheel's direction, returns
+    /// [`Handled::No`] and the event bubbles to the next one. The handler
+    /// runs inside the node's owner, so it can write the signals the
+    /// element's bindings read.
+    pub fn on_wheel(mut self, handler: impl FnMut(Point) -> Handled + 'static) -> Self {
         self.handlers.on_wheel = Some(Box::new(handler));
         self
     }

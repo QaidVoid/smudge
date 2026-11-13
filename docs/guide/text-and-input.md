@@ -99,7 +99,7 @@ While an input method composes, for example typing pinyin for Chinese or romaji 
 
 Copy, cut and paste use the system clipboard on the desktop. On Wayland that needs a compositor with the data-control protocol, or Xwayland; without either, the input falls back to an in-memory clipboard inside the application. The web build has no system clipboard yet: copy and paste work only inside the application.
 
-A paste into a single-line input flattens line breaks into spaces, so multi-line clipboard content stays one line. A paste into a text area keeps the breaks.
+A single-line input flattens line breaks into spaces, so multi-line clipboard content, an input method commit or a write to the signal stays one line, and the input writes that line back to the signal. A paste into a text area keeps the breaks.
 
 ## Text area
 
@@ -116,7 +116,7 @@ let field = text_area(draft.clone())
 
 `text_area(signal)` edits multi-line text bound to a `RwSignal<String>`, through the same editing machinery as the single-line input: the same undo, IME composition, clipboard and pointer behavior, now across paragraphs. Enter and Shift+Enter insert a line break and are handled, so they do not reach a parent's key handler; Enter with Ctrl, Cmd or Alt bubbles, so a parent can make it a submit shortcut. Paste keeps line breaks, and Windows line breaks become plain ones.
 
-The area is at least one line tall, and `min_lines(n)` raises that floor to `n` lines of the ambient text style, so a field of a few lines holds its size while the text is short and grows with it. Without an explicit height the area measures its whole text; with one it clips and scrolls, and the wheel scrolls it without moving the caret.
+The area is at least one line tall, and `min_lines(n)` raises that floor to `n` lines of the ambient text style, so a field of a few lines holds its size while the text is short and grows with it. Without an explicit height the area measures its whole text; with one it clips and scrolls, and the wheel scrolls it without moving the caret. A wheel the area cannot use, because its text fits or is already scrolled to its end in that direction, passes on to the page around it.
 
 ### Area keys
 
@@ -142,7 +142,7 @@ Any element can handle input:
 | `on_hover(f)` | `true` when the pointer enters, `false` when it leaves. |
 | `on_pointer_down(f)`, `on_pointer_move(f)`, `on_pointer_up(f)` | The position relative to the node's top left corner. |
 | `on_press_outside(f)` | A press anywhere outside the node, for closing popovers. |
-| `on_wheel(f)` | The scroll delta. |
+| `on_wheel(f)` | The scroll delta. Return `Handled::Yes` to take it, `Handled::No` to let it bubble to an outer handler. |
 | `on_key(f)` | A `KeyEvent`. Return `Handled::Yes` to stop it, `Handled::No` to let it bubble. |
 | `on_focus(f)` | `true` when the node gains keyboard focus, `false` when it loses it. |
 

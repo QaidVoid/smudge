@@ -9,8 +9,10 @@
 //! command set spans both widgets: line breaks, vertical moves by line and by
 //! page, Home and End within a line, and a wrap width that turns one
 //! paragraph into several visual lines. The first byte picks the area's
-//! edits or the single-line input's, whose paste rule flattens every line
-//! break into a space, so its text must never hold one.
+//! edits or the single-line input's. The input's editor is a single-line
+//! one, which turns every line break of a paste, a commit, a typed text or
+//! an outside write into a space, so the input's text must never hold one,
+//! and the input sends no vertical moves, no line breaks and no wrap.
 
 #![no_main]
 
@@ -22,6 +24,9 @@ use smudge_core::reactive::prelude::*;
 use smudge_text::Editor;
 use smudge_text::TextStyle;
 
+// The target reads only which characters break a line; the editor applies
+// the flattening itself.
+#[allow(dead_code)]
 #[path = "../../crates/smudge-text/src/line_breaks.rs"]
 mod line_breaks;
 
@@ -175,26 +180,26 @@ fn take_multiline(rest: &mut &[u8]) -> String {
         .collect()
 }
 
-/// Turns the edits into the ones a single-line input applies: a paste goes
-/// through the input's paste rule, Enter inserts nothing, and the text of
-/// every other edit carries no line break.
+/// Keeps the edits a single-line input sends, which leaves out Enter, the
+/// vertical moves, the moves within a visual line and the wrap: the input's
+/// Home and End jump to the ends of its one line. The text of every edit is
+/// kept as it came, line breaks included, for the editor to flatten.
 fn single_line(ops: Vec<Op>) -> Vec<Op> {
-    let strip = |text: String| -> String {
-        text.chars()
-            .filter(|character| !line_breaks::is_line_break(*character))
-            .collect()
-    };
     ops.into_iter()
-        .filter_map(|op| {
-            Some(match op {
-                Op::Enter => return None,
-                Op::Paste(text) => Op::Paste(line_breaks::flatten_line_breaks(&text)),
-                Op::Insert(text) => Op::Insert(strip(text)),
-                Op::Write(text) => Op::Write(strip(text)),
-                Op::Commit(text) => Op::Commit(strip(text)),
-                Op::Compose(text, cursor) => Op::Compose(strip(text), cursor),
-                op => op,
-            })
+        .filter(|op| {
+            !matches!(
+                op,
+                Op::Enter
+                    | Op::Up
+                    | Op::Down
+                    | Op::MoveLines(_)
+                    | Op::ExtendUp
+                    | Op::ExtendDown
+                    | Op::ExtendLines(_)
+                    | Op::LineStart
+                    | Op::LineEnd
+                    | Op::Wrap(_)
+            )
         })
         .collect()
 }
@@ -315,7 +320,11 @@ fuzz_target!(|data: &[u8]| {
         decode(data)
     };
     let value = RwSignal::new(String::new());
-    let editor = Editor::new(value.clone());
+    let editor = if is_single_line {
+        Editor::single_line(value.clone())
+    } else {
+        Editor::new(value.clone())
+    };
     editor.set_style(&TextStyle::default());
     let mut wrapped = false;
 

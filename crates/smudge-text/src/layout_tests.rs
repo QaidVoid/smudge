@@ -571,3 +571,56 @@ fn the_fallback_ellipsis_comes_from_the_styles_font() {
     assert_eq!(ellipsis.glyph, ellipsis_glyph_id());
     assert_eq!(ellipsis.dots, 1);
 }
+
+/// The number of times this thread has shaped text so far.
+fn shapes() -> usize {
+    crate::layout::SHAPES.with(std::cell::Cell::get)
+}
+
+/// A cut whose run font maps no ellipsis takes the style's, resolves it
+/// once for the shaped text and reuses it after a re-break, and a cut whose
+/// font maps one never resolves it.
+#[test]
+fn the_cut_falls_back_to_the_style_ellipsis_resolved_once() {
+    setup();
+    let style = TextStyle::default();
+    let text = "the quick brown fox jumps over the lazy dog";
+    let ellipsis = ellipsis_glyph_id();
+
+    let mut own = TextLayout::new(text, &style, Some(120.0));
+    let before = shapes();
+    own.truncate(Some(1), Some(120.0), &style);
+    assert_eq!(
+        shapes(),
+        before,
+        "a font with its own ellipsis needs no fallback"
+    );
+
+    let mut layout = TextLayout::new(text, &style, Some(120.0));
+    let before = shapes();
+    layout.truncate_resolving(Some(1), Some(120.0), &style, &mut |_, _| None);
+    assert_eq!(shapes(), before + 1, "the fallback is laid out once");
+    let positions = glyph_positions(&layout);
+    assert_eq!(
+        positions.last().expect("the cut line paints").0,
+        ellipsis,
+        "the style's ellipsis closes the line"
+    );
+    assert!(painted_extent(&layout) <= 120.0);
+
+    let before = shapes();
+    layout.rebreak(Some(100.0));
+    layout.truncate_resolving(Some(1), Some(100.0), &style, &mut |_, _| None);
+    assert_eq!(
+        shapes(),
+        before,
+        "a second cut of the same text reuses the fallback"
+    );
+    assert_eq!(
+        glyph_positions(&layout)
+            .last()
+            .expect("the cut line paints")
+            .0,
+        ellipsis
+    );
+}

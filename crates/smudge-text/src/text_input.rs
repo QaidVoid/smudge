@@ -9,7 +9,10 @@
 //! builder methods. Editing is by grapheme, and with control or alt by word;
 //! a mouse press places the caret, a drag selects and a double click selects
 //! a word. Every edit writes the bound signal, and an outside write to the
-//! signal replaces the text and moves the caret to its end. Undo and redo
+//! signal replaces the text and moves the caret to its end. The input holds
+//! one line: a line break in an outside write, a paste or an input method's
+//! commit becomes a space, and the signal is written with the line the
+//! input kept. Undo and redo
 //! walk back and forth through the edits, a typed word at a time. While an
 //! input method composes, the preedit is drawn underlined and reaches the
 //! value only when it is committed, and the platform's command modifier
@@ -37,9 +40,8 @@ use crate::chrome::{
     Direction, InputChrome, ParagraphCache, Placeholder, SELECTION_ALPHA, apply_edit_count,
     apply_move, apply_outside_write, caret_node, copy_selection, cut_selection, handle_commit,
     handle_focus, handle_move, handle_preedit, handle_press, handle_release, is_shortcut,
-    outside_write, paint_paragraphs, types_text,
+    outside_write, paint_paragraphs, paint_selection, types_text,
 };
-use crate::line_breaks::flatten_line_breaks;
 use crate::style::{TextStyle, current_text_style};
 
 /// One line of editable text.
@@ -156,18 +158,13 @@ impl Widget for TextInput {
             a: SELECTION_ALPHA,
             ..cx.theme.color(ColorToken::ACCENT)
         };
-        for area in self.chrome.editor.selection_geometry() {
-            out.push(PaintOp::FillRect {
-                rect: Rect::new(
-                    text_origin.x + area.x0,
-                    text_origin.y + area.y0,
-                    text_origin.x + area.x1,
-                    text_origin.y + area.y1,
-                ),
-                radius: Corners::ZERO,
-                color: selection_color,
-            });
-        }
+        paint_selection(
+            &self.chrome,
+            text_origin,
+            (f32::NEG_INFINITY, f32::INFINITY),
+            selection_color,
+            out,
+        );
 
         // The composing text is underlined so the user can tell it apart
         // from text that is in the field for good.
@@ -245,7 +242,7 @@ impl Widget for TextInput {
 /// offered, so give it a height through the style builders when the layout
 /// needs one.
 pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
-    let chrome = Rc::new(InputChrome::new(value.clone()));
+    let chrome = Rc::new(InputChrome::new(value.clone(), false));
 
     let key_chrome = Rc::clone(&chrome);
     let press_chrome = Rc::clone(&chrome);
@@ -481,13 +478,13 @@ fn handle_key(chrome: &InputChrome, event: &KeyEvent) -> Handled {
 /// Inserts the text on the clipboard of the running app.
 ///
 /// An app without a clipboard pastes nothing. Every line break in the
-/// pasted text becomes one space, because the input holds one line: a paste
-/// from a multi-line source pastes its text in one line. A carriage return
+/// pasted text becomes one space, because the input's editor holds one
+/// line: a paste from a multi-line source pastes its text in one line. A carriage return
 /// and line feed together count as one break, so a Windows paste gains no
 /// extra space where its text had one break.
 fn paste_from_clipboard(chrome: &InputChrome) {
     if let Some(text) = smudge_core::clipboard::with(|slot| slot.get()).flatten() {
-        chrome.editor.paste(&flatten_line_breaks(&text));
+        chrome.editor.paste(&text);
         chrome.touched();
     }
 }

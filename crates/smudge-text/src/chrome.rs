@@ -14,7 +14,7 @@ use std::time::Duration;
 use smudge_core::clipboard;
 use smudge_core::element::Element;
 use smudge_core::geometry::{Color, Corners, Point, Rect};
-use smudge_core::input::Modifiers;
+use smudge_core::input::{Handled, Modifiers};
 use smudge_core::paint::GlyphRun;
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
@@ -80,11 +80,15 @@ pub(crate) struct InputChrome {
     /// How far the text is scrolled left, in logical pixels.
     ///
     /// A wrapped area never scrolls sideways except past an unbreakable
-    /// word, and a one-line input never scrolls up or down, so each widget
-    /// leaves the other axis at zero.
+    /// word.
     pub(crate) scroll_x: Cell<f32>,
-    /// How far the text is scrolled up, in logical pixels.
+    /// How far the text is scrolled up, in logical pixels, which stays at
+    /// zero in a one-line input.
     pub(crate) scroll_y: Cell<f32>,
+    /// Whether the text scrolls up and down, which only a multi-line area
+    /// does: a one-line input keeps its first line at the top even while a
+    /// preedit holds a line break.
+    pub(crate) scrolls_vertically: bool,
     /// The height of one line of the text, as the last paint measured it.
     /// Zero before the first paint.
     pub(crate) line_height: Cell<f32>,
@@ -99,14 +103,25 @@ pub(crate) struct InputChrome {
     /// wheel turns this off, so the paint after it keeps the scroll the
     /// wheel chose, and the next caret change turns it back on.
     pub(crate) follow_caret: Cell<bool>,
+    /// The selection rectangles the last paint built, kept so the next
+    /// paint fills the same buffer.
+    pub(crate) selection: RefCell<Vec<Rect>>,
 }
 
 impl InputChrome {
     /// Creates the state of a widget that edits `value`, with the caret
     /// hidden until the widget takes the focus.
-    pub(crate) fn new(value: RwSignal<String>) -> InputChrome {
+    ///
+    /// A multi-line widget scrolls up and down and its editor keeps line
+    /// breaks; a one-line widget does neither, and its editor turns every
+    /// line break into a space.
+    pub(crate) fn new(value: RwSignal<String>, multi_line: bool) -> InputChrome {
         InputChrome {
-            editor: Editor::new(value),
+            editor: if multi_line {
+                Editor::new(value)
+            } else {
+                Editor::single_line(value)
+            },
             edits: RwSignal::new(0),
             caret: RwSignal::new(None),
             caret_on: RwSignal::new(true),
@@ -114,11 +129,13 @@ impl InputChrome {
             painted: Cell::new(None),
             scroll_x: Cell::new(0.0),
             scroll_y: Cell::new(0.0),
+            scrolls_vertically: multi_line,
             line_height: Cell::new(0.0),
             dragging: Cell::new(false),
             last_click: Cell::new(None),
             blink: RefCell::new(None),
             follow_caret: Cell::new(true),
+            selection: RefCell::new(Vec::new()),
         }
     }
 
@@ -164,11 +181,7 @@ impl InputChrome {
     pub(crate) fn place(&self, content: Rect, color: Color) -> (f32, f32) {
         let caret = self.editor.cursor_geometry(CARET_WIDTH);
         let follow = caret.filter(|_| self.follow_caret.get());
-        let layout = self.editor.layout_size();
-        // A caret at the very end of the text sits at the layout's right
-        // edge, so the horizontal scroll has to reach one caret width past
-        // the text for that caret to fit inside the field.
-        let max_scroll_x = (layout.width + CARET_WIDTH - content.width()).max(0.0);
+        let (max_scroll_x, max_scroll_y) = self.max_scroll(content);
         let mut scroll_x = self.scroll_x.get();
         if let Some(caret) = follow {
             if caret.x0 + CARET_WIDTH > scroll_x + content.width() {
@@ -181,7 +194,6 @@ impl InputChrome {
         let scroll_x = scroll_x.clamp(0.0, max_scroll_x);
         self.scroll_x.set(scroll_x);
 
-        let max_scroll_y = (layout.height - content.height()).max(0.0);
         let mut scroll_y = self.scroll_y.get();
         if let Some(caret) = follow {
             if caret.y1 > scroll_y + content.height() {
@@ -207,6 +219,23 @@ impl InputChrome {
             self.caret.set(paint);
         }
         (scroll_x, scroll_y)
+    }
+
+    /// Returns how far the text can scroll left and up inside `content`.
+    ///
+    /// Text that fits gives zero, and a one-line widget never scrolls up.
+    fn max_scroll(&self, content: Rect) -> (f32, f32) {
+        let layout = self.editor.layout_size();
+        // A caret at the very end of the text sits at the layout's right
+        // edge, so the horizontal scroll has to reach one caret width past
+        // the text for that caret to fit inside the field.
+        let x = (layout.width + CARET_WIDTH - content.width()).max(0.0);
+        let y = if self.scrolls_vertically {
+            (layout.height - content.height()).max(0.0)
+        } else {
+            0.0
+        };
+        (x, y)
     }
 
     /// Places the caret against the last painted content box, for an edit
@@ -363,15 +392,29 @@ pub(crate) fn layout_position(chrome: &InputChrome, position: Point) -> (f32, f3
 }
 
 /// Scrolls the text by a wheel's `delta`, in logical pixels, leaving the
-/// caret where it is.
+/// caret where it is, and returns whether the text moved.
 ///
 /// The scroll stays within the text, and the caret scrolls out of view with
-/// the text it sits in until the next caret change brings it back.
-pub(crate) fn handle_wheel(chrome: &InputChrome, delta: Point) {
+/// the text it sits in until the next caret change brings it back. A wheel
+/// that cannot move the text, because it fits or already sits at its limit
+/// in the wheel's direction, is not handled, so it reaches the ancestors.
+pub(crate) fn handle_wheel(chrome: &InputChrome, delta: Point) -> Handled {
+    let Some((content, _, _)) = chrome.painted.get() else {
+        return Handled::No;
+    };
+    let (max_x, max_y) = chrome.max_scroll(content);
+    let (old_x, old_y) = (chrome.scroll_x.get(), chrome.scroll_y.get());
+    let step = |delta: f32| if delta.is_finite() { delta } else { 0.0 };
+    let x = (old_x + step(delta.x)).clamp(0.0, max_x);
+    let y = (old_y + step(delta.y)).clamp(0.0, max_y);
+    if x == old_x && y == old_y {
+        return Handled::No;
+    }
     chrome.follow_caret.set(false);
-    chrome.scroll_x.set(chrome.scroll_x.get() + delta.x);
-    chrome.scroll_y.set(chrome.scroll_y.get() + delta.y);
+    chrome.scroll_x.set(x);
+    chrome.scroll_y.set(y);
     chrome.edits.update(|edits| *edits += 1);
+    Handled::Yes
 }
 
 /// Starts or stops the blink and the caret as the focus moves.
@@ -532,6 +575,32 @@ pub(crate) fn distance_squared(a: Point, b: Point) -> f32 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
     dx * dx + dy * dy
+}
+
+/// Appends the selection of the editor's text for the lines that meet
+/// `visible`, in text coordinates, as fills in `color` placed at `origin`.
+///
+/// The rectangles go through the chrome's kept buffer, so a steady paint
+/// allocates nothing.
+pub(crate) fn paint_selection(
+    chrome: &InputChrome,
+    origin: Point,
+    visible: (f32, f32),
+    color: Color,
+    out: &mut Vec<PaintOp>,
+) {
+    let mut rects = chrome.selection.borrow_mut();
+    chrome.editor.selection_rects(visible, &mut rects);
+    out.extend(rects.iter().map(|area| PaintOp::FillRect {
+        rect: Rect::new(
+            origin.x + area.x0,
+            origin.y + area.y0,
+            origin.x + area.x1,
+            origin.y + area.y1,
+        ),
+        radius: Corners::ZERO,
+        color,
+    }));
 }
 
 /// The glyph runs of the editor's text, with what they were built from.

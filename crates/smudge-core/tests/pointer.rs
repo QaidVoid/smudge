@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use smudge_core::element::{IntoElement, show};
 use smudge_core::geometry::{Color, Point};
-use smudge_core::input::{InputEvent, PointerButton};
+use smudge_core::input::{Handled, InputEvent, PointerButton};
 use smudge_core::reactive::{self, prelude::*};
 use smudge_core::style::px;
 use smudge_core::widget::panel;
@@ -783,5 +783,54 @@ fn removing_the_pressed_node_lets_hover_follow_the_pointer_again() {
         *log.borrow(),
         [("sibling", true)],
         "the sibling took the place of the removed node and is hovered"
+    );
+}
+
+#[test]
+fn a_wheel_handler_that_declines_lets_the_event_reach_its_ancestor() {
+    let outer = Rc::new(Cell::new(0u32));
+    let inner = Rc::new(Cell::new(0u32));
+    let take = Rc::new(Cell::new(false));
+    let (outer_count, inner_count, inner_takes) =
+        (Rc::clone(&outer), Rc::clone(&inner), Rc::clone(&take));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        let outer_count = Rc::clone(&outer_count);
+        let inner_count = Rc::clone(&inner_count);
+        let inner_takes = Rc::clone(&inner_takes);
+        scene(
+            panel()
+                .width(px(80.0))
+                .height(px(40.0))
+                .on_wheel(move |_| {
+                    outer_count.set(outer_count.get() + 1);
+                    Handled::Yes
+                })
+                .child(panel().width(px(40.0)).height(px(20.0)).on_wheel(move |_| {
+                    inner_count.set(inner_count.get() + 1);
+                    if inner_takes.get() {
+                        Handled::Yes
+                    } else {
+                        Handled::No
+                    }
+                })),
+        )
+    });
+    harness.frame();
+    harness.move_to(Point { x: 10.0, y: 5.0 });
+
+    let delta = Point { x: 0.0, y: 10.0 };
+    harness.event(InputEvent::Wheel { delta });
+    assert_eq!(
+        (inner.get(), outer.get()),
+        (1, 1),
+        "a declined wheel bubbles to the next handler"
+    );
+
+    take.set(true);
+    harness.event(InputEvent::Wheel { delta });
+    assert_eq!(
+        (inner.get(), outer.get()),
+        (2, 1),
+        "a taken wheel stops at the handler that took it"
     );
 }

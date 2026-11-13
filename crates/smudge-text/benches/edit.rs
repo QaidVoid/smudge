@@ -15,6 +15,10 @@
 //! The document stays the same size: after every measured keystroke, or
 //! every typed word, a backspace that is not measured takes the typed
 //! characters off again, and its frame lays the paragraph out as it was.
+//!
+//! The undo case types a word unmeasured and measures the undo that takes
+//! it off again, with the frame after it, which is the cost of one undo
+//! step in a document of that size.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -116,6 +120,19 @@ impl Document {
         stamps.truncate(index);
     }
 
+    /// Types a word unmeasured, then returns how long undoing it and the
+    /// frame after the undo took.
+    fn undo_word(&mut self) -> Duration {
+        for _ in 0..WORD {
+            self.editor.insert("x");
+        }
+        self.frame();
+        let start = Instant::now();
+        self.editor.undo();
+        self.frame();
+        start.elapsed()
+    }
+
     /// Types `count` characters and returns how long the keystrokes and
     /// their frames took, then takes the characters off again unmeasured.
     fn type_and_reset(&mut self, count: u64) -> Duration {
@@ -152,6 +169,10 @@ fn editing(c: &mut Criterion) {
                     spent
                 })
             },
+        );
+        group.bench_function(
+            format!("undo of a typed word at end of {bytes} bytes"),
+            |b| b.iter_custom(|iters| (0..iters).map(|_| document.undo_word()).sum::<Duration>()),
         );
         group.bench_function(
             format!("keystroke opening an undo step at end of {bytes} bytes"),

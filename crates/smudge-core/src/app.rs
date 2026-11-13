@@ -814,7 +814,9 @@ impl App {
     ///
     /// A change to a node the projection leaves out is reported as its
     /// nearest projected ancestor, whose child list it changed, or as
-    /// [`A11yChanges::roots_changed`] when no ancestor projects. Stale and
+    /// [`A11yChanges::roots_changed`] when no ancestor projects. A repaint
+    /// of such a node, such as a caret's blink, changes nothing projected
+    /// and is not reported. Stale and
     /// hidden ids drop out, and a frame that changed too much sets
     /// [`A11yChanges::reset`] instead of listing every node, so a backend can
     /// rebuild from scratch. Take these only when no frame is pending: a

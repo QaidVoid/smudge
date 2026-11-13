@@ -11,6 +11,7 @@ use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
 use smudge_core::semantics::{Role, Semantics};
 use smudge_core::style::px;
+use smudge_core::theme::ColorValue;
 use smudge_core::widget::{PaintCx, Panel, Widget};
 
 use accesskit::{Action, NodeId, Role as AccessKitRole};
@@ -414,6 +415,31 @@ fn a_hidden_node_leaves_the_projection_and_returns_when_shown() {
             .iter()
             .any(|(_, node)| node.role() == AccessKitRole::Button),
         "the shown button is rebuilt"
+    );
+}
+
+#[test]
+fn a_repaint_that_changes_nothing_projected_sends_no_node() {
+    let shade = RwSignal::new(Color::WHITE);
+    let mut app = app_with(|| {
+        let shade = shade.clone();
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Text("value"))
+                .width(px(40.0))
+                .height(px(20.0))
+                .background(move || ColorValue::from(shade.get())),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    app.frame();
+    let _ = projection.update(&mut app, 400.0, 200.0, 2.0, true);
+
+    shade.set(Color::BLACK);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    assert!(
+        update.nodes.is_empty(),
+        "a node whose projection did not change is not sent again: {:?}",
+        update.nodes
     );
 }
 

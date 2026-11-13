@@ -1295,6 +1295,91 @@ fn an_input_is_one_line_tall_without_a_height() {
     );
 }
 
+#[test]
+fn a_word_drag_to_the_left_leaves_the_caret_at_the_dragged_end() {
+    let value = RwSignal::new(String::new());
+    let editor = Editor::new(value);
+    editor.set_style(&TextStyle::default());
+    editor.set_text("alpha beta gamma");
+    let width = editor.layout_size().width;
+
+    editor.select_word_at_point(width - 4.0, 5.0);
+    editor.extend_to_point(4.0, 5.0);
+    assert_eq!(editor.selection(), 0..16, "the drag takes in every word");
+    let caret = editor.cursor_geometry(1.0).expect("a caret");
+    assert!(
+        caret.x0 < 1.0,
+        "the caret follows the pointer to the left end: {caret:?}"
+    );
+
+    editor.extend_right();
+    assert_eq!(
+        editor.selection(),
+        1..16,
+        "Shift and Right move the dragged end, not the double click's"
+    );
+}
+
+#[test]
+fn an_input_composing_a_line_break_keeps_its_first_line_in_view() {
+    let value = RwSignal::new(String::new());
+    let bound = value.clone();
+    let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        panel()
+            .column()
+            .child(text_input(bound.clone()).width(px(VIEWPORT.0)))
+    });
+    harness.frame();
+    harness.click(Point { x: 60.0, y: 5.0 });
+    harness.settle();
+
+    harness.event(InputEvent::ImePreedit {
+        text: String::from("one\ntwo"),
+        cursor: Some((7, 7)),
+    });
+    harness.settle();
+
+    let output = harness.app().frame();
+    let mut top = f32::INFINITY;
+    for item in output.list.items() {
+        if let DisplayItem::Op(PaintOp::Glyphs(run)) = item {
+            for glyph in &run.glyphs {
+                top = top.min(glyph.y);
+            }
+        }
+    }
+    assert!(
+        top > 0.0 && top < VIEWPORT.1,
+        "the one-line input never scrolls up or down, so the first line's \
+         baseline stays inside it: {top}"
+    );
+}
+
+#[test]
+fn an_input_method_commit_with_line_breaks_types_one_line() {
+    let (mut harness, value) = mounted("");
+    focus(&mut harness);
+
+    harness.event(InputEvent::ImeCommit {
+        text: String::from("one\ntwo\r\nthree"),
+    });
+    assert_eq!(value.get(), "one two three", "each break becomes a space");
+}
+
+#[test]
+fn an_outside_write_with_line_breaks_shows_one_line() {
+    let (mut harness, value) = mounted("");
+    harness.settle();
+
+    value.set(String::from("one\ntwo\u{2028}three"));
+    harness.settle();
+    assert_eq!(
+        value.get(),
+        "one two three",
+        "the input writes the one line it kept back to the signal"
+    );
+}
+
 /// One thing the property test does to an input.
 #[derive(Clone, Debug)]
 enum Op {
@@ -1439,7 +1524,7 @@ proptest! {
     fn random_edits_keep_the_signal_in_step(ops in proptest::collection::vec(any_op(), 0..30)) {
         let (mut harness, value) = mounted("");
         focus(&mut harness);
-        let reference = Editor::new(RwSignal::new(String::new()));
+        let reference = Editor::single_line(RwSignal::new(String::new()));
         reference.set_style(&TextStyle::default());
 
         for op in &ops {

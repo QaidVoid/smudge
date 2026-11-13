@@ -25,6 +25,7 @@ use smudge_core::reactive::{RwSignal, prelude::*};
 
 use crate::glyphs::glyph_runs;
 use crate::layout::TextLayout;
+use crate::line_breaks::flatten_line_breaks;
 use crate::style::TextStyle;
 use crate::system::TextSystem;
 
@@ -94,6 +95,9 @@ pub struct Editor {
     /// How many times the editor has built or wrapped a paragraph layout,
     /// which paragraph stamps are counted against.
     builds: Cell<u64>,
+    /// Whether the editor holds one line, turning every line break that
+    /// reaches it into a space.
+    single_line: bool,
 }
 
 /// The text and selection of an editor at one moment.
@@ -370,6 +374,36 @@ impl Editor {
     /// fills when its widget applies the signal's current value. Binding
     /// `value` through a widget does that on mount.
     pub fn new(value: RwSignal<String>) -> Editor {
+        Editor::with_lines(value, false)
+    }
+
+    /// Creates an editor of one line bound to `value`, starting empty.
+    ///
+    /// The editor works as [`Editor::new`] makes it, except that every line
+    /// break in text that reaches it becomes one space: typed or committed
+    /// text, a paste and a write through [`Editor::set_text`] alike, with a
+    /// carriage return and line feed pair counted as one break. The bound
+    /// signal is written with the line the editor kept. A preedit an input
+    /// method is composing is shown as the method sends it, since it is not
+    /// the editor's text until it commits.
+    ///
+    /// ```
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_text::{Editor, TextSystem};
+    ///
+    /// TextSystem::bundled_only().install();
+    /// let value = RwSignal::new(String::new());
+    /// let editor = Editor::single_line(value.clone());
+    /// editor.paste("one\ntwo");
+    /// assert_eq!(value.get(), "one two");
+    /// ```
+    pub fn single_line(value: RwSignal<String>) -> Editor {
+        Editor::with_lines(value, true)
+    }
+
+    /// Creates an empty editor bound to `value`, of one line when
+    /// `single_line` is set.
+    fn with_lines(value: RwSignal<String>, single_line: bool) -> Editor {
         let mut paragraphs = ParagraphTable::default();
         paragraphs.rebuild("");
         Editor {
@@ -387,6 +421,7 @@ impl Editor {
             style: RefCell::new(TextStyle::default()),
             width: Cell::new(None),
             builds: Cell::new(0),
+            single_line,
         }
     }
 
@@ -506,9 +541,7 @@ impl Editor {
             let mut add = |rect: Rect| area = Some(area.map_or(rect, |area| area.union(rect)));
             match preedit {
                 Some(range) => {
-                    for (rect, _) in session.range_rects(range) {
-                        add(rect);
-                    }
+                    session.range_rects(range, EVERYWHERE, &mut add);
                     if area.is_none() {
                         // A preedit of only line breaks holds no glyphs, so
                         // the caret anchors the area instead.
@@ -524,11 +557,12 @@ impl Editor {
                     let focus = session.selection.focus;
                     let (caret, y) = session.caret_box(focus, 0.0);
                     let caret = Rect::new(caret.x0, caret.y0 + y, caret.x1, caret.y1 + y);
-                    for (rect, _) in session.range_rects(session.selection_range()) {
+                    let range = session.selection_range();
+                    session.range_rects(range, EVERYWHERE, |rect| {
                         if rect.y0 == caret.y0 {
                             add(rect);
                         }
-                    }
+                    });
                     add(caret);
                 }
             }
@@ -628,10 +662,11 @@ impl Editor {
     /// composition stops, because the text it was composing into is gone.
     ///
     /// Every carriage return and line feed pair, and every lone carriage
-    /// return, becomes one line feed, and the bound signal is written with
-    /// the text the editor kept.
+    /// return, becomes one line feed, or every line break one space in a
+    /// [single-line](Editor::single_line) editor, and the bound signal is
+    /// written with the text the editor kept.
     pub fn set_text(&self, text: &str) {
-        let text = normalize_breaks(text);
+        let text = self.incoming(text);
         let text = text.as_ref();
         self.session(|session| {
             session.buffer.clear();
@@ -658,9 +693,10 @@ impl Editor {
     /// character at once, as a paste does, is a step of its own. The text
     /// may hold line breaks, which cut the document into more paragraphs. A
     /// carriage return and line feed pair, or a lone carriage return, is
-    /// inserted as one line feed.
+    /// inserted as one line feed. A [single-line](Editor::single_line)
+    /// editor inserts every line break as one space instead.
     pub fn insert(&self, text: &str) {
-        let text = normalize_breaks(text);
+        let text = self.incoming(text);
         let text = text.as_ref();
         let mut chars = text.chars();
         let grouping = match (chars.next(), chars.next()) {
@@ -680,12 +716,15 @@ impl Editor {
     ///
     /// Line breaks in the text cut the document into more paragraphs, with
     /// a carriage return and line feed pair, or a lone carriage return,
-    /// taken as one line feed. An empty paste inserts nothing.
+    /// taken as one line feed. A [single-line](Editor::single_line) editor
+    /// pastes every line break as one space instead, so a paste from a
+    /// multi-line source lands on its one line. An empty paste inserts
+    /// nothing.
     pub fn paste(&self, text: &str) {
         if text.is_empty() {
             return;
         }
-        let text = normalize_breaks(text);
+        let text = self.incoming(text);
         let text = text.as_ref();
         self.edit(EditKind::Insert, Grouping::Alone, |session| {
             let range = session.selection_range();
@@ -1128,17 +1167,26 @@ impl Editor {
     ///
     /// A collapsed selection yields no rectangles.
     pub fn selection_geometry(&self) -> Vec<Rect> {
+        let mut rects = Vec::new();
+        self.selection_rects(EVERYWHERE, &mut rects);
+        rects
+    }
+
+    /// Fills `out` with the rectangles of [`Editor::selection_geometry`]
+    /// that meet the vertical range `visible`, in the editor's own
+    /// coordinates, after clearing it.
+    ///
+    /// A painter that shows part of a tall document passes the range it
+    /// shows and keeps `out` between frames, so a selection over the whole
+    /// document neither walks nor allocates past what is on screen.
+    pub(crate) fn selection_rects(&self, visible: (f32, f32), out: &mut Vec<Rect>) {
+        out.clear();
         self.session(|session| {
             let range = session.selection_range();
-            if range.is_empty() {
-                return Vec::new();
+            if !range.is_empty() {
+                session.range_rects(range, visible, |rect| out.push(rect));
             }
-            session
-                .range_rects(range)
-                .into_iter()
-                .map(|(area, _)| area)
-                .collect()
-        })
+        });
     }
 
     /// Returns the width and height of the laid out text.
@@ -1235,6 +1283,21 @@ impl Editor {
         }
     }
 
+    /// Returns `text` with its line breaks as the editor keeps them: every
+    /// break one space in a single-line editor, and every carriage return
+    /// turned into a line feed otherwise.
+    fn incoming<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        if self.single_line {
+            if text.contains(crate::line_breaks::is_line_break) {
+                Cow::Owned(flatten_line_breaks(text))
+            } else {
+                Cow::Borrowed(text)
+            }
+        } else {
+            normalize_breaks(text)
+        }
+    }
+
     /// Writes the editor's text into the bound signal, when it changed.
     ///
     /// An equal write would wake every binding that reads the signal for
@@ -1252,15 +1315,16 @@ impl Editor {
     /// text records nothing. One that [`Grouping::Joins`] extends the open
     /// step when the last edit was of the same kind and left the selection
     /// where this one starts, and otherwise starts a step of its own, which
-    /// is the only time the text is copied for undo. Any edit discards the
-    /// steps redo could have taken, and one that is [`Grouping::Alone`]
-    /// leaves no step open behind it.
+    /// is the only time the text is copied for undo, right before the text
+    /// first changes. Any edit discards the steps redo could have taken, and
+    /// one that is [`Grouping::Alone`] leaves no step open behind it.
     fn edit(&self, kind: EditKind, grouping: Grouping, f: impl FnOnce(&mut Session<'_>) -> bool) {
         // An edit while composing ends the composition first, so the edit
         // acts on the committed text and the preedit never shifts across an
         // edit.
         self.cancel_compose();
         let starts = self.selection();
+        let selection = *self.selection.borrow();
         let continues = grouping == Grouping::Joins
             && self
                 .history
@@ -1268,13 +1332,13 @@ impl Editor {
                 .open
                 .as_ref()
                 .is_some_and(|(open, ended)| *open == kind && *ended == starts);
-        let before = (!continues).then(|| self.snapshot());
-        if !self.session(f) {
+        let (changed, before) = self.session_keeping(!continues, f);
+        if !changed {
             return;
         }
         let mut history = self.history.borrow_mut();
-        if let Some(before) = before {
-            history.push_undo(before);
+        if let Some(text) = before {
+            history.push_undo(Snapshot { text, selection });
         }
         history.clear_redo();
         history.open = (grouping != Grouping::Alone).then(|| (kind, self.selection()));
@@ -1287,18 +1351,26 @@ impl Editor {
         Snapshot {
             // A snapshot only happens outside compositions, where the
             // buffer is the committed text.
-            text: self.buffer.borrow().clone(),
+            text: copy_for_undo(&self.buffer.borrow()),
             selection: *self.selection.borrow(),
         }
     }
 
     /// Puts the text and the selection of `snapshot` back, and writes the
     /// text to the bound signal.
+    ///
+    /// Only the bytes between the longest common start and end of the two
+    /// texts are replaced, so the paragraphs outside them keep their
+    /// layouts and an undo in a large document lays out what it changed.
     fn restore(&self, snapshot: Snapshot) {
         self.session(|session| {
-            session.buffer.clear();
-            session.buffer.push_str(&snapshot.text);
-            session.table.rebuild(session.buffer);
+            let range = changed_range(session.buffer, &snapshot.text);
+            let kept_end = session.buffer.len() - range.end;
+            let replacement = &snapshot.text[range.start..snapshot.text.len() - kept_end];
+            if !range.is_empty() || !replacement.is_empty() {
+                session.buffer.replace_range(range.clone(), replacement);
+                session.table.splice(range, replacement);
+            }
             session.selection = snapshot.selection;
         });
         self.sync_text();
@@ -1309,6 +1381,17 @@ impl Editor {
     /// The session borrows the parts an operation touches and works on a
     /// copy of the selection, which the editor stores back afterwards.
     fn session<R>(&self, f: impl FnOnce(&mut Session<'_>) -> R) -> R {
+        self.session_keeping(false, f).0
+    }
+
+    /// Runs `f` as [`Editor::session`] does and, when `keep_before` is set,
+    /// returns the text as it was before `f` first changed it, or `None`
+    /// when `f` changed nothing.
+    fn session_keeping<R>(
+        &self,
+        keep_before: bool,
+        f: impl FnOnce(&mut Session<'_>) -> R,
+    ) -> (R, Option<String>) {
         let mut buffer = self.buffer.borrow_mut();
         let mut table = self.paragraphs.borrow_mut();
         let style = self.style.borrow();
@@ -1319,10 +1402,12 @@ impl Editor {
             width: self.width.get(),
             builds: &self.builds,
             selection: *self.selection.borrow(),
+            keep_before,
+            before: None,
         };
         let result = f(&mut session);
         *self.selection.borrow_mut() = session.selection;
-        result
+        (result, session.before)
     }
 
     /// Runs a caret move, which ends the open undo step: text typed after
@@ -1340,6 +1425,9 @@ impl Editor {
         }
     }
 }
+
+/// A vertical range that every rectangle meets.
+const EVERYWHERE: (f32, f32) = (f32::NEG_INFINITY, f32::INFINITY);
 
 /// The anchor the caret starts at in an empty document.
 const START: Anchor = Anchor {
@@ -1408,6 +1496,10 @@ struct Session<'a> {
     builds: &'a Cell<u64>,
     /// A copy of the selection the operation works on.
     selection: Selection,
+    /// Whether the first change copies the text as it was, for undo.
+    keep_before: bool,
+    /// The text as it was before the first change, when one was kept.
+    before: Option<String>,
 }
 
 impl Session<'_> {
@@ -1569,16 +1661,18 @@ impl Session<'_> {
         })
     }
 
-    /// One rectangle per line piece the byte range covers, in the editor's
-    /// coordinates, with the paragraph's offset from the top of the text.
+    /// Hands `f` one rectangle per line piece the byte range covers that
+    /// meets the vertical range `visible`, in the editor's coordinates.
     ///
     /// A line break inside the range shows as a narrow rectangle after the
     /// last line of its paragraph, so a selected empty line still shows.
-    fn range_rects(&mut self, range: Range<usize>) -> Vec<(Rect, f32)> {
+    /// Paragraphs outside `visible` are passed over without walking their
+    /// lines.
+    fn range_rects(&mut self, range: Range<usize>, visible: (f32, f32), mut f: impl FnMut(Rect)) {
         self.refresh_all();
         let newline_width = NEWLINE_WIDTH * self.style.size;
         let count = self.table.paragraphs.len();
-        let mut rects = Vec::new();
+        let meets = |rect: &Rect| rect.y1 >= visible.0 && rect.y0 <= visible.1;
         let mut y = 0.0;
         for index in 0..count {
             let paragraph = &self.table.paragraphs[index];
@@ -1588,6 +1682,14 @@ impl Session<'_> {
                 .layout
                 .as_ref()
                 .expect("refresh built every layout");
+            let height = layout.size().height;
+            if range.end < start || y > visible.1 {
+                break;
+            }
+            if range.start > end || y + height < visible.0 {
+                y += height;
+                continue;
+            }
             if range.start < end && range.end > start {
                 let local_start = range.start.max(start) - start;
                 let local_end = range.end.min(end) - start;
@@ -1596,12 +1698,13 @@ impl Session<'_> {
                         Cursor::from_byte_index(&layout.layout, local_start, Affinity::Downstream),
                         Cursor::from_byte_index(&layout.layout, local_end, Affinity::Downstream),
                     );
-                    for (area, _) in selection.geometry(&layout.layout) {
+                    selection.geometry_with(&layout.layout, |area, _| {
                         let area = rect(area);
-                        if area.width() > 0.0 {
-                            rects.push((Rect::new(area.x0, area.y0 + y, area.x1, area.y1 + y), y));
+                        let area = Rect::new(area.x0, area.y0 + y, area.x1, area.y1 + y);
+                        if area.width() > 0.0 && meets(&area) {
+                            f(area);
                         }
-                    }
+                    });
                 }
             }
             if index + 1 < count
@@ -1621,11 +1724,13 @@ impl Session<'_> {
                 } else {
                     (x, x + newline_width)
                 };
-                rects.push((Rect::new(x0, top + y, x1, bottom + y), y));
+                let area = Rect::new(x0, top + y, x1, bottom + y);
+                if meets(&area) {
+                    f(area);
+                }
             }
-            y += layout.size().height;
+            y += height;
         }
-        rects
     }
 
     /// Collapses the selection at `focus`, or extends to it, and resets the
@@ -1657,6 +1762,9 @@ impl Session<'_> {
     ) -> bool {
         let changed = self.buffer[range.clone()] != *text;
         if changed {
+            if self.keep_before && self.before.is_none() {
+                self.before = Some(copy_for_undo(self.buffer));
+            }
             if range.is_empty() {
                 self.buffer.insert_str(range.start, text);
             } else {
@@ -2049,12 +2157,20 @@ impl Session<'_> {
             Base::Word(base) => {
                 // Extend over the word the click landed in, taking in every
                 // byte between the word's far end and the double click's
-                // anchor, whichever side the click came from.
+                // anchor, whichever side the click came from. The focus
+                // goes to the end the pointer is at, so the caret and the
+                // scroll follow the drag.
                 let (target_anchor, target_focus) = self.word_at_point(x, y);
+                let leftward = self.table.global(target_anchor) < self.table.global(base[0]);
                 let mut ends = [target_anchor, target_focus, base[0], base[1]];
                 ends.sort_by_key(|anchor| self.table.global(*anchor));
-                self.selection.anchor = ends[0];
-                self.selection.focus = ends[3];
+                let (anchor, focus) = if leftward {
+                    (ends[3], ends[0])
+                } else {
+                    (ends[0], ends[3])
+                };
+                self.selection.anchor = anchor;
+                self.selection.focus = focus;
                 self.selection.h_pos = None;
             }
         }
@@ -2192,6 +2308,39 @@ fn normalize_breaks(text: &str) -> Cow<'_, str> {
     Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
+/// Copies `text` for an undo or redo step.
+fn copy_for_undo(text: &str) -> String {
+    #[cfg(test)]
+    SNAPSHOTS.with(|snapshots| snapshots.set(snapshots.get() + 1));
+    text.to_owned()
+}
+
+/// Returns the byte range of `current` that differs from `target`: the
+/// bytes between the longest start and the longest end the two share,
+/// without overlapping, on character boundaries of both.
+///
+/// Replacing that range of `current` with the matching middle of `target`
+/// gives `target`.
+fn changed_range(current: &str, target: &str) -> Range<usize> {
+    let (a, b) = (current.as_bytes(), target.as_bytes());
+    let mut start = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    while !current.is_char_boundary(start) {
+        start -= 1;
+    }
+    let limit = a.len().min(b.len()) - start;
+    let mut end = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(limit)
+        .take_while(|(x, y)| x == y)
+        .count();
+    while !current.is_char_boundary(a.len() - end) {
+        end -= 1;
+    }
+    start..a.len() - end
+}
+
 /// Returns `byte` clamped to `text` and snapped down to a character
 /// boundary, which an offset from a broken input method may need.
 fn char_boundary(text: &str, byte: usize) -> usize {
@@ -2277,6 +2426,13 @@ fn visual_word<B: parley::Brush>(
         }
     }
     current
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread copied an editor's text for undo, which
+    /// tests read to tell an edit that copied from one that did not.
+    pub(crate) static SNAPSHOTS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
