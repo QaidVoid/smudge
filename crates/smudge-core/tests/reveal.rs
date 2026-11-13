@@ -215,3 +215,55 @@ fn an_absolutely_positioned_focus_does_not_scroll_its_parent() {
         "the view's scroll never moves an absolute child, so it stays put"
     );
 }
+
+#[test]
+fn an_autofocus_whose_handler_moves_it_is_revealed_where_it_lands() {
+    let spacer = RwSignal::new(20.0_f32);
+    let offset = RwSignal::new(0.0_f32);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, {
+        let spacer = spacer.clone();
+        let offset = offset.clone();
+        move || {
+            let write = offset.clone();
+            let read = offset.clone();
+            let height = spacer.clone();
+            let grow = spacer.clone();
+            Element::new(Panel)
+                .column()
+                .height(px(60.0))
+                .overflow(Overflow::Scroll)
+                .on_reveal(move |revealed| write.set(revealed.y))
+                .scroll_offset(move || Point {
+                    x: 0.0,
+                    y: read.get(),
+                })
+                .child(panel().height(move || px(height.get())).shrink(0.0))
+                .child(
+                    panel()
+                        .height(px(20.0))
+                        .shrink(0.0)
+                        .focusable()
+                        .autofocus()
+                        .on_focus(move |focused| {
+                            if focused {
+                                grow.set(100.0);
+                            }
+                        }),
+                )
+                .child(panel().height(px(200.0)).shrink(0.0))
+        }
+    });
+
+    harness.frame();
+    harness.settle();
+
+    assert!(
+        harness.app().focused().is_some(),
+        "the autofocus took the focus"
+    );
+    assert_eq!(
+        offset.read(|value| *value),
+        60.0,
+        "the square its own handler moved to 100..120 ends at the bottom edge"
+    );
+}
