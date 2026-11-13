@@ -558,6 +558,27 @@ impl WidgetTree {
         }
     }
 
+    /// Removes the root and every node below it, leaving the tree empty for a
+    /// new root.
+    ///
+    /// A held press ends first, as [`WidgetTree::release_press`] ends it, so
+    /// the pressed node hears `on_pointer_up` while it still exists and the
+    /// release that follows reaches no handler. The removal drops the focus,
+    /// the focus traps and the autofocus requests, as removing any subtree
+    /// does, and the hover goes too, so the next layout pass hovers the new
+    /// node under the pointer. The accessibility projection is marked for a
+    /// rebuild from scratch, because every node it showed is gone. The
+    /// theme, the pointer position and the keyboard navigation mode stay.
+    pub(crate) fn unmount_root(&mut self) {
+        self.release_press();
+        if let Some(root) = self.root {
+            self.remove(root);
+        }
+        self.hovered = None;
+        self.a11y_dirty.clear();
+        self.a11y_reset = true;
+    }
+
     /// Recreates the layout node of every ancestor, starting at `parent`,
     /// whose hoisted child list still names one of `removed_taffy`.
     ///

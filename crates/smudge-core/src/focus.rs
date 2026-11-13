@@ -427,6 +427,53 @@ impl WidgetTree {
         true
     }
 
+    /// Returns the position of each node in its parent's children, from the
+    /// root's child down to the focused node, or `None` when nothing holds
+    /// the focus.
+    ///
+    /// The focused root gives an empty path.
+    pub(crate) fn focus_path(&self) -> Option<Vec<usize>> {
+        let mut current = self.focused?;
+        let mut path = Vec::new();
+        while let Some(parent) = self.nodes.get(current)?.parent {
+            let children = &self.nodes.get(parent)?.children;
+            path.push(children.iter().position(|&child| child == current)?);
+            current = parent;
+        }
+        path.reverse();
+        Some(path)
+    }
+
+    /// Focuses the node that `path`, as [`WidgetTree::focus_path`] gives it,
+    /// leads to from the root.
+    ///
+    /// The node takes it when it is focusable, can hold the focus and lies
+    /// inside the active focus trap, if one is mounted. Then the autofocus
+    /// requests of every node that is visible now are dropped, so the next
+    /// layout pass does not move the focus away again. A request whose node
+    /// is hidden stays queued, to resolve when the node shows.
+    pub(crate) fn restore_focus(&mut self, path: &[usize]) {
+        let Some(mut id) = self.root else {
+            return;
+        };
+        for &index in path {
+            let Some(&child) = self.nodes.get(id).and_then(|node| node.children.get(index)) else {
+                return;
+            };
+            id = child;
+        }
+        if self
+            .active_focus_trap()
+            .is_some_and(|trap| !self.is_within(id, trap))
+            || !self.request_focus(id)
+        {
+            return;
+        }
+        let mut pending = std::mem::take(&mut self.pending_autofocus);
+        pending.retain(|&request| self.hidden_in_tree(request));
+        self.pending_autofocus = pending;
+    }
+
     /// Queues an autofocus request for the node `id`, to resolve once a
     /// layout pass has laid it out visible.
     ///
