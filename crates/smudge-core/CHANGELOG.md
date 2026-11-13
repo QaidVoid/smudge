@@ -1,4 +1,27 @@
 
+## [0.2.0](https://github.com/QaidVoid/smudge/compare/smudge-core-v0.1.0...smudge-core-v0.2.0) - 2026-11-13
+
+### ⛰️  Features
+
+- *(core)* [**breaking**] Make scroll views scroll containers in layout - ([92c6031](https://github.com/QaidVoid/smudge/commit/92c603147c2b02ed4ba417a54a39bacb5a9f2aaa))
+- *(core)* Pin a flowing child in place - ([de6a6bd](https://github.com/QaidVoid/smudge/commit/de6a6bd7359cd4f283731dbcf8876067e5ee4bbc))
+- *(core)* [**breaking**] Follow a scroll view to its end - ([ac09643](https://github.com/QaidVoid/smudge/commit/ac0964363145cbe70c91e89a6762c235b18de602))
+- *(core)* Add root keys, autofocus and focus traps - ([6a84e85](https://github.com/QaidVoid/smudge/commit/6a84e85aabece89bfc3888127fcfc31d8692c22f))
+- *(core)* Add window commands, state and cursors - ([c584c1f](https://github.com/QaidVoid/smudge/commit/c584c1f40cca783122a6dbaf72c953e82fb1795d))
+- *(core)* Add channels from other threads - ([e5e15cd](https://github.com/QaidVoid/smudge/commit/e5e15cdd9f6db9901ca78ea31b38e2372be8d82a))
+- *(text)* [**breaking**] Add the multi-line text area - ([ef2416e](https://github.com/QaidVoid/smudge/commit/ef2416e57ff2691f996739c3049e16080eac772b))
+- *(text)* [**breaking**] Cap label lines with an ellipsis - ([e98c012](https://github.com/QaidVoid/smudge/commit/e98c01235f6c3cb9a569755c3ea3970fe58f90c6))
+- [**breaking**] Add premultiplied images to both renderers - ([8487574](https://github.com/QaidVoid/smudge/commit/8487574d865f84b0915f844e4eaf06339082713a))
+
+### 🐛 Bug Fixes
+
+- *(core)* [**breaking**] Harden focus, channels, cursors and bindings - ([5225d10](https://github.com/QaidVoid/smudge/commit/5225d10210257a22b8bd433b979942f5857fe437))
+- *(core)* Let the last builder call for a property win - ([248b2c9](https://github.com/QaidVoid/smudge/commit/248b2c910fda4b695039d5e1b7df11974289cba8))
+- *(examples)* Match the window theme to the dark clear color - ([e61e188](https://github.com/QaidVoid/smudge/commit/e61e188280324ba318a146cff5312959e589766d))
+- *(gpu)* Keep every image drawn and retry other backends - ([72f3057](https://github.com/QaidVoid/smudge/commit/72f3057561e50ecfdacb7bc3095971dc68a0dcea))
+- *(text)* [**breaking**] Correct editing edges and let the wheel pass on - ([7a34069](https://github.com/QaidVoid/smudge/commit/7a34069832dd897eb8a5356505f83529a81aa307))
+- *(widgets)* [**breaking**] Correct keyed list edges and image measuring - ([2f0e017](https://github.com/QaidVoid/smudge/commit/2f0e017bd5ebf12bcc1d35156899495b85fa80f3))
+
 ## [0.1.0] - 2026-10-28
 
 ### ⛰️  Features

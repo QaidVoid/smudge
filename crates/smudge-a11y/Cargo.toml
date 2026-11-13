@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 accesskit = { version = "0.25.2", default-features = false }
-smudge-core = { version = "0.1.0", path = "../smudge-core" }
+smudge-core = { version = "0.2.0", path = "../smudge-core" }
 
 [dev-dependencies]
 accesskit_consumer = "0.39.2"

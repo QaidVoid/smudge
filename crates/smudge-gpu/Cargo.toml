@@ -10,7 +10,7 @@ version.workspace = true
 [dependencies]
 futures-executor = "0.3.34"
 skrifa = "0.44.0"
-smudge-core = { version = "0.1.0", path = "../smudge-core" }
+smudge-core = { version = "0.2.0", path = "../smudge-core" }
 vello = { version = "0.11.0", default-features = false, features = ["wgpu", "wgpu_default"] }
 
 [lints]

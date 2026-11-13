@@ -1,4 +1,22 @@
 
+## [0.2.0](https://github.com/QaidVoid/smudge/compare/smudge-text-v0.1.0...smudge-text-v0.2.0) - 2026-11-13
+
+### ⛰️  Features
+
+- *(text)* [**breaking**] Add the multi-line text area - ([ef2416e](https://github.com/QaidVoid/smudge/commit/ef2416e57ff2691f996739c3049e16080eac772b))
+- *(text)* Fall SystemUi back to the bundled sans - ([9fc52c9](https://github.com/QaidVoid/smudge/commit/9fc52c99df2e2b33170206b5341efeffb4f02525))
+- *(text)* [**breaking**] Cap label lines with an ellipsis - ([e98c012](https://github.com/QaidVoid/smudge/commit/e98c01235f6c3cb9a569755c3ea3970fe58f90c6))
+- *(text)* Re-export the font style types - ([9ff7aa5](https://github.com/QaidVoid/smudge/commit/9ff7aa5d4fccccaa46fc71c513aa476af85d0079))
+- *(text)* Show the text cursor over a text input - ([30de236](https://github.com/QaidVoid/smudge/commit/30de236d474abb6010f718eef758e80721eae760))
+- [**breaking**] Add premultiplied images to both renderers - ([8487574](https://github.com/QaidVoid/smudge/commit/8487574d865f84b0915f844e4eaf06339082713a))
+
+### 🐛 Bug Fixes
+
+- *(core)* [**breaking**] Harden focus, channels, cursors and bindings - ([5225d10](https://github.com/QaidVoid/smudge/commit/5225d10210257a22b8bd433b979942f5857fe437))
+- *(core)* Let the last builder call for a property win - ([248b2c9](https://github.com/QaidVoid/smudge/commit/248b2c910fda4b695039d5e1b7df11974289cba8))
+- *(text)* [**breaking**] Correct editing edges and let the wheel pass on - ([7a34069](https://github.com/QaidVoid/smudge/commit/7a34069832dd897eb8a5356505f83529a81aa307))
+- *(text)* Flatten pasted line breaks into single spaces - ([f58bff3](https://github.com/QaidVoid/smudge/commit/f58bff3c9ea83a9eef12fc8081a03b5cf1c6b01d))
+
 ## [0.1.0] - 2026-10-28
 
 ### ⛰️  Features

@@ -1,4 +1,49 @@
 
+## [0.2.0](https://github.com/QaidVoid/smudge/compare/v0.1.0...v0.2.0) - 2026-11-13
+
+### ⛰️  Features
+
+- *(core)* [**breaking**] Make scroll views scroll containers in layout - ([92c6031](https://github.com/QaidVoid/smudge/commit/92c603147c2b02ed4ba417a54a39bacb5a9f2aaa))
+- *(core)* Pin a flowing child in place - ([de6a6bd](https://github.com/QaidVoid/smudge/commit/de6a6bd7359cd4f283731dbcf8876067e5ee4bbc))
+- *(core)* [**breaking**] Follow a scroll view to its end - ([ac09643](https://github.com/QaidVoid/smudge/commit/ac0964363145cbe70c91e89a6762c235b18de602))
+- *(core)* Add root keys, autofocus and focus traps - ([6a84e85](https://github.com/QaidVoid/smudge/commit/6a84e85aabece89bfc3888127fcfc31d8692c22f))
+- *(core)* Add window commands, state and cursors - ([c584c1f](https://github.com/QaidVoid/smudge/commit/c584c1f40cca783122a6dbaf72c953e82fb1795d))
+- *(core)* Add channels from other threads - ([e5e15cd](https://github.com/QaidVoid/smudge/commit/e5e15cdd9f6db9901ca78ea31b38e2372be8d82a))
+- *(platform)* [**breaking**] Add window options, commands and cursors - ([8be803e](https://github.com/QaidVoid/smudge/commit/8be803e9766ba90c9595a0bbaf248e9853894571))
+- *(platform)* Wake the window when a message arrives - ([c3f7d91](https://github.com/QaidVoid/smudge/commit/c3f7d91fc5bdea7c07afb12e34dc4b04e2f6040a))
+- *(smudge)* Export image from the prelude - ([ae45689](https://github.com/QaidVoid/smudge/commit/ae45689644e2333a7073eecab76162863da0ffd1))
+- *(smudge)* Forward system-fonts and font types - ([d68a539](https://github.com/QaidVoid/smudge/commit/d68a53911784723fea6d513ad147f030d6634e8d))
+- *(text)* [**breaking**] Add the multi-line text area - ([ef2416e](https://github.com/QaidVoid/smudge/commit/ef2416e57ff2691f996739c3049e16080eac772b))
+- *(text)* [**breaking**] Cap label lines with an ellipsis - ([e98c012](https://github.com/QaidVoid/smudge/commit/e98c01235f6c3cb9a569755c3ea3970fe58f90c6))
+- *(text)* Fall SystemUi back to the bundled sans - ([9fc52c9](https://github.com/QaidVoid/smudge/commit/9fc52c99df2e2b33170206b5341efeffb4f02525))
+- *(text)* Re-export the font style types - ([9ff7aa5](https://github.com/QaidVoid/smudge/commit/9ff7aa5d4fccccaa46fc71c513aa476af85d0079))
+- *(text)* Show the text cursor over a text input - ([30de236](https://github.com/QaidVoid/smudge/commit/30de236d474abb6010f718eef758e80721eae760))
+- *(widgets)* Add the image widget - ([f927256](https://github.com/QaidVoid/smudge/commit/f92725662b5dacbd891a0f2f5facf432a57fe628))
+- *(widgets)* Add a keyed virtual list with an anchor - ([e8d624e](https://github.com/QaidVoid/smudge/commit/e8d624ee8eca4a2826736dce858d9da87f2b7fb9))
+- [**breaking**] Add premultiplied images to both renderers - ([8487574](https://github.com/QaidVoid/smudge/commit/8487574d865f84b0915f844e4eaf06339082713a))
+
+### 🐛 Bug Fixes
+
+- *(core)* [**breaking**] Harden focus, channels, cursors and bindings - ([5225d10](https://github.com/QaidVoid/smudge/commit/5225d10210257a22b8bd433b979942f5857fe437))
+- *(core)* Let the last builder call for a property win - ([248b2c9](https://github.com/QaidVoid/smudge/commit/248b2c910fda4b695039d5e1b7df11974289cba8))
+- *(examples)* Match the window theme to the dark clear color - ([e61e188](https://github.com/QaidVoid/smudge/commit/e61e188280324ba318a146cff5312959e589766d))
+- *(gpu)* Keep every image drawn and retry other backends - ([72f3057](https://github.com/QaidVoid/smudge/commit/72f3057561e50ecfdacb7bc3095971dc68a0dcea))
+- *(gpu)* Downscale images larger than the GPU atlas - ([05749bd](https://github.com/QaidVoid/smudge/commit/05749bdd406c9cc6c7991e3ad993477cf2a9f09f))
+- *(gpu)* Request the adapter maximum storage binding limit - ([efd2ca3](https://github.com/QaidVoid/smudge/commit/efd2ca3a56a71691746f05a628b92d2ecf71f950))
+- *(platform)* Pace frames where the window system does not - ([f0d327d](https://github.com/QaidVoid/smudge/commit/f0d327dd0487322e8809d628dda0820be5e0a221))
+- *(platform)* End the press when the window system takes it - ([7a36fc9](https://github.com/QaidVoid/smudge/commit/7a36fc926f7fd072bf895ba7bae860473e108355))
+- *(text)* [**breaking**] Correct editing edges and let the wheel pass on - ([7a34069](https://github.com/QaidVoid/smudge/commit/7a34069832dd897eb8a5356505f83529a81aa307))
+- *(text)* Flatten pasted line breaks into single spaces - ([f58bff3](https://github.com/QaidVoid/smudge/commit/f58bff3c9ea83a9eef12fc8081a03b5cf1c6b01d))
+- *(widgets)* [**breaking**] Correct keyed list edges and image measuring - ([2f0e017](https://github.com/QaidVoid/smudge/commit/2f0e017bd5ebf12bcc1d35156899495b85fa80f3))
+
+### 📚 Documentation
+
+- Correct the guide for 0.2 and replay the recorded seeds - ([327c7bc](https://github.com/QaidVoid/smudge/commit/327c7bc375a11e259ae072d2fad99f69c66e8ead))
+
+### ⚡ Performance
+
+- *(gpu)* Compile area antialiasing only and skip OpenGL - ([4f141a2](https://github.com/QaidVoid/smudge/commit/4f141a22d6a7bc8c06803ae5ec50e95c7e0e0225))
+
 ## [0.1.0] - 2026-10-28
 
 ### ⛰️  Features

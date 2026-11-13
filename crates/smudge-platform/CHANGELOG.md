@@ -1,4 +1,24 @@
 
+## [0.2.0](https://github.com/QaidVoid/smudge/compare/smudge-platform-v0.1.0...smudge-platform-v0.2.0) - 2026-11-13
+
+### ⛰️  Features
+
+- *(platform)* [**breaking**] Add window options, commands and cursors - ([8be803e](https://github.com/QaidVoid/smudge/commit/8be803e9766ba90c9595a0bbaf248e9853894571))
+- *(platform)* Wake the window when a message arrives - ([c3f7d91](https://github.com/QaidVoid/smudge/commit/c3f7d91fc5bdea7c07afb12e34dc4b04e2f6040a))
+
+### 🐛 Bug Fixes
+
+- *(core)* [**breaking**] Harden focus, channels, cursors and bindings - ([5225d10](https://github.com/QaidVoid/smudge/commit/5225d10210257a22b8bd433b979942f5857fe437))
+- *(examples)* Match the window theme to the dark clear color - ([e61e188](https://github.com/QaidVoid/smudge/commit/e61e188280324ba318a146cff5312959e589766d))
+- *(gpu)* Keep every image drawn and retry other backends - ([72f3057](https://github.com/QaidVoid/smudge/commit/72f3057561e50ecfdacb7bc3095971dc68a0dcea))
+- *(gpu)* Request the adapter maximum storage binding limit - ([efd2ca3](https://github.com/QaidVoid/smudge/commit/efd2ca3a56a71691746f05a628b92d2ecf71f950))
+- *(platform)* Pace frames where the window system does not - ([f0d327d](https://github.com/QaidVoid/smudge/commit/f0d327dd0487322e8809d628dda0820be5e0a221))
+- *(platform)* End the press when the window system takes it - ([7a36fc9](https://github.com/QaidVoid/smudge/commit/7a36fc926f7fd072bf895ba7bae860473e108355))
+
+### ⚡ Performance
+
+- *(gpu)* Compile area antialiasing only and skip OpenGL - ([4f141a2](https://github.com/QaidVoid/smudge/commit/4f141a22d6a7bc8c06803ae5ec50e95c7e0e0225))
+
 ## [0.1.0] - 2026-10-28
 
 ### ⛰️  Features
