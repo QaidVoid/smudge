@@ -7,7 +7,11 @@
 # alone draw text, a headless build needs no window, every configuration the
 # small-binary guide documents builds on native, the bundled-font ones build on
 # wasm, wasm with system fonts alone fails, and a build with no font source
-# fails instead of drawing no text. Run it from anywhere.
+# fails instead of drawing no text. It also reads the IR of generic reactive
+# and text code compiled in an application crate, which must reach the
+# runtime and the text system through calls into the core and the text crate
+# and never address their thread-locals, because a hot patch built from that
+# crate would otherwise carry empty copies of its own. Run it from anywhere.
 set -e
 # A relative target directory would resolve inside each consumer, so make
 # it absolute against the caller's directory first.
@@ -72,6 +76,38 @@ echo 'consumer: the wasm font rule'
 ( cd guide-app && cargo check -q --target wasm32-unknown-unknown --no-default-features --features bundled-fonts )
 ( cd headless && cargo check -q --target wasm32-unknown-unknown )
 expect_fail 'guide-app on wasm with system fonts only' sh -c 'cd guide-app && cargo check -q --target wasm32-unknown-unknown --no-default-features --features system-fonts'
+
+echo 'consumer: application code reaches the runtime and the text system through calls'
+for profile in dev release; do
+    # The IR goes to a path of its own, removed first, so the check reads what
+    # this build emitted whatever the target, never a file left by an earlier
+    # one. One codegen unit makes rustc write one file there.
+    ir="$CARGO_TARGET_DIR/runtime-entry-$profile.ll"
+    rm -f "$ir"
+    touch runtime-entry/src/lib.rs
+    ( cd runtime-entry && cargo rustc -q --profile "$profile" --lib -- -C codegen-units=1 --emit=llvm-ir="$ir" )
+    [ -f "$ir" ] || {
+        echo "the $profile build of runtime-entry emitted no IR at $ir" >&2
+        exit 1
+    }
+    # LLVM may put attributes and a model between `thread_local` and
+    # `global`, so any global declaration of a thread-local whose symbol
+    # names either crate counts.
+    tls='^@[^ ]*smudge_(core|text)[^ ]* = .*\bthread_local\b'
+    if grep -Eq "$tls" "$ir"; then
+        echo "the $profile IR of runtime-entry addresses a thread-local of the core or the text crate:" >&2
+        grep -E "$tls" "$ir" >&2
+        exit 1
+    fi
+    grep -q 'call.*smudge_core8reactive7runtime6notify' "$ir" || {
+        echo "the $profile IR of runtime-entry never calls into the runtime, so it checks nothing" >&2
+        exit 1
+    }
+    grep -q 'call.*smudge_text6system12with_current' "$ir" || {
+        echo "the $profile IR of runtime-entry never calls into the text system, so it checks nothing" >&2
+        exit 1
+    }
+done
 
 for dir in */; do
     if grep -q 'source = "git+' "$dir/Cargo.lock"; then

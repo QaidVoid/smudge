@@ -4,10 +4,11 @@ use std::time::Duration;
 
 use web_time::Instant;
 
+use smudge_core::element::IntoElement;
 use smudge_core::geometry::{Color, Size};
 use smudge_core::widget::panel;
 
-use super::{WaitDecision, WindowOptions, next_frame_at, run_with, wait_decision};
+use super::{WaitDecision, WindowOptions, next_frame_at, run_view, run_with, wait_decision};
 use crate::PlatformError;
 
 /// Returns options with an opaque clear color, so a test only has to change
@@ -27,6 +28,16 @@ fn options(clear_color: Color) -> WindowOptions {
 fn a_translucent_clear_color_fails_before_any_window_opens() {
     let error = run_with(options(Color::rgba(20, 24, 30, 128)), panel, |_| {})
         .expect_err("a clear color that is not opaque must be rejected");
+
+    assert!(matches!(error, PlatformError::ClearColor));
+}
+
+#[test]
+fn run_view_rejects_a_translucent_clear_color_before_any_window_opens() {
+    let error = run_view(options(Color::rgba(20, 24, 30, 128)), (), |_| {
+        panel().into_any()
+    })
+    .expect_err("a clear color that is not opaque must be rejected");
 
     assert!(matches!(error, PlatformError::ClearColor));
 }

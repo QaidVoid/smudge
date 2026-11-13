@@ -233,8 +233,7 @@ fn register(
     delay: Duration,
     run: Box<dyn FnMut()>,
 ) -> Option<Rc<TimerEntry>> {
-    let owner = runtime::with_runtime(|runtime| runtime.current_owner())
-        .or_else(runtime::observer_owner)?;
+    let owner = runtime::current_owner().or_else(runtime::observer_owner)?;
     if owner.cleaned.get() {
         return None;
     }
@@ -349,8 +348,7 @@ fn book_of(owner: &Rc<OwnerData>) -> Option<Rc<RefCell<TimerBook>>> {
 /// app's time this way, which makes double click detection and other timing
 /// testable with a virtual clock.
 pub fn now() -> Instant {
-    let owner =
-        runtime::with_runtime(|runtime| runtime.current_owner()).or_else(runtime::observer_owner);
+    let owner = runtime::current_owner().or_else(runtime::observer_owner);
     match owner.as_ref().and_then(book_of) {
         Some(book) => book.borrow().clock.now(),
         None => Instant::now(),

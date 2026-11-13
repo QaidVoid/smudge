@@ -80,7 +80,7 @@ impl Clipboard for MemoryClipboard {
 /// an outer `with` call holds the clipboard already. The caller should then
 /// do nothing.
 pub fn with<R>(f: impl FnOnce(&mut dyn Clipboard) -> R) -> Option<R> {
-    let owner = runtime::with_runtime(|runtime| runtime.current_owner())?;
+    let owner = runtime::current_owner()?;
     let slot = clipboard_of(&owner)?;
     let mut slot = slot.try_borrow_mut().ok()?;
     Some(f(&mut **slot))

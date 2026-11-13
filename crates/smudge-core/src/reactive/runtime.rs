@@ -347,8 +347,83 @@ thread_local! {
 }
 
 /// Runs `f` with the thread's runtime.
-pub(crate) fn with_runtime<R>(f: impl FnOnce(&mut Runtime) -> R) -> R {
+///
+/// This is private to the module on purpose. The rest of the crate reaches
+/// the runtime through the functions below it and the other `pub(crate)`
+/// functions of this module, which are neither generic nor inlined. Generic
+/// code compiled in an application crate therefore reaches the runtime by
+/// calling into this crate, and never addresses the runtime's thread-locals
+/// itself. A hot patch is built from the application's crates, and a patch
+/// that addressed a thread-local would carry a fresh, empty copy of it
+/// instead of the running runtime. `tests/consumers/runtime-entry` checks the
+/// rule on the IR of an application crate.
+///
+/// Inside this module the accessor inlines, so the flush loop makes no calls
+/// to reach the runtime. A variant that sent every access through one
+/// non-inlined function made writing 10,000 signals and flushing their
+/// effects about twice as slow in the `reactive` benchmark. The entry points
+/// cost about 4 percent more instructions per write and flush.
+fn with_runtime<R>(f: impl FnOnce(&mut Runtime) -> R) -> R {
     RUNTIME.with_borrow_mut(f)
+}
+
+/// Creates the thread's runtime, when it does not exist yet.
+#[inline(never)]
+pub(crate) fn init() {
+    with_runtime(|_| {});
+}
+
+/// Returns the current owner, when one is set and still alive.
+#[inline(never)]
+pub(crate) fn current_owner() -> Option<Rc<OwnerData>> {
+    with_runtime(|runtime| runtime.current_owner())
+}
+
+/// Makes `owner` the current one, until another replaces it.
+#[inline(never)]
+pub(crate) fn set_current(owner: &Rc<OwnerData>) {
+    with_runtime(|runtime| runtime.set_current(owner));
+}
+
+/// Returns the scope new nodes and owners belong to: the current owner's
+/// scope, or the default one when no owner is current.
+#[inline(never)]
+pub(crate) fn current_scope() -> Rc<Scope> {
+    with_runtime(|runtime| runtime.current_scope())
+}
+
+/// Returns the scope a new owner under `parent` belongs to, or a fresh root
+/// scope when `parent` is `None`.
+#[inline(never)]
+pub(crate) fn owner_scope(parent: Option<&OwnerData>) -> Rc<Scope> {
+    with_runtime(|runtime| runtime.owner_scope(parent))
+}
+
+/// Creates a signal node under the current owner.
+#[inline(never)]
+pub(crate) fn new_signal() -> NodeId {
+    with_runtime(Runtime::new_signal)
+}
+
+/// Creates a memo node that computes with `run`, under the current owner.
+#[inline(never)]
+pub(crate) fn new_memo(run: Rc<dyn Fn()>) -> NodeId {
+    with_runtime(|runtime| runtime.new_memo(run))
+}
+
+/// Creates an effect node that runs `cell` and wakes `scope`, under the
+/// current owner.
+#[inline(never)]
+pub(crate) fn new_effect(cell: Rc<EffectCell>, scope: Rc<Scope>) -> NodeId {
+    with_runtime(|runtime| runtime.new_effect(cell, scope))
+}
+
+/// Marks the node `id` as changed, wakes its subscribers and runs the wake
+/// callbacks of the scopes that were asleep.
+#[inline(never)]
+pub(crate) fn notify(id: NodeId) {
+    let wakes = with_runtime(|runtime| runtime.notify(id));
+    fire_wakes(wakes);
 }
 
 impl Runtime {
@@ -840,6 +915,7 @@ pub(crate) struct CurrentOwnerGuard {
 
 impl CurrentOwnerGuard {
     /// Makes `owner` the current one for the block the guard lives in.
+    #[inline(never)]
     pub(crate) fn enter(owner: &Rc<OwnerData>) -> CurrentOwnerGuard {
         let previous = with_runtime(|runtime| {
             let previous = runtime
@@ -853,6 +929,7 @@ impl CurrentOwnerGuard {
 }
 
 impl Drop for CurrentOwnerGuard {
+    #[inline(never)]
     fn drop(&mut self) {
         with_runtime(|runtime| runtime.restore_current_owner(self.previous.take()));
     }
@@ -889,6 +966,7 @@ impl Drop for DisposeOnUnwind {
 /// The node is dropped after the runtime is released, because dropping a memo
 /// or an effect drops the user's closure, and what it captured may enter the
 /// runtime as it drops, as an effect handle or an owner does.
+#[inline(never)]
 pub(crate) fn dispose(id: NodeId) {
     let node = with_runtime(|runtime| runtime.dispose_node(id));
     drop(node);
@@ -898,6 +976,7 @@ pub(crate) fn dispose(id: NodeId) {
 ///
 /// The read is silently untracked when no effect or memo runs, or when the
 /// source was disposed.
+#[inline(never)]
 pub(crate) fn track_read(source: NodeId) {
     let Some(reader) = OBSERVER.with(Cell::get) else {
         return;
@@ -914,6 +993,7 @@ pub(crate) fn track_read(source: NodeId) {
 ///
 /// A rerun runs with no owner current, so a read that needs the application
 /// of the running code, such as the window state, finds it through here.
+#[inline(never)]
 pub(crate) fn observer_owner() -> Option<Rc<OwnerData>> {
     let observer = OBSERVER.with(Cell::get)?;
     with_runtime(|runtime| runtime.creation_owner(observer))
@@ -925,6 +1005,7 @@ pub(crate) fn observer_owner() -> Option<Rc<OwnerData>> {
 /// Code that needs the application of the running code, such as a window
 /// command or a new channel, finds it through here, so it works the same in
 /// a binding's rerun, which runs with no owner current, as in a handler.
+#[inline(never)]
 pub(crate) fn running_owner() -> Option<Rc<OwnerData>> {
     observer_owner().or_else(|| {
         with_runtime(|runtime| runtime.current_owner()).filter(|owner| !owner.cleaned.get())
@@ -935,6 +1016,7 @@ pub(crate) fn running_owner() -> Option<Rc<OwnerData>> {
 ///
 /// Effects queued by writes made while the loop drains run in the same call.
 /// A call from inside a running flush does nothing and returns `false`.
+#[inline(never)]
 pub(crate) fn flush() -> bool {
     if !with_runtime(|runtime| runtime.begin_flush()) {
         return false;
@@ -974,6 +1056,7 @@ fn run_effect(id: NodeId) {
 
 /// Runs an effect body under tracking, as a flush step or the first run at
 /// creation does.
+#[inline(never)]
 pub(crate) fn run_body(cell: &Rc<EffectCell>, node: NodeId) {
     let _observer = ObserverGuard::enter(Some(node));
     let mut borrow = cell
@@ -1013,6 +1096,7 @@ fn update_source(source: NodeId) {
 /// A dirty memo recomputes at once. A memo whose source may have changed
 /// brings its sources up to date in the order it read them, and recomputes
 /// as soon as one of them moved, without computing the ones after it.
+#[inline(never)]
 pub(crate) fn update_memo(id: NodeId) {
     match with_runtime(|runtime| runtime.memo_state(id)) {
         MemoState::Clean => {}
@@ -1039,6 +1123,7 @@ fn recompute_memo(id: NodeId) {
 }
 
 /// Runs the first computation of a fresh memo under the current observer.
+#[inline(never)]
 pub(crate) fn compute_new_memo(id: NodeId) {
     recompute_memo(id);
 }
@@ -1052,7 +1137,7 @@ pub(crate) struct Wakes(usize);
 ///
 /// A callback may write signals and wake more scopes, which land after the
 /// ones this call fires and are fired by the write that woke them.
-pub(crate) fn fire_wakes(wakes: Wakes) {
+fn fire_wakes(wakes: Wakes) {
     let end = with_runtime(|runtime| runtime.woken.len());
     for index in wakes.0..end {
         let callback = with_runtime(|runtime| {

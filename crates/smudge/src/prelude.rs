@@ -27,5 +27,6 @@ pub use smudge_widgets::{
 
 #[cfg(feature = "window")]
 pub use smudge_platform::{
-    PlatformError, PresentStats, PresentStatsHandle, RendererChoice, WindowOptions, run, run_with,
+    PlatformError, PresentStats, PresentStatsHandle, RendererChoice, WindowOptions, run, run_view,
+    run_with,
 };

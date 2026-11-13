@@ -73,6 +73,9 @@ impl TextSystem {
     ///
     /// Panics if the thread's system is in use, because a system cannot be
     /// replaced while a layout borrows it.
+    // Kept out of line, so an application crate never inlines the access to
+    // the thread-local, for the reason `with_current` gives.
+    #[inline(never)]
     pub fn install(self) {
         CURRENT.with(|slot| {
             let mut slot = slot.try_borrow_mut().expect(
@@ -93,14 +96,13 @@ impl TextSystem {
     /// for example from a [`crate::TextLayout`] constructor, because a system
     /// cannot be handed out twice at once.
     pub fn with<R>(f: impl FnOnce(&mut TextSystem) -> R) -> R {
-        CURRENT.with(|slot| {
-            let mut slot = slot.try_borrow_mut().expect(
-                "TextSystem::with cannot run inside another with call on the \
-                 same thread",
-            );
-            let system = slot.get_or_insert_with(default_for_platform);
-            f(system)
-        })
+        let mut f = Some(f);
+        let mut result = None;
+        with_current(&mut |system| {
+            let f = f.take().expect("with_current calls its closure once");
+            result = Some(f(system));
+        });
+        result.expect("with_current calls its closure once")
     }
 
     /// Registers the bundled faces and makes each one the last choice of its
@@ -166,6 +168,30 @@ impl TextSystem {
 thread_local! {
     /// The system this thread owns, if it has one already.
     static CURRENT: RefCell<Option<TextSystem>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` once with the current thread's system, creating one on first
+/// use.
+///
+/// [`TextSystem::with`] is generic, so it is compiled in every crate that
+/// calls it. It reaches the thread-local through this function, which is
+/// neither generic nor inlined, so code compiled in an application crate
+/// never addresses the thread-local itself. A hot patch is built from the
+/// application's crates, and a patch that addressed it would carry a fresh,
+/// empty copy of the text system instead of the running one.
+///
+/// # Panics
+///
+/// Panics if the thread's system is already handed out.
+#[inline(never)]
+fn with_current(f: &mut dyn FnMut(&mut TextSystem)) {
+    CURRENT.with(|slot| {
+        let mut slot = slot.try_borrow_mut().expect(
+            "TextSystem::with cannot run inside another with call on the \
+             same thread",
+        );
+        f(slot.get_or_insert_with(default_for_platform));
+    });
 }
 
 /// The system a thread creates when nothing was installed.

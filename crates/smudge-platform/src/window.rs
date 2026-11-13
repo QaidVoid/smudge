@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use smudge_core::app::{App, AppConfig, FrameOutput, FrameStats, RepaintMode};
 use smudge_core::clipboard::{Clipboard, MemoryClipboard};
-use smudge_core::element::IntoElement;
+use smudge_core::element::{AnyElement, IntoElement};
 use smudge_core::geometry::{Color, Rect, Size};
 use smudge_core::input::InputEvent;
 use smudge_core::window::{Cursor, WindowCommand};
@@ -42,11 +42,16 @@ use smudge_gpu::AdapterSummary;
 ///
 /// Every build carries the wake, which a message from another thread posts to
 /// ask for the frame that applies it. With the `a11y` feature the
-/// accessibility adapter sends its events through the same loop.
+/// accessibility adapter sends its events through the same loop, and with
+/// the `hot-reload` feature on Linux the hot reload receiver does.
 pub(crate) enum PlatformEvent {
     /// A message waits for the app: ask for a frame when the app has work
     /// only a frame can finish.
     Wake,
+    /// A patch arrived: apply it, remount the root through the patched view
+    /// and redraw, then answer the builder.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    HotPatch(crate::hot::Patch),
     /// An event from the accessibility adapter: a request for the initial
     /// tree, an action a user ran in an assistive tool, or a notice that the
     /// platform stopped reading the tree.
@@ -344,6 +349,151 @@ pub fn run_with<E: IntoElement + 'static>(
     build: impl FnOnce() -> E + 'static,
     configure: impl FnOnce(&mut App) + 'static,
 ) -> Result<(), PlatformError> {
+    let (event_loop, platform) = prepare(options, build, Box::new(configure))?;
+    launch(event_loop, platform)
+}
+
+/// Opens a window whose root `view` builds from `state`, and runs frames
+/// until the window closes.
+///
+/// This is the entry point an app uses for hot reload. The window takes
+/// `state` before it opens and keeps it for as long as it may build the root
+/// again, and every build calls `view` with it. The state is created once,
+/// outside every build, so the signals it holds keep their values when the
+/// root is built again. Signals, effects and timers that `view` creates
+/// belong to the build. A binding that needs a signal from the state after
+/// the build clones it out, as with any build.
+///
+/// With the `hot-reload` feature on Linux, an app started by a patch builder
+/// that set the `SMUDGE_HOT_SOCKET` environment variable applies every patch
+/// the builder sends, on the thread that runs the window, between two
+/// events. After each one, the window remounts its root through the patched
+/// `view` with [`App::remount`] and redraws, so the root shows the new code
+/// and every closure the build creates is fresh, while the state keeps its
+/// values. A `thread_local!` of a crate the patch rebuilt restarts from its
+/// initial value in the patched code, so keep what must survive in the
+/// state. A patch that arrives before the window opens or while it closes
+/// is refused, and the builder is told so. Without the variable the app
+/// never looks for a builder. Without the feature, or on other targets, this
+/// is [`run`] with a build that calls `view` once, and no patching code is
+/// compiled in.
+///
+/// `view` is a function pointer rather than a closure, because a patch maps
+/// functions, and the state it would capture is the `state` argument
+/// instead. The view returns an [`AnyElement`], which any element turns
+/// into with [`IntoElement::into_any`], so a patch that changes the view's
+/// outermost widget keeps its signature. Changes above the view, such as to
+/// `main` or to the [`WindowOptions`], need a restart.
+///
+/// A patch must leave the state type alone, because the state was built by
+/// the code before the patch, and patched code that reads it with another
+/// layout is undefined behavior. A guard narrows that down: before it runs a
+/// patched view, the window compares the size, the alignment and the name
+/// of the state type as the patch sees it with the original's, and keeps the
+/// view it has when they differ or when the patch no longer uses the type.
+/// It reports the change on standard error and to the builder, as one that
+/// needs a restart. The guard cannot see a change that keeps all three, such
+/// as two fields of one size swapped, or a field changed to another type of
+/// the same size, and it sees only the state type itself: a state that holds
+/// its data in signals or behind pointers keeps its size when the types
+/// behind them change. The rule covers every type the state's values reach,
+/// such as the item type of an `RwSignal<Vec<Todo>>`, and a change the guard
+/// misses is still undefined behavior, so restart the app after any change
+/// to such a type.
+///
+/// A patch must also keep the view's parameters and return type. Symbol
+/// names do not record a function's signature, so neither the table nor the
+/// guard can tell a view whose signature changed, and calling it is
+/// undefined behavior. The wire format therefore requires a builder to leave
+/// out every function whose signature changed and to report a change to the
+/// view's signature as one that needs a restart.
+///
+/// # Errors
+///
+/// Returns the same errors as [`run`].
+///
+/// # Panics
+///
+/// Panics when `view` panics, in the first build or in a remount after a
+/// patch.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smudge_core::element::{AnyElement, IntoElement};
+/// use smudge_core::geometry::Color;
+/// use smudge_core::reactive::{RwSignal, prelude::*};
+/// use smudge_core::style::px;
+/// use smudge_core::widget::panel;
+/// use smudge_platform::{WindowOptions, run_view};
+///
+/// struct State {
+///     width: RwSignal<f32>,
+/// }
+///
+/// fn view(state: &State) -> AnyElement {
+///     let width = state.width.clone();
+///     panel()
+///         .width(move || px(width.get()))
+///         .height(px(40.0))
+///         .background(Color::BLACK)
+///         .into_any()
+/// }
+///
+/// run_view(
+///     WindowOptions {
+///         title: String::from("Smudge"),
+///         ..WindowOptions::default()
+///     },
+///     State {
+///         width: RwSignal::new(120.0),
+///     },
+///     view,
+/// )?;
+/// # Ok::<(), smudge_platform::PlatformError>(())
+/// ```
+pub fn run_view<S: 'static>(
+    options: WindowOptions,
+    state: S,
+    view: fn(&S) -> AnyElement,
+) -> Result<(), PlatformError> {
+    #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
+    {
+        run(options, move || view(&state))
+    }
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    {
+        let state = Rc::new(state);
+        let first = Rc::clone(&state);
+        // Patches are applied only once the window is open, so the first
+        // build runs the view as the binary was built.
+        let (event_loop, mut platform) = prepare(options, move || view(&first), Box::new(|_| {}))?;
+        platform.remount = Some(Box::new(move |app| {
+            let view = crate::hot::current(view)?;
+            app.remount(|| view(&state));
+            Ok(())
+        }));
+        let proxy = platform.proxy.clone();
+        // The receiver's thread is left to run until the process ends, since
+        // it waits on the builder's socket. A patch the closed loop does not
+        // take is dropped, which answers it as failed.
+        let _receiver = crate::hot::start(move |patch| {
+            let _ = proxy.send_event(PlatformEvent::HotPatch(patch));
+        });
+        launch(event_loop, platform)
+    }
+}
+
+/// Checks the options, then creates the event loop and the state it drives.
+fn prepare<E, B>(
+    options: WindowOptions,
+    build: B,
+    configure: Configure,
+) -> Result<(EventLoop<UserEvent>, Platform<E, B>), PlatformError>
+where
+    E: IntoElement + 'static,
+    B: FnOnce() -> E + 'static,
+{
     if !options.clear_color.is_opaque() {
         return Err(PlatformError::ClearColor);
     }
@@ -353,17 +503,30 @@ pub fn run_with<E: IntoElement + 'static>(
         .build()
         .map_err(PlatformError::EventLoop)?;
     let proxy = event_loop.create_proxy();
-    // The web loop takes the state by value, so nothing mutates it here.
-    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
-    let mut platform = Platform {
+    let platform = Platform {
         renderer,
         options,
         build: Some(build),
-        configure: Some(Box::new(configure)),
+        configure: Some(configure),
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        remount: None,
         state: None,
         error: None,
         proxy,
     };
+    Ok((event_loop, platform))
+}
+
+/// Runs `platform` on `event_loop` until the window closes.
+fn launch<E, B>(
+    event_loop: EventLoop<UserEvent>,
+    // The web loop takes the state by value, so nothing mutates it here.
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))] mut platform: Platform<E, B>,
+) -> Result<(), PlatformError>
+where
+    E: IntoElement + 'static,
+    B: FnOnce() -> E + 'static,
+{
     // The web loop runs on the browser's own event loop and never runs to
     // completion, so it is started and can no longer return an error. A
     // failure after it started only stops the run.
@@ -399,6 +562,10 @@ where
     build: Option<B>,
     /// The caller's setup, run once the app exists.
     configure: Option<Configure>,
+    /// What rebuilds the root after a hot patch, when the app was started
+    /// through [`run_view`].
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    remount: Option<Remount>,
     /// The window, its app and its renderer, once the window exists.
     state: Option<WindowState>,
     /// The first error that stopped the run.
@@ -411,6 +578,11 @@ where
 /// The setup a caller hands to [`run_with`], boxed so the platform state does
 /// not become generic over it.
 type Configure = Box<dyn FnOnce(&mut App)>;
+
+/// What rebuilds an app's root after a hot patch, or says why the patched
+/// view must not run.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+type Remount = Box<dyn FnMut(&mut App) -> Result<(), String>>;
 
 /// One live window and everything it presents.
 struct WindowState {
@@ -787,6 +959,31 @@ where
         event_loop.exit();
     }
 
+    /// Applies a hot patch, remounts the root through the patched view and
+    /// redraws, then answers the builder.
+    ///
+    /// A patch that arrives before the window opens is refused, so the first
+    /// build always runs the view as the binary was built. A patch that
+    /// arrives once the loop is exiting is refused too, because a close
+    /// request or a close command queued before it has ended the app.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    fn hot_patch(&mut self, event_loop: &ActiveEventLoop, patch: crate::hot::Patch) {
+        let (Some(state), Some(remount)) = (self.state.as_mut(), self.remount.as_mut()) else {
+            patch.refuse("the window is not open yet");
+            return;
+        };
+        if event_loop.exiting() {
+            patch.refuse("the app is closing");
+            return;
+        }
+        patch.apply(|| {
+            remount(&mut state.app)?;
+            state.update_ime(false);
+            state.window.request_redraw();
+            Ok(())
+        });
+    }
+
     /// Answers an event the accessibility adapter posted.
     ///
     /// The first request for the tree is answered with a full update, which
@@ -849,7 +1046,16 @@ where
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+    fn user_event(
+        &mut self,
+        // Only a hot patch needs the loop, to tell whether it is exiting.
+        #[cfg_attr(
+            not(all(feature = "hot-reload", target_os = "linux")),
+            allow(unused_variables)
+        )]
+        event_loop: &ActiveEventLoop,
+        event: UserEvent,
+    ) {
         match event {
             PlatformEvent::Wake => {
                 if let Some(state) = self.state.as_mut()
@@ -860,6 +1066,8 @@ where
             }
             #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
             PlatformEvent::A11y(event) => self.handle_a11y_event(event),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            PlatformEvent::HotPatch(patch) => self.hot_patch(event_loop, patch),
         }
     }
 

@@ -92,7 +92,7 @@ use runtime::{CurrentOwnerGuard, EffectCell, MemoData, NodeId, OwnerData, OwnerS
 /// assert!(!reactive::flush(), "nothing was woken");
 /// ```
 pub fn init() {
-    runtime::with_runtime(|_| {});
+    runtime::init();
 }
 
 /// Runs every effect woken since the last call, in the order they were woken,
@@ -162,7 +162,7 @@ pub fn flush() -> bool {
 pub fn set_wake_callback(callback: impl Fn() + 'static) {
     // The previous callback drops after the runtime is released, so its drop
     // may enter the runtime.
-    let scope = runtime::with_runtime(|runtime| runtime.current_scope());
+    let scope = runtime::current_scope();
     scope.wake.replace(Some(Rc::new(callback)));
 }
 
@@ -254,7 +254,7 @@ impl<T: 'static> RwSignal<T> {
     /// owner nothing disposes it, and its entry in the runtime stays until the
     /// thread ends.
     pub fn new(value: T) -> RwSignal<T> {
-        let node = runtime::with_runtime(runtime::Runtime::new_signal);
+        let node = runtime::new_signal();
         RwSignal {
             data: Rc::new(SignalData {
                 value: RefCell::new(value),
@@ -312,8 +312,7 @@ impl<T: 'static> Read<T> for RwSignal<T> {
 impl<T: 'static> Update<T> for RwSignal<T> {
     fn update<U>(&self, fun: impl FnOnce(&mut T) -> U) -> U {
         let result = fun(&mut self.data.value.borrow_mut());
-        let wake = runtime::with_runtime(|runtime| runtime.notify(self.data.node.get()));
-        runtime::fire_wakes(wake);
+        runtime::notify(self.data.node.get());
         result
     }
 }
@@ -348,8 +347,7 @@ pub struct WriteSignal<T> {
 impl<T: 'static> Update<T> for WriteSignal<T> {
     fn update<U>(&self, fun: impl FnOnce(&mut T) -> U) -> U {
         let result = fun(&mut self.data.value.borrow_mut());
-        let wake = runtime::with_runtime(|runtime| runtime.notify(self.data.node.get()));
-        runtime::fire_wakes(wake);
+        runtime::notify(self.data.node.get());
         result
     }
 }
@@ -379,7 +377,7 @@ impl<T: 'static> Update<T> for WriteSignal<T> {
 /// assert_eq!(seen.get(), 4);
 /// ```
 pub fn signal_local<T: 'static>(value: T) -> (ReadSignal<T>, WriteSignal<T>) {
-    let node = runtime::with_runtime(runtime::Runtime::new_signal);
+    let node = runtime::new_signal();
     let data = Rc::new(SignalData {
         value: RefCell::new(value),
         node: Cell::new(node),
@@ -434,11 +432,10 @@ impl<T: 'static> Memo<T> {
                 .is_none_or(|old| *old != value);
             if changed {
                 *stored.value.borrow_mut() = Some(value);
-                let wake = runtime::with_runtime(|runtime| runtime.notify(stored.node.get()));
-                runtime::fire_wakes(wake);
+                runtime::notify(stored.node.get());
             }
         });
-        let node = runtime::with_runtime(|runtime| runtime.new_memo(run));
+        let node = runtime::new_memo(run);
         data.node.set(node);
         runtime::compute_new_memo(node);
         Memo { data }
@@ -497,14 +494,14 @@ impl RenderEffect {
     /// type's documentation for the lifetime rules. The body's return value
     /// is ignored.
     pub fn new<T>(mut run: impl FnMut() -> T + 'static) -> RenderEffect {
-        let owned = runtime::with_runtime(|runtime| runtime.current_owner().is_some());
-        let scope = runtime::with_runtime(|runtime| runtime.current_scope());
+        let owned = runtime::current_owner().is_some();
+        let scope = runtime::current_scope();
         let cell = Rc::new(EffectCell {
             run: RefCell::new(Some(Box::new(move || {
                 run();
             }))),
         });
-        let node = runtime::with_runtime(|runtime| runtime.new_effect(Rc::clone(&cell), scope));
+        let node = runtime::new_effect(Rc::clone(&cell), scope);
         let mut guard = runtime::DisposeOnUnwind {
             node,
             armed: !owned,
@@ -552,8 +549,8 @@ impl Owner {
     /// With no current owner the new owner starts a new root scope, which
     /// carries its own wake callback.
     pub fn new() -> Owner {
-        let parent = runtime::with_runtime(|runtime| runtime.current_owner());
-        let scope = runtime::with_runtime(|runtime| runtime.owner_scope(parent.as_deref()));
+        let parent = runtime::current_owner();
+        let scope = runtime::owner_scope(parent.as_deref());
         let inner = Rc::new(OwnerData {
             parent: parent.as_ref().map(Rc::downgrade),
             scope,
@@ -582,7 +579,7 @@ impl Owner {
     /// Makes this owner current until another one is set or a `with` block
     /// restores the previous one.
     pub fn set(&self) {
-        runtime::with_runtime(|runtime| runtime.set_current(&self.inner));
+        runtime::set_current(&self.inner);
     }
 
     /// Runs `fun` with this owner current, restoring the previous one after.
@@ -623,7 +620,7 @@ impl Owner {
 
     /// Returns the current owner, when one is set and still alive.
     fn current() -> Option<Rc<OwnerData>> {
-        runtime::with_runtime(|runtime| runtime.current_owner())
+        runtime::current_owner()
     }
 
     /// Runs the wake callback of this owner's tree, when one is set.
