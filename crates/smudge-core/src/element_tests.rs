@@ -445,3 +445,69 @@ fn a_dynamic_accessible_label_follows_its_signal() {
         Some(String::from("after")),
     );
 }
+
+#[test]
+fn a_fixed_value_after_a_binding_of_the_same_property_wins() {
+    let (height, set_height) = signal_local(Length::px(50.0));
+    let (color, set_color) = signal_local(Color::BLACK);
+    let (mut tree, queue, root) = mount_root(
+        panel()
+            .min_height(move || height.get())
+            .min_height(Length::px(10.0))
+            .background(move || color.get().into())
+            .background(Color::WHITE),
+    );
+    settle(&mut tree, &queue);
+    set_height.set(Length::px(80.0));
+    set_color.set(Color::rgb(1, 2, 3));
+    settle(&mut tree, &queue);
+
+    let style = tree.style(root).expect("the root is live");
+    assert_eq!(style.layout.min_height, Length::px(10.0));
+    assert_eq!(style.paint.background, Some(Color::WHITE.into()));
+}
+
+#[test]
+fn a_binding_after_a_binding_of_the_same_property_replaces_it() {
+    let (first, set_first) = signal_local(Length::px(50.0));
+    let (second, _set_second) = signal_local(Length::px(20.0));
+    let (mut tree, queue, root) = mount_root(
+        panel()
+            .width(move || first.get())
+            .width(move || second.get()),
+    );
+    settle(&mut tree, &queue);
+    set_first.set(Length::px(90.0));
+    settle(&mut tree, &queue);
+
+    assert_eq!(
+        tree.style(root).expect("the root is live").layout.width,
+        Length::px(20.0)
+    );
+}
+
+#[test]
+fn a_fixed_width_after_a_bound_size_keeps_the_bound_height() {
+    let (size, set_size) = signal_local(crate::geometry::Size {
+        width: 40.0,
+        height: 30.0,
+    });
+    let (mut tree, queue, root) = mount_root(
+        panel()
+            .size(move || size.get())
+            .width(Length::px(12.0))
+            .direction(crate::style::Direction::Column)
+            .row(),
+    );
+    settle(&mut tree, &queue);
+    set_size.set(crate::geometry::Size {
+        width: 70.0,
+        height: 60.0,
+    });
+    settle(&mut tree, &queue);
+
+    let style = tree.style(root).expect("the root is live");
+    assert_eq!(style.layout.width, Length::px(12.0));
+    assert_eq!(style.layout.height, Length::px(60.0));
+    assert_eq!(style.layout.direction, crate::style::Direction::Row);
+}

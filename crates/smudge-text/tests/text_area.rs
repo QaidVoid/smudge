@@ -808,3 +808,24 @@ fn the_undo_history_keeps_a_bounded_number_of_bytes() {
         "a few steps of a large text are kept: {undone}"
     );
 }
+
+#[test]
+fn an_app_minimum_height_replaces_the_one_line_floor() {
+    let value = RwSignal::new(String::new());
+    let bound = value.clone();
+    let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        smudge_core::widget::panel().column().child(
+            text_area(bound.clone())
+                .width(px(VIEWPORT.0))
+                .min_height(px(4.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+
+    let height = area_rect(&mut harness).height();
+    assert!(
+        height < TextStyle::default().size,
+        "the app's minimum replaces the floor the constructor set: {height}"
+    );
+}

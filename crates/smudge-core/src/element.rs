@@ -201,12 +201,53 @@ struct Binding {
     /// The effect runs once immediately and queues an update every time it
     /// runs.
     install: Install,
+    /// The property the binding writes, when it writes one the element's
+    /// builders can set again.
+    prop: Option<Prop>,
+}
+
+/// A property an element's builders write, so a later write of the same
+/// property can replace an earlier binding of it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Prop {
+    Width,
+    Height,
+    MinWidth,
+    MinHeight,
+    MaxWidth,
+    MaxHeight,
+    Padding,
+    Margin,
+    Gap,
+    Direction,
+    Wrap,
+    Grow,
+    Shrink,
+    Basis,
+    AlignItems,
+    JustifyContent,
+    Inset,
+    BorderWidth,
+    Overflow,
+    Hidden,
+    Background,
+    BorderColor,
+    TextColor,
+    Radius,
+    ScrollOffset,
+    Disabled,
+    Cursor,
 }
 
 impl Binding {
     /// A binding that writes one layout property.
-    fn layout<T: 'static>(get: Rc<dyn Fn() -> T>, write: fn(&mut LayoutProps, T)) -> Binding {
+    fn layout<T: 'static>(
+        prop: Prop,
+        get: Rc<dyn Fn() -> T>,
+        write: fn(&mut LayoutProps, T),
+    ) -> Binding {
         Binding {
+            prop: Some(prop),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -221,8 +262,13 @@ impl Binding {
     }
 
     /// A binding that writes one paint property.
-    fn paint<T: 'static>(get: Rc<dyn Fn() -> T>, write: fn(&mut PaintProps, T)) -> Binding {
+    fn paint<T: 'static>(
+        prop: Prop,
+        get: Rc<dyn Fn() -> T>,
+        write: fn(&mut PaintProps, T),
+    ) -> Binding {
         Binding {
+            prop: Some(prop),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -239,6 +285,7 @@ impl Binding {
     /// A binding that writes the node's disabled bit.
     fn disabled(get: Rc<dyn Fn() -> bool>) -> Binding {
         Binding {
+            prop: Some(Prop::Disabled),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -255,6 +302,7 @@ impl Binding {
     /// A binding that writes the node's accessible label.
     fn a11y_label(get: Rc<dyn Fn() -> String>) -> Binding {
         Binding {
+            prop: None,
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -274,6 +322,7 @@ impl Binding {
     /// layout engine, which is what a scroll view does on every wheel tick.
     fn scroll_offset(get: Rc<dyn Fn() -> Point>) -> Binding {
         Binding {
+            prop: Some(Prop::ScrollOffset),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -290,6 +339,7 @@ impl Binding {
     /// A binding that writes the node's cursor.
     fn cursor(get: Rc<dyn Fn() -> crate::window::Cursor>) -> Binding {
         Binding {
+            prop: Some(Prop::Cursor),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -314,6 +364,7 @@ impl Binding {
         apply: fn(&mut W, T) -> Dirty,
     ) -> Binding {
         Binding {
+            prop: None,
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
                 RenderEffect::new(move || {
@@ -472,71 +523,102 @@ impl<W: Widget> Element<W> {
     /// Writes one layout property, or records a binding for it.
     fn layout_value<T: 'static>(
         mut self,
+        prop: Prop,
         value: impl Into<Value<T>>,
         write: fn(&mut LayoutProps, T),
     ) -> Self {
+        self.replace_binding(prop);
         match value.into() {
             Value::Static(value) => write(&mut self.style.layout, value),
-            Value::Dynamic(get) => self.bindings.push(Binding::layout(get, write)),
+            Value::Dynamic(get) => self.bindings.push(Binding::layout(prop, get, write)),
         }
         self
+    }
+
+    /// Drops the bindings recorded for `prop` so far, because a later write
+    /// of the same property, fixed or bound, replaces them: the last builder
+    /// call for a property wins, as it does between two fixed values.
+    fn replace_binding(&mut self, prop: Prop) {
+        self.bindings.retain(|binding| binding.prop != Some(prop));
     }
 
     /// Writes one paint property, or records a binding for it.
     fn paint_value<T: 'static>(
         mut self,
+        prop: Prop,
         value: impl Into<Value<T>>,
         write: fn(&mut PaintProps, T),
     ) -> Self {
+        self.replace_binding(prop);
         match value.into() {
             Value::Static(value) => write(&mut self.style.paint, value),
-            Value::Dynamic(get) => self.bindings.push(Binding::paint(get, write)),
+            Value::Dynamic(get) => self.bindings.push(Binding::paint(prop, get, write)),
         }
         self
     }
 
     /// Sets the width. This takes part in layout.
     pub fn width(self, width: impl Into<Value<Length>>) -> Self {
-        self.layout_value(width, |layout, width| layout.width = width)
+        self.layout_value(Prop::Width, width, |layout, width| layout.width = width)
     }
 
     /// Sets the height. This takes part in layout.
     pub fn height(self, height: impl Into<Value<Length>>) -> Self {
-        self.layout_value(height, |layout, height| layout.height = height)
+        self.layout_value(Prop::Height, height, |layout, height| {
+            layout.height = height
+        })
     }
 
     /// Sets the width and the height, in logical pixels. This takes part in
     /// layout.
     pub fn size(self, size: impl Into<Value<Size>>) -> Self {
-        self.layout_value(size, |layout, size| {
-            layout.width = Length::px(size.width);
-            layout.height = Length::px(size.height);
-        })
+        let (width, height): (Value<Length>, Value<Length>) = match size.into() {
+            Value::Static(size) => (
+                Value::Static(Length::px(size.width)),
+                Value::Static(Length::px(size.height)),
+            ),
+            Value::Dynamic(get) => {
+                let get_height = Rc::clone(&get);
+                (
+                    Value::Dynamic(Rc::new(move || Length::px(get().width))),
+                    Value::Dynamic(Rc::new(move || Length::px(get_height().height))),
+                )
+            }
+        };
+        self.width(width).height(height)
     }
 
     /// Sets the lower bound of the width. This takes part in layout.
     pub fn min_width(self, width: impl Into<Value<Length>>) -> Self {
-        self.layout_value(width, |layout, width| layout.min_width = width)
+        self.layout_value(Prop::MinWidth, width, |layout, width| {
+            layout.min_width = width
+        })
     }
 
     /// Sets the lower bound of the height. This takes part in layout.
     pub fn min_height(self, height: impl Into<Value<Length>>) -> Self {
-        self.layout_value(height, |layout, height| layout.min_height = height)
+        self.layout_value(Prop::MinHeight, height, |layout, height| {
+            layout.min_height = height
+        })
     }
 
     /// Sets the upper bound of the width. This takes part in layout.
     pub fn max_width(self, width: impl Into<Value<Length>>) -> Self {
-        self.layout_value(width, |layout, width| layout.max_width = width)
+        self.layout_value(Prop::MaxWidth, width, |layout, width| {
+            layout.max_width = width
+        })
     }
 
     /// Sets the upper bound of the height. This takes part in layout.
     pub fn max_height(self, height: impl Into<Value<Length>>) -> Self {
-        self.layout_value(height, |layout, height| layout.max_height = height)
+        self.layout_value(Prop::MaxHeight, height, |layout, height| {
+            layout.max_height = height
+        })
     }
 
     /// Sets the same padding on all four sides. This takes part in layout.
     pub fn padding(self, padding: impl Into<Value<Length>>) -> Self {
-        self.layout_value(padding, |layout, padding| {
+        self.layout_value(Prop::Padding, padding, |layout, padding| {
             layout.padding = Edges::all(padding);
         })
     }
@@ -544,39 +626,41 @@ impl<W: Widget> Element<W> {
     /// Sets the horizontal padding from `width` and the vertical padding from
     /// `height`. This takes part in layout.
     pub fn padding_xy(self, padding: impl Into<Value<Size>>) -> Self {
-        self.layout_value(padding, |layout, padding| {
+        self.layout_value(Prop::Padding, padding, |layout, padding| {
             layout.padding = Edges::xy(Length::px(padding.width), Length::px(padding.height));
         })
     }
 
     /// Sets the same margin on all four sides. This takes part in layout.
     pub fn margin(self, margin: impl Into<Value<Length>>) -> Self {
-        self.layout_value(margin, |layout, margin| {
+        self.layout_value(Prop::Margin, margin, |layout, margin| {
             layout.margin = Edges::all(margin);
         })
     }
 
     /// Sets the space between adjacent children. This takes part in layout.
     pub fn gap(self, gap: impl Into<Value<Size>>) -> Self {
-        self.layout_value(gap, |layout, gap| layout.gap = gap)
+        self.layout_value(Prop::Gap, gap, |layout, gap| layout.gap = gap)
     }
 
     /// Sets the main axis of the children's flex layout. This takes part in
     /// layout.
     pub fn direction(self, direction: impl Into<Value<Direction>>) -> Self {
-        self.layout_value(direction, |layout, direction| {
+        self.layout_value(Prop::Direction, direction, |layout, direction| {
             layout.direction = direction;
         })
     }
 
     /// Lays the children out left to right. This takes part in layout.
     pub fn row(mut self) -> Self {
+        self.replace_binding(Prop::Direction);
         self.style.layout.direction = Direction::Row;
         self
     }
 
     /// Lays the children out top to bottom. This takes part in layout.
     pub fn column(mut self) -> Self {
+        self.replace_binding(Prop::Direction);
         self.style.layout.direction = Direction::Column;
         self
     }
@@ -584,37 +668,41 @@ impl<W: Widget> Element<W> {
     /// Lets children that do not fit move to a new line instead of shrinking.
     /// This takes part in layout.
     pub fn wrap(self, wrap: impl Into<Value<bool>>) -> Self {
-        self.layout_value(wrap, |layout, wrap| layout.wrap = wrap)
+        self.layout_value(Prop::Wrap, wrap, |layout, wrap| layout.wrap = wrap)
     }
 
     /// Sets the share of the leftover space on the main axis this node takes.
     /// This takes part in layout.
     pub fn grow(self, grow: impl Into<Value<f32>>) -> Self {
-        self.layout_value(grow, |layout, grow| layout.grow = grow)
+        self.layout_value(Prop::Grow, grow, |layout, grow| layout.grow = grow)
     }
 
     /// Sets how readily this node gives up space when its siblings overflow.
     /// This takes part in layout.
     pub fn shrink(self, shrink: impl Into<Value<f32>>) -> Self {
-        self.layout_value(shrink, |layout, shrink| layout.shrink = shrink)
+        self.layout_value(Prop::Shrink, shrink, |layout, shrink| {
+            layout.shrink = shrink
+        })
     }
 
     /// Sets the main axis size the node starts from before growing or
     /// shrinking. This takes part in layout.
     pub fn basis(self, basis: impl Into<Value<Length>>) -> Self {
-        self.layout_value(basis, |layout, basis| layout.basis = basis)
+        self.layout_value(Prop::Basis, basis, |layout, basis| layout.basis = basis)
     }
 
     /// Sets how the children line up across the main axis. This takes part in
     /// layout.
     pub fn align_items(self, align: impl Into<Value<Align>>) -> Self {
-        self.layout_value(align, |layout, align| layout.align_items = Some(align))
+        self.layout_value(Prop::AlignItems, align, |layout, align| {
+            layout.align_items = Some(align)
+        })
     }
 
     /// Sets how the children are spread along the main axis. This takes part in
     /// layout.
     pub fn justify_content(self, justify: impl Into<Value<Justify>>) -> Self {
-        self.layout_value(justify, |layout, justify| {
+        self.layout_value(Prop::JustifyContent, justify, |layout, justify| {
             layout.justify_content = Some(justify);
         })
     }
@@ -630,14 +718,14 @@ impl<W: Widget> Element<W> {
     /// Sets the offsets from the containing block's edges. This takes part in
     /// layout.
     pub fn inset(self, inset: impl Into<Value<Edges<Length>>>) -> Self {
-        self.layout_value(inset, |layout, inset| layout.inset = inset)
+        self.layout_value(Prop::Inset, inset, |layout, inset| layout.inset = inset)
     }
 
     /// Sets the border width, the same on all four sides. This takes part in
     /// layout, because the border takes space away from the content. The border
     /// is painted in the color set by [`Element::border_color`].
     pub fn border(self, width: impl Into<Value<f32>>) -> Self {
-        self.layout_value(width, |layout, width| {
+        self.layout_value(Prop::BorderWidth, width, |layout, width| {
             layout.border_width = Edges::all(width);
         })
     }
@@ -645,7 +733,7 @@ impl<W: Widget> Element<W> {
     /// Clips the children to the node's bounds. This takes part in layout,
     /// because clipping also changes the automatic minimum size of a flex item.
     pub fn clip(self, clip: impl Into<Value<bool>>) -> Self {
-        self.layout_value(clip, |layout, clip| {
+        self.layout_value(Prop::Overflow, clip, |layout, clip| {
             layout.overflow = if clip {
                 Overflow::Clip
             } else {
@@ -657,7 +745,9 @@ impl<W: Widget> Element<W> {
     /// Hides the node and its subtree, or shows them again. This takes part in
     /// layout, because a hidden node is not laid out and paints nothing.
     pub fn hidden(self, hidden: impl Into<Value<bool>>) -> Self {
-        self.layout_value(hidden, |layout, hidden| layout.hidden = hidden)
+        self.layout_value(Prop::Hidden, hidden, |layout, hidden| {
+            layout.hidden = hidden
+        })
     }
 
     /// Translates the node's flowing children by this offset after layout,
@@ -675,6 +765,7 @@ impl<W: Widget> Element<W> {
     /// position, not a style: it takes part in no layout comparison, and an
     /// equal offset changes nothing.
     pub fn scroll_offset(mut self, offset: impl Into<Value<Point>>) -> Self {
+        self.replace_binding(Prop::ScrollOffset);
         match offset.into() {
             Value::Static(offset) => self.scroll_offset = offset,
             Value::Dynamic(get) => self.bindings.push(Binding::scroll_offset(get)),
@@ -689,7 +780,9 @@ impl<W: Widget> Element<W> {
     /// [`ColorToken`]. A token resolves against the
     /// theme that is current when the node paints.
     pub fn background(self, color: impl Into<Value<ColorValue>>) -> Self {
-        self.paint_value(color, |paint, color| paint.background = Some(color))
+        self.paint_value(Prop::Background, color, |paint, color| {
+            paint.background = Some(color)
+        })
     }
 
     /// Sets the color of the border whose width [`Element::border`] sets. This
@@ -699,7 +792,9 @@ impl<W: Widget> Element<W> {
     /// [`ColorToken`]. A token resolves against the
     /// theme that is current when the node paints.
     pub fn border_color(self, color: impl Into<Value<ColorValue>>) -> Self {
-        self.paint_value(color, |paint, color| paint.border_color = Some(color))
+        self.paint_value(Prop::BorderColor, color, |paint, color| {
+            paint.border_color = Some(color)
+        })
     }
 
     /// Sets the color a widget's text paints with. This repaints the node
@@ -710,7 +805,9 @@ impl<W: Widget> Element<W> {
     /// [`ColorToken`]. A token resolves against the
     /// theme that is current when the node paints.
     pub fn text_color(self, color: impl Into<Value<ColorValue>>) -> Self {
-        self.paint_value(color, |paint, color| paint.text_color = Some(color))
+        self.paint_value(Prop::TextColor, color, |paint, color| {
+            paint.text_color = Some(color)
+        })
     }
 
     /// Sets the corner radius of the background and the border, the same on all
@@ -721,7 +818,7 @@ impl<W: Widget> Element<W> {
     /// [`RadiusToken`]. A token resolves against
     /// the theme that is current when the node paints.
     pub fn corner_radius(self, radius: impl Into<Value<RadiusValue>>) -> Self {
-        self.paint_value(radius, |paint, radius| {
+        self.paint_value(Prop::Radius, radius, |paint, radius| {
             paint.corner_radius = radius;
         })
     }
@@ -999,6 +1096,7 @@ impl<W: Widget> Element<W> {
     /// instead. Its children are still hit. This can be bound to a signal,
     /// like the style builders.
     pub fn disabled(mut self, disabled: impl Into<Value<bool>>) -> Self {
+        self.replace_binding(Prop::Disabled);
         match disabled.into() {
             Value::Static(disabled) => self.disabled = disabled,
             Value::Dynamic(get) => self.bindings.push(Binding::disabled(get)),
@@ -1028,6 +1126,7 @@ impl<W: Widget> Element<W> {
     ///     .cursor(Cursor::Pointer);
     /// ```
     pub fn cursor(mut self, cursor: impl Into<Value<crate::window::Cursor>>) -> Self {
+        self.replace_binding(Prop::Cursor);
         match cursor.into() {
             Value::Static(cursor) => self.cursor = Some(cursor),
             Value::Dynamic(get) => self.bindings.push(Binding::cursor(get)),
@@ -1542,6 +1641,7 @@ pub fn show<E: IntoElement>(
     let build: Rc<dyn Fn() -> AnyElement> = Rc::new(move || build().into_any());
     let mut element = Element::new(Slot);
     element.bindings.push(Binding {
+        prop: None,
         install: Box::new(move |id, queue| {
             let queue = queue.clone();
             let mounted: Rc<RefCell<Option<(WidgetId, Owner)>>> = Rc::new(RefCell::new(None));
@@ -1626,6 +1726,7 @@ where
     let row: Rc<dyn Fn(T) -> AnyElement> = Rc::new(move |item| row(item).into_any());
     let mut element = Element::new(Slot);
     element.bindings.push(Binding {
+        prop: None,
         install: Box::new(move |slot, queue| {
             let queue = queue.clone();
             let mounted: Rc<RefCell<HashMap<K, (WidgetId, Owner)>>> =
