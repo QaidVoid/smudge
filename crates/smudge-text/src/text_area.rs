@@ -262,6 +262,10 @@ impl Widget for TextArea {
 /// area does not scroll with it. A wheel that cannot move the text, because
 /// it fits or sits at its limit in the wheel's direction, passes on to the
 /// area's ancestors, so a page around the area keeps scrolling.
+///
+/// Only the field that holds the focus shows its selection. A field that
+/// loses the focus keeps the selection and shows it again when the focus
+/// returns.
 pub fn text_area(value: RwSignal<String>) -> Element<TextArea> {
     let chrome = Rc::new(InputChrome::new(value.clone(), true));
     let measured = Rc::new(Cell::new(0.0));

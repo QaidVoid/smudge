@@ -1664,3 +1664,73 @@ fn scrolled_selected_text_never_covers_the_border() {
         }
     }
 }
+
+/// Returns the vertical centers of the selection fills the next frame
+/// paints, telling them apart from other fills by the selection's alpha.
+fn selection_rows(harness: &mut Harness) -> Vec<f32> {
+    harness.settle();
+    let output = harness.app().frame();
+    output
+        .list
+        .items()
+        .iter()
+        .filter_map(|item| match item {
+            DisplayItem::Op(PaintOp::FillRect { rect, color, .. }) if color.a == 96 => {
+                Some((rect.y0 + rect.y1) / 2.0)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn only_the_focused_field_shows_its_selection() {
+    let first = RwSignal::new(String::from("first field"));
+    let second = RwSignal::new(String::from("second field"));
+    let (one, two) = (first.clone(), second.clone());
+    let mut harness = Harness::new(200.0, 100.0, 1.0, move || {
+        panel()
+            .column()
+            .child(text_input(one.clone()).width(px(200.0)).height(px(32.0)))
+            .child(text_input(two.clone()).width(px(200.0)).height(px(32.0)))
+    });
+    harness.frame();
+    let select_all = |harness: &mut Harness| {
+        harness.press_key_with(Key::Character(String::from("a")), command());
+    };
+
+    harness.click(Point { x: 60.0, y: 16.0 });
+    select_all(&mut harness);
+    let rows = selection_rows(&mut harness);
+    assert!(!rows.is_empty(), "the focused field shows its selection");
+    assert!(rows.iter().all(|&y| y < 32.0), "{rows:?}");
+
+    harness.click(Point { x: 60.0, y: 48.0 });
+    assert_eq!(
+        selection_rows(&mut harness),
+        Vec::<f32>::new(),
+        "the field that lost the focus hides its selection"
+    );
+
+    select_all(&mut harness);
+    let rows = selection_rows(&mut harness);
+    assert!(
+        !rows.is_empty(),
+        "the newly focused field shows its selection"
+    );
+    assert!(rows.iter().all(|&y| y >= 32.0), "{rows:?}");
+
+    harness.press_key_with(
+        Key::Tab,
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
+    let rows = selection_rows(&mut harness);
+    assert!(
+        !rows.is_empty() && rows.iter().all(|&y| y < 32.0),
+        "the first field shows its kept selection again when the focus returns: {rows:?}"
+    );
+    harness.assert_matches_full_repaint();
+}

@@ -65,9 +65,9 @@ pub(crate) struct InputChrome {
     pub(crate) caret: RwSignal<Option<CaretPaint>>,
     /// The blink phase: `true` while the caret shows.
     pub(crate) caret_on: RwSignal<bool>,
-    /// Whether the widget holds the focus, which is when a caret shows at
-    /// all.
-    pub(crate) caret_shown: RwSignal<bool>,
+    /// Whether the widget holds the focus, which is when its caret and its
+    /// selection show at all.
+    pub(crate) focused: RwSignal<bool>,
     /// The widget's content box in paint coordinates, the color its caret
     /// drew with and the box's origin relative to the widget's rectangle, as
     /// the last paint left them, or `None` before the first paint.
@@ -125,7 +125,7 @@ impl InputChrome {
             edits: RwSignal::new(0),
             caret: RwSignal::new(None),
             caret_on: RwSignal::new(true),
-            caret_shown: RwSignal::new(false),
+            focused: RwSignal::new(false),
             painted: Cell::new(None),
             scroll_x: Cell::new(0.0),
             scroll_y: Cell::new(0.0),
@@ -326,7 +326,7 @@ pub(crate) fn caret_node(chrome: &Rc<InputChrome>) -> Element<Caret> {
     )
     .bind(
         CaretShownKey,
-        move || shown_chrome.caret_on.get() && shown_chrome.caret_shown.get(),
+        move || shown_chrome.caret_on.get() && shown_chrome.focused.get(),
         apply_caret_shown,
     )
 }
@@ -426,7 +426,7 @@ pub(crate) fn handle_focus(chrome: &InputChrome, focused: bool) {
         // focus, so the composition dies with it instead of outliving it.
         chrome.editor.compose("", None);
     }
-    chrome.caret_shown.set(focused);
+    chrome.focused.set(focused);
     if focused {
         chrome.caret_on.set(true);
         chrome.start_blink();
@@ -580,6 +580,12 @@ pub(crate) fn distance_squared(a: Point, b: Point) -> f32 {
 /// Appends the selection of the editor's text for the lines that meet
 /// `visible`, in text coordinates, as fills in `color` placed at `origin`.
 ///
+/// Only a widget that holds the focus shows its selection, so of several
+/// fields only the one being edited shows one. The editor keeps the
+/// selection while the widget is unfocused, and it shows again when the
+/// focus comes back. The focus change repaints the widget through the edit
+/// counter [`handle_focus`] bumps.
+///
 /// The rectangles go through the chrome's kept buffer, so a steady paint
 /// allocates nothing.
 pub(crate) fn paint_selection(
@@ -589,6 +595,9 @@ pub(crate) fn paint_selection(
     color: Color,
     out: &mut Vec<PaintOp>,
 ) {
+    if !chrome.focused.read(|focused| *focused) {
+        return;
+    }
     let mut rects = chrome.selection.borrow_mut();
     chrome.editor.selection_rects(visible, &mut rects);
     out.extend(rects.iter().map(|area| PaintOp::FillRect {

@@ -249,6 +249,10 @@ impl Widget for TextInput {
 /// The input is one line tall by its content and fills the width it is
 /// offered, so give it a height through the style builders when the layout
 /// needs one.
+///
+/// Only the field that holds the focus shows its selection. A field that
+/// loses the focus keeps the selection and shows it again when the focus
+/// returns.
 pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
     let chrome = Rc::new(InputChrome::new(value.clone(), false));
 
