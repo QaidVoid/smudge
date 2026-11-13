@@ -113,6 +113,10 @@ pub(crate) struct Handlers {
     pub(crate) on_ime_preedit: Option<PreeditHandler>,
     /// Runs when the node gains or loses the keyboard focus.
     pub(crate) on_focus: Option<Box<dyn FnMut(bool)>>,
+    /// Runs with the node's new scroll offset when the tree scrolled the node
+    /// to bring the focused node into view. Its presence is what lets the
+    /// tree scroll the node for that, and it takes no part in hit testing.
+    pub(crate) on_reveal: Option<Box<dyn FnMut(Point)>>,
     /// Whether a fresh press of Enter or Space runs the node's
     /// [`on_press`](Self::on_press) handler, which is how a button fires from
     /// the keyboard.
@@ -203,8 +207,11 @@ impl WidgetTree {
                 self.set_focus(None);
             }
             // A press is a focus gesture, so it also ends the reach of a
-            // focus that a disabled or hidden node lost earlier.
+            // focus that a disabled or hidden node lost earlier, and drops a
+            // reveal an earlier focus move asked for, even when the press
+            // lands on the node that move focused.
             self.stale_focus = None;
+            self.reveal_focus = false;
         }
         if let Some(previous) = self.pressed.take() {
             self.set_bit(previous, Interaction::PRESSED, false);
@@ -330,9 +337,13 @@ impl WidgetTree {
     }
 
     /// Returns whether the tree holds work only a frame can finish: a node to
-    /// lay out or paint, or the pixels of a removed node to clear.
+    /// lay out or paint, a focused node to scroll into view, or the pixels of
+    /// a removed node to clear.
     pub(crate) fn has_pending_work(&self) -> bool {
-        self.layout_dirty || !self.paint_queue.is_empty() || !self.pending_damage.is_empty()
+        self.layout_dirty
+            || self.reveal_focus
+            || !self.paint_queue.is_empty()
+            || !self.pending_damage.is_empty()
     }
 
     /// Installs the handlers a node was mounted with.

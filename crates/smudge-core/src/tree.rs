@@ -318,6 +318,9 @@ pub(crate) struct WidgetTree {
     /// The autofocus requests that mounted nodes queued and no layout pass
     /// has resolved yet.
     pending_autofocus: Vec<WidgetId>,
+    /// Whether a focus move asked the next frame to scroll the focused node
+    /// into view. The layout of that frame resolves it and clears it.
+    reveal_focus: bool,
     /// The mounted focus traps, oldest first.
     ///
     /// The last mounted trap wins, and removing a node ends every trap it
@@ -368,6 +371,7 @@ impl WidgetTree {
             stale_focus: None,
             keyboard_nav: false,
             pending_autofocus: Vec::new(),
+            reveal_focus: false,
             focus_traps: Vec::new(),
             following: Vec::new(),
             pinned: Vec::new(),

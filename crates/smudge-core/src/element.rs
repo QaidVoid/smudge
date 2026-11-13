@@ -1495,6 +1495,90 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Lets the tree scroll the node to bring the focused node into view,
+    /// and runs `handler` with the node's new scroll offset each time it
+    /// does.
+    ///
+    /// When Tab, autofocus, a remount that restores the focus, a focus trap
+    /// that hides or goes away and hands the focus back, or
+    /// [`App::request_focus`](crate::app::App::request_focus) moves the
+    /// focus, the next layout scrolls every ancestor of the focused node that
+    /// set this handler, deepest first. An ancestor whose child on the way to
+    /// the focused node is absolutely positioned does not scroll, because its
+    /// offset never moves that child. Each one moves its vertical offset by
+    /// the least that brings the focused node inside its content box, or
+    /// aligns the node's top with the top of the content box when the node
+    /// is taller than it. The offset stays between zero and the furthest its
+    /// flowing content reaches, and the horizontal offset is left alone. An
+    /// ancestor further up reveals the part of the node that the one inside
+    /// it shows, so nested views each scroll. A node already in view moves
+    /// nothing, and the handler then does not run. A pointer press that
+    /// focuses a node does not scroll, because the node is under the
+    /// pointer.
+    ///
+    /// The tree sets the offset itself, in the frame the focus moved, so the
+    /// handler is where a node whose offset is bound to a signal writes the
+    /// new offset back, and the binding then applies the offset already in
+    /// place. A node that also follows the end of its content with
+    /// [`Element::follow`] is pinned again by the next layout pass unless
+    /// the handler releases the follow signal. The handler runs inside the
+    /// node's owner.
+    ///
+    /// ```
+    /// use smudge_core::app::{App, AppConfig, RepaintMode};
+    /// use smudge_core::element::Element;
+    /// use smudge_core::geometry::{Color, Point, Size};
+    /// use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers};
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_core::style::{Overflow, px};
+    /// use smudge_core::widget::{Panel, panel};
+    ///
+    /// let offset = RwSignal::new(0.0);
+    /// let view = {
+    ///     let read = offset.clone();
+    ///     let write = offset.clone();
+    ///     move || {
+    ///         Element::new(Panel)
+    ///             .column()
+    ///             .height(px(100.0))
+    ///             .overflow(Overflow::Scroll)
+    ///             .scroll_offset(move || Point { x: 0.0, y: read.get() })
+    ///             .on_reveal(move |revealed| write.set(revealed.y))
+    ///             .child(panel().height(px(300.0)).shrink(0.0))
+    ///             .child(panel().height(px(20.0)).shrink(0.0).focusable())
+    ///     }
+    /// };
+    /// let mut app = App::new(
+    ///     AppConfig {
+    ///         viewport: Size {
+    ///             width: 100.0,
+    ///             height: 100.0,
+    ///         },
+    ///         scale: 1.0,
+    ///         clear_color: Color::WHITE,
+    ///         repaint: RepaintMode::Damage,
+    ///     },
+    ///     view,
+    /// );
+    /// app.frame();
+    ///
+    /// app.handle_event(InputEvent::Key(KeyEvent {
+    ///     key: Key::Tab,
+    ///     pressed: true,
+    ///     repeat: false,
+    ///     modifiers: Modifiers::default(),
+    ///     text: None,
+    /// }));
+    /// app.frame();
+    ///
+    /// // The focused panel spans 300 to 320, so the view shows its bottom edge.
+    /// assert_eq!(offset.read(|value| *value), 220.0);
+    /// ```
+    pub fn on_reveal(mut self, handler: impl FnMut(Point) + 'static) -> Self {
+        self.handlers.on_reveal = Some(Box::new(handler));
+        self
+    }
+
     /// Binds one property of the element's own widget.
     ///
     /// The first argument names the property: pass a value of a marker type, usually a

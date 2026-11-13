@@ -79,6 +79,8 @@ let log = scroll(
 
 `scroll(content)` clips its content to its own box and scrolls it vertically with the wheel or touchpad, showing a thumb as a position indicator. Scrolling does not repaint the content: the rows keep their paint and only move, so a scroll frame through a thousand rows stays well under a millisecond on the CPU renderer.
 
+When Tab, `autofocus()`, a focus restored after a remount, a focus trap handing the focus back, or `App::request_focus` moves the keyboard focus to a node the view hides, the view scrolls just far enough to show that node at its nearest edge, and every scroll view around it does the same. A node taller than the view is shown from its top. A click that focuses a node scrolls nothing, because the node is already under the pointer.
+
 To control the position from your own state, bind it to a signal with `ScrollExt::offset`:
 
 ```rust
@@ -105,7 +107,7 @@ let follow = RwSignal::new(true);
 let log = scroll(output_lines).follow_end(follow).height(px(300.0));
 ```
 
-While the signal is true, the view shows the end of the content and stays there as lines arrive, which is what an output log wants. Scrolling up writes false, so the reader can look back in peace; scrolling back to the end or setting the signal to true pins it again.
+While the signal is true, the view shows the end of the content and stays there as lines arrive, which is what an output log wants. Scrolling up writes false, so the reader can look back in peace; scrolling back to the end or setting the signal to true pins it again. A focus move that scrolls the view up to show the focused node writes false too.
 
 ## Virtual list
 
