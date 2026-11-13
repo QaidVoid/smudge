@@ -27,7 +27,7 @@ use smudge_core::semantics::{Role, Semantics};
 use smudge_core::style::Length;
 use smudge_core::theme::ColorToken;
 use smudge_core::tree::Dirty;
-use smudge_core::widget::{AvailableSpace, MeasureInput, PaintCx, Widget};
+use smudge_core::widget::{AvailableSpace, MeasureInput, PaintCx, Panel, Widget};
 use smudge_core::window::Cursor;
 
 use crate::chrome::{
@@ -128,6 +128,9 @@ impl Widget for TextArea {
     /// or when the glyph run cache is already borrowed on this thread,
     /// which the paint pass cannot do.
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
+        // The field's own box, its background and border, paints first, the
+        // way a panel paints it, so the text and the selection draw over it.
+        Panel.paint(cx, out);
         let color = self.text_color(cx);
         let inset = Point {
             x: cx.content.x0 - cx.rect.x0,

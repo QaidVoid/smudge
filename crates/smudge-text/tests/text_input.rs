@@ -1587,3 +1587,38 @@ proptest! {
         prop_assert_eq!(reference.text(), end, "redo walks forward to where the edits ended");
     }
 }
+
+#[test]
+fn an_input_paints_its_own_background_and_border() {
+    let value = RwSignal::new(String::new());
+    let bound = value.clone();
+    let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        panel().child(
+            text_input(bound.clone())
+                .width(px(200.0))
+                .height(px(32.0))
+                .background(Color::rgb(30, 31, 36))
+                .border(1.0)
+                .border_color(Color::rgb(70, 74, 88)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+
+    let output = harness.app().frame();
+    let mut background = false;
+    let mut border = false;
+    for item in output.list.items() {
+        match item {
+            DisplayItem::Op(PaintOp::FillRect { color, .. }) => {
+                background |= *color == Color::rgb(30, 31, 36);
+            }
+            DisplayItem::Op(PaintOp::StrokeRect { color, width, .. }) => {
+                border |= *color == Color::rgb(70, 74, 88) && *width == 1.0;
+            }
+            _ => {}
+        }
+    }
+    assert!(background, "the input painted no background");
+    assert!(border, "the input painted no border");
+}
