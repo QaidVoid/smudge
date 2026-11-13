@@ -2,7 +2,8 @@
 //!
 //! Tests drive the same frame pipeline a window does, so behavior observed here
 //! matches what a running application shows. [`Harness`] runs an [`App`] and a
-//! [`CpuRenderer`] together without a window.
+//! [`CpuRenderer`] together without a window, and draws every frame into a
+//! window buffer through an [`XrgbRenderer`] as well.
 
 #![forbid(unsafe_code)]
 
@@ -20,7 +21,7 @@ use smudge_core::geometry::{Color, PixelRect, Point, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::paint::DisplayList;
 use smudge_core::timer::VirtualClock;
-use smudge_cpu::CpuRenderer;
+use smudge_cpu::{CpuRenderer, XrgbRenderer};
 
 /// The color the harness clears the surface with before it replays a frame.
 const CLEAR_COLOR: Color = Color::WHITE;
@@ -45,7 +46,10 @@ pub struct FrameReport {
 /// An app and a CPU renderer driven together without a window.
 ///
 /// Every frame runs [`App::frame`] and then hands its output to the renderer,
-/// so the surface holds what a window would show. The harness keeps the last
+/// so the surface holds what a window would show. The same damage is also
+/// drawn into a buffer of `0x00RRGGBB` words by an [`XrgbRenderer`], the way a
+/// window whose buffer showed the previous frame receives it. The harness
+/// keeps the last
 /// display list and its settings so that
 /// [`Harness::assert_matches_full_repaint`] can compare the damaged surface
 /// with a full repaint.
@@ -80,6 +84,11 @@ pub struct Harness {
     app: App,
     /// The renderer that accumulates the damaged rectangles.
     renderer: CpuRenderer,
+    /// The renderer that draws the damaged rectangles into `buffer`.
+    direct: XrgbRenderer,
+    /// The window buffer the damaged rectangles are drawn into, one
+    /// `0x00RRGGBB` word per pixel.
+    buffer: Vec<u32>,
     /// Whether a frame has run, so there is a display list to compare.
     framed: bool,
     /// The display list of the last frame, kept for the comparison.
@@ -130,6 +139,8 @@ impl Harness {
         let (surface_width, surface_height) = app.surface_size();
         Harness {
             renderer: CpuRenderer::new(surface_width, surface_height),
+            direct: XrgbRenderer::new(surface_width, surface_height),
+            buffer: vec![0; surface_width as usize * surface_height as usize],
             app,
             framed: false,
             list: DisplayList::new(),
@@ -156,6 +167,8 @@ impl Harness {
         let Harness {
             app,
             renderer,
+            direct,
+            buffer,
             framed,
             list,
             damage,
@@ -168,10 +181,13 @@ impl Harness {
         let (width, height) = app.surface_size();
         if (renderer.width(), renderer.height()) != (width, height) {
             renderer.resize(width, height);
+            direct.resize(width, height);
+            buffer.resize(width as usize * height as usize, 0);
         }
         let full = {
             let output = app.frame();
             renderer.render(&output);
+            direct.render_into(&output, buffer);
             *list = output.list.clone();
             *damage = output.damage.to_vec();
             *scale = output.scale;
@@ -364,14 +380,16 @@ impl Harness {
     /// Call it after at least one call to [`Harness::frame`], because it
     /// compares against the display list and settings that frame left. A fresh
     /// renderer replays that list over the whole surface, and its bytes must
-    /// match the surface the damaged frames produced.
+    /// match the surface the damaged frames produced. Its color channels must
+    /// also match the window buffer the damaged frames were drawn into.
     ///
     /// # Panics
     ///
     /// Panics at the first pixel whose bytes differ, naming the pixel, both
     /// values and the damage of the last frame. It also writes the damaged and
     /// the full image under `target/smudge-test-failures/<test name>/`, where
-    /// the test name is the name of the thread that runs the test.
+    /// the test name is the name of the thread that runs the test. A
+    /// difference in the window buffer panics the same way, without images.
     ///
     /// Also panics when no frame has run yet, because there is nothing to
     /// compare.
@@ -403,6 +421,23 @@ impl Harness {
             "the damaged surface differs from a full repaint",
             "full.png",
         );
+        let expected = full.pixels().as_chunks::<4>().0;
+        if let Some(pixel) =
+            self.buffer
+                .iter()
+                .zip(expected)
+                .position(|(&shown, &[red, green, blue, _])| {
+                    shown != u32::from(red) << 16 | u32::from(green) << 8 | u32::from(blue)
+                })
+        {
+            let (x, y) = (pixel % width as usize, pixel / width as usize);
+            panic!(
+                "the window buffer drawn from damage differs from a full repaint at \
+                 pixel ({x}, {y}): drawn {:#08x}, expected premultiplied RGBA {:?}. \
+                 The damage of the last frame was {:?}.",
+                self.buffer[pixel], expected[pixel], self.damage
+            );
+        }
     }
 
     /// Asserts that the surface equals the surface of `expected`, byte for

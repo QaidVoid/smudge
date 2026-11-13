@@ -13,9 +13,10 @@ pub const RENDERER_ENVIRONMENT: &str = "SMUDGE_RENDERER";
 
 /// Which renderer a window presents with.
 ///
-/// The CPU renderer keeps a pixmap and repaints only the frame's damage. The
-/// GPU renderer draws the whole frame on every present, with no damage
-/// tracking. Both draw the same display list.
+/// The CPU renderer repaints only the frame's damage, straight into the
+/// window buffer wherever the platform reports buffer ages. The GPU renderer
+/// draws the whole frame on every present, with no damage tracking. Both draw
+/// the same display list.
 ///
 /// The default is [`RendererChoice::Cpu`], with or without the `gpu`
 /// feature. Creating a GPU device costs an ordinary app most of its startup

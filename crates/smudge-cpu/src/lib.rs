@@ -11,11 +11,16 @@
 //! Redrawing a rectangle on its own produces the same pixels as a full
 //! repaint, because each pixel's coverage is computed from its absolute
 //! position and the shape covering it, not from the area being drawn.
+//!
+//! [`XrgbRenderer`] draws the same pixels straight into a window buffer of
+//! `0x00RRGGBB` words instead, so a window needs no second copy of the frame.
 
 #![forbid(unsafe_code)]
 
 mod draw;
 mod glyph_cache;
 mod renderer;
+mod xrgb;
 
 pub use renderer::CpuRenderer;
+pub use xrgb::XrgbRenderer;

@@ -7,9 +7,8 @@ use std::sync::Arc;
 use smudge_core::app::{App, AppConfig, FrameOutput, FrameStats, RepaintMode};
 use smudge_core::clipboard::{Clipboard, MemoryClipboard};
 use smudge_core::element::IntoElement;
-use smudge_core::geometry::{Color, PixelRect, Rect, Size};
+use smudge_core::geometry::{Color, Rect, Size};
 use smudge_core::window::{Cursor, WindowCommand};
-use smudge_cpu::CpuRenderer;
 use softbuffer::{Context, Surface};
 use std::time::Duration;
 
@@ -35,10 +34,7 @@ use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 use crate::clipboard::SystemClipboard;
 use crate::error::PlatformError;
 use crate::events::EventTranslator;
-use crate::present::{
-    DamageHistory, PresentStats, PresentStatsHandle, copy_rect, damage_region, present_skipped,
-    tint_rects,
-};
+use crate::present::{CpuFrames, PresentStats, PresentStatsHandle};
 use crate::renderer::RendererChoice;
 #[cfg(feature = "gpu")]
 use smudge_gpu::AdapterSummary;
@@ -106,11 +102,12 @@ pub struct WindowOptions {
     pub repaint: RepaintMode,
     /// Whether every present tints the pixels the frame repainted.
     ///
-    /// A debugging aid for damage regressions: while it is on, every present
-    /// copies the whole pixmap and blends a translucent tint over the frame's
-    /// damage rectangles in the window buffer alone, so the window shows what
-    /// each frame paid for. Damage presentation is off while the overlay is
-    /// on, and neither the renderer's pixmap nor a later frame keeps a tint.
+    /// A debugging aid for damage regressions: while it is on, the CPU
+    /// renderer keeps a pixmap of the frame, and every present copies the
+    /// whole pixmap and blends a translucent tint over the frame's damage
+    /// rectangles in the window buffer alone, so the window shows what each
+    /// frame paid for. Damage presentation is off while the overlay is on, and
+    /// neither the renderer's pixmap nor a later frame keeps a tint.
     ///
     /// The overlay exists on the CPU renderer only, so it makes
     /// [`RendererChoice::Auto`] pick the CPU renderer, and it cannot be
@@ -490,15 +487,6 @@ struct WindowState {
     /// backend asked for it or the scale moved every node's bounds.
     #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     a11y_full: bool,
-}
-
-/// The frame that was rendered and waits to be presented.
-#[derive(Default)]
-struct PendingFrame {
-    /// The rectangles the frame changed, in physical pixels.
-    damage: Vec<PixelRect>,
-    /// Whether the frame repainted the whole surface.
-    full: bool,
 }
 
 impl<E, B> Platform<E, B>
@@ -1162,8 +1150,8 @@ fn create_presenter(
 
 /// The renderer and presentation path a window presents with.
 ///
-/// Both paths are boxed: the wgpu handles of the GPU path and the pixmap state
-/// of the CPU path dwarf a boxed pointer, and the enum only dispatches.
+/// Both paths are boxed: the wgpu handles of the GPU path and the renderer
+/// state of the CPU path dwarf a boxed pointer, and the enum only dispatches.
 enum Presenter {
     /// The CPU renderer, presenting through the software surface.
     Cpu(Box<CpuPresenter>),
@@ -1216,16 +1204,12 @@ struct CpuPresenter {
     surface: Surface<SharedWindow, SharedWindow>,
     /// The window whose frames are presented, notified before every present.
     window: SharedWindow,
-    /// The renderer that paints the app's damage into a pixmap.
-    renderer: CpuRenderer,
-    /// Whether every present tints the frame's damage in the window buffer.
-    show_damage: bool,
-    /// The damage of the frames the window presented, most recent first.
-    history: DamageHistory,
-    /// The frame that was rendered and waits to be presented.
-    pending: PendingFrame,
-    /// Scratch for the region the next present copies.
-    region: Vec<PixelRect>,
+    /// The renderer and what it knows about the window buffers.
+    frames: CpuFrames,
+    /// The surface width in physical pixels.
+    width: u32,
+    /// The surface height in physical pixels.
+    height: u32,
     /// Scratch for the damage rectangles the next present reports.
     reported: Vec<softbuffer::Rect>,
 }
@@ -1254,11 +1238,9 @@ impl CpuPresenter {
         Ok(CpuPresenter {
             surface,
             window: SharedWindow(Arc::clone(window)),
-            renderer: CpuRenderer::new(width, height),
-            show_damage,
-            history: DamageHistory::default(),
-            pending: PendingFrame::default(),
-            region: Vec::new(),
+            frames: CpuFrames::new(width, height, show_damage),
+            width,
+            height,
             reported: Vec::new(),
         })
     }
@@ -1268,21 +1250,17 @@ impl CpuPresenter {
         self.surface
             .resize(width, height)
             .map_err(PlatformError::Surface)?;
-        self.renderer.resize(width.get(), height.get());
+        self.width = width.get();
+        self.height = height.get();
+        self.frames.resize(self.width, self.height);
         Ok(())
     }
 
-    /// Renders the frame into the pixmap and presents it.
+    /// Renders the frame and presents it.
     ///
-    /// The frame's damage and the recorded damage of the frames still in a
-    /// window buffer decide what has to be copied: when the buffer's age says
-    /// which frame it holds and no full repaint happened since, only their
-    /// union is copied and the present reports it as damage. Every other case
-    /// copies the whole pixmap. While the damage overlay is on, every present
-    /// copies the whole pixmap and blends the tint over the frame's damage in
-    /// the window buffer, so no tint reaches the pixmap a later frame repaints
-    /// from. It also presents a frame with no damage, so a tint never outlives
-    /// the frame that caused it.
+    /// [`CpuFrames::draw`] decides what the acquired buffer is missing and
+    /// draws it, and the present reports that region as damage when it is
+    /// known.
     ///
     /// Before every present, the window is told that a frame is about to
     /// show. That is the order winit needs on Wayland: it schedules a frame
@@ -1296,96 +1274,50 @@ impl CpuPresenter {
     /// shows the last present, no buffer is taken, and the frame limit does
     /// not count it. An empty frame without a tick is a redraw the window
     /// system asked for, such as an X11 window being shown again, and presents
-    /// the whole pixmap to restore the window's contents.
+    /// the whole surface to restore the window's contents.
     fn render_and_present(
         &mut self,
         frame: &FrameOutput<'_>,
         has_tick: bool,
     ) -> Result<Option<PresentStats>, PlatformError> {
-        let (width, height) = (self.renderer.width(), self.renderer.height());
-        if width == 0 || height == 0 {
-            return Ok(None);
-        }
-        let raster_start = Instant::now();
-        self.renderer.render(frame);
-        let raster = raster_start.elapsed();
-        self.pending.damage.clear();
-        self.pending.damage.extend_from_slice(frame.damage);
-        self.pending.full = frame.full;
-        if present_skipped(&self.pending.damage, has_tick, self.show_damage) {
+        let (width, height) = (self.width, self.height);
+        if width == 0 || height == 0 || self.frames.skips(frame, has_tick) {
             return Ok(None);
         }
         let acquire_start = Instant::now();
         let mut buffer = self.surface.buffer_mut().map_err(PlatformError::Surface)?;
         let acquire = acquire_start.elapsed();
-        let present_start = Instant::now();
-        debug_assert_eq!(
-            buffer.len(),
-            self.renderer.pixels().len() / 4,
-            "the window buffer must hold one entry per rendered pixel"
-        );
         let age = buffer.age();
-        let with_damage = !self.show_damage
-            && damage_region(
-                age,
-                &self.pending.damage,
-                self.pending.full,
-                &self.history,
-                &mut self.region,
-            );
-        let mut bytes_copied = 0;
-        if with_damage {
+        let drawn = self.frames.draw(frame, age, &mut buffer);
+        let present_start = Instant::now();
+        self.window.0.pre_present_notify();
+        if drawn.with_damage {
             self.reported.clear();
-            for rect in &self.region {
-                let (Some(rect_width), Some(rect_height)) =
-                    (NonZeroU32::new(rect.width), NonZeroU32::new(rect.height))
-                else {
-                    continue;
-                };
-                bytes_copied += u64::from(rect.width) * u64::from(rect.height) * 4;
-                self.reported.push(softbuffer::Rect {
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect_width,
-                    height: rect_height,
-                });
-            }
-            for &rect in &self.region {
-                copy_rect(self.renderer.pixels(), width, &mut buffer, rect);
-            }
-            self.window.0.pre_present_notify();
+            self.reported
+                .extend(self.frames.region().iter().filter_map(|rect| {
+                    Some(softbuffer::Rect {
+                        x: rect.x,
+                        y: rect.y,
+                        width: NonZeroU32::new(rect.width)?,
+                        height: NonZeroU32::new(rect.height)?,
+                    })
+                }));
             buffer
                 .present_with_damage(&self.reported)
                 .map_err(PlatformError::Surface)?;
         } else {
-            bytes_copied = u64::from(width) * u64::from(height) * 4;
-            copy_rect(
-                self.renderer.pixels(),
-                width,
-                &mut buffer,
-                PixelRect {
-                    x: 0,
-                    y: 0,
-                    width,
-                    height,
-                },
-            );
-            if self.show_damage {
-                tint_rects(&mut buffer, width, &self.pending.damage);
-            }
-            self.window.0.pre_present_notify();
             buffer.present().map_err(PlatformError::Surface)?;
         }
-        self.history.push(&self.pending.damage, self.pending.full);
+        self.frames.presented(frame);
         Ok(Some(PresentStats {
             buffer_age: age,
-            with_damage,
-            bytes_copied,
+            with_damage: drawn.with_damage,
+            bytes_copied: drawn.bytes_copied,
             surface_width: width,
             surface_height: height,
-            raster,
+            raster: drawn.raster,
             acquire,
-            present: present_start.elapsed(),
+            present: drawn.copy + present_start.elapsed(),
             renderer: "cpu",
         }))
     }

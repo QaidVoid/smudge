@@ -59,11 +59,87 @@ pub struct CpuRenderer {
     /// The surface that survives between frames, or `None` when the surface
     /// has no pixel.
     pixmap: Option<Pixmap>,
+    /// The state that survives between frames besides the surface.
+    painter: Painter,
+}
+
+/// What a renderer keeps between frames besides the pixels it draws into.
+pub(crate) struct Painter {
     /// The glyph masks that survive between frames.
     glyphs: GlyphCache,
     /// The display list's drawable operations of the frame being repainted,
     /// with their buffers reused between frames.
     plan: RasterPlan,
+}
+
+impl Painter {
+    /// Creates a painter with an empty glyph cache.
+    pub(crate) fn new() -> Painter {
+        Painter {
+            glyphs: GlyphCache::new(),
+            plan: RasterPlan::new(),
+        }
+    }
+
+    /// Clears and repaints each rectangle of [`FrameOutput::damage`] in
+    /// `pixels`, a premultiplied RGBA8 surface of `width` by `height` pixels,
+    /// and hands each rectangle to `finish` once it is painted.
+    ///
+    /// A rectangle reads and writes only its own pixels, so `finish` may
+    /// rewrite them in another format before the next rectangle is painted.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a damaged rectangle reaches outside the surface, which
+    /// means the frame was produced for a surface of a different size.
+    pub(crate) fn paint(
+        &mut self,
+        pixels: &mut [u8],
+        width: u32,
+        height: u32,
+        frame: &FrameOutput<'_>,
+        mut finish: impl FnMut(&mut [u8], PixelRect),
+    ) {
+        for rect in frame.damage {
+            assert!(
+                inside_surface(*rect, width, height),
+                "damage {rect:?} reaches outside the {width}x{height} surface, \
+                 so the frame was produced for a different surface size"
+            );
+        }
+        if pixels.is_empty() || frame.damage.is_empty() {
+            return;
+        }
+        let mut canvas = Canvas {
+            pixels,
+            width,
+            scale: frame.scale,
+            glyphs: &mut self.glyphs,
+        };
+        match frame.damage {
+            [rect] => {
+                // One rectangle repaints in a single walk, without collecting
+                // the operations first.
+                paint_single(
+                    &mut canvas,
+                    &mut self.plan.clips,
+                    &mut self.plan.offsets,
+                    frame,
+                    *rect,
+                    height,
+                );
+                finish(canvas.pixels, *rect);
+            }
+            damage => {
+                self.plan
+                    .build(frame.list.items(), frame.scale, width, height);
+                for &rect in damage {
+                    paint_rect(&mut canvas, frame, self.plan.ops(), rect);
+                    finish(canvas.pixels, rect);
+                }
+            }
+        }
+    }
 }
 
 impl CpuRenderer {
@@ -76,8 +152,7 @@ impl CpuRenderer {
     pub fn new(width: u32, height: u32) -> CpuRenderer {
         CpuRenderer {
             pixmap: Pixmap::new(width, height),
-            glyphs: GlyphCache::new(),
-            plan: RasterPlan::new(),
+            painter: Painter::new(),
         }
     }
 
@@ -109,48 +184,9 @@ impl CpuRenderer {
     /// That is a broken invariant of the caller, not input from outside the
     /// library.
     pub fn render(&mut self, frame: &FrameOutput<'_>) {
-        let width = self.width();
-        let height = self.height();
-        for rect in frame.damage {
-            assert!(
-                inside_surface(*rect, width, height),
-                "damage {rect:?} reaches outside the {width}x{height} surface, \
-                 so the frame was produced for a different surface size"
-            );
-        }
-        let Some(pixmap) = self.pixmap.as_mut() else {
-            return;
-        };
-        if frame.damage.is_empty() {
-            return;
-        }
-        let mut canvas = Canvas {
-            pixels: pixmap.data_mut(),
-            width,
-            scale: frame.scale,
-            glyphs: &mut self.glyphs,
-        };
-        match frame.damage {
-            [rect] => {
-                // One rectangle repaints in a single walk, without collecting
-                // the operations first.
-                paint_single(
-                    &mut canvas,
-                    &mut self.plan.clips,
-                    &mut self.plan.offsets,
-                    frame,
-                    *rect,
-                    height,
-                );
-            }
-            damage => {
-                self.plan
-                    .build(frame.list.items(), frame.scale, width, height);
-                for &rect in damage {
-                    paint_rect(&mut canvas, frame, self.plan.ops(), rect);
-                }
-            }
-        }
+        let (width, height) = (self.width(), self.height());
+        let pixels = self.pixmap.as_mut().map_or(&mut [][..], Pixmap::data_mut);
+        self.painter.paint(pixels, width, height, frame, |_, _| {});
     }
 
     /// Returns the surface width in physical pixels.
