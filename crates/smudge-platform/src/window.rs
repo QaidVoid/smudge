@@ -11,6 +11,8 @@ use smudge_core::geometry::{Color, PixelRect, Rect, Size};
 use smudge_core::window::{Cursor, WindowCommand};
 use smudge_cpu::CpuRenderer;
 use softbuffer::{Context, Surface};
+use std::time::Duration;
+
 use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
@@ -442,6 +444,19 @@ struct WindowState {
     frame_limit: Option<u64>,
     /// How many frames the window has presented.
     frames_presented: u64,
+    /// How far apart the frames of an app that keeps itself awake are
+    /// started, or `None` when the window system paces them itself.
+    ///
+    /// On Wayland the window asks for a frame callback before each present,
+    /// so a redraw request waits for the compositor, and on the web the
+    /// browser runs a redraw at its animation frame. Other window systems
+    /// redraw as soon as asked, so an app with a tick would draw as fast as
+    /// the CPU allows and the window spaces its frames by the display's
+    /// refresh period instead.
+    frame_period: Option<Duration>,
+    /// When the next frame of an app that keeps itself awake is due, while
+    /// the window waits for it.
+    next_frame: Option<Instant>,
     /// The number of physical pixels per logical pixel the app last used.
     scale: f32,
     /// The window's size in physical pixels when the app last used it.
@@ -602,6 +617,7 @@ where
         let clipboard: Box<dyn Clipboard> = Box::new(MemoryClipboard::default());
         app.set_clipboard(clipboard);
 
+        let frame_period = frame_period(&window);
         Ok(WindowState {
             window,
             app,
@@ -614,6 +630,8 @@ where
             rendered: false,
             frame_limit: self.options.frame_limit,
             frames_presented: 0,
+            frame_period,
+            next_frame: None,
             scale,
             physical: (physical.width, physical.height),
             ime_area: None,
@@ -695,6 +713,8 @@ where
             (on_event)(&mut state.app);
         }
         let driven = state.app.has_tick() || state.on_event.is_some();
+        let started = Instant::now();
+        state.next_frame = None;
         let output = state.app.frame();
         state.rendered = true;
         let presented = state.presenter.render_and_present(&output, driven)?;
@@ -711,8 +731,16 @@ where
         state.update_ime();
         #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         state.update_a11y();
-        if driven || (presented.is_some() && state.below_frame_limit()) {
+        if presented.is_some() && state.below_frame_limit() {
             state.window.request_redraw();
+        } else if driven {
+            match state.frame_period {
+                Some(period) => match next_frame_at(started, period, Instant::now()) {
+                    Some(at) => state.next_frame = Some(at),
+                    None => state.window.request_redraw(),
+                },
+                None => state.window.request_redraw(),
+            }
         }
         Ok(())
     }
@@ -733,6 +761,14 @@ where
             return;
         };
         if state.app.has_tick() || state.on_event.is_some() {
+            if let Some(at) = state.next_frame {
+                if at <= Instant::now() {
+                    state.next_frame = None;
+                    state.window.request_redraw();
+                } else {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+                }
+            }
             return;
         }
         if wait_decision(state.app.next_deadline(), Instant::now()) == WaitDecision::Now {
@@ -1409,6 +1445,47 @@ fn with_app_name(attributes: WindowAttributes, app_id: String) -> WindowAttribut
         use winit::platform::x11::WindowAttributesExtX11 as _;
         attributes.with_name(app_id.clone(), app_id)
     }
+}
+
+/// Returns how far apart to start the frames of an app that keeps itself
+/// awake in `window`, or `None` when the window system paces redraws itself.
+///
+/// The period is the refresh period of the window's monitor, or of a 60 Hz
+/// display when the monitor does not report its rate.
+fn frame_period(window: &Window) -> Option<Duration> {
+    if cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    {
+        use winit::platform::wayland::WindowExtWayland;
+        if window.xdg_toplevel().is_some() {
+            return None;
+        }
+    }
+    let millihertz = window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .filter(|millihertz| *millihertz > 0)
+        .unwrap_or(60_000);
+    Some(Duration::from_secs_f64(1_000.0 / f64::from(millihertz)))
+}
+
+/// Returns when the next frame should start, given that the last one
+/// started at `started` and frames start `period` apart, or `None` when it
+/// is due already.
+///
+/// A frame that ran late starts the next one at once, and only one: the
+/// schedule does not try to catch up with frames it missed.
+fn next_frame_at(started: Instant, period: Duration, now: Instant) -> Option<Instant> {
+    let at = started + period;
+    (at > now).then_some(at)
 }
 
 /// What the window does about the next timer.

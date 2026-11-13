@@ -7,7 +7,7 @@ use web_time::Instant;
 use smudge_core::geometry::{Color, Size};
 use smudge_core::widget::panel;
 
-use super::{WaitDecision, WindowOptions, run_with, wait_decision};
+use super::{WaitDecision, WindowOptions, next_frame_at, run_with, wait_decision};
 use crate::PlatformError;
 
 /// Returns options with an opaque clear color, so a test only has to change
@@ -69,4 +69,26 @@ fn a_future_timer_sets_the_wake_up_time() {
 fn no_timer_waits_for_events() {
     let now = Instant::now();
     assert_eq!(wait_decision(None, now), WaitDecision::Wait);
+}
+
+#[test]
+fn a_frame_that_ran_early_waits_for_the_rest_of_the_period() {
+    let started = Instant::now();
+    let period = Duration::from_millis(16);
+    let now = started + Duration::from_millis(3);
+
+    assert_eq!(next_frame_at(started, period, now), Some(started + period));
+}
+
+#[test]
+fn a_frame_that_ran_late_starts_the_next_at_once_without_catching_up() {
+    let started = Instant::now();
+    let period = Duration::from_millis(16);
+
+    assert_eq!(
+        next_frame_at(started, period, started + Duration::from_millis(40)),
+        None,
+        "a late frame asks for one frame now, not for the frames it missed"
+    );
+    assert_eq!(next_frame_at(started, period, started + period), None);
 }
