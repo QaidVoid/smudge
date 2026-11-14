@@ -418,6 +418,7 @@ impl<T: 'static> Memo<T> {
     where
         T: PartialEq,
     {
+        let compute = crate::hot::wrap(compute);
         let data = Rc::new(MemoData {
             value: RefCell::new(None),
             node: Cell::new(NodeId::default()),
@@ -492,8 +493,19 @@ impl RenderEffect {
     ///
     /// The effect is owned by the current owner, when there is one. See the
     /// type's documentation for the lifetime rules. The body's return value
-    /// is ignored.
-    pub fn new<T>(mut run: impl FnMut() -> T + 'static) -> RenderEffect {
+    /// is ignored. The body goes through the hot reload wrapper, so a patch
+    /// of the application replaces it.
+    pub fn new<T>(run: impl FnMut() -> T + 'static) -> RenderEffect {
+        Self::new_unwrapped(crate::hot::wrap_mut(run))
+    }
+
+    /// Creates an effect whose body is the closure as it is, with no hot
+    /// lookup.
+    ///
+    /// This is for Smudge's own effects, whose closures are compiled into
+    /// this crate and never patched, so a lookup would add work per run and
+    /// change nothing.
+    pub(crate) fn new_unwrapped<T>(mut run: impl FnMut() -> T + 'static) -> RenderEffect {
         let owned = runtime::current_owner().is_some();
         let scope = runtime::current_scope();
         let cell = Rc::new(EffectCell {
@@ -561,6 +573,8 @@ impl Owner {
             clipboard: RefCell::new(None),
             channel_book: RefCell::new(None),
             window_book: RefCell::new(None),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            hot_patch_book: RefCell::new(None),
         });
         if let Some(parent) = parent {
             parent.adopt(&inner);

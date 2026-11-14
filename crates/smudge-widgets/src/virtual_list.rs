@@ -76,8 +76,8 @@ pub fn virtual_list<E: IntoElement>(
     } else {
         0.0
     };
-    let count = Rc::new(count);
-    let row = Rc::new(row);
+    let count = Rc::new(smudge_core::hot::wrap(count));
+    let row = Rc::new(smudge_core::hot::wrap1(row));
     let visible: RwSignal<Option<f32>> = RwSignal::new(None);
     let offset = RwSignal::new(0.0);
 

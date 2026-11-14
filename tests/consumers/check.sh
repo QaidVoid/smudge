@@ -81,32 +81,53 @@ echo 'consumer: application code reaches the runtime and the text system through
 for profile in dev release; do
     # The IR goes to a path of its own, removed first, so the check reads what
     # this build emitted whatever the target, never a file left by an earlier
-    # one. One codegen unit makes rustc write one file there.
-    ir="$CARGO_TARGET_DIR/runtime-entry-$profile.ll"
-    rm -f "$ir"
-    touch runtime-entry/src/lib.rs
-    ( cd runtime-entry && cargo rustc -q --profile "$profile" --lib -- -C codegen-units=1 --emit=llvm-ir="$ir" )
-    [ -f "$ir" ] || {
-        echo "the $profile build of runtime-entry emitted no IR at $ir" >&2
-        exit 1
-    }
-    # LLVM may put attributes and a model between `thread_local` and
-    # `global`, so any global declaration of a thread-local whose symbol
-    # names either crate counts.
-    tls='^@[^ ]*smudge_(core|text)[^ ]* = .*\bthread_local\b'
-    if grep -Eq "$tls" "$ir"; then
-        echo "the $profile IR of runtime-entry addresses a thread-local of the core or the text crate:" >&2
-        grep -E "$tls" "$ir" >&2
-        exit 1
-    fi
-    grep -q 'call.*smudge_core8reactive7runtime6notify' "$ir" || {
-        echo "the $profile IR of runtime-entry never calls into the runtime, so it checks nothing" >&2
-        exit 1
-    }
-    grep -q 'call.*smudge_text6system12with_current' "$ir" || {
-        echo "the $profile IR of runtime-entry never calls into the text system, so it checks nothing" >&2
-        exit 1
-    }
+    # one. One codegen unit makes rustc write one file there. The pass with
+    # the hot-reload feature covers a wrapped closure: its shim must be
+    # compiled here, and its lookup must go through the non-generic,
+    # non-inlined getter of the core.
+    for set in "" "-hot"; do
+        if [ "$set" = "-hot" ]; then
+            features="--features hot-reload"
+        else
+            features=""
+        fi
+        ir="$CARGO_TARGET_DIR/runtime-entry-$profile$set.ll"
+        rm -f "$ir"
+        touch runtime-entry/src/lib.rs
+        # shellcheck disable=SC2086
+        ( cd runtime-entry && cargo rustc -q --profile "$profile" $features --lib -- -C codegen-units=1 --emit=llvm-ir="$ir" )
+        [ -f "$ir" ] || {
+            echo "the $profile$set build of runtime-entry emitted no IR at $ir" >&2
+            exit 1
+        }
+        # LLVM may put attributes and a model between `thread_local` and
+        # `global`, so any global declaration of a thread-local whose symbol
+        # names either crate counts.
+        tls='^@[^ ]*smudge_(core|text)[^ ]* = .*\bthread_local\b'
+        if grep -Eq "$tls" "$ir"; then
+            echo "the $profile$set IR of runtime-entry addresses a thread-local of the core or the text crate:" >&2
+            grep -E "$tls" "$ir" >&2
+            exit 1
+        fi
+        grep -q 'call.*smudge_core8reactive7runtime6notify' "$ir" || {
+            echo "the $profile$set IR of runtime-entry never calls into the runtime, so it checks nothing" >&2
+            exit 1
+        }
+        grep -q 'call.*smudge_text6system12with_current' "$ir" || {
+            echo "the $profile$set IR of runtime-entry never calls into the text system, so it checks nothing" >&2
+            exit 1
+        }
+        if [ "$set" = "-hot" ] && [ "$(uname -s)" = "Linux" ]; then
+            grep -q 'call.*smudge_core3hot3imp9published' "$ir" || {
+                echo "the $profile IR of runtime-entry reaches the jump table without the non-inlined published getter of the core, so a patch would read a stale copy of the table" >&2
+                exit 1
+            }
+            grep -q 'define .*smudge_core3hot3imp11shim_shared' "$ir" || {
+                echo "the $profile IR of runtime-entry holds no shim of the wrapped closure, so a patch of this crate would never map it" >&2
+                exit 1
+            }
+        fi
+    done
 done
 
 for dir in */; do

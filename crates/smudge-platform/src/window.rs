@@ -978,6 +978,7 @@ where
         }
         patch.apply(|| {
             remount(&mut state.app)?;
+            state.app.run_hot_patch_hooks();
             state.update_ime(false);
             state.window.request_redraw();
             Ok(())

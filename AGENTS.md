@@ -47,7 +47,7 @@ Smudge is a native Rust GUI library. It has a retained widget tree, fine-grained
 - Optimize only with a measurement in hand. When complexity is added for performance, say so in a doc comment or commit body together with the measurement that justified it.
 - Avoid per-frame allocation in hot paths (layout, paint, damage, raster, present). Reuse buffers.
 - Library code must not panic on bad input. Use `expect` only for internal invariants, and write the message as the invariant that was broken. Document every possible panic under a `# Panics` heading.
-- `unsafe` needs a `// SAFETY:` comment that explains why it is sound, and a measurement or platform need that justifies it. `smudge-core` uses `#![forbid(unsafe_code)]`.
+- `unsafe` needs a `// SAFETY:` comment that explains why it is sound, and a measurement or platform need that justifies it. `smudge-core` uses `#![forbid(unsafe_code)]`, with one exception: with the `hot-reload` feature on Linux, the `hot` module may use `unsafe` to call the function address a hot patch looked up, which mirrors the one module `smudge-platform` allows it in.
 
 ## Comments and documentation
 

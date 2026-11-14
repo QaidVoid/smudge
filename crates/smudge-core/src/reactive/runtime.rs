@@ -107,6 +107,11 @@ pub(crate) struct OwnerData {
     /// root owner when the app is created. A window command queues into the
     /// book of the root its owner chain leads to.
     pub(crate) window_book: RefCell<Option<Weak<RefCell<crate::window::WindowBook>>>>,
+    /// The hot patch hook book of the app this owner tree belongs to, set on
+    /// the root owner when the app is created. A hook registers into the
+    /// book of the root its owner chain leads to.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) hot_patch_book: RefCell<Option<Weak<RefCell<crate::hot::HotPatchBook>>>>,
 }
 
 impl OwnerData {
@@ -171,6 +176,8 @@ impl OwnerData {
             clipboard: RefCell::new(None),
             channel_book: RefCell::new(None),
             window_book: RefCell::new(None),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            hot_patch_book: RefCell::new(None),
         });
         self.adopt(&inner);
         Owner { inner }

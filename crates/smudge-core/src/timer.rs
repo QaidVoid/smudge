@@ -366,7 +366,7 @@ pub fn now() -> Instant {
 ///
 /// A duration of zero fires at the start of the next frame.
 pub fn after(duration: Duration, fun: impl FnMut() + 'static) {
-    register(None, duration, Box::new(fun));
+    register(None, duration, Box::new(crate::hot::wrap_mut(fun)));
 }
 
 /// Runs `fun` every `period` on the app's clock, until the returned handle is
@@ -379,7 +379,7 @@ pub fn after(duration: Duration, fun: impl FnMut() + 'static) {
 /// long as the timer should run; see [`TimerHandle`]. When no timer can be
 /// created, the handle that comes back is inert and cancels nothing.
 pub fn every(period: Duration, fun: impl FnMut() + 'static) -> TimerHandle {
-    let entry = register(Some(period), period, Box::new(fun));
+    let entry = register(Some(period), period, Box::new(crate::hot::wrap_mut(fun)));
     TimerHandle {
         entry: entry.unwrap_or_else(|| inactive_entry(period)),
     }

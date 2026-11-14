@@ -14,6 +14,12 @@ publish = false
 smudge-core = { path = "../../../crates/smudge-core" }
 smudge-text = { version = "0.2.0", path = "../../../crates/smudge-text" }
 
+# The pass with this feature checks that a wrapped closure keeps the shim in
+# this crate and reaches the jump table only through the non-inlined getter
+# of the core.
+[features]
+hot-reload = ["smudge-core/hot-reload"]
+
 # Standalone, so the generic code below is compiled in this crate, as it is
 # in an application.
 [workspace]

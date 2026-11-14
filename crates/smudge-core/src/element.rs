@@ -107,6 +107,12 @@ pub enum Value<T> {
     /// A value that never changes.
     Static(T),
     /// A closure that reads the value from signals.
+    ///
+    /// A closure that arrives through [`From`] goes through the hot reload
+    /// wrapper, so a patch replaces it. A closure the application erased
+    /// itself, with `Value::Dynamic(Rc::new(...))`, does not: it keeps the
+    /// code it was built with until a remount rebuilds it. Take the
+    /// `From` path when a binding should be hot.
     Dynamic(Rc<dyn Fn() -> T>),
 }
 
@@ -200,7 +206,7 @@ impl From<RadiusToken> for Value<RadiusValue> {
 
 impl<F: Fn() -> T + 'static, T: 'static> From<F> for Value<T> {
     fn from(get: F) -> Value<T> {
-        Value::Dynamic(Rc::new(get))
+        Value::Dynamic(Rc::new(crate::hot::wrap(get)))
     }
 }
 
@@ -275,7 +281,7 @@ impl Binding {
             key: Some(Key::Style(prop)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move || {
+                RenderEffect::new_unwrapped(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -296,7 +302,7 @@ impl Binding {
             key: Some(Key::Style(prop)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move || {
+                RenderEffect::new_unwrapped(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -313,7 +319,7 @@ impl Binding {
             key: Some(Key::Style(Prop::Disabled)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move || {
+                RenderEffect::new_unwrapped(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -330,7 +336,7 @@ impl Binding {
             key: None,
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move || {
+                RenderEffect::new_unwrapped(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -350,7 +356,7 @@ impl Binding {
             key: Some(Key::Style(Prop::ScrollOffset)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move || {
+                RenderEffect::new_unwrapped(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -367,7 +373,7 @@ impl Binding {
             key: Some(Key::Style(Prop::Pin)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move || {
+                RenderEffect::new_unwrapped(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -384,7 +390,7 @@ impl Binding {
             key: Some(Key::Style(Prop::Cursor)),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move || {
+                RenderEffect::new_unwrapped(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -410,7 +416,7 @@ impl Binding {
             key: Some(key),
             install: Box::new(move |id, queue| {
                 let queue = queue.clone();
-                RenderEffect::new(move || {
+                RenderEffect::new_unwrapped(move || {
                     let value = get();
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
@@ -555,7 +561,7 @@ impl<W: Widget> Element<W> {
     /// });
     /// ```
     pub fn style_children(mut self, style: impl Fn(&mut Style) + 'static) -> Self {
-        let style = Rc::new(style);
+        let style = Rc::new(crate::hot::wrap1_mut_ref(style));
         for child in &mut self.children {
             style(&mut child.style);
         }
@@ -862,7 +868,8 @@ impl<W: Widget> Element<W> {
     /// ```
     pub fn pin_child(mut self, pin: impl Fn() -> Option<(usize, f32)> + 'static) -> Self {
         self.replace_binding(Prop::Pin);
-        self.bindings.push(Binding::pin_child(Rc::new(pin)));
+        self.bindings
+            .push(Binding::pin_child(Rc::new(crate::hot::wrap(pin))));
         self
     }
 
@@ -1068,7 +1075,7 @@ impl<W: Widget> Element<W> {
     /// assert_eq!(presses.get(), 1);
     /// ```
     pub fn on_press(mut self, handler: impl FnMut() + 'static) -> Self {
-        self.handlers.on_press = Some(Box::new(handler));
+        self.handlers.on_press = Some(Box::new(crate::hot::wrap_mut(handler)));
         self
     }
 
@@ -1082,7 +1089,7 @@ impl<W: Widget> Element<W> {
     /// button is released. The handler runs inside the node's owner, so it can
     /// write the signals the element's bindings read.
     pub fn on_hover(mut self, handler: impl FnMut(bool) + 'static) -> Self {
-        self.handlers.on_hover = Some(Box::new(handler));
+        self.handlers.on_hover = Some(Box::new(crate::hot::wrap1_mut(handler)));
         self
     }
 
@@ -1092,7 +1099,7 @@ impl<W: Widget> Element<W> {
     /// node's rectangle, so it does not depend on where layout or a scroll
     /// view put the node. Other buttons do not run it.
     pub fn on_pointer_down(mut self, handler: impl FnMut(Point) + 'static) -> Self {
-        self.handlers.on_pointer_down = Some(Box::new(handler));
+        self.handlers.on_pointer_down = Some(Box::new(crate::hot::wrap1_mut(handler)));
         self
     }
 
@@ -1104,7 +1111,7 @@ impl<W: Widget> Element<W> {
     /// the ones it gets. A press that reaches no node at all is outside every
     /// node.
     pub fn on_press_outside(mut self, handler: impl FnMut() + 'static) -> Self {
-        self.handlers.on_press_outside = Some(Box::new(handler));
+        self.handlers.on_press_outside = Some(Box::new(crate::hot::wrap_mut(handler)));
         self
     }
 
@@ -1122,7 +1129,7 @@ impl<W: Widget> Element<W> {
     /// runs inside the node's owner, so it can write the signals the
     /// element's bindings read.
     pub fn on_wheel(mut self, handler: impl FnMut(Point) -> Handled + 'static) -> Self {
-        self.handlers.on_wheel = Some(Box::new(handler));
+        self.handlers.on_wheel = Some(Box::new(crate::hot::wrap1_mut(handler)));
         self
     }
 
@@ -1137,7 +1144,7 @@ impl<W: Widget> Element<W> {
     /// inside the node's owner, so it can write the signals the element's
     /// bindings read.
     pub fn on_pointer_move(mut self, handler: impl FnMut(Point) + 'static) -> Self {
-        self.handlers.on_pointer_move = Some(Box::new(handler));
+        self.handlers.on_pointer_move = Some(Box::new(crate::hot::wrap1_mut(handler)));
         self
     }
 
@@ -1151,7 +1158,7 @@ impl<W: Widget> Element<W> {
     /// The handler runs inside the node's owner, so it can write the signals the
     /// element's bindings read.
     pub fn on_pointer_up(mut self, handler: impl FnMut(Point) + 'static) -> Self {
-        self.handlers.on_pointer_up = Some(Box::new(handler));
+        self.handlers.on_pointer_up = Some(Box::new(crate::hot::wrap1_mut(handler)));
         self
     }
 
@@ -1167,7 +1174,7 @@ impl<W: Widget> Element<W> {
     /// the node's owner, so it can write the signals the element's bindings
     /// read.
     pub fn on_ime_commit(mut self, handler: impl FnMut(&str) + 'static) -> Self {
-        self.handlers.on_ime_commit = Some(Box::new(handler));
+        self.handlers.on_ime_commit = Some(Box::new(crate::hot::wrap1_ref_mut(handler)));
         self
     }
 
@@ -1186,7 +1193,7 @@ impl<W: Widget> Element<W> {
         mut self,
         handler: impl FnMut(&str, Option<(usize, usize)>) + 'static,
     ) -> Self {
-        self.handlers.on_ime_preedit = Some(Box::new(handler));
+        self.handlers.on_ime_preedit = Some(Box::new(crate::hot::wrap2_ref_mut(handler)));
         self
     }
 
@@ -1461,7 +1468,7 @@ impl<W: Widget> Element<W> {
     /// assert_eq!(enters.get(), 1);
     /// ```
     pub fn on_key(mut self, handler: impl FnMut(&KeyEvent) -> Handled + 'static) -> Self {
-        self.handlers.on_key = Some(Box::new(handler));
+        self.handlers.on_key = Some(Box::new(crate::hot::wrap1_ref_mut(handler)));
         self.focusable = true;
         self
     }
@@ -1496,7 +1503,7 @@ impl<W: Widget> Element<W> {
     /// focus where it is and runs no handler, and code that should react to
     /// it reads [`window::focused`](crate::window::focused).
     pub fn on_focus(mut self, handler: impl FnMut(bool) + 'static) -> Self {
-        self.handlers.on_focus = Some(Box::new(handler));
+        self.handlers.on_focus = Some(Box::new(crate::hot::wrap1_mut(handler)));
         self
     }
 
@@ -1580,7 +1587,7 @@ impl<W: Widget> Element<W> {
     /// assert_eq!(offset.read(|value| *value), 220.0);
     /// ```
     pub fn on_reveal(mut self, handler: impl FnMut(Point) + 'static) -> Self {
-        self.handlers.on_reveal = Some(Box::new(handler));
+        self.handlers.on_reveal = Some(Box::new(crate::hot::wrap1_mut(handler)));
         self
     }
 
@@ -1851,6 +1858,8 @@ pub fn show<E: IntoElement>(
     when: impl Fn() -> bool + 'static,
     build: impl Fn() -> E + 'static,
 ) -> Element<Slot> {
+    let when = crate::hot::wrap(when);
+    let build = crate::hot::wrap(build);
     let build: Rc<dyn Fn() -> AnyElement> = Rc::new(move || build().into_any());
     let mut element = Element::new(Slot);
     element.bindings.push(Binding {
@@ -1858,7 +1867,7 @@ pub fn show<E: IntoElement>(
         install: Box::new(move |id, queue| {
             let queue = queue.clone();
             let mounted: Rc<RefCell<Option<(WidgetId, Owner)>>> = Rc::new(RefCell::new(None));
-            RenderEffect::new(move || {
+            RenderEffect::new_unwrapped(move || {
                 let visible = when();
                 let child_queue = queue.clone();
                 let mounted = Rc::clone(&mounted);
@@ -1934,8 +1943,9 @@ where
     K: Eq + Hash + Clone + 'static,
     E: IntoElement,
 {
-    let items = Rc::new(items);
-    let key = Rc::new(key);
+    let items = Rc::new(crate::hot::wrap(items));
+    let key = Rc::new(crate::hot::wrap1_ref(key));
+    let row = crate::hot::wrap1(row);
     let row: Rc<dyn Fn(T) -> AnyElement> = Rc::new(move |item| row(item).into_any());
     let mut element = Element::new(Slot);
     element.bindings.push(Binding {
@@ -1945,7 +1955,7 @@ where
             let mounted: Rc<RefCell<HashMap<K, (WidgetId, Owner)>>> =
                 Rc::new(RefCell::new(HashMap::new()));
             let order: Rc<RefCell<Vec<K>>> = Rc::new(RefCell::new(Vec::new()));
-            RenderEffect::new(move || {
+            RenderEffect::new_unwrapped(move || {
                 let items = items();
                 let keys: Vec<K> = items.iter().map(|item| key(item)).collect();
                 // The last occurrence of a key decides where its row goes, so
