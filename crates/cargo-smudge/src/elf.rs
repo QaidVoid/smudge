@@ -23,6 +23,9 @@ pub(crate) struct Sym {
     pub defined: bool,
     /// Whether the binding is weak.
     pub weak: bool,
+    /// Whether the symbol lives in a section the running program can
+    /// write, such as `.data` or `.bss`: state a patch would duplicate.
+    pub writable: bool,
 }
 
 /// Every named symbol of one file, by name.
@@ -56,6 +59,22 @@ impl Symbols {
             if !defined && map.contains_key(name) {
                 continue;
             }
+            // A section the program writes is state: a patch that carries
+            // its own copy of it would reset what the running app has
+            // built there since it started. A common symbol is such state
+            // too, though it names no section until the link places it.
+            let writable = symbol.is_common()
+                || symbol
+                    .section_index()
+                    .and_then(|index| file.section_by_index(index).ok())
+                    .is_some_and(|section| {
+                        matches!(
+                            section.kind(),
+                            object::SectionKind::Data
+                                | object::SectionKind::UninitializedData
+                                | object::SectionKind::Common
+                        )
+                    });
             map.insert(
                 String::from(name),
                 Sym {
@@ -64,6 +83,7 @@ impl Symbols {
                     kind: symbol.kind(),
                     defined,
                     weak: symbol.is_weak(),
+                    writable,
                 },
             );
         }
@@ -215,3 +235,58 @@ pub(crate) fn extract_rlib_objects(
     }
     Ok(written)
 }
+
+/// The names the archive symbol indexes of the rlibs under the sysroot's
+/// `rustlib` directory define, which are the standard library's: the link
+/// takes those rlibs whole from there. Like the compiler, this looks in
+/// `lib64/rustlib` when it exists and in `lib/rustlib` otherwise. An rlib counts only when its canonical path
+/// lies under that canonical directory, so a name in this set is the
+/// standard library's by where it comes from and not by how it is spelled,
+/// and a crate of any other origin stays out, even one a project builds
+/// under a sysroot such as `/usr`.
+///
+/// # Errors
+///
+/// Returns the first sysroot rlib that could not be read or parsed.
+pub(crate) fn sysroot_symbols(
+    args: &[String],
+    sysroot: &Path,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut names = std::collections::BTreeSet::new();
+    // A relative sysroot would resolve against wherever this process runs,
+    // where a project's own `lib/rustlib` could sit.
+    if !sysroot.is_absolute() {
+        return Ok(names);
+    }
+    let wide = sysroot.join("lib64").join("rustlib");
+    let rustlib = if wide.is_dir() {
+        wide
+    } else {
+        sysroot.join("lib").join("rustlib")
+    };
+    let Ok(libraries) = rustlib.canonicalize() else {
+        return Ok(names);
+    };
+    for arg in args.iter().filter(|arg| arg.ends_with(".rlib")) {
+        let Ok(path) = Path::new(arg).canonicalize() else {
+            continue;
+        };
+        if !path.starts_with(&libraries) {
+            continue;
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("{arg}: {e}"))?;
+        let archive = ArchiveFile::parse(&*bytes).map_err(|e| format!("{arg}: {e}"))?;
+        let Some(symbols) = archive.symbols().map_err(|e| format!("{arg}: {e}"))? else {
+            continue;
+        };
+        for symbol in symbols {
+            let symbol = symbol.map_err(|e| format!("{arg}: {e}"))?;
+            names.insert(String::from_utf8_lossy(symbol.name()).into_owned());
+        }
+    }
+    Ok(names)
+}
+
+#[cfg(test)]
+#[path = "elf_tests.rs"]
+mod tests;

@@ -1,0 +1,9 @@
+[package]
+name = "smudge-hotapp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+subsecond.workspace = true
+ui.workspace = true
+tls.workspace = true

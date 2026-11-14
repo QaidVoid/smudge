@@ -10,35 +10,35 @@
 #![allow(clippy::print_stdout)]
 // A dev tool reports its progress on stdout, like cargo itself.
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod driver;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod dwarf;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod elf;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod patch;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod record;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod roles;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod stub;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod wire;
 
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     return linux_main(args);
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     return unsupported_main(args);
 }
 
-/// The command on Linux, where the roles and the dev session run.
-#[cfg(target_os = "linux")]
+/// The command on x86-64 Linux, where the roles and the dev session run.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn linux_main(args: Vec<String>) -> ExitCode {
     if let Some(code) = roles::run(args.clone()) {
         return code;
@@ -49,19 +49,19 @@ fn linux_main(args: Vec<String>) -> ExitCode {
     }
 }
 
-/// The command elsewhere: every role refuses, and names Linux.
-#[cfg(not(target_os = "linux"))]
+/// The command elsewhere: every role refuses, and names x86-64 Linux.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 fn unsupported_main(_args: Vec<String>) -> ExitCode {
     eprintln!(
-        "cargo smudge builds, runs and hot-patches Smudge apps on Linux, \
-         which is the only platform this command supports"
+        "cargo smudge builds, runs and hot-patches Smudge apps on x86-64 \
+         Linux, which is the only platform this command supports"
     );
     ExitCode::FAILURE
 }
 
 /// Parses the `dev` command, answering its options, or none when the
 /// arguments are not a usable `dev` invocation.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn driver_command(args: &[String]) -> Option<driver::Options> {
     // Cargo hands its subcommands their own name first, so `cargo smudge
     // dev` arrives here as `smudge dev`, while a direct invocation of the
@@ -100,7 +100,7 @@ fn driver_command(args: &[String]) -> Option<driver::Options> {
 }
 
 /// Reports how to use the command and answers failure.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn usage() -> ExitCode {
     eprintln!(
         "usage: cargo smudge dev [--bin NAME | --example NAME] [-p NAME] \
@@ -110,22 +110,6 @@ fn usage() -> ExitCode {
     ExitCode::FAILURE
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::driver_command;
-
-    #[test]
-    fn accepts_the_name_cargo_prefixes() {
-        let smudge = String::from("smudge");
-        let dev = String::from("dev");
-        let single = [dev.clone()];
-        assert!(driver_command(&single).is_some());
-        assert!(driver_command(&[smudge, dev]).is_some());
-    }
-
-    #[test]
-    fn refuses_other_commands() {
-        let build = String::from("build");
-        assert!(driver_command(&[build]).is_none());
-    }
-}
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[path = "main_tests.rs"]
+mod tests;

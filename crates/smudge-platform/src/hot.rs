@@ -98,8 +98,13 @@ use subsecond::JumpTable;
 /// and the text crate of this library: their reactive runtime and text
 /// system would start empty in the patched code. A thread-local of the app's
 /// own rebuilt crates restarts from its initial value in the patched code.
-/// Likewise, every function and static the patch did not change resolves to
-/// the running process's own instance: a patch library must not carry a
+/// The statics of a rebuilt crate are copies as well: the patched code sees a
+/// writable one at its initial value, which is why a builder should refuse to
+/// rebuild a library crate that defines one, and an immutable one at another
+/// address than the running app's, so comparing its address with one the
+/// app captured before the patch finds them different.
+/// Every function and static of a crate the patch did not rebuild resolves
+/// to the running process's own instance: a patch library must not carry a
 /// private copy of a crate it did not rebuild, such as a second reactive
 /// runtime, because its code would then read that copy's empty state.
 ///

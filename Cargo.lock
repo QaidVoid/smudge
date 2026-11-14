@@ -587,6 +587,7 @@ name = "cargo-smudge"
 version = "0.2.0"
 dependencies = [
  "gimli",
+ "libc",
  "object",
  "serde",
  "serde_json",

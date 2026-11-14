@@ -1,0 +1,11 @@
+[workspace]
+members = ["app", "ui", "core2", "tls", "mac", "helper"]
+resolver = "2"
+
+[workspace.dependencies]
+subsecond = { version = "=0.7.10", default-features = false }
+ui = { path = "ui" }
+tls = { path = "tls" }
+core2 = { path = "core2" }
+mac = { path = "mac" }
+helper = { path = "helper" }

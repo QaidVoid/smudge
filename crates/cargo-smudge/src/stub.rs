@@ -3,18 +3,17 @@
 //!
 //! Every function the patch imports from the binary is a trampoline that
 //! jumps to the function's address in the running process, and every other
-//! symbol is an absolute symbol at that address, which the dynamic linker
-//! slides with the patch library's load address. A thread-local import
-//! cannot be resolved that way: a loaded library binds thread-local
-//! references to the module that defines them, and the binary keeps its own
-//! locals out of its dynamic symbol table. The stub therefore defines every
-//! thread-local the patch imports as a copy of the binary's initialization
-//! image. The patched code reads and writes its own fresh instance of such
-//! a thread-local, whose values start at the initializer, while the running
-//! code keeps the one it has. This is the copy semantics the wire format
-//! documents on the platform crate's environment variable: a crate the
-//! patch rebuilds gives its thread-locals a fresh start, and so does a
-//! thread-local of a crate the patch does not rebuild that the stub copies.
+//! symbol is an absolute symbol at its address in the running process,
+//! which the dynamic linker leaves as it is. A thread-local import cannot
+//! be resolved that way: a loaded library binds thread-local references to
+//! the module that defines them, and the binary keeps its own locals out of
+//! its dynamic symbol table. The stub therefore defines every thread-local
+//! the patch imports as a copy of the binary's initialization image, and
+//! the patched code reads and writes its own instance, whose values start
+//! at the initializer. The patch step only lets the standard library's
+//! thread-locals through, which hold per-thread caches that inlined
+//! standard library code reaches, and refuses a patch that imports any
+//! other crate's.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,7 +62,7 @@ pub(crate) fn build(
         let address = sym.address + slide;
         if sym.kind == object::SymbolKind::Text {
             asm.push_str(&format!(
-                ".globl {name}\n.p2align 4\n{name}:\n    jmp .Lsmudge_target_{text}(%rip)\n"
+                ".globl {name}\n.p2align 4\n{name}:\n    jmp *.Lsmudge_target_{text}(%rip)\n"
             ));
             addresses.push_str(&format!(
                 ".Lsmudge_target_{text}:\n    .quad {address:#x}\n"

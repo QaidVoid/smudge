@@ -1,0 +1,12 @@
+[package]
+name = "ui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# A renamed dependency, which keeps its real crate name in its artifact.
+engine = { package = "core2", path = "../core2" }
+mac.workspace = true
+
+[features]
+fancy = []
