@@ -31,9 +31,9 @@ use subsecond::JumpTable;
 ///
 /// The builder sets it to the path of a Unix stream socket, usually under
 /// the target directory, before it starts the app. An app started through
-/// [`crate::run_view`] with the `hot-reload` feature on Linux connects to it
-/// and applies the patches it receives. Without the variable the app never
-/// looks for a builder.
+/// [`crate::run_view`] or [`crate::run_view_with`] with the `hot-reload`
+/// feature on Linux connects to it and applies the patches it receives.
+/// Without the variable the app never looks for a builder.
 ///
 /// # Wire format
 ///
@@ -81,7 +81,8 @@ use subsecond::JumpTable;
 /// Each patch replaces the one before it. Its library and its table hold
 /// every function changed since the app started, not only those changed
 /// since the last patch, and always the crate that defines the view and the
-/// crate that calls `run_view`, where the state guard is compiled, because
+/// crate that calls `run_view` or `run_view_with`, where the state guard is
+/// compiled, because
 /// installing a table replaces the active one without merging entries,
 /// while every earlier table and library stays allocated, which is what
 /// keeps the calls of the application's workers valid across a patch.
@@ -522,7 +523,7 @@ unsafe fn patched<S, E>(
         return Err(format!(
             "the patch maps the view but not the guard for the state type `{name}`: \
              either the state type changed, or the patch left out the crate that \
-             calls `run_view`. The window keeps its view until a restart"
+             calls `run_view` or `run_view_with`. The window keeps its view until a restart"
         ));
     };
     // SAFETY: the caller promises that a mapped probe has the probe's

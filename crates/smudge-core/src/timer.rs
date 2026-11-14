@@ -180,12 +180,29 @@ impl TimerEntry {
 #[must_use = "a timer runs until its handle is dropped, so an unused handle \
               cancels it at once"]
 pub struct TimerHandle {
-    entry: Rc<TimerEntry>,
+    /// The timer, or `None` once [`detach`](Self::detach) released it, so a
+    /// dropped handle of a detached timer cancels nothing.
+    entry: Option<Rc<TimerEntry>>,
 }
 
 impl Drop for TimerHandle {
     fn drop(&mut self) {
-        self.entry.active.set(false);
+        if let Some(entry) = self.entry.take() {
+            entry.active.set(false);
+        }
+    }
+}
+
+impl TimerHandle {
+    /// Keeps the timer running after the handle is gone.
+    ///
+    /// The handle stops holding the timer, so dropping it cancels nothing,
+    /// and the timer stops only when its owner is cleaned up. A timer
+    /// created under the app's root owner, for example in the configure
+    /// step of the window, runs for as long as the app lives and keeps its
+    /// state across a remount.
+    pub fn detach(mut self) {
+        self.entry = None;
     }
 }
 
@@ -381,7 +398,7 @@ pub fn after(duration: Duration, fun: impl FnMut() + 'static) {
 pub fn every(period: Duration, fun: impl FnMut() + 'static) -> TimerHandle {
     let entry = register(Some(period), period, Box::new(crate::hot::wrap_mut(fun)));
     TimerHandle {
-        entry: entry.unwrap_or_else(|| inactive_entry(period)),
+        entry: Some(entry.unwrap_or_else(|| inactive_entry(period))),
     }
 }
 
