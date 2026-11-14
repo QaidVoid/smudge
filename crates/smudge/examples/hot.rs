@@ -1,8 +1,10 @@
-//! A window started through `run_view`, which `cargo smudge dev` patches.
+//! A window started through `run_view_with`, which `cargo smudge dev`
+//! patches.
 //!
 //! Run with `cargo smudge dev --example hot -p smudge --features hot-reload`
 //! and edit `view`: the window shows the change within about a second and
-//! keeps the count.
+//! keeps the count. The configure step makes the app follow the system's
+//! light or dark preference, so the text stays readable either way.
 
 use smudge::core::element::AnyElement;
 use smudge::prelude::*;
@@ -31,7 +33,7 @@ fn view(state: &State) -> AnyElement {
 }
 
 fn main() -> Result<(), PlatformError> {
-    run_view(
+    run_view_with(
         WindowOptions {
             title: String::from("Hot"),
             size: Size {
@@ -45,5 +47,13 @@ fn main() -> Result<(), PlatformError> {
             count: RwSignal::new(0_u32),
         },
         view,
+        |app| {
+            app.follow_color_scheme(
+                Theme::light(),
+                Color::WHITE,
+                Theme::dark(),
+                Color::rgb(16, 17, 21),
+            );
+        },
     )
 }

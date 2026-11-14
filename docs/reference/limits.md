@@ -32,6 +32,7 @@
 - **No screen readers on the web.** Browsers expose their own accessibility tree, and projecting into it needs a different approach.
 - **Maximize under X11 depends on the window manager.** `toggle_maximize` and `maximized` use the standard X11 maximize request and state. A window manager that does not implement them, as some X11 bridges inside Wayland compositors do not, ignores the request, and `maximized` stays `false`. Running natively on Wayland avoids this.
 - **Wayland clipboard needs data-control or Xwayland.** On a compositor with neither, copy and paste stay inside the application.
+- **The color scheme follows the desktop on Linux, macOS and Windows.** An app that follows the system's light or dark preference reads the desktop's `color-scheme` setting through the settings portal on the session bus on Linux, and the theme the window system reports on macOS and Windows. A desktop that serves no portal, and the web, report nothing: the app keeps the light side it starts on until a report says otherwise.
 
 ## Stability
 

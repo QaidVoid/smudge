@@ -16,10 +16,11 @@ use crate::element::{IntoElement, UpdateQueue, mount};
 use crate::geometry::{Color, PixelRect, Point, Rect, Size};
 use crate::input::{InputEvent, Modifiers};
 use crate::paint::DisplayList;
+use crate::reactive::prelude::{Get, Set};
 use crate::reactive::runtime::Scope;
-use crate::reactive::{self, Owner, RenderEffect};
+use crate::reactive::{self, Owner, RenderEffect, RwSignal};
 use crate::semantics::{A11yChanges, SemanticsNode};
-use crate::theme::Theme;
+use crate::theme::{ColorScheme, Theme};
 use crate::timer::{self, Clock, TimerBook};
 use crate::tree::{WidgetId, WidgetTree};
 
@@ -165,6 +166,11 @@ pub struct App {
     hooks: Rc<RefCell<crate::hot::HotPatchBook>>,
     /// Whether the next frame repaints the whole surface.
     force_full: bool,
+    /// The system color scheme the last report named, even when the app does
+    /// not follow it, so a follower that arrives later starts on it.
+    scheme: Option<ColorScheme>,
+    /// What the app paints with when it follows the system color scheme.
+    scheme_follow: Option<SchemeFollow>,
     /// Whether a remount replaced the text fields since the window last
     /// asked, so the input method's composition belongs to none of them.
     ime_reset: bool,
@@ -183,6 +189,28 @@ pub struct App {
     /// The clipboard the app's handlers copy and paste through, when one is
     /// installed.
     clipboard: Option<crate::clipboard::Slot>,
+}
+
+/// What an app that follows the system color scheme paints with.
+struct SchemeFollow {
+    /// The scheme as it was last reported, whose writes drive the binding.
+    scheme: RwSignal<ColorScheme>,
+    /// The themes and clear colors, shared with the binding so a later
+    /// follow swaps them under it.
+    pair: Rc<RefCell<SchemePair>>,
+}
+
+/// The themes an app that follows the color scheme paints with.
+#[derive(Clone)]
+struct SchemePair {
+    /// The theme a light report paints with.
+    light: Theme,
+    /// The color a light report starts the surface from.
+    light_clear: Color,
+    /// The theme a dark report paints with.
+    dark: Theme,
+    /// The color a dark report starts the surface from.
+    dark_clear: Color,
 }
 
 impl App {
@@ -252,6 +280,8 @@ impl App {
             #[cfg(all(feature = "hot-reload", target_os = "linux"))]
             hooks,
             force_full: true,
+            scheme: None,
+            scheme_follow: None,
             ime_reset: false,
             build_owner,
             _root: root,
@@ -503,6 +533,137 @@ impl App {
                 queue.push(Box::new(move |tree| tree.set_theme(theme)));
             });
         });
+    }
+
+    /// Follows the system color scheme, switching the app's theme and the
+    /// color the surface starts from when it changes.
+    ///
+    /// The windowing layer reports the scheme the desktop holds, and reports
+    /// again whenever it changes; while the app follows, a light report
+    /// paints `light` over `light_clear` and a dark report paints `dark`
+    /// over `dark_clear`. Both clear colors must be opaque, like the
+    /// window's own: presentation copies only the color channels. Following
+    /// replaces what [`App::set_theme`] last
+    /// set: from here on the scheme's changes choose the theme, until
+    /// another call to this one names new themes.
+    ///
+    /// An app that never calls this paints the themes it sets itself. The
+    /// desktop holds no scheme an app can read everywhere, so on a platform
+    /// that reports none the app keeps the light side until a report says
+    /// otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use smudge_core::app::{App, AppConfig, RepaintMode};
+    /// use smudge_core::geometry::{Color, Size};
+    /// use smudge_core::theme::{ColorScheme, Theme};
+    /// use smudge_core::widget::panel;
+    ///
+    /// # let mut app = App::new(
+    /// #     AppConfig {
+    /// #         viewport: Size { width: 120.0, height: 80.0 },
+    /// #         scale: 1.0,
+    /// #         clear_color: Color::WHITE,
+    /// #         repaint: RepaintMode::Damage,
+    /// #     },
+    /// #     || panel(),
+    /// # );
+    /// app.follow_color_scheme(
+    ///     Theme::light(),
+    ///     Color::WHITE,
+    ///     Theme::dark(),
+    ///     Color::rgb(16, 17, 21),
+    /// );
+    /// app.set_color_scheme(ColorScheme::Dark);
+    /// assert_eq!(app.frame().clear_color, Color::rgb(16, 17, 21));
+    /// ```
+    pub fn follow_color_scheme(
+        &mut self,
+        light: Theme,
+        light_clear: Color,
+        dark: Theme,
+        dark_clear: Color,
+    ) {
+        if let Some(follow) = &self.scheme_follow {
+            // A later follow swaps the pair under the standing binding; the
+            // write below wakes it, and it reads the new themes next frame.
+            let mut pair = follow.pair.borrow_mut();
+            *pair = SchemePair {
+                light,
+                light_clear,
+                dark,
+                dark_clear,
+            };
+        } else {
+            // The signal lives under the root owner, like the binding, so
+            // it dies with the app and survives every remount. The pair is
+            // shared so the binding reads whatever the latest follow named.
+            let pair = Rc::new(RefCell::new(SchemePair {
+                light,
+                light_clear,
+                dark,
+                dark_clear,
+            }));
+            let scheme = self
+                ._root
+                .with(|| RwSignal::new(self.scheme.unwrap_or(ColorScheme::Light)));
+            let signal = scheme.clone();
+            let read = pair.clone();
+            let queue = self.queue.clone();
+            self._root.with(|| {
+                RenderEffect::new_unwrapped(move || {
+                    let pair = read.borrow().clone();
+                    let theme = if signal.get() == ColorScheme::Dark {
+                        pair.dark
+                    } else {
+                        pair.light
+                    };
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| tree.set_theme(theme)));
+                });
+            });
+            self.scheme_follow = Some(SchemeFollow { scheme, pair });
+        }
+        // A report may have arrived before the app started following, and a
+        // first follow names the clear color the window has not applied yet.
+        let start = self.scheme.unwrap_or(ColorScheme::Light);
+        self.set_color_scheme(start);
+    }
+
+    /// Reports the system color scheme the desktop holds.
+    ///
+    /// The windowing layer calls it when the scheme changes. An app that
+    /// follows the scheme through [`App::follow_color_scheme`] switches its
+    /// theme and clear color; any app keeps the report, and a later call to
+    /// [`App::follow_color_scheme`] starts on it.
+    pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
+        self.scheme = Some(scheme);
+        let Some(follow) = &self.scheme_follow else {
+            return;
+        };
+        let clear = match scheme {
+            ColorScheme::Dark => follow.pair.borrow().dark_clear,
+            ColorScheme::Light => follow.pair.borrow().light_clear,
+        };
+        follow.scheme.set(scheme);
+        self.set_clear_color(clear);
+    }
+
+    /// Whether the app follows the system color scheme.
+    ///
+    /// The windowing layer starts the watcher that reports scheme changes
+    /// only when it does, so an app that shows no interest holds no
+    /// connection to the desktop.
+    pub fn follows_color_scheme(&self) -> bool {
+        self.scheme_follow.is_some()
+    }
+
+    /// Changes the color the surface starts from, and makes the next frame
+    /// repaint the whole surface, since no pixel's paint names it.
+    fn set_clear_color(&mut self, color: Color) {
+        self.config.clear_color = color;
+        self.force_full = true;
     }
 
     /// Installs the clipboard the app's widgets copy and paste through.

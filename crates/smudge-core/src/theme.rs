@@ -68,6 +68,18 @@ impl ColorToken {
     pub const FOCUS_RING: ColorToken = ColorToken("focus_ring");
 }
 
+/// Whether the system would rather show light or dark colors.
+///
+/// The desktop reports it; [`App::follow_color_scheme`](crate::app::App::follow_color_scheme)
+/// switches the app's theme when it changes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ColorScheme {
+    /// The system prefers light colors.
+    Light,
+    /// The system prefers dark colors.
+    Dark,
+}
+
 /// The name of a corner radius in a [`Theme`].
 ///
 /// A token is a name, not a value: the value comes from the theme that is

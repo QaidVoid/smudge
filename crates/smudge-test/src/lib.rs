@@ -41,6 +41,8 @@ pub struct FrameReport {
     pub nodes_painted: u32,
     /// Whether the layout pass ran the layout engine.
     pub layout_ran: bool,
+    /// The color the surface started from this frame.
+    pub clear_color: Color,
 }
 
 /// An app and a CPU renderer driven together without a window.
@@ -120,12 +122,27 @@ impl Harness {
         scale: f32,
         build: impl FnOnce() -> E,
     ) -> Harness {
+        Harness::with_clear_color(width, height, scale, CLEAR_COLOR, build)
+    }
+
+    /// Creates a harness like [`Harness::new`], whose app starts from `clear`
+    /// instead of the plain white.
+    ///
+    /// A test that switches the color the surface starts from compares its
+    /// frames against a harness that starts from the switched color.
+    pub fn with_clear_color<E: IntoElement>(
+        width: f32,
+        height: f32,
+        scale: f32,
+        clear: Color,
+        build: impl FnOnce() -> E,
+    ) -> Harness {
         let clock = VirtualClock::new(Instant::now());
         let app = App::with_clock(
             AppConfig {
                 viewport: Size { width, height },
                 scale,
-                clear_color: CLEAR_COLOR,
+                clear_color: clear,
                 repaint: RepaintMode::Damage,
             },
             clock.clone().into(),
@@ -202,6 +219,7 @@ impl Harness {
             full,
             nodes_painted: stats.nodes_painted,
             layout_ran: stats.layout_ran,
+            clear_color: *clear_color,
         }
     }
 

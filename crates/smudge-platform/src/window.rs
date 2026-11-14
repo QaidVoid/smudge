@@ -57,6 +57,19 @@ pub(crate) enum PlatformEvent {
     /// platform stopped reading the tree.
     #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     A11y(accesskit_winit::Event),
+    /// The desktop's color scheme changed, or the watcher learned the one it
+    /// holds: hand it to the app that follows it.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "redox",
+            target_family = "wasm",
+            target_os = "android",
+            target_os = "ios",
+            target_os = "macos"
+        ))
+    ))]
+    ColorSchemeChanged(smudge_core::theme::ColorScheme),
 }
 
 #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
@@ -719,6 +732,20 @@ struct WindowState {
     /// a real event cannot arrive before the app has drawn once, and a hit
     /// test before the first layout has no rectangles to hit.
     rendered: bool,
+    /// Whether the color-scheme watcher was started for this window, so a
+    /// follow that begins after the window opened starts it once, at the
+    /// frame that follows.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "redox",
+            target_family = "wasm",
+            target_os = "android",
+            target_os = "ios",
+            target_os = "macos"
+        ))
+    ))]
+    scheme_watcher_started: bool,
     /// How many frames to present before the window closes.
     frame_limit: Option<u64>,
     /// How many frames the window has presented.
@@ -847,6 +874,50 @@ where
             app.configure(configure);
         }
 
+        // An app that follows the system color scheme is the only one that
+        // wants the watcher, so an app that shows no interest holds no
+        // connection to the desktop. The watcher reports through the run
+        // loop's user events, which land on this thread.
+        #[cfg(all(
+            unix,
+            not(any(
+                target_os = "redox",
+                target_family = "wasm",
+                target_os = "android",
+                target_os = "ios",
+                target_os = "macos"
+            ))
+        ))]
+        if app.follows_color_scheme() {
+            let proxy = self.proxy.clone();
+            crate::color_scheme::start(move |scheme| {
+                let _ = proxy.send_event(PlatformEvent::ColorSchemeChanged(scheme));
+            });
+        }
+        // The app moves into the window state below, and its answer to
+        // whether it follows decides when the watcher starts.
+        #[cfg(all(
+            unix,
+            not(any(
+                target_os = "redox",
+                target_family = "wasm",
+                target_os = "android",
+                target_os = "ios",
+                target_os = "macos"
+            ))
+        ))]
+        let scheme_watcher_started = app.follows_color_scheme();
+
+        // The window system reports the theme itself on macOS and Windows,
+        // so the scheme is read from the window whatever the app does with
+        // it: an app that follows later still starts on the desktop's
+        // answer, and one that never follows keeps only the report. Later
+        // changes arrive with the window's events.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some(theme) = window.theme() {
+            app.set_color_scheme(color_scheme(theme));
+        }
+
         // A message from another thread posts a wake through the proxy, so a
         // sending thread never polls and the window never does either.
         let proxy = self.proxy.clone();
@@ -902,6 +973,17 @@ where
             on_frame: self.options.on_frame.take(),
             on_event: self.options.on_event.take(),
             rendered: false,
+            #[cfg(all(
+                unix,
+                not(any(
+                    target_os = "redox",
+                    target_family = "wasm",
+                    target_os = "android",
+                    target_os = "ios",
+                    target_os = "macos"
+                ))
+            ))]
+            scheme_watcher_started,
             frame_limit: self.options.frame_limit,
             frames_presented: 0,
             frame_period,
@@ -982,6 +1064,26 @@ where
         let Some(state) = self.state.as_mut() else {
             return Ok(());
         };
+        // An app that begins following after the window opened starts the
+        // watcher at the first frame that follows, through the same
+        // reporting path a follower gets at creation.
+        #[cfg(all(
+            unix,
+            not(any(
+                target_os = "redox",
+                target_family = "wasm",
+                target_os = "android",
+                target_os = "ios",
+                target_os = "macos"
+            ))
+        ))]
+        if !state.scheme_watcher_started && state.app.follows_color_scheme() {
+            state.scheme_watcher_started = true;
+            let proxy = self.proxy.clone();
+            crate::color_scheme::start(move |scheme| {
+                let _ = proxy.send_event(PlatformEvent::ColorSchemeChanged(scheme));
+            });
+        }
         if state.rendered
             && let Some(on_event) = &state.on_event
         {
@@ -991,6 +1093,12 @@ where
         let started = Instant::now();
         state.next_frame = None;
         let output = state.app.frame();
+        // The follower's colors reach this check like any other change,
+        // so a scheme whose clear color is not opaque is refused here as
+        // the window's own clear color is at creation.
+        if !output.clear_color.is_opaque() {
+            return Err(PlatformError::ClearColor);
+        }
         state.rendered = true;
         let presented = state.presenter.render_and_present(&output, driven)?;
         if let Some(stats) = presented {
@@ -1179,6 +1287,24 @@ where
             PlatformEvent::A11y(event) => self.handle_a11y_event(event),
             #[cfg(all(feature = "hot-reload", target_os = "linux"))]
             PlatformEvent::HotPatch(patch) => self.hot_patch(event_loop, patch),
+            #[cfg(all(
+                unix,
+                not(any(
+                    target_os = "redox",
+                    target_family = "wasm",
+                    target_os = "android",
+                    target_os = "ios",
+                    target_os = "macos"
+                ))
+            ))]
+            PlatformEvent::ColorSchemeChanged(scheme) => {
+                if let Some(state) = self.state.as_mut() {
+                    state.app.set_color_scheme(scheme);
+                    if state.app.needs_frame() {
+                        state.window.request_redraw();
+                    }
+                }
+            }
         }
     }
 
@@ -1218,6 +1344,19 @@ where
                     event_loop.exit();
                 }
                 result
+            }
+            // The window system reports a theme change on the platforms whose
+            // themes are real; the arm is kept off Linux, whose stub would
+            // clobber a scheme the settings portal reported.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            WindowEvent::ThemeChanged(theme) => {
+                if let Some(state) = self.state.as_mut() {
+                    state.app.set_color_scheme(color_scheme(theme));
+                    if state.app.needs_frame() {
+                        state.window.request_redraw();
+                    }
+                }
+                Ok(())
             }
             // A composition event that arrives while the input method is off
             // belongs to a composition that was dropped, for example one in a
@@ -1682,6 +1821,15 @@ impl CpuPresenter {
             present: drawn.copy + present_start.elapsed(),
             renderer: "cpu",
         }))
+    }
+}
+
+/// The app's color scheme for the theme the window system reports.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn color_scheme(theme: winit::window::Theme) -> smudge_core::theme::ColorScheme {
+    match theme {
+        winit::window::Theme::Light => smudge_core::theme::ColorScheme::Light,
+        winit::window::Theme::Dark => smudge_core::theme::ColorScheme::Dark,
     }
 }
 

@@ -7,9 +7,9 @@
 use smudge_core::element::{Element, IntoElement};
 use smudge_core::geometry::{Color, Corners, PixelRect};
 use smudge_core::paint::PaintOp;
-use smudge_core::reactive::{self, prelude::*};
+use smudge_core::reactive::{self, Owner, prelude::*};
 use smudge_core::style::px;
-use smudge_core::theme::{ColorToken, RadiusToken, Theme};
+use smudge_core::theme::{ColorScheme, ColorToken, RadiusToken, Theme};
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 use smudge_test::Harness;
 
@@ -40,7 +40,14 @@ fn panels(first: Element<Panel>) -> impl IntoElement {
 /// A harness that mounts `surface` where the token panel sits, for pixel
 /// comparisons.
 fn plain_harness(surface: Color) -> Harness {
-    let mut harness = Harness::new(100.0, 60.0, 1.0, move || plain_scene(surface));
+    plain_harness_on(Color::WHITE, surface)
+}
+
+/// A plain harness that starts from `clear`, for comparisons against a
+/// surface whose clear color the app switched.
+fn plain_harness_on(clear: Color, surface: Color) -> Harness {
+    let mut harness =
+        Harness::with_clear_color(100.0, 60.0, 1.0, clear, move || plain_scene(surface));
     harness.frame();
     harness
 }
@@ -116,6 +123,168 @@ fn bind_theme_follows_the_signal_it_reads() {
         frame.nodes_painted, 1,
         "switching back repaints the token user again"
     );
+    harness.assert_matches(&plain_harness(Theme::light().color(ColorToken::SURFACE)));
+}
+
+#[test]
+fn following_the_color_scheme_switches_the_theme_and_the_clear_color() {
+    let dark_clear = Color::rgb(16, 17, 21);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, token_scene);
+    harness
+        .app()
+        .follow_color_scheme(Theme::light(), Color::WHITE, Theme::dark(), dark_clear);
+    let frame = harness.frame();
+    assert_eq!(
+        frame.clear_color,
+        Color::WHITE,
+        "the light side paints the light clear color"
+    );
+    harness.assert_matches(&plain_harness(Theme::light().color(ColorToken::SURFACE)));
+
+    harness.app().set_color_scheme(ColorScheme::Dark);
+    let frame = harness.frame();
+    assert!(
+        frame.full,
+        "a clear color change repaints the whole surface"
+    );
+    assert_eq!(frame.clear_color, dark_clear);
+    harness.assert_matches(&plain_harness_on(
+        dark_clear,
+        Theme::dark().color(ColorToken::SURFACE),
+    ));
+
+    harness.app().set_color_scheme(ColorScheme::Light);
+    let frame = harness.frame();
+    assert_eq!(frame.clear_color, Color::WHITE);
+    harness.assert_matches(&plain_harness(Theme::light().color(ColorToken::SURFACE)));
+}
+
+#[test]
+fn a_scheme_reported_before_the_follow_sets_the_start() {
+    let dark_clear = Color::rgb(16, 17, 21);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, token_scene);
+    // The desktop's report can arrive before the app asks to follow it.
+    harness.app().set_color_scheme(ColorScheme::Dark);
+    harness
+        .app()
+        .follow_color_scheme(Theme::light(), Color::WHITE, Theme::dark(), dark_clear);
+    let frame = harness.frame();
+    assert_eq!(
+        frame.clear_color, dark_clear,
+        "the follower starts on the report it already holds"
+    );
+    harness.assert_matches(&plain_harness_on(
+        dark_clear,
+        Theme::dark().color(ColorToken::SURFACE),
+    ));
+}
+
+#[test]
+fn a_first_follow_applies_the_clear_color_the_window_started_without() {
+    // hot.rs starts its window on a dark clear color; a system in light mode
+    // that has not reported yet must still land on the light side.
+    let started = Color::rgb(16, 17, 21);
+    let mut harness = Harness::with_clear_color(100.0, 60.0, 1.0, started, token_scene);
+    harness
+        .app()
+        .follow_color_scheme(Theme::light(), Color::WHITE, Theme::dark(), started);
+    let frame = harness.frame();
+    assert_eq!(
+        frame.clear_color,
+        Color::WHITE,
+        "a follow with no report yet applies the light clear color"
+    );
+    harness.assert_matches(&plain_harness(Theme::light().color(ColorToken::SURFACE)));
+}
+
+#[test]
+fn a_later_follow_names_the_themes_the_binding_paints() {
+    let mut light2 = Theme::light();
+    light2
+        .colors
+        .insert(ColorToken::SURFACE.0, Color::rgb(90, 10, 10));
+    let mut dark2 = Theme::dark();
+    dark2
+        .colors
+        .insert(ColorToken::SURFACE.0, Color::rgb(5, 60, 70));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, token_scene);
+    harness.app().follow_color_scheme(
+        Theme::light(),
+        Color::WHITE,
+        Theme::dark(),
+        Color::rgb(16, 17, 21),
+    );
+    harness.frame();
+
+    let (light_clear, dark_clear) = (Color::rgb(1, 2, 3), Color::rgb(4, 5, 6));
+    harness
+        .app()
+        .follow_color_scheme(light2.clone(), light_clear, dark2.clone(), dark_clear);
+    let frame = harness.frame();
+    assert_eq!(
+        frame.clear_color, light_clear,
+        "the replacement names a clear color the next frame paints"
+    );
+    harness.assert_matches(&plain_harness_on(
+        light_clear,
+        light2.color(ColorToken::SURFACE),
+    ));
+
+    // Both sides of the replacement are live: the scheme flips to the
+    // replacement's dark pair, then back to its light pair.
+    harness.app().set_color_scheme(ColorScheme::Dark);
+    let frame = harness.frame();
+    assert_eq!(
+        frame.clear_color, dark_clear,
+        "the replacement's dark clear color paints after the flip"
+    );
+    harness.assert_matches(&plain_harness_on(
+        dark_clear,
+        dark2.color(ColorToken::SURFACE),
+    ));
+
+    harness.app().set_color_scheme(ColorScheme::Light);
+    let frame = harness.frame();
+    assert_eq!(
+        frame.clear_color, light_clear,
+        "the replacement's light clear color paints after the flip back"
+    );
+    harness.assert_matches(&plain_harness_on(
+        light_clear,
+        light2.color(ColorToken::SURFACE),
+    ));
+}
+
+#[test]
+fn a_follower_survives_a_remount_and_keeps_reporting() {
+    let dark_clear = Color::rgb(16, 17, 21);
+    let mut harness = Harness::with_clear_color(100.0, 60.0, 1.0, Color::WHITE, token_scene);
+    // The follow runs under an owner the caller drops, as a window's setup
+    // code might; the follower must root its signal with the app, not
+    // with whoever was current when the call landed.
+    let caller = Owner::new();
+    caller.with(|| {
+        harness
+            .app()
+            .follow_color_scheme(Theme::light(), Color::WHITE, Theme::dark(), dark_clear);
+    });
+    drop(caller);
+    harness.frame();
+
+    // The report lands before the remount, and must still drive the frame
+    // after the build's owner was replaced.
+    harness.app().set_color_scheme(ColorScheme::Dark);
+    harness.app().remount(token_scene);
+    let frame = harness.frame();
+    assert_eq!(frame.clear_color, dark_clear);
+    harness.assert_matches(&plain_harness_on(
+        dark_clear,
+        Theme::dark().color(ColorToken::SURFACE),
+    ));
+
+    harness.app().set_color_scheme(ColorScheme::Light);
+    let frame = harness.frame();
+    assert_eq!(frame.clear_color, Color::WHITE);
     harness.assert_matches(&plain_harness(Theme::light().color(ColorToken::SURFACE)));
 }
 
