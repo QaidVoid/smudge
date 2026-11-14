@@ -32,7 +32,7 @@ mod window;
 pub use error::PlatformError;
 pub use present::{PresentStats, PresentStatsHandle};
 pub use renderer::{RENDERER_ENVIRONMENT, RendererChoice};
-pub use window::{EventHook, FrameHook, WindowOptions, run, run_view, run_with};
+pub use window::{EventHook, FrameHook, WindowOptions, run, run_view, run_view_with, run_with};
 
 #[cfg(all(feature = "hot-reload", target_os = "linux"))]
 pub use hot::{HOT_BUILD_ENVIRONMENT, HOT_SOCKET_ENVIRONMENT};

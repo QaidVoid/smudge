@@ -3,6 +3,8 @@
 //! The tests run the app on a virtual clock and advance it by hand, so a
 //! timer fires at exactly the moment the test chooses and nothing sleeps.
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::Duration;
 
 use web_time::Instant;
@@ -10,7 +12,7 @@ use web_time::Instant;
 use crate::app::{App, AppConfig, RepaintMode};
 use crate::geometry::{Color, Size};
 use crate::reactive::{Owner, prelude::*, signal_local};
-use crate::timer::{self, VirtualClock};
+use crate::timer::{self, VirtualClock, every};
 use crate::widget::panel;
 
 /// The settings for a small app, shared by the tests.
@@ -117,6 +119,47 @@ fn cleaning_the_owner_up_cancels_its_timers() {
 }
 
 #[test]
+fn a_detached_timer_releases_its_capture_when_the_app_drops() {
+    let start = Instant::now();
+    // The slot only ever holds a weak reference, so the closure's capture is
+    // the one strong reference the test watches.
+    let witness: Rc<RefCell<Option<std::rc::Weak<Cell<u32>>>>> = Rc::new(RefCell::new(None));
+    let (mut app, clock) = timed(start, {
+        let witness = Rc::clone(&witness);
+        move || {
+            *witness.borrow_mut() = None;
+        }
+    });
+
+    app.configure(|_| {
+        let capture = Rc::new(Cell::new(0u32));
+        *witness.borrow_mut() = Some(Rc::downgrade(&capture));
+        every(Duration::from_millis(100), move || {
+            capture.set(capture.get() + 1);
+        })
+        .detach();
+    });
+
+    clock.advance(Duration::from_millis(100));
+    app.frame();
+    assert_eq!(
+        witness.borrow().as_ref().unwrap().upgrade().unwrap().get(),
+        1,
+        "the detached timer fired"
+    );
+
+    // The app owns the root owner the timer belongs to, so dropping it
+    // cleans the owner up and drops the book, and the timer entry and its
+    // captures go with it. A handle that leaked its strong reference would
+    // keep the capture alive here.
+    drop(app);
+    assert!(
+        witness.borrow().as_ref().unwrap().upgrade().is_none(),
+        "the app drop released the timer's capture"
+    );
+}
+
+#[test]
 fn now_reads_the_app_clock() {
     let start = Instant::now();
     let (seen, set_seen) = signal_local(None);
@@ -183,7 +226,7 @@ fn due_timers_run_between_frames_and_wake_only_when_they_write() {
     let _watch = app
         .root()
         .with(|| crate::reactive::RenderEffect::new(move || watched.get()));
-    let wakes = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let wakes = std::rc::Rc::new(Cell::new(0u32));
     app.set_wake_callback({
         let wakes = std::rc::Rc::clone(&wakes);
         move || wakes.set(wakes.get() + 1)

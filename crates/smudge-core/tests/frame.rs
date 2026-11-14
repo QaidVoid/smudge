@@ -547,6 +547,37 @@ fn a_hook_registered_in_a_build_runs_on_the_remount_round() {
 }
 
 #[test]
+fn a_timer_created_in_the_configure_scope_survives_a_remount() {
+    use std::time::Duration;
+
+    use smudge_core::timer::{VirtualClock, every};
+    use web_time::Instant;
+
+    let beats = Rc::new(Cell::new(0u32));
+    let clock = VirtualClock::new(Instant::now());
+    let mut app = App::with_clock(config(RepaintMode::Damage), clock.clone().into(), panel);
+
+    // The configure scope of the window: under the root owner, and the
+    // handle detaches, so the timer outlives the scope.
+    app.configure(|_| {
+        let beats = Rc::clone(&beats);
+        every(Duration::from_millis(250), move || {
+            beats.set(beats.get() + 1);
+        })
+        .detach();
+    });
+
+    clock.advance(Duration::from_millis(250));
+    app.frame();
+    assert_eq!(beats.get(), 1, "the detached timer fired");
+
+    app.remount(panel);
+    clock.advance(Duration::from_millis(250));
+    app.frame();
+    assert_eq!(beats.get(), 2, "the timer outlived the remount");
+}
+
+#[test]
 fn a_scaled_viewport_reports_physical_pixels() {
     let mut app = App::new(config(RepaintMode::Damage), panel);
     app.set_viewport(

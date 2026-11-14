@@ -259,6 +259,23 @@ impl App {
         }
     }
 
+    /// Runs `setup` with the app under its root owner, which lives for as
+    /// long as the app does and survives every remount.
+    ///
+    /// This is the step the window calls once after the first build mounted
+    /// and before the first frame. Timers and hot patch hooks that `setup`
+    /// creates belong to the root owner, so they outlive every build: a
+    /// remount cleans up the build's owner and leaves these running. A
+    /// repeating timer created here should be detached, so dropping the
+    /// `setup` scope does not cancel it.
+    ///
+    /// Outside the window this gives long-lived registration a scope of its
+    /// own, for the same reason.
+    pub fn configure(&mut self, setup: impl FnOnce(&mut App)) {
+        let root = self._root.clone();
+        root.with(|| setup(self));
+    }
+
     /// Throws the whole tree away and mounts the element that `build` returns
     /// in its place.
     ///

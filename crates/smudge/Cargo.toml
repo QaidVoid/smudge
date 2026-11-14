@@ -38,9 +38,9 @@ complex-scripts = ["smudge-text/complex-scripts"]
 # Font discovery for the fonts installed on the machine, as the feature of
 # the same name in the text crate describes. Unavailable on wasm.
 system-fonts = ["smudge-text/system-fonts"]
-# Hot reload for apps started with `run_view`, on Linux. Implies `window`.
-# Elsewhere `run_view` stays a plain run. Never on by default, and meant for
-# development builds only.
+# Hot reload for apps started with `run_view` or `run_view_with`, on Linux.
+# Implies `window`. Elsewhere both stay plain runs. Never on by default, and
+# meant for development builds only.
 hot-reload = ["window", "smudge-platform/hot-reload"]
 
 [package.metadata.docs.rs]

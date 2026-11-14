@@ -484,6 +484,110 @@ pub fn run_view<S: 'static>(
     }
 }
 
+/// Opens a window whose root `view` builds from `state`, and runs frames
+/// until the window closes, like [`run_view`], and hands the app to
+/// `configure` once after the first build mounted and before the first
+/// frame.
+///
+/// Use the `configure` step to install what must outlive the builds: a
+/// per-frame driver with [`App::set_tick`], a timer with
+/// `smudge_core::timer::every`, or measurement that runs alongside the
+/// frames. Closures created there are never rebuilt, so a patch carries
+/// them over through the wrappers that the facade's `smudge::hot` module
+/// adds.
+///
+/// With the `hot-reload` feature on Linux, a patch remounts the root
+/// through the patched `view` under the same rules as [`run_view`], and the
+/// closures `configure` created keep their state and run the patched code.
+/// Everywhere else this is [`run_with`] with the `view` as the build.
+///
+/// # Errors
+///
+/// Returns the same errors as [`run`].
+///
+/// # Panics
+///
+/// Panics when `view` or `configure` panics, in the first build or in a
+/// remount after a patch.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::time::Duration;
+///
+/// use smudge_core::element::{AnyElement, IntoElement};
+/// use smudge_core::geometry::Color;
+/// use smudge_core::reactive::{RwSignal, prelude::*};
+/// use smudge_core::timer::every;
+/// use smudge_core::widget::panel;
+/// use smudge_platform::{WindowOptions, run_view_with};
+///
+/// struct State {
+///     ticks: RwSignal<u32>,
+/// }
+///
+/// fn view(state: &State) -> AnyElement {
+///     let ticks = state.ticks.clone();
+///     panel()
+///         .child(smudge_text::label(move || {
+///             format!("{} ticks", ticks.get())
+///         }))
+///         .into_any()
+/// }
+///
+/// let ticks = RwSignal::new(0);
+/// run_view_with(
+///     WindowOptions {
+///         title: String::from("Smudge"),
+///         ..WindowOptions::default()
+///     },
+///     State {
+///         ticks: ticks.clone(),
+///     },
+///     view,
+///     |_app| {
+///         every(Duration::from_secs(1), move || {
+///             ticks.update(|ticks| *ticks += 1);
+///         })
+///         .detach();
+///     },
+/// )?;
+/// # Ok::<(), smudge_platform::PlatformError>(())
+/// ```
+pub fn run_view_with<S: 'static>(
+    options: WindowOptions,
+    state: S,
+    view: fn(&S) -> AnyElement,
+    configure: impl FnOnce(&mut App) + 'static,
+) -> Result<(), PlatformError> {
+    #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
+    {
+        run_with(options, move || view(&state), configure)
+    }
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    {
+        let state = Rc::new(state);
+        let first = Rc::clone(&state);
+        // Patches are applied only once the window is open, so the first
+        // build runs the view as the binary was built.
+        let (event_loop, mut platform) =
+            prepare(options, move || view(&first), Box::new(configure))?;
+        platform.remount = Some(Box::new(move |app| {
+            let view = crate::hot::current(view)?;
+            app.remount(|| view(&state));
+            Ok(())
+        }));
+        let proxy = platform.proxy.clone();
+        // The receiver's thread is left to run until the process ends, since
+        // it waits on the builder's socket. A patch the closed loop does not
+        // take is dropped, which answers it as failed.
+        let _receiver = crate::hot::start(move |patch| {
+            let _ = proxy.send_event(PlatformEvent::HotPatch(patch));
+        });
+        launch(event_loop, platform)
+    }
+}
+
 /// Checks the options, then creates the event loop and the state it drives.
 fn prepare<E, B>(
     options: WindowOptions,
@@ -734,7 +838,7 @@ where
             build,
         );
         if let Some(configure) = self.configure.take() {
-            configure(&mut app);
+            app.configure(configure);
         }
 
         // A message from another thread posts a wake through the proxy, so a

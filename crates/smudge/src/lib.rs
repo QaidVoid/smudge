@@ -84,9 +84,10 @@
 //!   build in which the text crate gets no font feature fails to compile,
 //!   whichever crate the feature is enabled on.
 //! - **Hot reload:** with the `hot-reload` feature, on Linux, an application
-//!   started through [`window::run_view`] under a patch builder remounts its
+//!   started through [`window::run_view`] or
+//!   [`window::run_view_with`] under a patch builder remounts its
 //!   root through the patched code after every patch, and keeps the state it
-//!   passed in. Everywhere else `run_view` is a plain run.
+//!   passed in. Everywhere else both are plain runs.
 
 pub mod prelude;
 
@@ -101,8 +102,8 @@ pub use smudge_widgets as widgets;
 /// next iteration. [`on_hot_patch`](self::hot::on_hot_patch) registers a
 /// hook the window runs after it applied a patch and remounted, so an
 /// application restarts the workers it created outside the build. Both are
-/// for applications started through
-/// [`window::run_view`] with the `hot-reload` feature on
+/// for applications started through [`window::run_view`] or
+/// [`window::run_view_with`] with the `hot-reload` feature on
 /// Linux; everywhere else `call` runs the body and `on_hot_patch` drops the
 /// hook.
 pub mod hot {
