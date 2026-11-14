@@ -22,6 +22,7 @@ name = "smudge"
 git_tag_name = "v{{ version }}"
 git_release_enable = true
 changelog_include = [
+  "cargo-smudge",
   "smudge-a11y",
   "smudge-core",
   "smudge-cpu",

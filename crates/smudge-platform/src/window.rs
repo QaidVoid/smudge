@@ -477,9 +477,12 @@ pub fn run_view<S: 'static>(
         // The receiver's thread is left to run until the process ends, since
         // it waits on the builder's socket. A patch the closed loop does not
         // take is dropped, which answers it as failed.
-        let _receiver = crate::hot::start(move |patch| {
-            let _ = proxy.send_event(PlatformEvent::HotPatch(patch));
-        });
+        let _receiver = crate::hot::start(
+            move |patch| {
+                let _ = proxy.send_event(PlatformEvent::HotPatch(patch));
+            },
+            view as usize,
+        );
         launch(event_loop, platform)
     }
 }
@@ -581,9 +584,12 @@ pub fn run_view_with<S: 'static>(
         // The receiver's thread is left to run until the process ends, since
         // it waits on the builder's socket. A patch the closed loop does not
         // take is dropped, which answers it as failed.
-        let _receiver = crate::hot::start(move |patch| {
-            let _ = proxy.send_event(PlatformEvent::HotPatch(patch));
-        });
+        let _receiver = crate::hot::start(
+            move |patch| {
+                let _ = proxy.send_event(PlatformEvent::HotPatch(patch));
+            },
+            view as usize,
+        );
         launch(event_loop, platform)
     }
 }

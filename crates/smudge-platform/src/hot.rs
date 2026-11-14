@@ -37,13 +37,13 @@ use subsecond::JumpTable;
 ///
 /// # Wire format
 ///
-/// This is version 1 of the format. Both sides send frames: one byte for the
+/// This is version 2 of the format. Both sides send frames: one byte for the
 /// frame's kind, the payload's length in bytes as a little-endian `u32`, and
 /// then the payload. Every number inside a payload is little-endian too.
 ///
 /// | Kind | Sent by | Payload |
 /// |---|---|---|
-/// | 1, hello | the app | the format version as a `u32`, the process id as a `u32`, the runtime address of `main` as a `u64`, and then the build id, the value of [`HOT_BUILD_ENVIRONMENT`], to the end |
+/// | 1, hello | the app | the format version as a `u32`, the process id as a `u32`, the runtime address of `main` as a `u64`, the runtime address of the view as a `u64`, and then the build id, the value of [`HOT_BUILD_ENVIRONMENT`], to the end |
 /// | 2, patch | the builder | the address of `main` in the binary as linked, as a `u64`, the address of `main` in the patch library as linked, as a `u64`, the entry count as a `u64`, that many pairs of `u64` mapping the address of a function in the binary as linked to the address of its new version in the patch library as linked, and then the path of the patch library to the end |
 /// | 3, applied | the app | empty |
 /// | 4, failed | the app | why the patch was not applied, in UTF-8 |
@@ -70,7 +70,12 @@ use subsecond::JumpTable;
 /// a mapped function with the signature it has in the binary and cannot
 /// check it: symbol names do not record signatures. When the view's own
 /// signature changed, the builder reports that the change needs a restart
-/// instead of sending the patch.
+/// instead of sending the patch. The hello tells the builder which function
+/// is the view: version 2 carries the view's runtime address, which the
+/// builder rebases against the address of `main` like every other runtime
+/// address. Against a version 1 hello a builder cannot attribute a
+/// signature change to the view or to anything else, so it must refuse
+/// every signature change and ask for a restart instead.
 ///
 /// A builder must not send a patch that changes the layout of a type whose
 /// values outlive the build: the state type and every type its values reach,
@@ -139,7 +144,7 @@ pub const HOT_SOCKET_ENVIRONMENT: &str = "SMUDGE_HOT_SOCKET";
 pub const HOT_BUILD_ENVIRONMENT: &str = "SMUDGE_HOT_BUILD";
 
 /// The version of the wire format the hello announces.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// The kind of the frame that introduces the app.
 const HELLO: u8 = 1;
@@ -210,28 +215,37 @@ pub(crate) fn note_patch_installed() {
 ///
 /// `deliver` runs on the receiver's thread for every patch that decodes. It
 /// must hand the patch to the thread that runs the event loop, which applies
-/// or refuses it. The receiver waits for that answer before it reads the
-/// next frame. Returns `None` when [`HOT_SOCKET_ENVIRONMENT`] is unset, and
-/// when the socket cannot be reached, which it reports on standard error.
-pub(crate) fn start(deliver: impl Fn(Patch) + Send + 'static) -> Option<JoinHandle<()>> {
+/// or refuses it. `view` is the runtime address of the view that `run_view`
+/// or `run_view_with` was given, which the hello announces so the builder
+/// can attribute a signature change to the view. The receiver waits for
+/// that answer before it reads the next frame. Returns `None` when
+/// [`HOT_SOCKET_ENVIRONMENT`] is unset, and when the socket cannot be
+/// reached, which it reports on standard error.
+pub(crate) fn start(
+    deliver: impl Fn(Patch) + Send + 'static,
+    view: usize,
+) -> Option<JoinHandle<()>> {
     start_from(
         std::env::var_os(HOT_SOCKET_ENVIRONMENT),
         std::env::var_os(HOT_BUILD_ENVIRONMENT),
         subsecond::aslr_reference(),
+        view,
         deliver,
     )
 }
 
 /// Connects to `socket` like [`start`], with the values of the environment
-/// variables and the runtime address of `main` passed in.
+/// variables, the runtime address of `main` and the runtime address of the
+/// view passed in.
 ///
-/// An address of 0 means the binary does not export `main` in its dynamic
-/// symbol table, so no patch could be placed against it. Hot reload is then
-/// off, and the app says so instead of connecting.
+/// An address of `main` of 0 means the binary does not export `main` in its
+/// dynamic symbol table, so no patch could be placed against it. Hot reload
+/// is then off, and the app says so instead of connecting.
 fn start_from(
     socket: Option<OsString>,
     build: Option<OsString>,
     main: usize,
+    view: usize,
     deliver: impl Fn(Patch) + Send + 'static,
 ) -> Option<JoinHandle<()>> {
     let socket = PathBuf::from(socket?);
@@ -243,7 +257,7 @@ fn start_from(
         return None;
     }
     let build = build.unwrap_or_default();
-    match connect(&socket, build.as_encoded_bytes(), main, deliver) {
+    match connect(&socket, build.as_encoded_bytes(), main, view, deliver) {
         Ok(receiver) => Some(receiver),
         Err(error) => {
             eprintln!(
@@ -261,13 +275,15 @@ fn connect(
     socket: &Path,
     build: &[u8],
     main: usize,
+    view: usize,
     deliver: impl Fn(Patch) + Send + 'static,
 ) -> io::Result<JoinHandle<()>> {
     let mut stream = UnixStream::connect(socket)?;
-    let mut hello = Vec::with_capacity(16 + build.len());
+    let mut hello = Vec::with_capacity(24 + build.len());
     hello.extend_from_slice(&VERSION.to_le_bytes());
     hello.extend_from_slice(&std::process::id().to_le_bytes());
     hello.extend_from_slice(&(main as u64).to_le_bytes());
+    hello.extend_from_slice(&(view as u64).to_le_bytes());
     hello.extend_from_slice(build);
     write_frame(&mut stream, HELLO, &hello)?;
     std::thread::Builder::new()

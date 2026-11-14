@@ -12,6 +12,7 @@
 | [`smudge-gpu`](https://crates.io/crates/smudge-gpu) | The GPU renderer. | [docs.rs](https://docs.rs/smudge-gpu) |
 | [`smudge-platform`](https://crates.io/crates/smudge-platform) | Windows, input, presentation, renderer choice, and the web build. | [docs.rs](https://docs.rs/smudge-platform) |
 | [`smudge-a11y`](https://crates.io/crates/smudge-a11y) | The bridge from the widget tree's semantics to the platform accessibility APIs. | [docs.rs](https://docs.rs/smudge-a11y) |
+| [`cargo-smudge`](https://crates.io/crates/cargo-smudge) | The `cargo smudge` subcommand, which builds, runs and hot-patches Smudge apps. | [docs.rs](https://docs.rs/cargo-smudge) |
 
 The repository also holds three crates that are not published: `smudge-bench`, the benchmark tool, `smudge-test`, shared test helpers, and `docs-check`, which compiles the guide's samples.
 
