@@ -523,6 +523,29 @@ fn the_tick_callback_runs_once_per_frame() {
     assert_eq!(ticks.get(), 2, "the tick runs at the start of each frame");
 }
 
+/// A hook that a build registers runs on the round the window runs after
+/// that remount, and a later remount drops it with its owner.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_hook_registered_in_a_build_runs_on_the_remount_round() {
+    use smudge_core::hot::on_hot_patch;
+
+    let runs = Rc::new(Cell::new(0u32));
+    let count = Rc::clone(&runs);
+    let mut app = App::new(config(RepaintMode::Damage), panel);
+
+    app.remount(|| {
+        on_hot_patch(move || count.set(count.get() + 1));
+        panel()
+    });
+    app.run_hot_patch_hooks();
+    assert_eq!(runs.get(), 1, "the hook of the new build ran once");
+
+    app.remount(panel);
+    app.run_hot_patch_hooks();
+    assert_eq!(runs.get(), 1, "the replaced build's hook did not run again");
+}
+
 #[test]
 fn a_scaled_viewport_reports_physical_pixels() {
     let mut app = App::new(config(RepaintMode::Damage), panel);

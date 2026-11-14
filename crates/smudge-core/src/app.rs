@@ -159,6 +159,10 @@ pub struct App {
     /// The window commands handlers queue and the state the window reports,
     /// shared with every owner of the tree.
     window: Rc<RefCell<crate::window::WindowBook>>,
+    /// The hot patch hooks the app registered, which the root owner reaches
+    /// through a weak link, like the timers and the channels.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    hooks: Rc<RefCell<crate::hot::HotPatchBook>>,
     /// Whether the next frame repaints the whole surface.
     force_full: bool,
     /// Whether a remount replaced the text fields since the window last
@@ -220,6 +224,12 @@ impl App {
         root.data()
             .window_book
             .replace(Some(Rc::downgrade(&window)));
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        let hooks = Rc::new(RefCell::new(crate::hot::HotPatchBook::new()));
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        root.data()
+            .hot_patch_book
+            .replace(Some(Rc::downgrade(&hooks)));
         let mut tree = WidgetTree::new();
         tree.set_scale(config.scale);
         let queue = UpdateQueue::default();
@@ -239,6 +249,8 @@ impl App {
             timers,
             channels,
             window,
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            hooks,
             force_full: true,
             ime_reset: false,
             build_owner,
@@ -465,9 +477,10 @@ impl App {
     /// to the callback set with [`App::set_wake_callback`] and stops when the
     /// app is dropped.
     pub fn bind_theme(&mut self, get: impl Fn() -> Theme + 'static) {
+        let get = crate::hot::wrap(get);
         let queue = self.queue.clone();
         self._root.with(|| {
-            RenderEffect::new(move || {
+            RenderEffect::new_unwrapped(move || {
                 let theme = get();
                 let queue = queue.clone();
                 queue.push(Box::new(move |tree| tree.set_theme(theme)));
@@ -573,7 +586,18 @@ impl App {
     /// The time comes from the app's [`Clock`], the same one its timers
     /// read, so a test that runs the app on a virtual clock drives both.
     pub fn set_tick(&mut self, tick: impl FnMut(Instant) + 'static) {
-        self.tick = Some(Box::new(tick));
+        self.tick = Some(Box::new(crate::hot::wrap1_mut(tick)));
+    }
+
+    /// Runs the hot patch hooks of the app, inside the owners they belong
+    /// to.
+    ///
+    /// This is for the windowing layer, which runs it after it applied a
+    /// patch and remounted, so an app's hooks restart the workers they
+    /// own. Applications do not call it.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub fn run_hot_patch_hooks(&self) {
+        crate::hot::run_hot_patch_hooks(&self.hooks);
     }
 
     /// Returns the current time of the app's clock.

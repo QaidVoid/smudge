@@ -2994,6 +2994,7 @@ dependencies = [
  "proptest",
  "slotmap",
  "smudge-test",
+ "subsecond",
  "taffy",
  "web-time",
 ]

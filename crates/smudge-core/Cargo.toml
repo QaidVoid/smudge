@@ -24,3 +24,12 @@ smudge-test = { path = "../smudge-test" }
 [[bench]]
 name = "reactive"
 harness = false
+
+[target.'cfg(target_os = "linux")'.dependencies]
+subsecond = { version = "=0.7.10", default-features = false, optional = true }
+
+[features]
+# Hot reload for the closures the tree stores and for the app's own threads.
+# Turned on by the same feature of the platform crate, which installs the
+# jump table the lookups here read. Linux only, like the receiver.
+hot-reload = ["dep:subsecond"]

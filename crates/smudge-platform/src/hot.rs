@@ -7,10 +7,13 @@
 //! thread that runs the app, which applies it and answers. Without the
 //! variable, nothing here runs: no connection and no thread.
 //!
-//! A patch is installed in [`Patch::apply`] and the jump table is read in
-//! [`current`], and both run only on the thread that runs the event loop. The
-//! table's store and load therefore never race, and a patch library is
-//! loaded only while no app code runs.
+//! A patch is installed in [`Patch::apply`], on the thread that runs the
+//! event loop, between two events, and [`current`] reads the table on that
+//! same thread, so the window's own store and load never race. The
+//! application's other threads may call through `smudge_core::hot` while a
+//! patch is applied: they read the table the last patch published, which
+//! is never rewritten after its install and whose library stays loaded, so
+//! their calls are safe across an install.
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
@@ -79,7 +82,9 @@ use subsecond::JumpTable;
 /// every function changed since the app started, not only those changed
 /// since the last patch, and always the crate that defines the view and the
 /// crate that calls `run_view`, where the state guard is compiled, because
-/// installing a table drops the previous one.
+/// installing a table replaces the active one without merging entries,
+/// while every earlier table and library stays allocated, which is what
+/// keeps the calls of the application's workers valid across a patch.
 ///
 /// A patch gets fresh, empty copies of the thread-locals defined in the
 /// crates it rebuilds. It must therefore never rebuild a crate whose
@@ -92,10 +97,14 @@ use subsecond::JumpTable;
 /// private copy of a crate it did not rebuild, such as a second reactive
 /// runtime, because its code would then read that copy's empty state.
 ///
-/// Only the thread that runs the event loop reads the table: the window
-/// looks up the view there, and the app must not look up a hot function on
-/// another thread. The table is published without synchronization for
-/// other threads, so a read elsewhere could see it half written. The app's binary must export
+/// The thread that runs the event loop applies every patch, and its read
+/// of the table right after an install is ordered by program order. The
+/// application's own threads reach the table only through the publication
+/// of `smudge_core::hot`, whose release store on the event loop's thread
+/// and acquire load on theirs order every read after the writes that
+/// filled the table in. A table is never rewritten after its install and
+/// every loaded library stays loaded, so concurrent readers need no other
+/// synchronization. The app's binary must export
 /// `main` in its dynamic symbol table, which the builder arranges when it
 /// links. Without it the app sends no hello and leaves hot reload off.
 ///
@@ -167,7 +176,10 @@ impl Patch {
     /// that reads the table through [`current`]. `then` rebuilds the root
     /// through the patched view, and its error is the answer when it fails.
     pub(crate) fn apply(self, then: impl FnOnce() -> Result<(), String>) {
-        let outcome = install(self.table).and_then(|()| then());
+        let outcome = install(self.table).and_then(|()| {
+            note_patch_installed();
+            then()
+        });
         let _ = self.answer.send(outcome);
     }
 
@@ -176,6 +188,20 @@ impl Patch {
     pub(crate) fn refuse(self, reason: &str) {
         let _ = self.answer.send(Err(String::from(reason)));
     }
+}
+
+/// Publishes the table the last patch installed to the calls of
+/// [`smudge_core::hot::call`], so a step of a loop on a thread the app
+/// spawned itself picks the patch up.
+///
+/// [`Patch::apply`] calls this on the thread that runs the event loop,
+/// right after it installed the table there.
+pub(crate) fn note_patch_installed() {
+    // SAFETY: `Patch::apply` runs on the thread that runs the event loop
+    // and calls this right after `install` put the table in place on that
+    // thread, which is the contract the core's publication asks of its
+    // caller.
+    unsafe { smudge_core::hot::note_patch_installed() }
 }
 
 /// Connects to the patch builder the environment names, and returns the
@@ -297,12 +323,23 @@ fn install(table: JumpTable) -> Result<(), String> {
     // path no earlier patch used and left unchanged since, which is the
     // well-formed table `apply_patch` requires, and its unchanged functions
     // and statics resolve to this process's own, as the wire format also
-    // requires. This runs on the thread that runs the event loop, the only
-    // thread that reads the table, as the wire format requires of the app,
-    // so the
-    // relaxed store that publishes it is ordered before every later read by
-    // program order, no read holds the previous table across this call, and
-    // the library's loading runs while no app code does. A view whose state
+    // requires. This runs on the thread that runs the event loop, which
+    // applies every patch, so the relaxed store that publishes the table is
+    // ordered before this call's read of it by program order, and no read
+    // on this thread holds the previous table across this call. The
+    // application's own
+    // threads reach the table only through `smudge_core::hot`'s
+    // publication. A reader that observes this install's publication
+    // acquires the store of it on this thread, which orders its reads
+    // after the writes this install made; a reader that still observes an
+    // earlier publication synchronizes with that earlier install in the
+    // same way. A table is never rewritten after its install and every
+    // library stays loaded, so a concurrent reader races nothing here. The
+    // loading runs in the event handler that applies the patch, between
+    // two events, so the code the event loop itself runs never sees it
+    // half done, while the application's workers keep running the code of
+    // the earlier patches, whose libraries and tables this process keeps.
+    // A view whose state
     // type changed is caught by the guard in `patched` before it runs,
     // except for a change that keeps the type's size, alignment and name,
     // which is undefined behavior the guard narrows but cannot rule out, as

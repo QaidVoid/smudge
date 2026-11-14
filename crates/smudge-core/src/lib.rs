@@ -4,7 +4,11 @@
 //! Everything in this crate is independent of a window, a GPU or a rasterizer,
 //! so it builds for any target the standard library supports.
 
-#![forbid(unsafe_code)]
+#![cfg_attr(all(feature = "hot-reload", target_os = "linux"), deny(unsafe_code))]
+#![cfg_attr(
+    not(all(feature = "hot-reload", target_os = "linux")),
+    forbid(unsafe_code)
+)]
 
 pub mod app;
 pub mod channel;
@@ -12,6 +16,8 @@ pub mod clipboard;
 mod damage;
 pub mod element;
 pub mod geometry;
+/// Hot reload of the closures the tree stores, for the facade to re-export.
+pub mod hot;
 pub mod image;
 pub mod input;
 pub mod paint;

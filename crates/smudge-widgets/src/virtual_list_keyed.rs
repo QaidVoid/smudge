@@ -168,9 +168,10 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
     } else {
         0.0
     };
+    let items = smudge_core::hot::wrap(items);
     let current_items = Memo::new(move || Snapshot(items()));
-    let key = Rc::new(key);
-    let row = Rc::new(row);
+    let key = Rc::new(smudge_core::hot::wrap1_ref(key));
+    let row = Rc::new(smudge_core::hot::wrap1_ref(row));
 
     let state: Rc<RefCell<KeyedList<T, K>>> = Rc::new(RefCell::new(KeyedList {
         items: RefCell::new(Rc::from([])),

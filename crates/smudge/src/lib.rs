@@ -94,6 +94,21 @@ pub use smudge_core as core;
 pub use smudge_text as text;
 pub use smudge_widgets as widgets;
 
+/// Hot reload helpers for applications.
+///
+/// [`call`](self::hot::call) runs one step of a loop on a thread the
+/// application spawned itself, so the step picks up the patched code on the
+/// next iteration. [`on_hot_patch`](self::hot::on_hot_patch) registers a
+/// hook the window runs after it applied a patch and remounted, so an
+/// application restarts the workers it created outside the build. Both are
+/// for applications started through
+/// [`window::run_view`] with the `hot-reload` feature on
+/// Linux; everywhere else `call` runs the body and `on_hot_patch` drops the
+/// hook.
+pub mod hot {
+    pub use smudge_core::hot::{call, on_hot_patch};
+}
+
 /// The commands an application sends to its window from a handler, the
 /// window state it reads, and the pointer cursors.
 ///

@@ -53,3 +53,18 @@ pub fn text_system() -> u32 {
     let seen = Local(2);
     TextSystem::with(move |_system| Local(seen.0 + 1)).0
 }
+
+/// Wraps a closure of a local type the way a binding stores one, and runs
+/// it through the wrapper, so the shim and the lookup are instantiated in
+/// this crate.
+pub fn hot_closure() -> u32 {
+    let owner = Owner::new();
+    let seen = owner.with(|| {
+        let signal = RwSignal::new(Local(3));
+        let read = signal.clone();
+        let get = smudge_core::hot::wrap(move || Local(read.get().0 + 1));
+        get().0
+    });
+    owner.cleanup();
+    seen
+}

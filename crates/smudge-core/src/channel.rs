@@ -153,6 +153,7 @@ const WAKER_POISONED: &str = "a channel waker lock is poisoned, although it \
 /// because no frame would ever run the handler. Release builds return a
 /// sender whose every `send` returns [`Closed`] instead.
 pub fn channel<T: Send + 'static>(handler: impl FnMut(T) + 'static) -> UiSender<T> {
+    let handler = crate::hot::wrap1_mut(handler);
     let owner = runtime::running_owner();
     let book = owner.as_ref().and_then(book_of);
     let Some((owner, book)) = owner.zip(book) else {
