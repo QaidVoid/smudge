@@ -160,6 +160,25 @@ fn following_the_color_scheme_switches_the_theme_and_the_clear_color() {
 }
 
 #[test]
+fn a_translucent_clear_color_of_the_follower_is_used_opaque() {
+    // Presentation copies only the color channels, so a translucent clear
+    // color would fail the frame that switches to it; the follower takes
+    // it opaque from the start instead.
+    let mut harness = Harness::new(100.0, 60.0, 1.0, token_scene);
+    harness.app().follow_color_scheme(
+        Theme::light(),
+        Color::rgba(250, 250, 250, 10),
+        Theme::dark(),
+        Color::rgba(16, 17, 21, 200),
+    );
+    assert_eq!(harness.frame().clear_color, Color::rgb(250, 250, 250));
+
+    harness.app().set_color_scheme(ColorScheme::Dark);
+
+    assert_eq!(harness.frame().clear_color, Color::rgb(16, 17, 21));
+}
+
+#[test]
 fn a_scheme_reported_before_the_follow_sets_the_start() {
     let dark_clear = Color::rgb(16, 17, 21);
     let mut harness = Harness::new(100.0, 60.0, 1.0, token_scene);

@@ -1093,12 +1093,6 @@ where
         let started = Instant::now();
         state.next_frame = None;
         let output = state.app.frame();
-        // The follower's colors reach this check like any other change,
-        // so a scheme whose clear color is not opaque is refused here as
-        // the window's own clear color is at creation.
-        if !output.clear_color.is_opaque() {
-            return Err(PlatformError::ClearColor);
-        }
         state.rendered = true;
         let presented = state.presenter.render_and_present(&output, driven)?;
         if let Some(stats) = presented {

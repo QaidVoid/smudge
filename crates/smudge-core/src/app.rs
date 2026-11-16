@@ -541,8 +541,9 @@ impl App {
     /// The windowing layer reports the scheme the desktop holds, and reports
     /// again whenever it changes; while the app follows, a light report
     /// paints `light` over `light_clear` and a dark report paints `dark`
-    /// over `dark_clear`. Both clear colors must be opaque, like the
-    /// window's own: presentation copies only the color channels. Following
+    /// over `dark_clear`. Both clear colors are used opaque, whatever alpha
+    /// they carry, because presentation copies only the color channels, so
+    /// a translucent one cannot fail a frame later. Following
     /// replaces what [`App::set_theme`] last
     /// set: from here on the scheme's changes choose the theme, until
     /// another call to this one names new themes.
@@ -585,6 +586,14 @@ impl App {
         dark: Theme,
         dark_clear: Color,
     ) {
+        let light_clear = Color {
+            a: 255,
+            ..light_clear
+        };
+        let dark_clear = Color {
+            a: 255,
+            ..dark_clear
+        };
         if let Some(follow) = &self.scheme_follow {
             // A later follow swaps the pair under the standing binding; the
             // write below wakes it, and it reads the new themes next frame.
