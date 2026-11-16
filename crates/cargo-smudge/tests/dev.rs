@@ -606,6 +606,48 @@ fn leaves_a_removed_function_out_of_the_table() {
 }
 
 #[test]
+fn omits_a_runner_whose_closure_type_changed_its_layout() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let app = fixture("closure-layout");
+    // A runner that takes the closure as an erased pointer names the closure
+    // type only as a type parameter, which is how a hot shim reads its
+    // closure. The closure moves the struct out whole, so it captures the
+    // struct and not its fields one by one. A captured struct whose fields
+    // swap keeps its size, its alignment and the closure's type id, so only
+    // the debug info of the type parameter tells the two layouts apart.
+    edit(
+        &app,
+        &[(
+            "fn main() {",
+            "/// Two numbers a closure captures.\n#[derive(Clone, Copy)]\n#[repr(C)]\nstruct Captured {\n    first: u32,\n    second: u64,\n}\n\n/// Runs the closure behind an erased pointer.\n#[inline(never)]\nfn erased<F: Fn() -> u64>(env: *const ()) -> u64 {\n    // SAFETY: the fixture only hands its own closure of this type.\n    unsafe { (*env.cast::<F>())() }\n}\n\n/// Runs `f` through its erased runner.\nfn run_erased<F: Fn() -> u64>(f: &F) -> u64 {\n    erased::<F>(std::ptr::from_ref(f).cast())\n}\n\nfn main() {\n    let captured = Captured { first: 1, second: 2 };\n    let read = move || {\n        let whole = captured;\n        u64::from(whole.first) + whole.second\n    };\n    let _ = run_erased(&read);",
+        )],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit(
+        &app,
+        &[(
+            "    first: u32,\n    second: u64,",
+            "    second: u64,\n    first: u32,",
+        )],
+    );
+    let out = session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 1: applied");
+    // Six functions name the closure's type among their parameters, the
+    // closure's body, `run_erased` and the generic instances the compiler
+    // makes for the closure, and `erased` names it only as its type
+    // parameter, which is the seventh: a signature that left type
+    // parameters out would map it and omit six.
+    assert!(
+        line.contains("7 omitted for a changed signature"),
+        "the runner of the changed closure was mapped: {line}"
+    );
+    session.quit();
+}
+
+#[test]
 fn omits_a_changed_signature_and_applies_the_rest() {
     require_linker();
     let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());

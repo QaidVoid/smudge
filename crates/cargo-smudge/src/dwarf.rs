@@ -260,6 +260,10 @@ impl Signatures {
     }
 }
 
+/// The type attributes of a list of dies, as a subprogram's parameters
+/// name them.
+type TypeAttributes = Vec<Option<AttributeValue<SectionReader>>>;
+
 /// Serializes the signatures and types of one file's DWARF.
 ///
 /// The fields are borrowed apart from `Signatures` so a unit can stay
@@ -322,8 +326,13 @@ impl<'a> Parser<'a> {
             return_type = declaration.attr_value(gimli::DW_AT_type).map_err(string)?;
         }
         let convention = self.convention_of(unit, &die, specification)?;
-        let parameters = self.parameters(unit, offset)?;
-        let mut parts = Vec::with_capacity(parameters.len() + 2);
+        let (parameters, mut templates) = self.parameters(unit, offset)?;
+        if templates.is_empty()
+            && let Some(specified) = specification
+        {
+            templates = self.parameters(unit, specified)?.1;
+        }
+        let mut parts = Vec::with_capacity(parameters.len() + templates.len() + 2);
         parts.push(format!(
             "cc={}",
             convention.map_or(String::new(), |value| value.to_string())
@@ -331,6 +340,13 @@ impl<'a> Parser<'a> {
         parts.push(self.describe(index, return_type)?);
         for parameter in parameters {
             parts.push(self.describe(index, parameter)?);
+        }
+        // A type parameter can shape what the function reads without
+        // appearing among its parameters, as a closure type does in a
+        // function handed the closure as an erased pointer, so its layout
+        // joins the signature too.
+        for template in templates {
+            parts.push(format!("T:{}", self.describe(index, template)?));
         }
         Ok(Some(parts.join("|")))
     }
@@ -365,18 +381,20 @@ impl<'a> Parser<'a> {
         Ok(found)
     }
 
-    /// The type attributes of a die's formal parameters.
+    /// The type attributes of a die's formal parameters and of its template
+    /// type parameters.
     fn parameters(
         &mut self,
         unit: &Unit<SectionReader>,
         offset: UnitOffset,
-    ) -> Result<Vec<Option<AttributeValue<SectionReader>>>, String> {
+    ) -> Result<(TypeAttributes, TypeAttributes), String> {
         let mut found = Vec::new();
+        let mut templates = Vec::new();
         let mut children = unit.entries_at_offset(offset).map_err(string)?;
         // The cursor's first die is the one itself, and its parameters are
         // the children after it.
         if children.next_dfs().map_err(string)?.is_none() {
-            return Ok(found);
+            return Ok((found, templates));
         }
         // The depths the cursor answers are deltas from the previous die, so
         // the children of the one are the entries until the depth is 0
@@ -390,9 +408,11 @@ impl<'a> Parser<'a> {
             depth = next as usize;
             if depth == 1 && child.tag() == gimli::DW_TAG_formal_parameter {
                 found.push(child.attr_value(gimli::DW_AT_type).map_err(string)?);
+            } else if depth == 1 && child.tag() == gimli::DW_TAG_template_type_parameter {
+                templates.push(child.attr_value(gimli::DW_AT_type).map_err(string)?);
             }
         }
-        Ok(found)
+        Ok((found, templates))
     }
 
     /// Serializes the type an attribute names, or `()` when there is none.
@@ -772,7 +792,7 @@ impl<'a> Parser<'a> {
                 {
                     found.push(edge);
                 }
-                for parameter in self.parameters(unit, die.offset())? {
+                for parameter in self.parameters(unit, die.offset())?.0 {
                     if let Some(value) = parameter
                         && let Some(edge) = self.type_ref(index, value)
                     {
@@ -951,7 +971,7 @@ impl<'a> Parser<'a> {
                     .map_err(string)?
                     .as_ref()
                     .and_then(unsigned_of);
-                let parameters = self.parameters(unit, die.offset())?;
+                let parameters = self.parameters(unit, die.offset())?.0;
                 let mut parts = Vec::with_capacity(parameters.len() + 2);
                 parts.push(format!(
                     "cc={}",
