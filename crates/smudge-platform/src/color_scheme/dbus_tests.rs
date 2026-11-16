@@ -9,10 +9,21 @@
 
 use std::os::unix::net::UnixStream;
 use std::thread;
+use std::time::Duration;
 
-use super::dbus::{Body, Connection, Cursor};
-use super::scheme_of;
-use smudge_core::theme::ColorScheme;
+use super::{Body, Connection, Cursor, candidate_path, session_addresses};
+use crate::color_scheme::MATCH_RULE;
+
+/// Opens the socket pair a test's client and fake bus speak over, with a
+/// read timeout on both ends so a regression fails instead of hanging.
+fn socket_pair() -> (UnixStream, UnixStream) {
+    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    for side in [&client_side, &bus_side] {
+        side.set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("the socket takes a read timeout");
+    }
+    (client_side, bus_side)
+}
 
 #[test]
 fn a_body_holds_its_strings_and_a_variant_reads_back() {
@@ -59,20 +70,8 @@ fn a_variant_u32_reads_through_strings_that_misalign_it() {
 }
 
 #[test]
-fn a_scheme_of_one_is_dark_and_an_unknown_value_is_light() {
-    assert_eq!(scheme_of(0), ColorScheme::Light);
-    assert_eq!(scheme_of(1), ColorScheme::Dark);
-    assert_eq!(scheme_of(2), ColorScheme::Light);
-    assert_eq!(
-        scheme_of(3),
-        ColorScheme::Light,
-        "an unknown value is no preference"
-    );
-}
-
-#[test]
 fn an_address_path_decodes_its_escapes_even_to_non_text_bytes() {
-    let path = super::dbus::candidate_path("unix:path=/tmp/session-%ff/bus,guid=abc")
+    let path = candidate_path("unix:path=/tmp/session-%ff/bus,guid=abc")
         .expect("the candidate names a path");
     assert_eq!(
         std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()),
@@ -81,19 +80,42 @@ fn an_address_path_decodes_its_escapes_even_to_non_text_bytes() {
     );
     // The properties may sit in any order, and only `path=` answers.
     assert_eq!(
-        super::dbus::candidate_path("unix:guid=abc,path=/run/user/1000/bus"),
+        candidate_path("unix:guid=abc,path=/run/user/1000/bus"),
         Some(std::path::PathBuf::from("/run/user/1000/bus"))
     );
     assert_eq!(
-        super::dbus::candidate_path("unix:abstract=/tmp/garbage"),
+        candidate_path("unix:abstract=/tmp/garbage"),
         None,
         "a transport without a path answers nothing"
     );
 }
 
 #[test]
+fn a_session_address_without_a_path_falls_back_to_the_runtime_directory() {
+    let runtime_dir = std::ffi::OsStr::new("/run/user/1000");
+    let fallback = vec![std::path::PathBuf::from("/run/user/1000/bus")];
+    assert_eq!(
+        session_addresses(
+            Some("unix:abstract=/tmp/dbus-x,guid=abc;unix:tmpdir=/tmp"),
+            Some(runtime_dir)
+        ),
+        fallback,
+        "an address with no unix path still finds the well-known socket"
+    );
+    assert_eq!(session_addresses(None, Some(runtime_dir)), fallback);
+    assert_eq!(
+        session_addresses(
+            Some("unix:abstract=/tmp/dbus-x;unix:path=/tmp/bus"),
+            Some(runtime_dir)
+        ),
+        vec![std::path::PathBuf::from("/tmp/bus")],
+        "a path the address names comes before the well-known socket"
+    );
+}
+
+#[test]
 fn a_client_exchanges_the_portal_round_trip_with_a_bus() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -124,11 +146,14 @@ fn a_client_exchanges_the_portal_round_trip_with_a_bus() {
         );
         assert_eq!(
             add_match.body_strings(),
-            vec![String::from(super::MATCH_RULE)],
-            "the rule the watcher subscribes with names the portal as sender"
+            vec![String::from(MATCH_RULE)],
+            "the rule travels as the watcher wrote it"
+        );
+        assert!(
+            MATCH_RULE.contains("sender='org.freedesktop.portal.Desktop'"),
+            "only the rule's sender keeps other connections' signals out"
         );
         bus.reply_empty(add_match.serial);
-        bus.handle_owner_query();
 
         let read_one = bus.read_call();
         assert_eq!(read_one.member, "ReadOne");
@@ -162,9 +187,8 @@ fn a_client_exchanges_the_portal_round_trip_with_a_bus() {
         Connection::authenticated(client_side, 1000).expect("the handshake answers");
     connection.hello().expect("the bus names the client");
     connection
-        .add_match(super::MATCH_RULE)
+        .add_match(MATCH_RULE)
         .expect("the rule is accepted");
-    connection.expect_signals_from(super::dbus::PORTAL);
     assert_eq!(
         connection.read_setting("org.freedesktop.appearance", "color-scheme"),
         Some(2),
@@ -184,7 +208,7 @@ fn a_client_exchanges_the_portal_round_trip_with_a_bus() {
 
 #[test]
 fn a_reply_that_answers_another_call_is_skipped() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -206,7 +230,7 @@ fn a_reply_that_answers_another_call_is_skipped() {
 
 #[test]
 fn a_return_that_answers_another_call_does_not_answer_this_one() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -236,8 +260,8 @@ fn a_return_that_answers_another_call_does_not_answer_this_one() {
 }
 
 #[test]
-fn a_change_that_arrives_during_a_call_is_not_lost() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+fn a_change_seen_during_a_failed_read_is_the_start() {
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -245,12 +269,12 @@ fn a_change_that_arrives_during_a_call_is_not_lost() {
         bus.reply_string(hello.serial, ":1.42");
         let add_match = bus.read_call();
         bus.reply_empty(add_match.serial);
-        bus.handle_owner_query();
-        // The portal announces dark while the initial read is on its way;
-        // the read answers the scheme the portal started from.
-        bus.signal_changed("org.freedesktop.appearance", "color-scheme", 1);
+        // The portal announces dark, and then answers neither read.
         let read_one = bus.read_call();
-        bus.reply_variant(false, read_one.serial, 0);
+        bus.signal_changed("org.freedesktop.appearance", "color-scheme", 1);
+        bus.reply_error(read_one.serial);
+        let read = bus.read_call();
+        bus.reply_error(read.serial);
     });
 
     let mut connection =
@@ -259,27 +283,17 @@ fn a_change_that_arrives_during_a_call_is_not_lost() {
     connection
         .add_match("type='signal'")
         .expect("the rule is accepted");
-    connection.expect_signals_from(super::dbus::PORTAL);
     assert_eq!(
-        connection.read_setting("org.freedesktop.appearance", "color-scheme"),
-        Some(0),
-        "the read answers what the portal held"
-    );
-    assert_eq!(
-        connection.wait_for_changed(),
-        Some((
-            String::from("org.freedesktop.appearance"),
-            String::from("color-scheme"),
-            1
-        )),
-        "the change that raced the read is delivered, not dropped"
+        connection.read_settled("org.freedesktop.appearance", "color-scheme"),
+        Some(1),
+        "the change the failed read waited past is the value to start from"
     );
     bus.join().expect("the fake bus ends");
 }
 
 #[test]
-fn a_version_one_portal_answers_the_older_read() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+fn a_newer_change_than_the_reply_is_read_again() {
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -287,7 +301,216 @@ fn a_version_one_portal_answers_the_older_read() {
         bus.reply_string(hello.serial, ":1.42");
         let add_match = bus.read_call();
         bus.reply_empty(add_match.serial);
-        bus.handle_owner_query();
+        // A portal that replaced the one the read reached announces dark
+        // before the old one answers with light; the read that follows
+        // reaches the new portal.
+        let read_one = bus.read_call();
+        bus.signal_changed("org.freedesktop.appearance", "color-scheme", 1);
+        bus.reply_variant(false, read_one.serial, 0);
+        let again = bus.read_call();
+        bus.reply_variant(false, again.serial, 1);
+        bus.signal_changed("org.freedesktop.appearance", "color-scheme", 0);
+    });
+
+    let mut connection =
+        Connection::authenticated(client_side, 1000).expect("the handshake answers");
+    connection.hello().expect("the bus names the client");
+    connection
+        .add_match("type='signal'")
+        .expect("the rule is accepted");
+    assert_eq!(
+        connection.read_settled("org.freedesktop.appearance", "color-scheme"),
+        Some(1),
+        "the value the current portal holds is the start"
+    );
+    assert_eq!(
+        connection.wait_for_changed(),
+        Some((
+            String::from("org.freedesktop.appearance"),
+            String::from("color-scheme"),
+            0
+        )),
+        "a change after the read still arrives"
+    );
+    bus.join().expect("the fake bus ends");
+}
+
+#[test]
+fn an_older_change_than_the_reply_is_read_again() {
+    let (client_side, bus_side) = socket_pair();
+    let bus = thread::spawn(move || {
+        let mut bus = FakeBus::over(bus_side);
+        bus.accept_handshake();
+        let hello = bus.read_call();
+        bus.reply_string(hello.serial, ":1.42");
+        let add_match = bus.read_call();
+        bus.reply_empty(add_match.serial);
+        // A portal on its way out announced dark; its replacement answers
+        // the read with the light set since, and announces nothing.
+        let read_one = bus.read_call();
+        bus.signal_changed("org.freedesktop.appearance", "color-scheme", 1);
+        bus.reply_variant(false, read_one.serial, 2);
+        let again = bus.read_call();
+        bus.reply_variant(false, again.serial, 2);
+    });
+
+    let mut connection =
+        Connection::authenticated(client_side, 1000).expect("the handshake answers");
+    connection.hello().expect("the bus names the client");
+    connection
+        .add_match("type='signal'")
+        .expect("the rule is accepted");
+    assert_eq!(
+        connection.read_settled("org.freedesktop.appearance", "color-scheme"),
+        Some(2),
+        "the stale change does not override the current portal's value"
+    );
+    bus.join().expect("the fake bus ends");
+}
+
+#[test]
+fn a_failed_read_again_starts_from_the_change_that_prompted_it() {
+    let (client_side, bus_side) = socket_pair();
+    let bus = thread::spawn(move || {
+        let mut bus = FakeBus::over(bus_side);
+        bus.accept_handshake();
+        let hello = bus.read_call();
+        bus.reply_string(hello.serial, ":1.42");
+        let add_match = bus.read_call();
+        bus.reply_empty(add_match.serial);
+        // A replacing portal announces dark before the old one answers
+        // light, and then answers neither read that follows.
+        let read_one = bus.read_call();
+        bus.signal_changed("org.freedesktop.appearance", "color-scheme", 1);
+        bus.reply_variant(false, read_one.serial, 0);
+        let again = bus.read_call();
+        bus.reply_error(again.serial);
+        let read = bus.read_call();
+        bus.reply_error(read.serial);
+    });
+
+    let mut connection =
+        Connection::authenticated(client_side, 1000).expect("the handshake answers");
+    connection.hello().expect("the bus names the client");
+    connection
+        .add_match("type='signal'")
+        .expect("the rule is accepted");
+    assert_eq!(
+        connection.read_settled("org.freedesktop.appearance", "color-scheme"),
+        Some(1),
+        "the change, not the reply it raced, is the start"
+    );
+    bus.join().expect("the fake bus ends");
+}
+
+#[test]
+fn reads_that_all_race_a_change_start_from_the_last_change() {
+    let (client_side, bus_side) = socket_pair();
+    let bus = thread::spawn(move || {
+        let mut bus = FakeBus::over(bus_side);
+        bus.accept_handshake();
+        let hello = bus.read_call();
+        bus.reply_string(hello.serial, ":1.42");
+        let add_match = bus.read_call();
+        bus.reply_empty(add_match.serial);
+        // Every read races a replacing portal's change to dark, which
+        // arrives before the old portal's light.
+        for _ in 0..3 {
+            let read_one = bus.read_call();
+            bus.signal_changed("org.freedesktop.appearance", "color-scheme", 1);
+            bus.reply_variant(false, read_one.serial, 0);
+        }
+    });
+
+    let mut connection =
+        Connection::authenticated(client_side, 1000).expect("the handshake answers");
+    connection.hello().expect("the bus names the client");
+    connection
+        .add_match("type='signal'")
+        .expect("the rule is accepted");
+    assert_eq!(
+        connection.read_settled("org.freedesktop.appearance", "color-scheme"),
+        Some(1),
+        "the last change, not the reply it raced, is the start"
+    );
+    bus.join().expect("the fake bus ends");
+}
+
+#[test]
+fn changes_of_other_settings_leave_the_read_settings_change() {
+    let (client_side, bus_side) = socket_pair();
+    let bus = thread::spawn(move || {
+        let mut bus = FakeBus::over(bus_side);
+        bus.accept_handshake();
+        let hello = bus.read_call();
+        bus.reply_string(hello.serial, ":1.42");
+        let add_match = bus.read_call();
+        bus.reply_empty(add_match.serial);
+        // The portal announces dark and then many other settings, and
+        // answers neither read.
+        let read_one = bus.read_call();
+        bus.signal_changed("org.freedesktop.appearance", "color-scheme", 1);
+        for index in 0..40 {
+            bus.signal_changed("org.example.other", &format!("key-{index}"), 7);
+        }
+        bus.reply_error(read_one.serial);
+        let read = bus.read_call();
+        bus.reply_error(read.serial);
+    });
+
+    let mut connection =
+        Connection::authenticated(client_side, 1000).expect("the handshake answers");
+    connection.hello().expect("the bus names the client");
+    connection
+        .add_match("type='signal'")
+        .expect("the rule is accepted");
+    assert_eq!(
+        connection.read_settled("org.freedesktop.appearance", "color-scheme"),
+        Some(1),
+        "the other settings pushed the read setting's change out"
+    );
+    bus.join().expect("the fake bus ends");
+}
+
+#[test]
+fn a_change_addressed_to_the_client_is_skipped() {
+    let (client_side, bus_side) = socket_pair();
+    let bus = thread::spawn(move || {
+        let mut bus = FakeBus::over(bus_side);
+        bus.accept_handshake();
+        let hello = bus.read_call();
+        bus.reply_string(hello.serial, ":1.42");
+        // Another connection sends the client a change by name; only the
+        // portal's broadcast that follows is the portal's.
+        bus.signal_changed_to_client(1);
+        bus.signal_changed("org.freedesktop.appearance", "color-scheme", 0);
+    });
+
+    let mut connection =
+        Connection::authenticated(client_side, 1000).expect("the handshake answers");
+    connection.hello().expect("the bus names the client");
+    assert_eq!(
+        connection.wait_for_changed(),
+        Some((
+            String::from("org.freedesktop.appearance"),
+            String::from("color-scheme"),
+            0
+        )),
+        "the addressed change was taken for the portal's"
+    );
+    bus.join().expect("the fake bus ends");
+}
+
+#[test]
+fn a_version_one_portal_answers_the_older_read() {
+    let (client_side, bus_side) = socket_pair();
+    let bus = thread::spawn(move || {
+        let mut bus = FakeBus::over(bus_side);
+        bus.accept_handshake();
+        let hello = bus.read_call();
+        bus.reply_string(hello.serial, ":1.42");
+        let add_match = bus.read_call();
+        bus.reply_empty(add_match.serial);
         let read_one = bus.read_call();
         assert_eq!(
             read_one.member, "ReadOne",
@@ -306,7 +529,6 @@ fn a_version_one_portal_answers_the_older_read() {
     connection
         .add_match("type='signal'")
         .expect("the rule is accepted");
-    connection.expect_signals_from(super::dbus::PORTAL);
     assert_eq!(
         connection.read_setting("org.freedesktop.appearance", "color-scheme"),
         Some(2),
@@ -317,7 +539,7 @@ fn a_version_one_portal_answers_the_older_read() {
 
 #[test]
 fn a_reply_serial_after_a_signature_field_is_still_found() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -348,7 +570,7 @@ fn a_reply_serial_after_a_signature_field_is_still_found() {
 
 #[test]
 fn a_reply_serial_after_a_signature_field_is_found_in_either_order() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -376,8 +598,49 @@ fn a_reply_serial_after_a_signature_field_is_found_in_either_order() {
 }
 
 #[test]
+fn an_unknown_header_field_is_skipped_by_its_type() {
+    let (client_side, bus_side) = socket_pair();
+    let bus = thread::spawn(move || {
+        let mut bus = FakeBus::over(bus_side);
+        bus.accept_handshake();
+        let hello = bus.read_call();
+        bus.reply_string(hello.serial, ":1.42");
+        let add_match = bus.read_call();
+        bus.reply_empty(add_match.serial);
+        // Fields this client has no name for lead the block; a parser
+        // that stops at them misses the serial and takes the fallback
+        // answer instead.
+        let read_one = bus.read_call();
+        bus.reply_variant_with_fields(
+            false,
+            &[
+                field_fixed(200, b'y', &[7]),
+                field_fixed(201, b't', &[0xff; 8]),
+                field_u32(5, read_one.serial, false),
+                field_typed(8, "v", "g", false),
+            ],
+            2,
+        );
+        bus.reply_variant(false, read_one.serial, 7);
+    });
+
+    let mut connection =
+        Connection::authenticated(client_side, 1000).expect("the handshake answers");
+    connection.hello().expect("the bus names the client");
+    connection
+        .add_match("type='signal'")
+        .expect("the rule is accepted");
+    assert_eq!(
+        connection.read_setting("org.freedesktop.appearance", "color-scheme"),
+        Some(2),
+        "the unknown fields are skipped and the serial behind them is found"
+    );
+    bus.join().expect("the fake bus ends");
+}
+
+#[test]
 fn a_field_read_from_its_padding_does_not_answer_a_call() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -409,7 +672,7 @@ fn a_field_read_from_its_padding_does_not_answer_a_call() {
 
 #[test]
 fn a_change_to_another_setting_is_skipped_not_fatal() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -417,7 +680,6 @@ fn a_change_to_another_setting_is_skipped_not_fatal() {
         bus.reply_string(hello.serial, ":1.42");
         let add_match = bus.read_call();
         bus.reply_empty(add_match.serial);
-        bus.handle_owner_query();
         // The desktop changes an unrelated setting, whose value is a
         // string; then the color scheme changes.
         bus.signal_changed_string(
@@ -434,7 +696,6 @@ fn a_change_to_another_setting_is_skipped_not_fatal() {
     connection
         .add_match("type='signal'")
         .expect("the rule is accepted");
-    connection.expect_signals_from(super::dbus::PORTAL);
     assert_eq!(
         connection.wait_for_changed(),
         Some((
@@ -448,190 +709,8 @@ fn a_change_to_another_setting_is_skipped_not_fatal() {
 }
 
 #[test]
-fn a_signal_from_another_connection_never_delivers() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
-    let bus = thread::spawn(move || {
-        let mut bus = FakeBus::over(bus_side);
-        bus.accept_handshake();
-        let hello = bus.read_call();
-        bus.reply_string(hello.serial, ":1.42");
-        let add_match = bus.read_call();
-        bus.reply_empty(add_match.serial);
-        bus.handle_owner_query();
-        // A peer that is not the portal speaks the signal's exact shape;
-        // the sender field is what keeps it from speaking for the
-        // desktop, and the query it forces answers the same owner.
-        bus.signal_from("org.freedesktop.appearance", "color-scheme", 7, ":1.99");
-        bus.handle_owner_query();
-        bus.signal_changed("org.freedesktop.appearance", "color-scheme", 1);
-    });
-
-    let mut connection =
-        Connection::authenticated(client_side, 1000).expect("the handshake answers");
-    connection.hello().expect("the bus names the client");
-    connection
-        .add_match("type='signal'")
-        .expect("the rule is accepted");
-    connection.expect_signals_from(super::dbus::PORTAL);
-    assert_eq!(
-        connection.wait_for_changed(),
-        Some((
-            String::from("org.freedesktop.appearance"),
-            String::from("color-scheme"),
-            1
-        )),
-        "the impostor's change is skipped and the portal's delivers"
-    );
-    bus.join().expect("the fake bus ends");
-}
-
-#[test]
-fn a_change_from_a_replacement_portal_is_not_dropped_while_a_call_waits() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
-    let bus = thread::spawn(move || {
-        let mut bus = FakeBus::over(bus_side);
-        bus.accept_handshake();
-        let hello = bus.read_call();
-        bus.reply_string(hello.serial, ":1.42");
-        let add_match = bus.read_call();
-        bus.reply_empty(add_match.serial);
-        bus.handle_owner_query();
-        // The portal restarts under a new unique name and announces dark
-        // while the initial read is still on its way.
-        bus.signal_from("org.freedesktop.appearance", "color-scheme", 1, ":1.57");
-        let read_one = bus.read_call();
-        bus.reply_variant(false, read_one.serial, 0);
-        // The next owner query names the replacement; then the new
-        // portal's own change follows under the name it now holds.
-        bus.handle_owner_query_replying_with(":1.57");
-        bus.signal_from("org.freedesktop.appearance", "color-scheme", 0, ":1.57");
-    });
-
-    let mut connection =
-        Connection::authenticated(client_side, 1000).expect("the handshake answers");
-    connection.hello().expect("the bus names the client");
-    connection
-        .add_match("type='signal'")
-        .expect("the rule is accepted");
-    connection.expect_signals_from(super::dbus::PORTAL);
-    assert_eq!(
-        connection.read_setting("org.freedesktop.appearance", "color-scheme"),
-        Some(0),
-        "the read answers what the portal it spoke to held"
-    );
-    assert_eq!(
-        connection.wait_for_changed(),
-        Some((
-            String::from("org.freedesktop.appearance"),
-            String::from("color-scheme"),
-            1
-        )),
-        "the replacement's change kept during the read delivers once it owns the name"
-    );
-    assert_eq!(
-        connection.wait_for_changed(),
-        Some((
-            String::from("org.freedesktop.appearance"),
-            String::from("color-scheme"),
-            0
-        )),
-        "the watch continues on the new owner"
-    );
-    bus.join().expect("the fake bus ends");
-}
-
-#[test]
-fn a_portal_that_starts_late_is_woken_by_the_first_read() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
-    let bus = thread::spawn(move || {
-        let mut bus = FakeBus::over(bus_side);
-        bus.accept_handshake();
-        let hello = bus.read_call();
-        bus.reply_string(hello.serial, ":1.42");
-        let add_match = bus.read_call();
-        bus.reply_empty(add_match.serial);
-        // No portal runs yet, so the bus names no owner; asking does not
-        // start one either.
-        let owner = bus.read_call();
-        assert_eq!(owner.member, "GetNameOwner");
-        bus.reply_error(owner.serial);
-        // The first read wakes the activatable portal, which announces
-        // light while the call waits for its answer.
-        bus.signal_from("org.freedesktop.appearance", "color-scheme", 0, ":1.42");
-        let read_one = bus.read_call();
-        bus.reply_variant(false, read_one.serial, 2);
-        // The kept change settles the name the portal now holds.
-        bus.handle_owner_query();
-    });
-
-    let mut connection =
-        Connection::authenticated(client_side, 1000).expect("the handshake answers");
-    connection.hello().expect("the bus names the client");
-    connection
-        .add_match("type='signal'")
-        .expect("the rule is accepted");
-    connection.expect_signals_from(super::dbus::PORTAL);
-    assert_eq!(
-        connection.read_setting("org.freedesktop.appearance", "color-scheme"),
-        Some(2),
-        "the read woke the portal and answers the scheme it holds"
-    );
-    assert_eq!(
-        connection.wait_for_changed(),
-        Some((
-            String::from("org.freedesktop.appearance"),
-            String::from("color-scheme"),
-            0
-        )),
-        "the change that raced the woken portal's first answer delivers"
-    );
-    bus.join().expect("the fake bus ends");
-}
-
-#[test]
-fn a_portal_between_restarts_ends_no_watch() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
-    let bus = thread::spawn(move || {
-        let mut bus = FakeBus::over(bus_side);
-        bus.accept_handshake();
-        let hello = bus.read_call();
-        bus.reply_string(hello.serial, ":1.42");
-        let add_match = bus.read_call();
-        bus.reply_empty(add_match.serial);
-        bus.handle_owner_query();
-        // The portal announces dark and leaves: the bus holds no owner
-        // while it restarts, which it reports as an error.
-        bus.signal_from("org.freedesktop.appearance", "color-scheme", 1, ":1.57");
-        let owner = bus.read_call();
-        assert_eq!(owner.member, "GetNameOwner");
-        bus.reply_error(owner.serial);
-        // The portal returns under a new name and announces light.
-        bus.signal_from("org.freedesktop.appearance", "color-scheme", 0, ":1.72");
-        bus.handle_owner_query_replying_with(":1.72");
-    });
-
-    let mut connection =
-        Connection::authenticated(client_side, 1000).expect("the handshake answers");
-    connection.hello().expect("the bus names the client");
-    connection
-        .add_match("type='signal'")
-        .expect("the rule is accepted");
-    connection.expect_signals_from(super::dbus::PORTAL);
-    assert_eq!(
-        connection.wait_for_changed(),
-        Some((
-            String::from("org.freedesktop.appearance"),
-            String::from("color-scheme"),
-            0
-        )),
-        "the gap's change is skipped, the watch survives, and the returned portal's delivers"
-    );
-    bus.join().expect("the fake bus ends");
-}
-
-#[test]
 fn a_signal_that_is_not_the_portal_s_shape_is_skipped() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -639,7 +718,6 @@ fn a_signal_that_is_not_the_portal_s_shape_is_skipped() {
         bus.reply_string(hello.serial, ":1.42");
         let add_match = bus.read_call();
         bus.reply_empty(add_match.serial);
-        bus.handle_owner_query();
         // Even with the portal's sender, a signal whose member, body
         // signature or path differ from the portal's carries no change.
         bus.send_signal(
@@ -675,7 +753,6 @@ fn a_signal_that_is_not_the_portal_s_shape_is_skipped() {
     connection
         .add_match("type='signal'")
         .expect("the rule is accepted");
-    connection.expect_signals_from(super::dbus::PORTAL);
     assert_eq!(
         connection.wait_for_changed(),
         Some((
@@ -690,7 +767,7 @@ fn a_signal_that_is_not_the_portal_s_shape_is_skipped() {
 
 #[test]
 fn a_reply_in_the_other_byte_order_is_read_by_its_own_order() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
@@ -721,13 +798,12 @@ fn a_header_that_names_more_fields_than_any_message_holds_is_refused() {
     // The cap sits a little above the honest maximum; without it the
     // client would read this whole frame, treat it as an empty signal and
     // answer with the change that follows instead of refusing.
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
         bus.send_frame((1 << 20) + 8, 0);
         bus.signal_changed("org.freedesktop.appearance", "color-scheme", 1);
-        bus.handle_owner_query();
     });
 
     let mut connection =
@@ -744,13 +820,12 @@ fn a_header_that_names_a_bigger_body_than_any_message_holds_is_refused() {
     // The same discrimination for the body cap: the frame's whole body is
     // written, so a client without the cap would read past it to the
     // change that follows.
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.accept_handshake();
         bus.send_frame(0, (16 << 20) + 8);
         bus.signal_changed("org.freedesktop.appearance", "color-scheme", 1);
-        bus.handle_owner_query();
     });
 
     let mut connection =
@@ -764,7 +839,7 @@ fn a_header_that_names_a_bigger_body_than_any_message_holds_is_refused() {
 
 #[test]
 fn a_client_that_the_bus_rejects_connects_to_nothing() {
-    let (client_side, bus_side) = UnixStream::pair().expect("a socket pair opens");
+    let (client_side, bus_side) = socket_pair();
     let bus = thread::spawn(move || {
         let mut bus = FakeBus::over(bus_side);
         bus.read_sasl_line();
@@ -839,6 +914,17 @@ fn field_u32(code: u8, value: u32, big_endian: bool) -> Vec<u8> {
         field.push(0);
     }
     put_u32(&mut field, value, big_endian);
+    field
+}
+
+/// One header field whose variant holds a fixed-size basic type, its
+/// value given as the bytes it lays out, aligned to its own size.
+fn field_fixed(code: u8, signature: u8, value: &[u8]) -> Vec<u8> {
+    let mut field = vec![code, 1, signature, 0];
+    while !field.len().is_multiple_of(value.len()) {
+        field.push(0);
+    }
+    field.extend_from_slice(value);
     field
 }
 
@@ -1157,15 +1243,25 @@ impl FakeBus {
     /// reply serial, the order a hostile peer might try, carrying one
     /// unsigned integer in a variant.
     fn reply_variant_signature_first(&mut self, big_endian: bool, call_serial: u32, value: u32) {
+        self.reply_variant_with_fields(
+            big_endian,
+            &[
+                field_typed(8, "v", "g", big_endian),
+                field_u32(5, call_serial, big_endian),
+            ],
+            value,
+        );
+    }
+
+    /// Writes one method return whose header holds exactly the field
+    /// entries given, carrying one unsigned integer in a variant.
+    fn reply_variant_with_fields(&mut self, big_endian: bool, entries: &[Vec<u8>], value: u32) {
         let mut body = vec![1, b'u', 0];
         while !body.len().is_multiple_of(4) {
             body.push(0);
         }
         put_u32(&mut body, value, big_endian);
-        let fields = field_block(&[
-            field_typed(8, "v", "g", big_endian),
-            field_u32(5, call_serial, big_endian),
-        ]);
+        let fields = field_block(entries);
         let mut message = message_header(
             if big_endian { b'B' } else { b'l' },
             2,
@@ -1228,6 +1324,34 @@ impl FakeBus {
         );
     }
 
+    /// Sends one `SettingChanged` addressed to the client by name, which a
+    /// broadcast never is: any connection can send one, past the match rule.
+    fn signal_changed_to_client(&mut self, value: u32) {
+        let body = changed_body("org.freedesktop.appearance", "color-scheme", value);
+        let fields = field_block(&[
+            field_typed(1, "/org/freedesktop/portal/desktop", "o", false),
+            field_typed(2, "org.freedesktop.portal.Settings", "s", false),
+            field_typed(3, "SettingChanged", "s", false),
+            field_typed(6, ":1.42", "s", false),
+            field_typed(7, ":1.99", "s", false),
+            field_typed(8, "ssv", "g", false),
+        ]);
+        let mut message = message_header(
+            b'l',
+            4,
+            4,
+            body.len() as u32,
+            fields.len() as u32,
+            &fields,
+            false,
+        );
+        while !message.len().is_multiple_of(8) {
+            message.push(0);
+        }
+        message.extend_from_slice(&body);
+        std::io::Write::write_all(&mut self.stream, &message).expect("the bus forwards the signal");
+    }
+
     /// Broadcasts one `SettingChanged` whose value is a string, as a
     /// change to an unrelated setting arrives.
     fn signal_changed_string(&mut self, namespace: &str, key: &str, value: &str) {
@@ -1243,19 +1367,6 @@ impl FakeBus {
             ":1.42",
             "ssv",
             &body,
-        );
-    }
-
-    /// Sends one signal in the portal's exact shape, with the sender the
-    /// test names, so a test can speak as a peer the portal is not.
-    fn signal_from(&mut self, namespace: &str, key: &str, value: u32, sender: &str) {
-        self.send_signal(
-            "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.Settings",
-            "SettingChanged",
-            sender,
-            "ssv",
-            &changed_body(namespace, key, value),
         );
     }
 
@@ -1292,23 +1403,6 @@ impl FakeBus {
         }
         message.extend_from_slice(body);
         std::io::Write::write_all(&mut self.stream, &message).expect("the bus forwards the signal");
-    }
-
-    /// Answers the owner query the watcher makes before it trusts
-    /// signals, with the owner `name_reply` names.
-    fn handle_owner_query_replying_with(&mut self, name_reply: &str) {
-        let call = self.read_call();
-        assert_eq!(call.member, "GetNameOwner");
-        assert_eq!(
-            call.body_strings(),
-            vec![String::from("org.freedesktop.portal.Desktop")]
-        );
-        self.reply_string(call.serial, name_reply);
-    }
-
-    /// Answers the owner query with the owner most tests rely on.
-    fn handle_owner_query(&mut self) {
-        self.handle_owner_query_replying_with(":1.42");
     }
 }
 

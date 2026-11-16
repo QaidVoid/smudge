@@ -13,9 +13,6 @@ use std::thread;
 use smudge_core::theme::ColorScheme;
 
 mod dbus;
-#[cfg(test)]
-#[path = "color_scheme/dbus_tests.rs"]
-mod tests;
 
 /// The namespace that holds the color scheme.
 const APPEARANCE: &str = "org.freedesktop.appearance";
@@ -23,8 +20,10 @@ const APPEARANCE: &str = "org.freedesktop.appearance";
 /// The value of the namespace that names the user's preference.
 const COLOR_SCHEME: &str = "color-scheme";
 
-/// The match rule that forwards the portal's settings changes, naming the
-/// portal as sender so no other connection's signals get through.
+/// The match rule that forwards the portal's settings changes. It names the
+/// portal as sender, and the bus forwards a broadcast that names a
+/// well-known sender only from that name's current owner, so no other
+/// connection's signals get through, even across a portal restart.
 const MATCH_RULE: &str = "type='signal',interface='org.freedesktop.portal.Settings',\
      member='SettingChanged',sender='org.freedesktop.portal.Desktop'";
 
@@ -55,12 +54,7 @@ fn run(deliver: impl Fn(ColorScheme)) -> Option<()> {
     let mut connection = dbus::Connection::connect()?;
     connection.hello()?;
     connection.add_match(MATCH_RULE)?;
-    // Signals are trusted by their sender, which the bus fills in; the
-    // name to expect is the portal's current owner, when it has one. A
-    // portal that is not running yet is woken by the read below, and its
-    // first signal settles the name then.
-    connection.expect_signals_from(dbus::PORTAL);
-    if let Some(value) = connection.read_setting(APPEARANCE, COLOR_SCHEME) {
+    if let Some(value) = connection.read_settled(APPEARANCE, COLOR_SCHEME) {
         deliver(scheme_of(value));
     }
     loop {
@@ -81,3 +75,7 @@ fn scheme_of(value: u32) -> ColorScheme {
         ColorScheme::Light
     }
 }
+
+#[cfg(test)]
+#[path = "color_scheme_tests.rs"]
+mod tests;

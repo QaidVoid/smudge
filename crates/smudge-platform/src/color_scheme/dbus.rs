@@ -8,7 +8,6 @@
 //! unsigned 32-bit integers, and reads back replies and signals of the same
 //! few types, which is all the settings portal needs.
 
-use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
@@ -33,7 +32,7 @@ const MAX_BODY: u32 = 16 << 20;
 const MAX_FIELDS: usize = 1 << 20;
 
 /// The bus name of the settings portal, which serves the desktop's settings.
-pub(crate) const PORTAL: &str = "org.freedesktop.portal.Desktop";
+const PORTAL: &str = "org.freedesktop.portal.Desktop";
 
 /// The interface of the settings portal, on the desktop object at its
 /// standard path.
@@ -56,15 +55,17 @@ pub(crate) struct Connection {
     /// The serial of the last message this client sent, which its next one
     /// follows.
     serial: u32,
-    /// The unique name that owns the portal, which a signal's sender is
-    /// checked against, since the bus fills the sender in and no client
-    /// can forge it.
-    portal_owner: String,
-    /// Changes that arrived while a call was outstanding, with the name
-    /// that carried each, which the watcher delivers before it waits on
-    /// the socket again.
-    pending: VecDeque<PendingChange>,
+    /// The setting [`Connection::read_settled`] reads, whose changes a call
+    /// notes while it waits for its reply.
+    watched: Option<(String, String)>,
+    /// The last change of the watched setting announced while a call
+    /// waited.
+    raced: Option<u32>,
 }
+
+/// How many times [`Connection::read_settled`] reads again after a change
+/// raced its read.
+const SETTLE_READS: usize = 3;
 
 impl Connection {
     /// Connects to the session bus the environment names, or `None` when it
@@ -72,7 +73,11 @@ impl Connection {
     /// socket address. A candidate whose socket answers but whose
     /// handshake fails does not stop the later candidates.
     pub(crate) fn connect() -> Option<Connection> {
-        for path in session_addresses() {
+        let addresses = session_addresses(
+            std::env::var("DBUS_SESSION_BUS_ADDRESS").ok().as_deref(),
+            std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        );
+        for path in addresses {
             if let Ok(stream) = UnixStream::connect(&path)
                 // The external authentication names the user this process
                 // runs as, which is the user the bus serves.
@@ -85,14 +90,14 @@ impl Connection {
         None
     }
 
-    /// Builds a connection on a socket that is already connected, which the
-    /// tests use to speak to a bus that pretends to be one.
-    pub(crate) fn authenticated(stream: UnixStream, uid: u32) -> Option<Connection> {
+    /// Builds a connection on a socket that is already connected, naming
+    /// the user `uid` to the bus over the handshake.
+    fn authenticated(stream: UnixStream, uid: u32) -> Option<Connection> {
         let mut connection = Connection {
             stream,
             serial: 0,
-            portal_owner: String::new(),
-            pending: VecDeque::new(),
+            watched: None,
+            raced: None,
         };
         connection.authenticate(uid)?;
         Some(connection)
@@ -136,11 +141,12 @@ impl Connection {
         }
     }
 
-    /// Sends one method call and waits for what answers it, skipping the
-    /// signals that arrive meanwhile. An error reply the call drew
-    /// answers `Err`, which the caller may read as an answer in its own
-    /// right; a bus that breaks answers `None`.
-    fn call_result(
+    /// Sends one method call and waits for what answers it. A change of the
+    /// watched setting announced meanwhile is noted, the last one, for
+    /// [`Connection::read_settled`] to learn that a change raced its read.
+    /// Anything else that arrives is skipped. An error reply answers `None`,
+    /// like a bus that breaks.
+    fn call(
         &mut self,
         path: &str,
         destination: &str,
@@ -148,7 +154,7 @@ impl Connection {
         member: &str,
         body: &[u8],
         body_signature: &str,
-    ) -> Option<Result<Message, ()>> {
+    ) -> Option<Message> {
         self.serial += 1;
         let message = call_message(
             self.serial,
@@ -167,35 +173,52 @@ impl Connection {
             // this call waits for.
             match message.kind {
                 METHOD_RETURN if message.fields.reply_serial == Some(self.serial) => {
-                    return Some(Ok(message));
+                    return Some(message);
                 }
-                ERROR if message.fields.reply_serial == Some(self.serial) => {
-                    return Some(Err(()));
+                ERROR if message.fields.reply_serial == Some(self.serial) => return None,
+                _ => {
+                    if let Some((namespace, key, value)) = message.setting_change()
+                        && self.watched.as_ref() == Some(&(namespace, key))
+                    {
+                        self.raced = Some(value);
+                    }
                 }
-                _ => {}
-            }
-            // A change that arrives while this call waits is kept with
-            // the name that carried it, so the watcher delivers it once
-            // the sender is settled, instead of losing it to the wait.
-            if let Some(pending) = message.pending_change() {
-                self.pending.push_back(pending);
             }
         }
     }
 
-    /// Sends one method call and waits for what answers it. An error
-    /// reply answers `None`, like a bus that breaks.
-    fn call(
-        &mut self,
-        path: &str,
-        destination: &str,
-        interface: &str,
-        member: &str,
-        body: &[u8],
-        body_signature: &str,
-    ) -> Option<Message> {
-        self.call_result(path, destination, interface, member, body, body_signature)?
-            .ok()
+    /// Reads one setting of the settings portal and keeps reading while a
+    /// change of it races the read, answering the value to start from.
+    ///
+    /// A change announced while the read waits may come from the portal that
+    /// answers or from one that replaced it, before or after the reply, and
+    /// the bus orders only each sender's own messages. A read that follows
+    /// goes to whoever owns the portal then, so its answer settles the race.
+    /// When a read fails, or every read raced a change, the last change seen
+    /// during any of the reads is the value to go by: from the portal that answered, it equals what
+    /// that portal's reply held, since a portal announces a change before
+    /// it serves a read of it, and from a portal that replaced it, it is
+    /// newer. With no change seen, the answer of an earlier read stands.
+    pub(crate) fn read_settled(&mut self, namespace: &str, key: &str) -> Option<u32> {
+        self.watched = Some((String::from(namespace), String::from(key)));
+        let mut answer = None;
+        let mut last_change = None;
+        let mut settled = None;
+        for _ in 0..SETTLE_READS {
+            let read = self.read_setting(namespace, key);
+            let changed = self.raced.take();
+            last_change = changed.or(last_change);
+            match (read, changed) {
+                (Some(value), None) => {
+                    settled = Some(value);
+                    break;
+                }
+                (Some(value), Some(_)) => answer = Some(value),
+                (None, _) => break,
+            }
+        }
+        self.watched = None;
+        settled.or(last_change).or(answer)
     }
 
     /// Names this client to the bus, which every conversation starts with.
@@ -232,7 +255,7 @@ impl Connection {
     /// value's own variant. A version-one portal has no `ReadOne`, and its
     /// `Read` answers the value wrapped in another variant, which names
     /// it; the older form is tried when the newer names no method.
-    pub(crate) fn read_setting(&mut self, namespace: &str, key: &str) -> Option<u32> {
+    fn read_setting(&mut self, namespace: &str, key: &str) -> Option<u32> {
         let mut body = Body::default();
         body.string(namespace);
         body.string(key);
@@ -252,93 +275,51 @@ impl Connection {
     /// Waits for the next change the portal announces, answering the
     /// setting that changed and its new value.
     ///
-    /// Changes that arrived while a call was outstanding come first, in
-    /// the order they arrived; a signal from any other connection than
-    /// the portal is not the desktop speaking and is skipped, and only a
-    /// stream that breaks ends the wait.
+    /// Only the portal's broadcasts reach this connection, because the match
+    /// rule names the portal as sender and the bus forwards a broadcast
+    /// that names a well-known sender only from that name's current owner;
+    /// a signal addressed to this connection is not the portal's and is
+    /// skipped like a message of any other shape. Only a stream that breaks
+    /// ends the wait.
     pub(crate) fn wait_for_changed(&mut self) -> Option<(String, String, u32)> {
         loop {
-            // What earlier calls kept comes before anything newer, and is
-            // drained before every read, so a query that kept a change
-            // cannot starve it behind the socket.
-            while let Some(pending) = self.pending.pop_front() {
-                if let Some(change) = self.settled(pending)? {
-                    return Some(change);
-                }
-            }
             let message = read_message(&mut self.stream)?;
-            if let Some(pending) = message.pending_change()
-                && let Some(change) = self.settled(pending)?
-            {
+            if let Some(change) = message.setting_change() {
                 return Some(change);
             }
         }
     }
-
-    /// Delivers a waiting change when its sender owns the portal now. A
-    /// sender that is not the name held may mean the portal changed hands
-    /// while we watched, so one fresh query settles it. A bus that
-    /// breaks ends the watch; a bus that names no owner holds a portal
-    /// between restarts, whose change is not the desktop speaking now,
-    /// so the change is skipped and the watch goes on.
-    fn settled(&mut self, pending: PendingChange) -> Option<Option<(String, String, u32)>> {
-        if pending.sender != self.portal_owner {
-            self.portal_owner = self.owner_of(PORTAL)?.unwrap_or_default();
-        }
-        Some((pending.sender == self.portal_owner).then_some(pending.change))
-    }
-
-    /// Records the unique name that owns `name`, when the bus names one.
-    /// A portal that is not running yet has no owner, and asking for it
-    /// does not start one; the initial read below wakes an activatable
-    /// portal, and the first change settles the name then.
-    pub(crate) fn expect_signals_from(&mut self, name: &str) {
-        self.portal_owner = self
-            .owner_of(name)
-            .and_then(|owner| owner)
-            .unwrap_or_default();
-    }
-
-    /// Asks the bus who owns `name`. The outer answer is `None` when the
-    /// bus itself breaks; the inner one is `None` when the bus names no
-    /// owner, which the protocol reports as an error, not as an empty
-    /// answer.
-    fn owner_of(&mut self, name: &str) -> Option<Option<String>> {
-        let mut body = Body::default();
-        body.string(name);
-        match self.call_result(
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus",
-            "org.freedesktop.DBus",
-            "GetNameOwner",
-            &body.0,
-            "s",
-        )? {
-            Ok(reply) => Some(Cursor::over(&reply.body, reply.big_endian).string()),
-            Err(()) => Some(None),
-        }
-    }
 }
 
-/// The session bus addresses the environment names, or the well-known
-/// place under the user's runtime directory when it names nothing. Only
-/// addresses that name a unix path are answered; the launchers that set
-/// more name a path among them.
-fn session_addresses() -> Vec<std::path::PathBuf> {
-    if let Ok(address) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
-        return address.split(';').filter_map(candidate_path).collect();
+/// The session bus sockets to try, given the bus address and the user's
+/// runtime directory the environment holds.
+///
+/// Only address candidates that name a unix path are answered. When the
+/// address names none, for example because it holds only abstract sockets
+/// or a temporary directory, or when there is no address at all, the
+/// well-known place under the runtime directory is tried instead.
+fn session_addresses(
+    address: Option<&str>,
+    runtime_dir: Option<&std::ffi::OsStr>,
+) -> Vec<std::path::PathBuf> {
+    let named: Vec<_> = address
+        .into_iter()
+        .flat_map(|address| address.split(';'))
+        .filter_map(candidate_path)
+        .collect();
+    if !named.is_empty() {
+        return named;
     }
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(dir) => vec![std::path::PathBuf::from(dir).join("bus")],
-        None => Vec::new(),
-    }
+    runtime_dir
+        .map(|dir| std::path::Path::new(dir).join("bus"))
+        .into_iter()
+        .collect()
 }
 
 /// The path of one address candidate, a `unix:` transport whose
 /// comma-separated properties may name `path=` in any order, with its
-/// escapes decoded. Visible to the tests, which check it apart from the
-/// connection it serves.
-pub(crate) fn candidate_path(candidate: &str) -> Option<std::path::PathBuf> {
+/// escapes decoded.
+fn candidate_path(candidate: &str) -> Option<std::path::PathBuf> {
     let properties = candidate.strip_prefix("unix:")?;
     let path = properties
         .split(',')
@@ -386,9 +367,6 @@ struct Message {
 struct Fields {
     /// The serial of the call a reply answers.
     reply_serial: Option<u32>,
-    /// The unique name of the sending connection, which the bus fills in
-    /// and no client can choose.
-    sender: Option<String>,
     /// The object path a signal was emitted on.
     path: Option<String>,
     /// The interface a signal was emitted on.
@@ -397,16 +375,21 @@ struct Fields {
     member: Option<String>,
     /// The types the body carries.
     body_signature: Option<String>,
+    /// Whether the message names a destination, which a broadcast signal
+    /// never does.
+    addressed: bool,
 }
 
 impl Message {
-    /// The change this signal carries, with the name of the connection
-    /// that carried it, when it is shaped as the portal's signal: on the
-    /// portal's path and interface, named `SettingChanged`, and holding a
-    /// namespace, a key and a value. Whether the sender may speak for the
-    /// portal is settled later, against the owner of that moment.
-    fn pending_change(&self) -> Option<PendingChange> {
-        if self.kind != SIGNAL {
+    /// The change this signal carries, when it is shaped as the portal's
+    /// signal: broadcast on the portal's path and interface, named
+    /// `SettingChanged`, and holding a namespace, a key and a value.
+    ///
+    /// The match rule limits broadcasts to the portal's owner, but a signal
+    /// sent to this connection by name reaches it whatever the rule says,
+    /// and the portal only ever broadcasts, so an addressed one is not its.
+    fn setting_change(&self) -> Option<(String, String, u32)> {
+        if self.kind != SIGNAL || self.fields.addressed {
             return None;
         }
         let named = self.fields.path.as_deref() == Some(PORTAL_PATH)
@@ -420,20 +403,8 @@ impl Message {
         let namespace = cursor.string()?;
         let key = cursor.string()?;
         let value = cursor.variant_u32()?;
-        let sender = self.fields.sender.clone()?;
-        Some(PendingChange {
-            sender,
-            change: (namespace, key, value),
-        })
+        Some((namespace, key, value))
     }
-}
-
-/// One change a signal carried, with the connection that carried it.
-struct PendingChange {
-    /// The unique name the bus recorded as the sender.
-    sender: String,
-    /// The setting that changed and its new value.
-    change: (String, String, u32),
 }
 
 /// Reads one message, whose header says how much follows it.
@@ -474,6 +445,11 @@ fn read_message(stream: &mut UnixStream) -> Option<Message> {
 /// name is skipped by its type; a block that stops parsing partway
 /// answers with the fields read so far, whose absence the callers treat
 /// as the message saying nothing.
+///
+/// Every field the protocol defines holds a basic type, so any basic type
+/// is skipped. A field that holds a container would need a full walk of
+/// the marshalling format to skip, so parsing stops there instead, and the
+/// message still answers with the fields read before it.
 fn header_fields(fields: &[u8], big_endian: bool) -> Fields {
     let mut read = Fields::default();
     let mut at = 0;
@@ -548,18 +524,38 @@ fn header_fields(fields: &[u8], big_endian: bool) -> Fields {
                 let value = String::from_utf8(text.to_vec())
                     .ok()
                     .filter(|text| !text.contains('\0'));
+                if code == 6 {
+                    read.addressed = true;
+                }
                 match (code, value) {
                     (1, Some(path)) => read.path = Some(path),
                     (2, Some(interface)) => read.interface = Some(interface),
                     (3, Some(member)) => read.member = Some(member),
-                    (7, Some(sender)) => read.sender = Some(sender),
                     _ => {}
                 }
             }
-            _ => break,
+            other => {
+                let Some(size) = fixed_size(other) else {
+                    break;
+                };
+                at += (size - at % size) % size;
+                at += size;
+            }
         }
     }
     read
+}
+
+/// The size of one fixed-size basic type, which is also its alignment, or
+/// `None` for any other type.
+fn fixed_size(signature: &str) -> Option<usize> {
+    match signature {
+        "y" => Some(1),
+        "n" | "q" => Some(2),
+        "b" | "i" | "u" | "h" => Some(4),
+        "x" | "t" | "d" => Some(8),
+        _ => None,
+    }
 }
 
 /// Reads a little- or big-endian integer out of a message header.
@@ -611,15 +607,15 @@ fn call_message(
 
 /// One method call's arguments, built in the order the interface names.
 #[derive(Default)]
-pub(crate) struct Body(
+struct Body(
     /// The bytes, which the arguments' types lay out.
-    pub(crate) Vec<u8>,
+    Vec<u8>,
 );
 
 impl Body {
     /// Adds one string, whose length leads and whose end carries the nul
     /// byte the protocol counts.
-    pub(crate) fn string(&mut self, value: &str) {
+    fn string(&mut self, value: &str) {
         align(&mut self.0, 4);
         self.0
             .extend_from_slice(&(value.len() as u32).to_le_bytes());
@@ -667,7 +663,7 @@ fn push_signature(out: &mut Vec<u8>, value: &str) {
 
 /// Reads the arguments of one message body out of the bytes the message
 /// carried, keeping to the alignments the protocol fixes per type.
-pub(crate) struct Cursor<'a> {
+struct Cursor<'a> {
     bytes: &'a [u8],
     at: usize,
     big_endian: bool,
@@ -676,7 +672,7 @@ pub(crate) struct Cursor<'a> {
 impl<'a> Cursor<'a> {
     /// Starts a cursor over one body, whose offsets begin at zero however
     /// the message's header sat.
-    pub(crate) fn over(bytes: &'a [u8], big_endian: bool) -> Cursor<'a> {
+    fn over(bytes: &'a [u8], big_endian: bool) -> Cursor<'a> {
         Cursor {
             bytes,
             at: 0,
@@ -709,7 +705,7 @@ impl<'a> Cursor<'a> {
     /// Reads one string, whose length leads and which ends in a nul byte.
     /// A nul inside the text is not part of any string the protocol
     /// carries, and a length that overflows the body names no string.
-    pub(crate) fn string(&mut self) -> Option<String> {
+    fn string(&mut self) -> Option<String> {
         let length = self.u32()? as usize;
         let end = self.at.checked_add(length)?;
         let text = self.bytes.get(self.at..end)?;
@@ -746,7 +742,7 @@ impl<'a> Cursor<'a> {
     /// A variant in the D-Bus format starts right where the last byte
     /// ended; its integer value still keeps the four-byte alignment the
     /// type carries everywhere.
-    pub(crate) fn variant_u32(&mut self) -> Option<u32> {
+    fn variant_u32(&mut self) -> Option<u32> {
         let signature = self.signature()?;
         if signature != "u" {
             return None;
@@ -754,3 +750,7 @@ impl<'a> Cursor<'a> {
         self.u32()
     }
 }
+
+#[cfg(test)]
+#[path = "dbus_tests.rs"]
+mod tests;
