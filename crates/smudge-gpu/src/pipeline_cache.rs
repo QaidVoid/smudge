@@ -70,30 +70,65 @@ pub(crate) fn open_from(device: &Device, dir: &Path) -> Option<PipelineCache> {
     }
     let key = wgpu::util::pipeline_cache_key(&device.adapter_info())?;
     let file = read_validated(dir, &key);
+    // wgpu reports data it rejects as made for another device as an error,
+    // whatever `fallback` says, and the default handler of a device panics
+    // on errors, so the scope catches it and the start goes on uncached.
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     // SAFETY: wgpu requires `data` to be bytes that `PipelineCache::get_data`
     // returned, and a save to disk cannot prove that. The checks above close
     // the gap instead: the bytes live in an owner-private directory whose
     // type, owner and permissions were checked before the read, the header
     // names this adapter's `pipeline_cache_key`, the format version is fixed,
     // and a hash covers the whole payload, so a truncated, tampered or
-    // foreign file never reaches here. With `fallback: true` wgpu falls back
-    // to pipelines without a cache when it still rejects the data, so a bad
-    // file cannot fail the start either.
-    let cache = unsafe {
+    // foreign file never reaches here. wgpu checks its own header of the
+    // data again, falls back to an empty cache on the rejections
+    // `fallback` covers, and the scope catches the others.
+    let cache = unsafe { create_cache(device, file.as_deref()) };
+    if ready_now(scope.pop()).flatten().is_some() {
+        // SAFETY: no data is always valid data for a pipeline cache.
+        return Some(unsafe { create_cache(device, None) });
+    }
+    Some(cache)
+}
+
+/// The output of `future` when it is ready on its first poll.
+///
+/// The native backends answer an error scope at once, and polling here
+/// rather than entering an executor keeps a caller that already runs inside
+/// one from panicking. A future that is not ready yet answers none, which
+/// keeps the cache: only a backend without pipeline caches pends here.
+fn ready_now<T>(future: impl Future<Output = T>) -> Option<T> {
+    let mut future = std::pin::pin!(future);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match future.as_mut().poll(&mut context) {
+        std::task::Poll::Ready(value) => Some(value),
+        std::task::Poll::Pending => None,
+    }
+}
+
+/// Creates a pipeline cache from `data`.
+///
+/// # Safety
+///
+/// `data` must be bytes [`PipelineCache::get_data`] returned on this
+/// adapter, as [`Device::create_pipeline_cache`] requires.
+unsafe fn create_cache(device: &Device, data: Option<&[u8]>) -> PipelineCache {
+    // SAFETY: the caller vouches for `data`.
+    unsafe {
         device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
             label: Some("smudge pipeline cache"),
-            data: file.as_deref(),
+            data,
             fallback: true,
         })
-    };
-    Some(cache)
+    }
 }
 
 /// Saves the pipelines `cache` has collected to the user's cache location.
 ///
-/// Nothing is written when the cache holds no data, when the adapter or the
-/// cache location is unusable, or when the file cannot be written. Every
-/// skip is silent: a lost save costs the next start its speed, nothing else.
+/// Nothing is written when the cache holds no data, when the file already
+/// holds exactly this data, when the adapter or the cache location is
+/// unusable, or when the file cannot be written. Every skip is silent: a lost
+/// save costs the next start its speed, nothing else.
 pub(crate) fn save(device: &Device, cache: &PipelineCache) {
     if let Some(dir) = cache_dir() {
         save_into(device, cache, &dir);
@@ -118,6 +153,9 @@ pub(crate) fn save_into(device: &Device, cache: &PipelineCache, dir: &Path) {
         return;
     }
     if !ensure_dir(dir) {
+        return;
+    }
+    if read_validated(dir, &key).is_some_and(|saved| saved == data) {
         return;
     }
     let target = dir.join(&key);
@@ -259,9 +297,9 @@ fn write_atomically(dir: &Path, target: &Path, bytes: &[u8]) -> bool {
 /// Creates `temp` and writes `bytes` into it, from the first byte on
 /// readable by the owner only.
 fn write_temp(temp: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
     #[cfg(unix)]
     {
+        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new()
             .write(true)

@@ -362,10 +362,66 @@ fn a_saved_cache_round_trips_through_a_device() {
         "the file this process wrote passes its own checks"
     );
 
+    let saved_at = fs::metadata(&file)
+        .and_then(|meta| meta.modified())
+        .expect("the file's time is read");
     save_into(&device, &cache, &dir.0);
     let rewritten = fs::read(&file).expect("the file is read again");
-    assert_eq!(rewritten, written, "a second save writes the same bytes");
-    assert!(open_from(&device, &dir.0).is_some(), "the cache reopens");
+    assert_eq!(rewritten, written, "a second save keeps the same bytes");
+    assert_eq!(
+        fs::metadata(&file)
+            .and_then(|meta| meta.modified())
+            .expect("the file's time is read again"),
+        saved_at,
+        "a save of unchanged data leaves the file alone"
+    );
+    let payload = validate(&written, &key).expect("the file passes its checks");
+    let reopened = open_from(&device, &dir.0).expect("the cache reopens");
+    assert_eq!(
+        reopened.get_data().as_deref(),
+        Some(payload),
+        "the reopened cache holds the saved pipelines"
+    );
+}
+
+#[test]
+fn data_made_for_another_device_yields_a_fresh_cache() {
+    let Some((device, _queue)) = headless_device() else {
+        eprintln!("skipping: no GPU adapter available for the pipeline cache");
+        return;
+    };
+    let Some(key) = wgpu::util::pipeline_cache_key(&device.adapter_info()) else {
+        eprintln!("skipping: this adapter keeps no application pipeline cache");
+        return;
+    };
+    let dir = scratch("another-device");
+    let cache = open_from(&device, &dir.0)
+        .expect("a device with the pipeline cache feature always yields a cache");
+    let renderer = vello::Renderer::new(&device, crate::renderer::vello_options(Some(&cache)))
+        .expect("the device cannot create the vello pipelines");
+    drop(renderer);
+    let mut data = cache.get_data().expect("the cache holds the pipelines");
+    // wgpu's own header names the device from its 18th byte on, after its
+    // magic, two versions and the backend: a file that passes every check
+    // of ours can still carry data wgpu reads as another device's.
+    data[17] ^= 0xff;
+    fs::write(dir.0.join(&key), serialize(&data, &key)).expect("the file is written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir.0.join(&key), fs::Permissions::from_mode(0o600))
+            .expect("the file mode is set");
+    }
+
+    // A caller that already runs inside an executor must not panic either.
+    let fresh = futures_executor::block_on(async { open_from(&device, &dir.0) })
+        .expect("the start goes on with a cache");
+
+    // The cache handed back serves vello like a fresh one, which a cache
+    // wgpu had marked invalid could not.
+    let renderer = vello::Renderer::new(&device, crate::renderer::vello_options(Some(&fresh)))
+        .expect("the device cannot create the vello pipelines");
+    drop(renderer);
 }
 
 #[test]
@@ -379,9 +435,17 @@ fn a_corrupt_cache_file_yields_a_fresh_cache_instead_of_failing() {
         return;
     };
     let dir = scratch("corrupt");
-    let mut bytes = serialize(PAYLOAD, &key);
-    let last = bytes.len() - 1;
-    bytes[last] ^= 0xff;
+    // Real pipeline data the driver would load, under a hash that no
+    // longer matches it: only the checks of ours can keep it out.
+    let cache = open_from(&device, &dir.0)
+        .expect("a device with the pipeline cache feature always yields a cache");
+    let renderer = vello::Renderer::new(&device, crate::renderer::vello_options(Some(&cache)))
+        .expect("the device cannot create the vello pipelines");
+    drop(renderer);
+    let data = cache.get_data().expect("the cache holds the pipelines");
+    let mut bytes = serialize(&data, &key);
+    let hash_at = bytes.len() - data.len() - 8;
+    bytes[hash_at] ^= 0xff;
     let file = dir.0.join(&key);
     fs::write(&file, bytes).expect("the corrupt file is written");
     // The save of ours would have left the file owner-private, so the
@@ -392,6 +456,11 @@ fn a_corrupt_cache_file_yields_a_fresh_cache_instead_of_failing() {
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600))
             .expect("the file mode is set");
     }
-    open_from(&device, &dir.0)
+    let fresh = open_from(&device, &dir.0)
         .expect("a rejected file still gives a cache, so the start only loses its speed");
+    assert_ne!(
+        fresh.get_data().as_deref(),
+        Some(&data[..]),
+        "the rejected data never reached the driver"
+    );
 }
