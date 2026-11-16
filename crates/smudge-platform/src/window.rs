@@ -305,7 +305,8 @@ pub fn run<E: IntoElement + 'static>(
 /// Behaves like [`run`], and calls `configure` once after `build` has mounted
 /// its element and before the first frame. Use it to install a per-frame
 /// driver with [`App::set_tick`], or to set up measurement that must run
-/// alongside the frames.
+/// alongside the frames. `configure` runs under the app's root owner, so the
+/// effects, memos and timers it creates live as long as the app.
 ///
 /// Platform-specific:
 ///
@@ -470,34 +471,7 @@ pub fn run_view<S: 'static>(
     state: S,
     view: fn(&S) -> AnyElement,
 ) -> Result<(), PlatformError> {
-    #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
-    {
-        run(options, move || view(&state))
-    }
-    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
-    {
-        let state = Rc::new(state);
-        let first = Rc::clone(&state);
-        // Patches are applied only once the window is open, so the first
-        // build runs the view as the binary was built.
-        let (event_loop, mut platform) = prepare(options, move || view(&first), Box::new(|_| {}))?;
-        platform.remount = Some(Box::new(move |app| {
-            let view = crate::hot::current(view)?;
-            app.remount(|| view(&state));
-            Ok(())
-        }));
-        let proxy = platform.proxy.clone();
-        // The receiver's thread is left to run until the process ends, since
-        // it waits on the builder's socket. A patch the closed loop does not
-        // take is dropped, which answers it as failed.
-        let _receiver = crate::hot::start(
-            move |patch| {
-                let _ = proxy.send_event(PlatformEvent::HotPatch(patch));
-            },
-            view as usize,
-        );
-        launch(event_loop, platform)
-    }
+    run_view_with(options, state, view, |_| {})
 }
 
 /// Opens a window whose root `view` builds from `state`, and runs frames
