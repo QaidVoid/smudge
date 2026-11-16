@@ -15,16 +15,26 @@
 //! # How the lookup works
 //!
 //! The shim is generic over the closure's type, so its instance is compiled
-//! in the crate that created the closure, and a patch of that crate maps the
-//! instance to its new version. The wrapper passes the size and the
-//! alignment of the closure's type as the creating code saw them; the shim
-//! compares them with its own view before it calls, and reports a mismatch
-//! when a capture changed the layout, on which the wrapper calls the code it
-//! holds, whose environment it built. A change that keeps the size and the
-//! alignment passes the guard, and a patch that inserts a closure before
-//! another one in the same function can map a shim to the wrong closure of
-//! the same shape. The layout gate of the patch builder refuses most of
-//! that; what it cannot see is documented as a limit.
+//! in the crate that created the closure, and a patch of that crate maps
+//! the instance to its new version. The calling code passes the [`TypeId`]
+//! of the closure's type as it was compiled; the shim compares it with the
+//! id of its own closure type before it calls, and reports a mismatch on
+//! which the calling code runs the version it holds, whose environment it
+//! built. A closure's type id names the closure, by its place among the
+//! closures of the function that defines it, and the types of its captures,
+//! so a capture that changes its type reports a mismatch, while an edit of
+//! the body alone keeps the id. A closure inserted before another one of
+//! the same function takes over the place, and with captures of the same
+//! types its id too: a closure the app holds since before the patch then
+//! runs the inserted closure's body. Remounting rebuilds the closures of
+//! the tree, so this reaches only the ones kept outside it, such as those
+//! of a configure step, a timer or a worker. Restarting the app clears it.
+//! The id does not cover the layout of a captured type whose own fields
+//! change: the patch builder must leave such a shim out, which it does by
+//! comparing the debug info of each shim's closure type, as the wire format
+//! requires of the signatures of every function it maps.
+//!
+//! [`TypeId`]: std::any::TypeId
 //!
 //! A patch is applied on the thread that runs the event loop, which
 //! publishes the installed table with release ordering once it is in
@@ -54,8 +64,7 @@ use std::rc::Rc;
 pub fn wrap<R, F: Fn() -> R + 'static>(f: F) -> impl Fn() -> R + 'static {
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     {
-        let (size, align) = (std::mem::size_of::<F>(), std::mem::align_of::<F>());
-        move || imp::call_shared(imp::published(), &f, size, align)
+        move || imp::call_shared(imp::published(), &f)
     }
 
     #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
@@ -74,8 +83,7 @@ pub fn wrap_mut<R, F: FnMut() -> R + 'static>(f: F) -> impl FnMut() -> R + 'stat
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     {
         let mut f = f;
-        let (size, align) = (std::mem::size_of::<F>(), std::mem::align_of::<F>());
-        move || imp::call_mut(imp::published(), &mut f, size, align)
+        move || imp::call_mut(imp::published(), &mut f)
     }
 
     #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
@@ -96,8 +104,7 @@ pub fn wrap_mut<R, F: FnMut() -> R + 'static>(f: F) -> impl FnMut() -> R + 'stat
 pub fn wrap1<A, R, F: Fn(A) -> R + 'static>(f: F) -> impl Fn(A) -> R + 'static {
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     {
-        let (size, align) = (std::mem::size_of::<F>(), std::mem::align_of::<F>());
-        move |arg| imp::call1_shared(imp::published(), &f, size, align, arg)
+        move |arg| imp::call1_shared(imp::published(), &f, arg)
     }
 
     #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
@@ -118,8 +125,7 @@ pub fn wrap1_mut<A, R, F: FnMut(A) -> R + 'static>(f: F) -> impl FnMut(A) -> R +
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     {
         let mut f = f;
-        let (size, align) = (std::mem::size_of::<F>(), std::mem::align_of::<F>());
-        move |arg| imp::call1_mut(imp::published(), &mut f, size, align, arg)
+        move |arg| imp::call1_mut(imp::published(), &mut f, arg)
     }
 
     #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
@@ -138,8 +144,7 @@ pub fn wrap2_mut<A, B, R, F: FnMut(A, B) -> R + 'static>(f: F) -> impl FnMut(A, 
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     {
         let mut f = f;
-        let (size, align) = (std::mem::size_of::<F>(), std::mem::align_of::<F>());
-        move |first, second| imp::call2_mut(imp::published(), &mut f, size, align, first, second)
+        move |first, second| imp::call2_mut(imp::published(), &mut f, first, second)
     }
 
     #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
@@ -159,8 +164,7 @@ pub fn wrap1_ref<A: ?Sized, R, F: for<'a> Fn(&'a A) -> R + 'static>(
 ) -> impl for<'a> Fn(&'a A) -> R + 'static {
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     {
-        let (size, align) = (std::mem::size_of::<F>(), std::mem::align_of::<F>());
-        move |arg: &A| imp::call1_shared(imp::published(), &f, size, align, arg)
+        move |arg: &A| imp::call1_shared(imp::published(), &f, arg)
     }
 
     #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
@@ -182,8 +186,7 @@ pub fn wrap1_ref_mut<A: ?Sized, R, F: for<'a> FnMut(&'a A) -> R + 'static>(
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     {
         let mut f = f;
-        let (size, align) = (std::mem::size_of::<F>(), std::mem::align_of::<F>());
-        move |arg: &A| imp::call1_mut(imp::published(), &mut f, size, align, arg)
+        move |arg: &A| imp::call1_mut(imp::published(), &mut f, arg)
     }
 
     #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
@@ -204,8 +207,7 @@ pub fn wrap1_mut_ref<A: ?Sized, R, F: for<'a> Fn(&'a mut A) -> R + 'static>(
 ) -> impl for<'a> Fn(&'a mut A) -> R + 'static {
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     {
-        let (size, align) = (std::mem::size_of::<F>(), std::mem::align_of::<F>());
-        move |arg: &mut A| imp::call1_shared(imp::published(), &f, size, align, arg)
+        move |arg: &mut A| imp::call1_shared(imp::published(), &f, arg)
     }
 
     #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
@@ -227,8 +229,7 @@ pub fn wrap2_ref_mut<A: ?Sized, B, R, F: for<'a> FnMut(&'a A, B) -> R + 'static>
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     {
         let mut f = f;
-        let (size, align) = (std::mem::size_of::<F>(), std::mem::align_of::<F>());
-        move |arg: &A, second| imp::call2_mut(imp::published(), &mut f, size, align, arg, second)
+        move |arg: &A, second| imp::call2_mut(imp::published(), &mut f, arg, second)
     }
 
     #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
@@ -252,8 +253,7 @@ pub fn wrap2_ref_mut<A: ?Sized, B, R, F: for<'a> FnMut(&'a A, B) -> R + 'static>
 pub fn call<R, F: FnMut() -> R + 'static>(mut f: F) -> R {
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     {
-        let (size, align) = (std::mem::size_of::<F>(), std::mem::align_of::<F>());
-        imp::call_synced(&mut f, size, align)
+        imp::call_synced(&mut f)
     }
 
     #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
@@ -376,18 +376,19 @@ struct HotPatchEntry {
 #[cfg(all(feature = "hot-reload", target_os = "linux"))]
 #[allow(unsafe_code)]
 mod imp {
+    use std::any::TypeId;
     use std::cell::RefCell;
-    use std::mem::{align_of, size_of, transmute_copy};
+    use std::mem::transmute_copy;
     use std::rc::{Rc, Weak};
     use std::sync::atomic::{AtomicPtr, Ordering};
 
     use subsecond::JumpTable;
 
     /// The signature a two-argument shim and its patch share: the closure
-    /// as an erased pointer, the size and the alignment the wrapper
-    /// recorded, and the two arguments, which the shim hands back when its
-    /// guard fails.
-    type Shim2<A, B, R> = fn(*mut (), usize, usize, A, B) -> Result<R, (A, B)>;
+    /// as an erased pointer, the type id of the closure as the calling code
+    /// was compiled, and the two arguments, which the shim hands back when
+    /// its guard fails.
+    type Shim2<A, B, R> = fn(*mut (), TypeId, A, B) -> Result<R, (A, B)>;
 
     use super::{HotPatchBook, HotPatchEntry};
     use crate::reactive::runtime::{CurrentOwnerGuard, OwnerData};
@@ -457,13 +458,8 @@ mod imp {
     }
 
     /// Runs a shared, no-argument closure through the published table.
-    pub(super) fn call_shared<R, F: Fn() -> R>(
-        table: Option<&JumpTable>,
-        env: &F,
-        size: usize,
-        align: usize,
-    ) -> R {
-        let shim: fn(*const (), usize, usize) -> Result<R, ()> = shim_shared::<R, F>;
+    pub(super) fn call_shared<R, F: Fn() -> R + 'static>(table: Option<&JumpTable>, env: &F) -> R {
+        let shim: fn(*const (), TypeId) -> Result<R, ()> = shim_shared::<R, F>;
         match find(table, shim as usize) {
             Some(mapped) => {
                 // SAFETY: a patch maps the shim's address only to the new
@@ -473,13 +469,13 @@ mod imp {
                 // `find` filtered the null address out. The environment
                 // crosses the boundary as an erased pointer, so the
                 // patched code forms a reference to it only after its
-                // guard accepted the size and the alignment the wrapper
-                // recorded; `Err` sends the call back to the version the
-                // wrapper holds, whose environment it built.
+                // guard found the closure type it was compiled for to be
+                // the one this code was compiled for; `Err` sends the call
+                // back to the version the wrapper holds, whose environment
+                // it built.
                 let run = unsafe {
-                    let patched: fn(*const (), usize, usize) -> Result<R, ()> =
-                        transmute_copy(&mapped);
-                    patched(std::ptr::from_ref(env).cast(), size, align)
+                    let patched: fn(*const (), TypeId) -> Result<R, ()> = transmute_copy(&mapped);
+                    patched(std::ptr::from_ref(env).cast(), TypeId::of::<F>())
                 };
                 run.unwrap_or_else(|()| env())
             }
@@ -488,20 +484,17 @@ mod imp {
     }
 
     /// Runs a mutating, no-argument closure through the published table.
-    pub(super) fn call_mut<R, F: FnMut() -> R>(
+    pub(super) fn call_mut<R, F: FnMut() -> R + 'static>(
         table: Option<&JumpTable>,
         env: &mut F,
-        size: usize,
-        align: usize,
     ) -> R {
-        let shim: fn(*mut (), usize, usize) -> Result<R, ()> = shim_mut::<R, F>;
+        let shim: fn(*mut (), TypeId) -> Result<R, ()> = shim_mut::<R, F>;
         match find(table, shim as usize) {
             Some(mapped) => {
                 // SAFETY: the argument in `call_shared` applies here too.
                 let run = unsafe {
-                    let patched: fn(*mut (), usize, usize) -> Result<R, ()> =
-                        transmute_copy(&mapped);
-                    patched(std::ptr::from_mut(env).cast(), size, align)
+                    let patched: fn(*mut (), TypeId) -> Result<R, ()> = transmute_copy(&mapped);
+                    patched(std::ptr::from_mut(env).cast(), TypeId::of::<F>())
                 };
                 run.unwrap_or_else(|()| env())
             }
@@ -511,28 +504,25 @@ mod imp {
 
     /// Runs a mutating, no-argument closure on a thread patches are not
     /// applied on, which reads the table the applying thread published.
-    pub(super) fn call_synced<R, F: FnMut() -> R>(env: &mut F, size: usize, align: usize) -> R {
-        call_mut(published(), env, size, align)
+    pub(super) fn call_synced<R, F: FnMut() -> R + 'static>(env: &mut F) -> R {
+        call_mut(published(), env)
     }
 
     /// Runs a shared, one-argument closure through the published table.
-    pub(super) fn call1_shared<A, R, F: Fn(A) -> R>(
+    pub(super) fn call1_shared<A, R, F: Fn(A) -> R + 'static>(
         table: Option<&JumpTable>,
         env: &F,
-        size: usize,
-        align: usize,
         arg: A,
     ) -> R {
-        let shim: fn(*const (), usize, usize, A) -> Result<R, A> = shim1_shared::<A, R, F>;
+        let shim: fn(*const (), TypeId, A) -> Result<R, A> = shim1_shared::<A, R, F>;
         match find(table, shim as usize) {
             Some(mapped) => {
                 // SAFETY: the argument in `call_shared` applies here too. The
                 // shim hands the argument back when its guard fails, so the
                 // fallback can run the code the wrapper holds.
                 let run = unsafe {
-                    let patched: fn(*const (), usize, usize, A) -> Result<R, A> =
-                        transmute_copy(&mapped);
-                    patched(std::ptr::from_ref(env).cast(), size, align, arg)
+                    let patched: fn(*const (), TypeId, A) -> Result<R, A> = transmute_copy(&mapped);
+                    patched(std::ptr::from_ref(env).cast(), TypeId::of::<F>(), arg)
                 };
                 match run {
                     Ok(result) => result,
@@ -544,23 +534,20 @@ mod imp {
     }
 
     /// Runs a mutating, one-argument closure through the published table.
-    pub(super) fn call1_mut<A, R, F: FnMut(A) -> R>(
+    pub(super) fn call1_mut<A, R, F: FnMut(A) -> R + 'static>(
         table: Option<&JumpTable>,
         env: &mut F,
-        size: usize,
-        align: usize,
         arg: A,
     ) -> R {
-        let shim: fn(*mut (), usize, usize, A) -> Result<R, A> = shim1_mut::<A, R, F>;
+        let shim: fn(*mut (), TypeId, A) -> Result<R, A> = shim1_mut::<A, R, F>;
         match find(table, shim as usize) {
             Some(mapped) => {
                 // SAFETY: the argument in `call_shared` applies here too. The
                 // shim hands the argument back when its guard fails, so the
                 // fallback can run the code the wrapper holds.
                 let run = unsafe {
-                    let patched: fn(*mut (), usize, usize, A) -> Result<R, A> =
-                        transmute_copy(&mapped);
-                    patched(std::ptr::from_mut(env).cast(), size, align, arg)
+                    let patched: fn(*mut (), TypeId, A) -> Result<R, A> = transmute_copy(&mapped);
+                    patched(std::ptr::from_mut(env).cast(), TypeId::of::<F>(), arg)
                 };
                 match run {
                     Ok(result) => result,
@@ -572,11 +559,9 @@ mod imp {
     }
 
     /// Runs a mutating, two-argument closure through the published table.
-    pub(super) fn call2_mut<A, B, R, F: FnMut(A, B) -> R>(
+    pub(super) fn call2_mut<A, B, R, F: FnMut(A, B) -> R + 'static>(
         table: Option<&JumpTable>,
         env: &mut F,
-        size: usize,
-        align: usize,
         first: A,
         second: B,
     ) -> R {
@@ -588,7 +573,12 @@ mod imp {
                 // fallback can run the code the wrapper holds.
                 let run = unsafe {
                     let patched: Shim2<A, B, R> = transmute_copy(&mapped);
-                    patched(std::ptr::from_mut(env).cast(), size, align, first, second)
+                    patched(
+                        std::ptr::from_mut(env).cast(),
+                        TypeId::of::<F>(),
+                        first,
+                        second,
+                    )
                 };
                 match run {
                     Ok(result) => result,
@@ -601,17 +591,17 @@ mod imp {
 
     /// The shared, no-argument shim a wrapper looks up.
     ///
-    /// Calls the closure only when the size and the alignment of the
-    /// closure's type, as the calling code saw them, match this code's own
-    /// view. A mismatch means a capture changed its layout, and the
+    /// Calls the closure only when the closure type the calling code was
+    /// compiled for is the one this code was compiled for. A mismatch means
+    /// a capture changed its type or the closure is another one, and the
     /// calling code runs the version it holds instead.
     #[inline(never)]
-    fn shim_shared<R, F: Fn() -> R>(env: *const (), size: usize, align: usize) -> Result<R, ()> {
-        if size_of::<F>() == size && align_of::<F>() == align {
-            // SAFETY: the guard passed, so the layout this code sees of the
-            // closure's type is the layout the wrapper recorded, and the
-            // pointer came from the wrapper's reference to a live closure
-            // of that type.
+    fn shim_shared<R, F: Fn() -> R + 'static>(env: *const (), id: TypeId) -> Result<R, ()> {
+        if TypeId::of::<F>() == id {
+            // SAFETY: the guard passed, so this code and the caller name one
+            // closure type with the same captures, whose layout the patch
+            // builder checked when it mapped this shim, and the pointer came
+            // from the caller's reference to a live closure of that type.
             let env = unsafe { &*env.cast::<F>() };
             Ok(env())
         } else {
@@ -621,8 +611,8 @@ mod imp {
 
     /// The mutating, no-argument shim a wrapper looks up.
     #[inline(never)]
-    fn shim_mut<R, F: FnMut() -> R>(env: *mut (), size: usize, align: usize) -> Result<R, ()> {
-        if size_of::<F>() == size && align_of::<F>() == align {
+    fn shim_mut<R, F: FnMut() -> R + 'static>(env: *mut (), id: TypeId) -> Result<R, ()> {
+        if TypeId::of::<F>() == id {
             // SAFETY: the guard passed, and the pointer came from the
             // wrapper's mutable reference to a live closure of this type.
             let env = unsafe { &mut *env.cast::<F>() };
@@ -634,18 +624,17 @@ mod imp {
 
     /// The shared, one-argument shim a wrapper looks up.
     ///
-    /// Calls the closure only when the size and the alignment of the
-    /// closure's type, as the calling code saw them, match this code's own
-    /// view, and hands the argument back otherwise, so the calling code can
-    /// run the version it holds.
+    /// Calls the closure only when the closure type the calling code was
+    /// compiled for is the one this code was compiled for, and hands the
+    /// argument back otherwise, so the calling code can run the version it
+    /// holds.
     #[inline(never)]
-    fn shim1_shared<A, R, F: Fn(A) -> R>(
+    fn shim1_shared<A, R, F: Fn(A) -> R + 'static>(
         env: *const (),
-        size: usize,
-        align: usize,
+        id: TypeId,
         arg: A,
     ) -> Result<R, A> {
-        if size_of::<F>() == size && align_of::<F>() == align {
+        if TypeId::of::<F>() == id {
             // SAFETY: the guard passed, and the pointer came from the
             // wrapper's reference to a live closure of this type.
             let env = unsafe { &*env.cast::<F>() };
@@ -657,13 +646,12 @@ mod imp {
 
     /// The mutating, one-argument shim a wrapper looks up.
     #[inline(never)]
-    fn shim1_mut<A, R, F: FnMut(A) -> R>(
+    fn shim1_mut<A, R, F: FnMut(A) -> R + 'static>(
         env: *mut (),
-        size: usize,
-        align: usize,
+        id: TypeId,
         arg: A,
     ) -> Result<R, A> {
-        if size_of::<F>() == size && align_of::<F>() == align {
+        if TypeId::of::<F>() == id {
             // SAFETY: the guard passed, and the pointer came from the
             // wrapper's mutable reference to a live closure of this type.
             let env = unsafe { &mut *env.cast::<F>() };
@@ -675,14 +663,13 @@ mod imp {
 
     /// The mutating, two-argument shim a wrapper looks up.
     #[inline(never)]
-    fn shim2_mut<A, B, R, F: FnMut(A, B) -> R>(
+    fn shim2_mut<A, B, R, F: FnMut(A, B) -> R + 'static>(
         env: *mut (),
-        size: usize,
-        align: usize,
+        id: TypeId,
         first: A,
         second: B,
     ) -> Result<R, (A, B)> {
-        if size_of::<F>() == size && align_of::<F>() == align {
+        if TypeId::of::<F>() == id {
             // SAFETY: the guard passed, and the pointer came from the
             // wrapper's mutable reference to a live closure of this type.
             let env = unsafe { &mut *env.cast::<F>() };
@@ -695,38 +682,37 @@ mod imp {
     /// The address the no-argument lookup keys a closure's shim by. For the
     /// tests, which build tables by hand from it.
     #[cfg(test)]
-    pub(super) fn shim_key_shared<R, F: Fn() -> R>(_f: &F) -> usize {
-        let shim: fn(*const (), usize, usize) -> Result<R, ()> = shim_shared::<R, F>;
+    pub(super) fn shim_key_shared<R, F: Fn() -> R + 'static>(_f: &F) -> usize {
+        let shim: fn(*const (), TypeId) -> Result<R, ()> = shim_shared::<R, F>;
         shim as usize
     }
 
     /// The address the one-argument lookup keys a closure's shim by.
     #[cfg(test)]
-    pub(super) fn shim_key1_mut<A, R, F: FnMut(A) -> R>(_f: &F) -> usize {
-        let shim: fn(*mut (), usize, usize, A) -> Result<R, A> = shim1_mut::<A, R, F>;
+    pub(super) fn shim_key1_mut<A, R, F: FnMut(A) -> R + 'static>(_f: &F) -> usize {
+        let shim: fn(*mut (), TypeId, A) -> Result<R, A> = shim1_mut::<A, R, F>;
         shim as usize
     }
 
-    /// Runs the real no-argument shim of `env`'s type with the size and the
-    /// alignment the test hands in, and reports whether the guard accepted
-    /// them. For the tests, which pin the guard's behavior.
+    /// Runs the real no-argument shim of `env`'s type with the type id the
+    /// test hands in, and reports whether the guard accepted it. For the
+    /// tests, which pin the guard's behavior.
     #[cfg(test)]
-    pub(super) fn guard_runs<R, F: Fn() -> R>(env: &F, size: usize, align: usize) -> bool {
-        let shim: fn(*const (), usize, usize) -> Result<R, ()> = shim_shared::<R, F>;
-        shim(std::ptr::from_ref(env).cast(), size, align).is_ok()
+    pub(super) fn guard_runs<R, F: Fn() -> R + 'static>(env: &F, id: TypeId) -> bool {
+        let shim: fn(*const (), TypeId) -> Result<R, ()> = shim_shared::<R, F>;
+        shim(std::ptr::from_ref(env).cast(), id).is_ok()
     }
 
     /// The same for a one-argument handler, which the shim runs when the
-    /// guard accepts the layout.
+    /// guard accepts the type id.
     #[cfg(test)]
-    pub(super) fn guard1_mut_runs<A, R, F: FnMut(A) -> R>(
+    pub(super) fn guard1_mut_runs<A, R, F: FnMut(A) -> R + 'static>(
         env: &mut F,
-        size: usize,
-        align: usize,
+        id: TypeId,
         arg: A,
     ) -> bool {
-        let shim: fn(*mut (), usize, usize, A) -> Result<R, A> = shim1_mut::<A, R, F>;
-        shim(std::ptr::from_mut(env).cast(), size, align, arg).is_ok()
+        let shim: fn(*mut (), TypeId, A) -> Result<R, A> = shim1_mut::<A, R, F>;
+        shim(std::ptr::from_mut(env).cast(), id, arg).is_ok()
     }
 
     /// Registers `run` under `owner`, in the book of the app the owner
