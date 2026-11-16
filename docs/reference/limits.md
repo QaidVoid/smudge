@@ -34,6 +34,12 @@
 - **Wayland clipboard needs data-control or Xwayland.** On a compositor with neither, copy and paste stay inside the application.
 - **The color scheme follows the desktop on Linux, macOS and Windows.** An app that follows the system's light or dark preference reads the desktop's `color-scheme` setting through the settings portal on the session bus on Linux, and the theme the window system reports on macOS and Windows. A desktop that serves no portal, and the web, report nothing: the app keeps the light side it starts on until a report says otherwise.
 
+## Hot reload
+
+- **Statics of the patched app crate start fresh.** The patched code reaches a static of the app crate, `pub` or not, by a short distance from itself, and the patch is loaded too far from the running app to reach the app's copy, so a writable one starts over at its initial value in the patched code. `cargo smudge dev` names such statics once per session. Keep state that must survive a patch in the state passed to `run_view`, in signals, or in a `pub static` of a library crate: a patch shares those with the running app, as long as the static's type keeps its layout. An edited immutable static, such as a table or a string, shows its new value.
+- **Some library statics ask for a restart.** An edit of a library crate whose writable statics a patch cannot share, because they are private, their type changed, or the debug information does not describe them, asks for a restart.
+- **Closures that trade places can run each other's bodies.** A closure the app keeps outside the tree, such as one a configure step, a timer or a worker holds, runs the patched body of the closure that now has its place when two closures of a function swap, or when one is removed and another added so their count stays the same. When the count of a function's closures and async blocks changes, the change is detected, and those closures keep their old bodies until a restart.
+
 ## Stability
 
 Smudge follows semantic versioning, and before 1.0 a minor version may change the API. Breaking changes are listed in the changelog of each release.

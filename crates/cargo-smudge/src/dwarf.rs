@@ -151,7 +151,16 @@ pub(crate) struct Signatures {
     /// The namespace-qualified name of every die a description named,
     /// by unit and unit offset.
     qualified: HashMap<DieKey, String>,
+    /// The closures each function defines, by the function's path.
+    closures: ClosureIndices,
+    /// The static variables the DWARF describes, by linkage name.
+    variables: HashMap<String, (usize, UnitOffset)>,
 }
+
+/// The closure numbers each function defines, by the function's qualified
+/// path.
+pub(crate) type ClosureIndices =
+    std::collections::BTreeMap<String, std::collections::BTreeSet<u32>>;
 
 impl Signatures {
     /// Reads the signatures of the ELF file in `bytes`.
@@ -165,6 +174,8 @@ impl Signatures {
         let mut units = Vec::new();
         let mut names = HashMap::new();
         let mut offsets: HashMap<usize, HashMap<u64, UnitOffset>> = HashMap::new();
+        let mut closures = ClosureIndices::new();
+        let mut variables = HashMap::new();
         let mut headers = dwarf.units();
         while let Some(header) = headers.next().map_err(|e| e.to_string())? {
             let global = header
@@ -174,12 +185,18 @@ impl Signatures {
                 .ok_or_else(|| String::from("a unit in .debug_types is not supported"))?;
             let unit = dwarf.unit(header).map_err(|e| e.to_string())?;
             let index = units.len();
-            let (addresses, named) = subprograms(&dwarf, &unit)?;
-            for (address, offset) in addresses {
+            let walked = walk_unit(&dwarf, &unit)?;
+            for (address, offset) in walked.addressed {
                 offsets.entry(index).or_default().insert(address, offset);
             }
-            for (name, offset) in named {
+            for (name, offset) in walked.named {
                 names.insert(name, (index, offset));
+            }
+            for (parent, number) in walked.closures {
+                closures.entry(parent).or_default().insert(number);
+            }
+            for (name, offset) in walked.variables {
+                variables.insert(name, (index, offset));
             }
             units.push((global, unit));
         }
@@ -204,6 +221,8 @@ impl Signatures {
             next_component: 0,
             parents: HashMap::new(),
             qualified: HashMap::new(),
+            closures,
+            variables,
         };
         Ok(signatures)
     }
@@ -239,6 +258,62 @@ impl Signatures {
             Err(error) if error.starts_with(AMBIGUOUS) => Ok(None),
             other => other,
         }
+    }
+
+    /// The closures each function defines, async blocks and coroutines
+    /// among them, by the function's path, read from the environment types
+    /// the DWARF names `{closure_env#N}`, `{async_block_env#N}` and the like
+    /// under it. The compiler numbers them by their order in the function,
+    /// all kinds in one numbering, so one inserted or removed renumbers the
+    /// ones after it, which the numbers here show.
+    pub(crate) fn closures(&self) -> &ClosureIndices {
+        &self.closures
+    }
+
+    /// The layout digest of the type of the static whose linkage name is
+    /// `name`, in the same spelling a signature gives a parameter's type,
+    /// or none when the DWARF does not describe the static.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the type could not be serialized.
+    pub(crate) fn static_type(&mut self, name: &str) -> Result<Option<String>, String> {
+        let Some(&(index, offset)) = self.variables.get(name) else {
+            return Ok(None);
+        };
+        let Some((_, unit)) = self.units.get(index) else {
+            return Ok(None);
+        };
+        let die = unit.entry(offset).map_err(string)?;
+        let Some(value) = die.attr_value(gimli::DW_AT_type).map_err(string)? else {
+            return Ok(None);
+        };
+        let mut parser = Parser {
+            dwarf: &self.dwarf,
+            units: &self.units,
+            answers: &mut self.answers,
+            component: &mut self.component,
+            members: &mut self.members,
+            ambiguous: &mut self.ambiguous,
+            wrappers: &mut self.wrappers,
+            next_order: &mut self.next_order,
+            next_component: &mut self.next_component,
+            parents: &mut self.parents,
+            qualified: &mut self.qualified,
+        };
+        match parser.describe(index, Some(value)) {
+            Err(error) if error.starts_with(AMBIGUOUS) => Ok(None),
+            other => other.map(Some),
+        }
+    }
+
+    /// The source name of the static whose linkage name is `name`, such as
+    /// `CONFIG`, when the DWARF describes it.
+    pub(crate) fn static_name(&self, name: &str) -> Option<String> {
+        let &(index, offset) = self.variables.get(name)?;
+        let (_, unit) = self.units.get(index)?;
+        let die = unit.entry(offset).ok()?;
+        die_name(&self.dwarf, unit, &die).ok().flatten()
     }
 
     /// The signature of the subprogram at `offset` of unit `index`.
@@ -805,8 +880,9 @@ impl<'a> Parser<'a> {
         Ok(found)
     }
 
-    /// The type edges the members, variant parts and variants under an
-    /// aggregate carry, the same descent the digest walk takes.
+    /// The type edges the members, variant parts, variants and template
+    /// type parameters under an aggregate carry, the same descent the
+    /// digest walk takes.
     fn member_edges(
         &self,
         index: usize,
@@ -827,6 +903,16 @@ impl<'a> Parser<'a> {
             depth = next as usize;
             match child.tag() {
                 gimli::DW_TAG_member => {
+                    if let Some(value) = child.attr_value(gimli::DW_AT_type).map_err(string)?
+                        && let Some(edge) = self.type_ref(index, value)
+                    {
+                        found.push(edge);
+                    }
+                }
+                // Only the aggregate's own type parameters, its direct
+                // children: a generic method declared under it carries
+                // parameters of its own, which say nothing of the layout.
+                gimli::DW_TAG_template_type_parameter if depth == 1 => {
                     if let Some(value) = child.attr_value(gimli::DW_AT_type).map_err(string)?
                         && let Some(edge) = self.type_ref(index, value)
                     {
@@ -1099,6 +1185,17 @@ impl<'a> Parser<'a> {
                     independent &= child_independent;
                     found.push(member);
                 }
+                // A type parameter can shape the data a member only points
+                // at through an erased pointer, as a vector's element type
+                // does its buffer, so its layout joins the aggregate's. Only
+                // the aggregate's own count, its direct children: a generic
+                // method declared under it carries parameters of its own.
+                gimli::DW_TAG_template_type_parameter if cursor == 1 => {
+                    let (parameter, child_independent) =
+                        self.walk_member(index, unit, child, component, depth)?;
+                    independent &= child_independent;
+                    found.push(format!("T:{parameter}"));
+                }
                 // The tag a variant answers to decides which payload a
                 // caller reads, so it joins the digest beside the
                 // members it governs; a variant without one is the
@@ -1257,6 +1354,28 @@ fn digest_of(desc: &str) -> String {
     format!("{hash:016x}")
 }
 
+/// The function and the number of the closure, async block or coroutine
+/// whose environment type has the qualified name `qualified`, such as
+/// `app::main::{closure_env#2}` or `app::main::{async_block_env#1}`.
+pub(crate) fn closure_of(qualified: &str) -> Option<(String, u32)> {
+    // Type arguments can name other closures, so the environment's own
+    // name is the last one before them.
+    let head = qualified.split('<').next().unwrap_or(qualified);
+    let at = head.rfind("::{")?;
+    let rest = &head[at + "::{".len()..];
+    let (kind, number) = rest.split_once("_env#")?;
+    if kind.is_empty()
+        || !kind
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+    {
+        return None;
+    }
+    let digits: String = number.chars().take_while(char::is_ascii_digit).collect();
+    let number = digits.parse().ok()?;
+    Some((head[..at].to_string(), number))
+}
+
 /// Turns a gimli error into its message, which is all the pairing needs.
 fn string(error: Error) -> String {
     error.to_string()
@@ -1297,20 +1416,73 @@ fn number_of(value: &AttributeValue<SectionReader>) -> Option<String> {
 
 /// The addresses and entry offsets of the subprograms of one unit that the
 /// DWARF places in code, which are the functions a symbol table pairs.
-/// One walk over a unit's dies, answering both the subprograms that
-/// hold code by address and the same subprograms by the name a symbol
-/// table pairs them with. One traversal serves both, since each pass
-/// reads the same dies apart from the attributes it picks.
-/// The subprograms one unit holds: those with code by address, and the
-/// same subprograms by the name a symbol table pairs them with.
-type Subprograms = (Vec<(u64, UnitOffset)>, Vec<(String, UnitOffset)>);
+/// What one walk over a unit's dies collects: its subprograms with code,
+/// by address and by the name a symbol table pairs them with, the
+/// closures each function defines, and its statics by linkage name. One
+/// traversal serves all of them, since each reads the same dies apart from
+/// the attributes it picks.
+#[derive(Default)]
+struct Walked {
+    /// The subprograms with code, by address.
+    addressed: Vec<(u64, UnitOffset)>,
+    /// The same subprograms, by the name a symbol table pairs them with.
+    named: Vec<(String, UnitOffset)>,
+    /// The closures the unit names, by function path and number.
+    closures: Vec<(String, u32)>,
+    /// The statics the unit describes, by linkage name.
+    variables: Vec<(String, UnitOffset)>,
+}
 
-fn subprograms(dwarf: &Sections, unit: &Unit<SectionReader>) -> Result<Subprograms, String> {
-    let mut addressed = Vec::new();
-    let mut named = Vec::new();
+/// Walks one unit's dies once and answers what [`Walked`] holds. The path
+/// of a closure comes from the names of the dies that enclose it, which
+/// the walk keeps on a stack as it goes, so no second pass is needed.
+fn walk_unit(dwarf: &Sections, unit: &Unit<SectionReader>) -> Result<Walked, String> {
+    let mut walked = Walked::default();
+    let mut enclosing: Vec<(isize, Option<String>)> = Vec::new();
+    let mut depth: isize = 0;
     let mut entries = unit.entries();
-    while let Some((_, die)) = entries.next_dfs().map_err(string)? {
-        if die.tag() != gimli::DW_TAG_subprogram {
+    while let Some((delta, die)) = entries.next_dfs().map_err(string)? {
+        depth += delta;
+        while enclosing.last().is_some_and(|(at, _)| *at >= depth) {
+            enclosing.pop();
+        }
+        let tag = die.tag();
+        if matches!(
+            tag,
+            gimli::DW_TAG_namespace
+                | gimli::DW_TAG_structure_type
+                | gimli::DW_TAG_union_type
+                | gimli::DW_TAG_enumeration_type
+                | gimli::DW_TAG_class_type
+        ) {
+            let name = die_name(dwarf, unit, die)?;
+            // Closures, async blocks and coroutines share one numbering
+            // per function, and each kind names its environment type
+            // `{<kind>_env#N}`.
+            if tag == gimli::DW_TAG_structure_type
+                && let Some(name) = name.as_deref()
+                && name.starts_with('{')
+                && name.contains("_env#")
+            {
+                let mut path: Vec<&str> = enclosing
+                    .iter()
+                    .filter_map(|(_, name)| name.as_deref())
+                    .collect();
+                path.push(name);
+                if let Some(closure) = closure_of(&path.join("::")) {
+                    walked.closures.push(closure);
+                }
+            }
+            enclosing.push((depth, name));
+            continue;
+        }
+        if tag == gimli::DW_TAG_variable {
+            if let Some(name) = self_linkage_name(dwarf, unit, die)? {
+                walked.variables.push((name, die.offset()));
+            }
+            continue;
+        }
+        if tag != gimli::DW_TAG_subprogram {
             continue;
         }
         // DWARF 5 names the address through an index into the unit's
@@ -1321,7 +1493,7 @@ fn subprograms(dwarf: &Sections, unit: &Unit<SectionReader>) -> Result<Subprogra
         let Some(address) = dwarf.attr_address(unit, low_pc).map_err(string)? else {
             continue;
         };
-        addressed.push((address, die.offset()));
+        walked.addressed.push((address, die.offset()));
         let mut name = self_linkage_name(dwarf, unit, die)?;
         if name.is_none()
             && let Some(AttributeValue::UnitRef(specification)) =
@@ -1347,10 +1519,10 @@ fn subprograms(dwarf: &Sections, unit: &Unit<SectionReader>) -> Result<Subprogra
             name = die_name(dwarf, unit, &declaration)?;
         }
         if let Some(name) = name {
-            named.push((name, die.offset()));
+            walked.named.push((name, die.offset()));
         }
     }
-    Ok((addressed, named))
+    Ok(walked)
 }
 
 /// The plain name a die carries itself, if any.

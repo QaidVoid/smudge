@@ -28,6 +28,13 @@ pub(crate) enum Outcome {
         added: usize,
         /// Functions left out because their signature changed.
         changed_signature: usize,
+        /// Functions left out because they name a closure of a function
+        /// whose closures the edit renumbered.
+        renumbered: usize,
+        /// The writable statics of the app crate the patched code starts
+        /// fresh copies of, because they cannot be shared with the running
+        /// app, by symbol name and source name.
+        fresh_statics: Vec<(String, String)>,
         /// Functions left out whose signature could not be verified.
         unverified: usize,
         /// Imports the stub resolved to the running binary's code.
@@ -178,6 +185,8 @@ enum Compiled {
 struct ObjectInfo {
     /// Where the object sits, for the link line.
     path: PathBuf,
+    /// The crate the object belongs to.
+    krate: String,
     /// Every symbol the object names.
     symbols: Symbols,
     /// The signatures its debug information describes.
@@ -291,6 +300,9 @@ fn step_inner(
                 }
                 Ok(())
             })?;
+            for info in &mut objects_read {
+                info.krate = step.name.clone();
+            }
             objects.append(&mut objects_read);
             thin = thin_args;
         } else {
@@ -341,6 +353,7 @@ fn step_inner(
                     replay_dir,
                     &dir,
                 )?;
+                let mut infos = Vec::with_capacity(extracted.len());
                 for path in &extracted {
                     let info = read_object(path)?;
                     let tls = info
@@ -359,37 +372,69 @@ fn step_inner(
                             discovered: std::mem::take(discovered),
                         });
                     }
-                    // A static the program writes is state the running app
-                    // builds since it started: a patch that carries its own
-                    // fresh copy of it resets that state behind the app's
-                    // back, so the crate leaves the replay to the restart.
-                    // Any symbol in a writable section counts, whatever its
-                    // type: storage defined in assembly without a `.type`
-                    // directive is as much state as a Rust static. The
-                    // personality cell the ABI defines under `DW.ref.` is
-                    // link-time data the program never writes, so it
-                    // answers for nothing.
-                    let writable = info.symbols.map.iter().any(|(name, sym)| {
-                        sym.defined && sym.writable && !name.starts_with("DW.ref.")
-                    });
-                    if writable {
-                        return Ok(Outcome::RestartNeeded {
-                            reason: format!(
-                                "the crate {} defines writable statics, which \
-                                 a patch would give fresh copies of; restart \
-                                 the app",
-                                step.name
-                            ),
-                            refused: Some(step.name.clone()),
-                            discovered: std::mem::take(discovered),
-                        });
-                    }
-                    objects.push(info);
+                    infos.push(info);
                 }
+                // A static every reference reaches through a full address
+                // is the running app's own in the patch; the others the
+                // patch would carry fresh copies of.
+                for info in &mut infos {
+                    info.krate = step.name.clone();
+                }
+                objects.append(&mut infos);
             }
             outputs.insert(step.name.clone(), artifact);
         }
     }
+    // A static every reference in the patch reaches through a full
+    // address is the running app's own in the patched code. The decision
+    // weighs every object the patch links, since a consumer's reference
+    // by a 32-bit distance could not reach the running app's copy.
+    let paths: Vec<PathBuf> = objects.iter().map(|info| info.path.clone()).collect();
+    let shared = crate::elf::shared_statics(&paths, plan.symbols)?;
+    let shared = same_static_types(shared, &mut objects, plan.signatures)?;
+    share_statics(&mut objects, &shared, &replay_dir.join("shared"))?;
+    // A static the program writes is state the running app builds since
+    // it started, or since the patch that introduced it: a patch that
+    // carries its own fresh copy of it resets that state behind the
+    // app's back, so a library crate with one leaves the replay to the
+    // restart. Any symbol in a writable section counts, whatever its
+    // type: storage defined in assembly is as much state as a Rust
+    // static. The app crate's ones start fresh in the patched code, and
+    // the app hears of them, since refusing would block every app whose
+    // macros keep writable statics, such as logging call sites.
+    let tip_name = plan
+        .chain
+        .iter()
+        .find(|step| step.tip)
+        .map(|step| step.name.clone())
+        .unwrap_or_default();
+    for krate in &replayed {
+        let fresh: Vec<String> = fresh_statics(objects.iter().filter(|info| &info.krate == krate))
+            .iter()
+            .map(|name| static_name(&objects, name))
+            .collect();
+        if !fresh.is_empty() {
+            return Ok(Outcome::RestartNeeded {
+                reason: format!(
+                    "the crate {krate} defines writable statics the patch cannot \
+                     share with the running app ({}), which it would give fresh \
+                     copies of; restart the app",
+                    fresh.join(", ")
+                ),
+                refused: Some(krate.clone()),
+                discovered: std::mem::take(discovered),
+            });
+        }
+    }
+    let app_fresh: Vec<(String, String)> =
+        fresh_statics(objects.iter().filter(|info| info.krate == tip_name))
+            .into_iter()
+            .map(|name| {
+                let shown = static_name(&objects, &name);
+                (name, shown)
+            })
+            .collect();
+
     // Every object of the replay keeps its own signatures, because an
     // address is relative to its own object: the same number names a
     // different function in each of them.
@@ -536,6 +581,42 @@ fn step_inner(
         Ok(())
     })?;
 
+    // A function whose closures changed in number renumbers the ones
+    // after the change, so a closure's name can now belong to another
+    // closure of the same shape; whatever names such a closure, its body
+    // or a function built for its type, stays out of the table.
+    // Only the replayed crates' own functions compare: a function of a
+    // crate the patch did not rebuild shows only the closures whose
+    // types reached the replayed code, never all of them.
+    let rebuilt: Vec<&str> = plan
+        .chain
+        .iter()
+        .filter(|step| step.tip || replayed.contains(&step.name))
+        .map(|step| step.name.as_str())
+        .collect();
+    let mut new_closures = crate::dwarf::ClosureIndices::new();
+    for object in &objects {
+        for (parent, numbers) in object.signatures.closures() {
+            new_closures
+                .entry(parent.clone())
+                .or_default()
+                .extend(numbers);
+        }
+    }
+    let old_closures = plan.signatures.closures();
+    let renumbered_parents: Vec<String> = new_closures
+        .iter()
+        .filter(|(parent, _)| {
+            parent
+                .split("::")
+                .next()
+                .is_some_and(|krate| rebuilt.contains(&krate))
+        })
+        .filter(|(parent, numbers)| old_closures.get(*parent) != Some(*numbers))
+        .map(|(parent, _)| parent.clone())
+        .collect();
+    let mut renumbered = 0;
+
     // Every function the patch rebuilt that the binary also has: a change
     // to its parameter types or its return type leaves it out of the table.
     let mut tabled: Vec<(String, u64)> = Vec::new();
@@ -561,7 +642,11 @@ fn step_inner(
         };
         match (old_signature, new_signature.as_deref()) {
             (Some(old_sig), Some(new_sig)) if old_sig == new_sig => {
-                tabled.push((name.clone(), old.address));
+                if names_a_closure_of(new_sig, &renumbered_parents) {
+                    renumbered += 1;
+                } else {
+                    tabled.push((name.clone(), old.address));
+                }
             }
             (Some(_), Some(_)) => changed.push((name.clone(), old.address)),
             _ => unverified += 1,
@@ -702,6 +787,8 @@ fn step_inner(
             entries,
             added,
             changed_signature: changed.len(),
+            renumbered,
+            fresh_statics: app_fresh,
             unverified,
             trampolines,
             absolutes,
@@ -860,6 +947,7 @@ fn read_object(path: &Path) -> Result<ObjectInfo, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(ObjectInfo {
         path: path.to_path_buf(),
+        krate: String::new(),
         symbols: Symbols::read(&bytes)?,
         signatures: Signatures::read(&bytes)?,
     })
@@ -956,3 +1044,128 @@ fn passthrough(thin: &[String]) -> Vec<String> {
     }
     out
 }
+
+/// Makes the statics `shared` imports of the objects among `infos` that
+/// define them, writing the changed objects into `dir`, so the stub's
+/// symbols at the running binary's copies answer every reference to them.
+///
+/// # Errors
+///
+/// Returns why an object could not be rewritten.
+fn share_statics(
+    infos: &mut [ObjectInfo],
+    shared: &std::collections::BTreeSet<String>,
+    dir: &Path,
+) -> Result<(), String> {
+    if shared.is_empty() {
+        return Ok(());
+    }
+    for info in infos {
+        let dir = dir.join(&info.krate);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let defines = shared
+            .iter()
+            .any(|name| info.symbols.get(name).is_some_and(|sym| sym.defined));
+        if !defines {
+            continue;
+        }
+        let Some(file_name) = info.path.file_name() else {
+            return Err(format!(
+                "{}: the object has no file name",
+                info.path.display()
+            ));
+        };
+        let out = dir.join(file_name);
+        crate::elf::import_statics(&info.path, shared, &out)?;
+        for name in shared {
+            if let Some(sym) = info.symbols.map.get_mut(name) {
+                sym.defined = false;
+            }
+        }
+        info.path = out;
+    }
+    Ok(())
+}
+
+/// The statics among `shared` whose type the replayed objects describe with
+/// the same layout as the running binary: a static whose type changed,
+/// even at the same size, holds the running app's data in the old layout,
+/// which the patched code would read in the new one.
+///
+/// # Errors
+///
+/// Returns why a type could not be serialized.
+fn same_static_types(
+    shared: std::collections::BTreeSet<String>,
+    infos: &mut [ObjectInfo],
+    binary: &mut Signatures,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut kept = std::collections::BTreeSet::new();
+    for name in shared {
+        let Some(running) = binary.static_type(&name)? else {
+            continue;
+        };
+        let mut replayed = None;
+        for info in infos.iter_mut() {
+            if let Some(found) = info.signatures.static_type(&name)? {
+                replayed = Some(found);
+                break;
+            }
+        }
+        if replayed.as_deref() == Some(running.as_str()) {
+            kept.insert(name);
+        }
+    }
+    Ok(kept)
+}
+
+/// The source name the objects' debug information gives the static
+/// `name`, or the symbol name when they give none.
+fn static_name(infos: &[ObjectInfo], name: &str) -> String {
+    infos
+        .iter()
+        .find_map(|info| info.signatures.static_name(name))
+        .unwrap_or_else(|| String::from(name))
+}
+
+/// The writable statics `infos` still define, whose state the patched
+/// code would not see: any symbol in a writable section, whatever its
+/// type, except the personality cell the ABI defines under `DW.ref.`,
+/// which the program never writes.
+fn fresh_statics<'a>(infos: impl IntoIterator<Item = &'a ObjectInfo>) -> Vec<String> {
+    let mut names: Vec<String> = infos
+        .into_iter()
+        .flat_map(|info| info.symbols.map.iter())
+        .filter(|(name, sym)| sym.defined && sym.writable && !name.starts_with("DW.ref."))
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Whether `signature` names a type the compiler made inside one of the
+/// functions `parents` names: a closure's or an async block's environment,
+/// `parent::{closure_env#N}`, or anything nested in one of them,
+/// `parent::{async_block#N}::…`, and not inside a function whose path
+/// merely ends like one of them.
+fn names_a_closure_of(signature: &str, parents: &[String]) -> bool {
+    parents.iter().any(|parent| {
+        let needle = format!("{parent}::{{");
+        signature.match_indices(&needle).any(|(at, _)| {
+            let before = &signature[..at];
+            // A path starts the signature, a part of it, or a type
+            // parameter's entry, and nothing that continues another path.
+            before.is_empty()
+                || before.ends_with("|T:")
+                || before
+                    .chars()
+                    .last()
+                    .is_some_and(|c| !(c.is_alphanumeric() || c == '_' || c == ':'))
+        })
+    })
+}
+
+#[cfg(test)]
+#[path = "patch_tests.rs"]
+mod tests;

@@ -648,6 +648,86 @@ fn omits_a_runner_whose_closure_type_changed_its_layout() {
 }
 
 #[test]
+fn names_the_app_statics_a_patch_starts_fresh_once() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let app = fixture("app-static");
+    // A private static of the app crate is reached by a 32-bit distance,
+    // so the patched code gets its own copy; the session says so, once.
+    edit(
+        &app,
+        &[(
+            "fn main() {",
+            "/// The value the app configured at startup.\nstatic CONFIG: std::sync::OnceLock<u32> = std::sync::OnceLock::new();\n\n/// Reads the configured value.\n#[inline(never)]\nfn configured() -> u32 {\n    CONFIG.get().copied().unwrap_or(0)\n}\n\nfn main() {\n    let _ = CONFIG.set(5);\n    let _ = configured();",
+        )],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit(&app, &[("\"alpha-1\"", "\"alpha-2\"")]);
+    let out = session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    session.wait(
+        "note: the patched code starts fresh copies",
+        1,
+        STEP_TIMEOUT,
+    );
+    assert!(
+        line_of(&out, "note: the patched code starts fresh copies").contains("CONFIG"),
+        "the note does not name the static:\n{out}"
+    );
+    edit(&app, &[("\"alpha-2\"", "\"alpha-3\"")]);
+    let out = session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    assert_eq!(
+        out.matches("note: the patched code starts fresh copies")
+            .count(),
+        1,
+        "the note came again for a static it already named:\n{out}"
+    );
+    session.quit();
+}
+
+#[test]
+fn omits_closures_an_inserted_closure_renumbered() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let app = fixture("closure-renumbered");
+    edit(
+        &app,
+        &[(
+            "fn main() {",
+            "/// Runs the closure behind an erased pointer.\n#[inline(never)]\nfn erased<F: Fn() -> u64>(env: *const ()) -> u64 {\n    // SAFETY: the fixture only hands its own closure of this type.\n    unsafe { (*env.cast::<F>())() }\n}\n\n/// Runs `f` through its erased runner.\nfn run_erased<F: Fn() -> u64>(f: &F) -> u64 {\n    erased::<F>(std::ptr::from_ref(f).cast())\n}\n\nfn main() {\n    let seed = 3_u64;\n    // FIRST\n    let read = move || seed + 1;\n    let _ = run_erased(&read);",
+        )],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    // An edit of a closure's body keeps every closure's number.
+    edit(&app, &[("seed + 1", "seed + 2")]);
+    let out = session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 1: applied");
+    assert!(
+        line.contains(" 0 omitted for renumbered closures"),
+        "a body edit left closures out: {line}"
+    );
+    // A closure of the same shape inserted before it takes its number, so
+    // what names the old number must stay out of the table.
+    edit(
+        &app,
+        &[(
+            "    // FIRST\n",
+            "    let other = move || seed * 7;\n    let _ = run_erased(&other);\n",
+        )],
+    );
+    let out = session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 2: applied");
+    assert!(
+        !line.contains(" 0 omitted for renumbered closures"),
+        "the renumbered closures were mapped: {line}"
+    );
+    session.quit();
+}
+
+#[test]
 fn omits_a_changed_signature_and_applies_the_rest() {
     require_linker();
     let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
@@ -1156,17 +1236,16 @@ fn refuses_a_thread_local_crate_and_keeps_running() {
 }
 
 #[test]
-fn refuses_a_writable_static_crate_and_keeps_running() {
+fn shares_a_librarys_public_static_with_the_running_app() {
     require_linker();
     let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
-    let ws = fixture_workspace("ws-writable-static");
+    let ws = fixture_workspace("ws-shared-static");
     let app = ws.join("app");
     let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
     fs::create_dir_all(&target).expect("the shared target could not be made");
-    // The library keeps a static the app writes once at startup, which a
-    // replayed library would hand the app a fresh zeroed copy of: the
-    // edit refuses, the app keeps running, and the counter keeps the
-    // value the app built.
+    // The library keeps a public static the app writes once at startup.
+    // Every reference to it goes through a full address, so the patched
+    // code reads the running app's copy, and the value the app built.
     edit_in(
         &ws,
         "ui/src/lib.rs",
@@ -1196,9 +1275,309 @@ fn refuses_a_writable_static_crate_and_keeps_running() {
     let mut session = Session::start(&app, &target);
     session.wait("app running as pid", 1, FAT_TIMEOUT);
     edit_in(&ws, "ui/src/lib.rs", &[("\"ui-1\"", "\"ui-2\"")]);
+    let out = session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    let line = out
+        .lines()
+        .find(|line| line.contains("fixture ui="))
+        .expect("the fixture printed its probes")
+        .to_owned();
+    assert!(
+        line.contains("runs=41 runs_hot=true"),
+        "the patched reader did not see the running app's static: {line}"
+    );
+    session.quit();
+}
+
+#[test]
+fn refuses_a_public_static_whose_type_changed_layout() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-static-layout");
+    let app = ws.join("app");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    fs::create_dir_all(&target).expect("the shared target could not be made");
+    // A public static whose type swaps two fields keeps its size, but the
+    // running app's data stands in the old layout: the patched code must
+    // not read it, so the edit refuses, naming the static.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+            "/// Two numbers the app keeps.\n#[repr(C)]\npub struct Pair {\n    /// The first.\n    pub first: u32,\n    /// The second.\n    pub second: u32,\n}\n\n/// The pair the app keeps since it started.\npub static PAIR: std::sync::Mutex<Pair> = std::sync::Mutex::new(Pair { first: 1, second: 2 });\n\n/// Reads the pair's first number.\n#[inline(never)]\npub fn first() -> u32 {\n    PAIR.lock().map(|pair| pair.first).unwrap_or(0)\n}\n\n#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+        )],
+    );
+    edit_in(
+        &ws,
+        "app/src/main.rs",
+        &[(
+            "    let bin_address = bin_only::tag as *const () as usize;",
+            "    let bin_address = bin_only::tag as *const () as usize;\n    println!(\"first={}\", ui::first());",
+        )],
+    );
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "    /// The first.\n    pub first: u32,\n    /// The second.\n    pub second: u32,",
+            "    /// The second.\n    pub second: u32,\n    /// The first.\n    pub first: u32,",
+        )],
+    );
     let out = session.wait("patch 1: not sent", 1, STEP_TIMEOUT);
     assert!(
-        out.contains("writable statics"),
+        out.contains("writable statics") && out.contains("PAIR"),
+        "the static whose layout changed was shared:\n{out}"
+    );
+    session.quit();
+}
+
+#[test]
+fn refuses_a_public_static_whose_element_type_changed_layout() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-static-element");
+    let app = ws.join("app");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    fs::create_dir_all(&target).expect("the shared target could not be made");
+    // A vector reaches its elements through an erased pointer, so only
+    // its element type tells that the running app's elements stand in the
+    // old layout: the edit refuses, naming the static.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+            "/// Two numbers the app keeps.\n#[repr(C)]\npub struct Pair {\n    /// The first.\n    pub first: u32,\n    /// The second.\n    pub second: u32,\n}\n\n/// The pair the app keeps since it started.\npub static PAIRS: std::sync::Mutex<Vec<Pair>> = std::sync::Mutex::new(Vec::new());\n\n/// Reads the pair's first number.\n#[inline(never)]\npub fn first() -> u32 {\n    PAIRS.lock().map(|pairs| pairs.first().map_or(0, |pair| pair.first)).unwrap_or(0)\n}\n\n#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+        )],
+    );
+    edit_in(
+        &ws,
+        "app/src/main.rs",
+        &[(
+            "    let bin_address = bin_only::tag as *const () as usize;",
+            "    let bin_address = bin_only::tag as *const () as usize;\n    println!(\"first={}\", ui::first());",
+        )],
+    );
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "    /// The first.\n    pub first: u32,\n    /// The second.\n    pub second: u32,",
+            "    /// The second.\n    pub second: u32,\n    /// The first.\n    pub first: u32,",
+        )],
+    );
+    let out = session.wait("patch 1: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        out.contains("writable statics") && out.contains("PAIRS"),
+        "the static whose layout changed was shared:\n{out}"
+    );
+    session.quit();
+}
+
+#[test]
+fn refuses_an_immutable_static_an_edit_makes_writable() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-static-mut");
+    let app = ws.join("app");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    fs::create_dir_all(&target).expect("the shared target could not be made");
+    // An immutable static sits in read-only memory in the running app, so
+    // an edit that makes it writable cannot share it: the edit refuses.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+            "/// A count the app reads.\npub static COUNT: u64 = 0;\n\n/// Reads the count.\n#[inline(never)]\npub fn count() -> u64 {\n    // SAFETY: the fixture's only thread reads a plain aligned word.\n    unsafe { core::ptr::read_volatile(&raw const COUNT) }\n}\n\n#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+        )],
+    );
+    edit_in(
+        &ws,
+        "app/src/main.rs",
+        &[(
+            "    let bin_address = bin_only::tag as *const () as usize;",
+            "    let bin_address = bin_only::tag as *const () as usize;\n    println!(\"count={}\", ui::count());",
+        )],
+    );
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[
+            (
+                "pub static COUNT: u64 = 0;",
+                "pub static mut COUNT: u64 = 0;",
+            ),
+            (
+                "    unsafe { core::ptr::read_volatile(&raw const COUNT) }",
+                "    unsafe {\n        core::ptr::write_volatile(&raw mut COUNT, 41);\n        core::ptr::read_volatile(&raw const COUNT)\n    }",
+            ),
+        ],
+    );
+    let out = session.wait("patch 1: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        out.contains("writable statics") && out.contains("COUNT"),
+        "the static the edit made writable was shared:\n{out}"
+    );
+    session.quit();
+}
+
+#[test]
+fn patches_an_edited_immutable_static() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-static-edit");
+    let app = ws.join("app");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    fs::create_dir_all(&target).expect("the shared target could not be made");
+    // An immutable public static carries the edit's new contents, so the
+    // patched code reads the new value and not the running app's old one.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+            "/// The label the library shows.\npub static LABEL: &str = \"ui-1\";\n\n#[inline(never)]\npub fn label() -> &'static str {\n    LABEL\n}",
+        )],
+    );
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit_in(&ws, "ui/src/lib.rs", &[("\"ui-1\"", "\"ui-2\"")]);
+    session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    session.wait("fixture ui=ui-2 ui_hot=true", 1, STEP_TIMEOUT);
+    session.quit();
+}
+
+#[test]
+fn refuses_a_writable_static_an_edit_adds_to_a_library() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-static-added");
+    let app = ws.join("app");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    fs::create_dir_all(&target).expect("the shared target could not be made");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    // A static the edit adds has no copy in the running app to share, and
+    // every later patch would carry a fresh one, resetting what the patched
+    // code kept in it: the edit asks for a restart.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+            "/// The calls counted since the patch.\npub static CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);\n\n#[inline(never)]\npub fn label() -> &'static str {\n    CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);\n    \"ui-2\"\n}",
+        )],
+    );
+    let out = session.wait("patch 1: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        out.contains("writable statics") && out.contains("CALLS"),
+        "the added static was not refused:\n{out}"
+    );
+    session.quit();
+}
+
+#[test]
+fn a_generic_method_used_anew_keeps_its_types_signature() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-generic-method");
+    let app = ws.join("app");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("ws-generic-method-target");
+    fs::create_dir_all(&target).expect("the target could not be made");
+    // One codegen unit keeps the method's declaration under its type in the
+    // same unit as the functions that take the type. A body edit that
+    // calls the method with a new type parameter adds that parameter
+    // under the type's declaration, which is no change of its layout.
+    let manifest = fs::read_to_string(ws.join("Cargo.toml")).expect("the manifest is read");
+    fs::write(
+        ws.join("Cargo.toml"),
+        format!("{manifest}\n[profile.dev]\ncodegen-units = 1\n"),
+    )
+    .expect("the manifest is written");
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+            "/// A counted value.\npub struct Counter {\n    /// The value.\n    pub value: u64,\n}\n\nimpl Counter {\n    /// The value plus the size of `T`.\n    #[inline(never)]\n    pub fn read<T>(&self) -> u64 {\n        self.value + std::mem::size_of::<T>() as u64\n    }\n}\n\n/// Reads the counter.\n#[inline(never)]\npub fn probe(counter: &Counter) -> u64 {\n    counter.value\n}\n\n#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+        )],
+    );
+    edit_in(
+        &ws,
+        "app/src/main.rs",
+        &[(
+            "    let bin_address = bin_only::tag as *const () as usize;",
+            "    let bin_address = bin_only::tag as *const () as usize;\n    println!(\"probe={}\", ui::probe(&ui::Counter { value: 41 }));",
+        )],
+    );
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[("    counter.value\n", "    counter.read::<u64>()\n")],
+    );
+    let out = session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 1: applied");
+    assert!(
+        line.contains(" 0 omitted for a changed signature"),
+        "the method's type parameter changed its type's signature: {line}"
+    );
+    session.quit();
+}
+
+#[test]
+fn refuses_a_librarys_private_writable_static() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-private-static");
+    let app = ws.join("app");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    fs::create_dir_all(&target).expect("the shared target could not be made");
+    // The library keeps a private static the app writes once at startup.
+    // The library's code reaches it by a 32-bit distance, which the
+    // running app's copy lies too far from, so a replay would hand the
+    // patched code a fresh zeroed copy: the edit refuses, naming it, the
+    // app keeps running, and the counter keeps the value the app built.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}",
+            "use std::sync::atomic::{AtomicU32, Ordering};\n\n/// The runs the app counted since it started, which a patch's\n/// fresh copy would reset.\nstatic RUNS: AtomicU32 = AtomicU32::new(0);\n\n/// Sets the counter the app starts from.\n#[inline(never)]\npub fn set_runs(value: u32) {\n    RUNS.store(value, Ordering::Relaxed);\n}\n\n#[inline(never)]\npub fn label() -> &'static str {\n    \"ui-1\"\n}\n\n/// Reads the counter, so the value the app built answers.\n#[inline(never)]\npub fn runs() -> u32 {\n    RUNS.load(Ordering::Relaxed)\n}",
+        )],
+    );
+    edit_in(
+        &ws,
+        "app/src/main.rs",
+        &[
+            (
+                "    let bin_address = bin_only::tag as *const () as usize;",
+                "    let bin_address = bin_only::tag as *const () as usize;\n    let runs_address = ui::runs as *const () as usize;\n    ui::set_runs(41);",
+            ),
+            (
+                "        let (bin_value, bin_hot) = through(table, bin_address);",
+                "        let (bin_value, bin_hot) = through(table, bin_address);\n        let (runs_value, runs_hot) = through_deep(table, runs_address);",
+            ),
+            (
+                "bin={bin_value} bin_hot={bin_hot}\"",
+                "bin={bin_value} bin_hot={bin_hot} runs={runs_value} runs_hot={runs_hot}\"",
+            ),
+        ],
+    );
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit_in(&ws, "ui/src/lib.rs", &[("\"ui-1\"", "\"ui-2\"")]);
+    let out = session.wait("patch 1: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        out.contains("writable statics") && out.contains("RUNS"),
         "the refusal names no writable static:\n{out}"
     );
     assert!(
@@ -1224,7 +1603,11 @@ fn refuses_a_writable_static_crate_and_keeps_running() {
 
 #[test]
 fn refuses_untyped_assembly_storage() {
-    refuses_assembly_storage(
+    // Storage assembly defines without a `.type` directive has no type the
+    // debug information describes, so nothing shows that the running
+    // app's data still fits the patched code, and it is not shared.
+    assembly_storage(
+        false,
         "ws-asm-storage",
         "\".section .data.ui_counter,\\\"aw\\\",@progbits\",\n    \".p2align 2\",\n    \".globl ui_counter\",\n    \"ui_counter:\",\n    \".long 0\",\n",
     );
@@ -1233,12 +1616,13 @@ fn refuses_untyped_assembly_storage() {
 #[test]
 fn refuses_common_assembly_storage() {
     // A common symbol names no section until the link places it.
-    refuses_assembly_storage("ws-asm-common", "\".comm ui_counter,4,4\",\n");
+    assembly_storage(false, "ws-asm-common", "\".comm ui_counter,4,4\",\n");
 }
 
 /// Defines `ui_counter` in `ui` through the assembly `directives` and
-/// checks that an edit of `ui` refuses for its writable state.
-fn refuses_assembly_storage(name: &str, directives: &str) {
+/// checks that an edit of `ui` patches when the storage is `shared` with
+/// the running app, and refuses for its writable state otherwise.
+fn assembly_storage(shared: bool, name: &str, directives: &str) {
     require_linker();
     let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
     let ws = fixture_workspace(name);
@@ -1268,11 +1652,15 @@ fn refuses_assembly_storage(name: &str, directives: &str) {
     let mut session = Session::start(&app, &target);
     session.wait("app running as pid", 1, FAT_TIMEOUT);
     edit_in(&ws, "ui/src/lib.rs", &[("\"ui-1\"", "\"ui-2\"")]);
-    let out = session.wait("patch 1: not sent", 1, STEP_TIMEOUT);
-    assert!(
-        out.contains("writable statics"),
-        "the assembly storage did not refuse:\n{out}"
-    );
+    if shared {
+        session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    } else {
+        let out = session.wait("patch 1: not sent", 1, STEP_TIMEOUT);
+        assert!(
+            out.contains("writable statics"),
+            "the assembly storage did not refuse:\n{out}"
+        );
+    }
     session.quit();
 }
 

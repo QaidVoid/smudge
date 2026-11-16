@@ -30,7 +30,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(100);
 
 /// The shape of the symbol cache, bumped when what it stores changes.
-const CACHE_SHAPE: u32 = 3;
+const CACHE_SHAPE: u32 = 4;
 
 /// The Unix socket path limit, which counts the terminating NUL.
 const SOCKET_PATH_LIMIT: usize = 108;
@@ -232,6 +232,10 @@ struct Session {
     /// because every patch must carry the library edits of the patches
     /// before it, and a restart of the app drops them.
     live: std::collections::BTreeSet<String>,
+    /// The app crate's statics the session has already said start fresh
+    /// in the patched code, by symbol name, so each is named once per
+    /// session.
+    told_fresh: std::collections::BTreeSet<String>,
     /// The crates whose edits a patch attempt took over without yet
     /// installing, because a failed or refused attempt must not forget
     /// them the way a forgotten scan would.
@@ -968,6 +972,7 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
         tip_root: source,
         tip_sources,
         live: std::collections::BTreeSet::new(),
+        told_fresh: std::collections::BTreeSet::new(),
         pending: std::collections::BTreeSet::new(),
     })
 }
@@ -2246,6 +2251,8 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
             entries,
             added,
             changed_signature,
+            renumbered,
+            fresh_statics,
             unverified,
             trampolines,
             absolutes,
@@ -2257,13 +2264,26 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
             let mut line = format!(
                 "patch {generation}: applied; compile {compile:?}, total {total:?}, \
                  {entries} entries, {added} new, {changed_signature} omitted for a \
-                 changed signature, {unverified} unverifiable, {trampolines} \
+                 changed signature, {renumbered} omitted for renumbered closures, \
+                 {unverified} unverifiable, {trampolines} \
                  trampolines, {absolutes} absolutes, {tls_copies} tls, {missing} missing"
             );
             if !replayed.is_empty() {
                 line.push_str(&format!(", replayed {}", replayed.join(", ")));
             }
             println!("{line}");
+            let untold: Vec<String> = fresh_statics
+                .into_iter()
+                .filter(|(symbol, _)| session.told_fresh.insert(symbol.clone()))
+                .map(|(_, shown)| shown)
+                .collect();
+            if !untold.is_empty() {
+                println!(
+                    "note: the patched code starts fresh copies of the app's statics {}, \
+                     which only a restart keeps the state of",
+                    untold.join(", ")
+                );
+            }
             session.live.extend(replayed);
             // What the replays learned about their sources holds for the
             // rest of the session, an app restart included: the app

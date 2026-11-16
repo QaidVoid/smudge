@@ -67,14 +67,7 @@ impl Symbols {
                 || symbol
                     .section_index()
                     .and_then(|index| file.section_by_index(index).ok())
-                    .is_some_and(|section| {
-                        matches!(
-                            section.kind(),
-                            object::SectionKind::Data
-                                | object::SectionKind::UninitializedData
-                                | object::SectionKind::Common
-                        )
-                    });
+                    .is_some_and(|section| holds_state(&section));
             map.insert(
                 String::from(name),
                 Sym {
@@ -190,6 +183,191 @@ pub(crate) fn tdata_template(bytes: &[u8]) -> TlsTemplate {
         alignment,
         relocations: found,
     }
+}
+
+/// The relocation types that reach a symbol through a full address the
+/// loader fills in, which can name the running binary's copy wherever it
+/// lies: the global offset table entry, in its plain and relaxable forms,
+/// and a 64-bit absolute address.
+const FULL_ADDRESS_RELOCATIONS: [u32; 4] = [
+    object::elf::R_X86_64_GOTPCREL,
+    object::elf::R_X86_64_GOTPCRELX,
+    object::elf::R_X86_64_REX_GOTPCRELX,
+    object::elf::R_X86_64_64,
+];
+
+/// The writable statics of one crate's objects that a patch can take from
+/// the running binary instead of carrying fresh copies of them.
+///
+/// A static qualifies when it is global and writable, the binary defines a
+/// static of that name and size, and every reference to it in `objects`
+/// reaches it
+/// through a full address: a reference through its section, or one that
+/// encodes a 32-bit distance, names a place in the patch library itself,
+/// which the binary's copy lies too far from.
+///
+/// # Errors
+///
+/// Returns the first object that could not be read or parsed.
+pub(crate) fn shared_statics(
+    objects: &[PathBuf],
+    binary: &Symbols,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut candidates: BTreeMap<String, (usize, object::SectionIndex)> = BTreeMap::new();
+    let mut files = Vec::with_capacity(objects.len());
+    for path in objects {
+        files.push(std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?);
+    }
+    for (at, bytes) in files.iter().enumerate() {
+        let file = object::File::parse(&bytes[..]).map_err(|e| e.to_string())?;
+        for symbol in file.symbols() {
+            let Ok(name) = symbol.name() else { continue };
+            if !symbol.is_global()
+                || symbol.is_undefined()
+                || name.starts_with("DW.ref.")
+                || !matches!(symbol.kind(), SymbolKind::Data | SymbolKind::Unknown)
+            {
+                continue;
+            }
+            let Some(section) = symbol.section_index() else {
+                continue;
+            };
+            // Only state is shared: an immutable static carries the edit's
+            // new contents, which the patched code must read.
+            let writable = file
+                .section_by_index(section)
+                .is_ok_and(|held| holds_state(&held));
+            if !writable {
+                continue;
+            }
+            let Some(running) = binary.get(name) else {
+                continue;
+            };
+            // The running copy must be state as well: an immutable
+            // static an edit made writable sits in read-only memory.
+            if !running.defined
+                || !running.writable
+                || matches!(running.kind, SymbolKind::Text | SymbolKind::Tls)
+                || running.size != symbol.size()
+            {
+                continue;
+            }
+            candidates.insert(String::from(name), (at, section));
+        }
+    }
+    let mut ruled_out = std::collections::BTreeSet::new();
+    for (at, bytes) in files.iter().enumerate() {
+        let file = object::File::parse(&bytes[..]).map_err(|e| e.to_string())?;
+        for section in file.sections() {
+            for (_, relocation) in section.relocations() {
+                let object::RelocationTarget::Symbol(index) = relocation.target() else {
+                    continue;
+                };
+                let Ok(target) = file.symbol_by_index(index) else {
+                    continue;
+                };
+                if target.kind() == SymbolKind::Section {
+                    // A reference through the section reaches whatever the
+                    // section holds at an offset, in this object alone.
+                    for (name, (owner, held)) in &candidates {
+                        if *owner == at && Some(*held) == target.section_index() {
+                            ruled_out.insert(name.clone());
+                        }
+                    }
+                    continue;
+                }
+                let Ok(name) = target.name() else { continue };
+                if !candidates.contains_key(name) {
+                    continue;
+                }
+                let full = matches!(
+                    relocation.flags(),
+                    object::RelocationFlags::Elf { r_type } if FULL_ADDRESS_RELOCATIONS.contains(&r_type)
+                );
+                if !full {
+                    ruled_out.insert(String::from(name));
+                }
+            }
+        }
+    }
+    Ok(candidates
+        .into_keys()
+        .filter(|name| !ruled_out.contains(name))
+        .collect())
+}
+
+/// Writes a copy of the object at `path` to `out` in which the statics
+/// `names` are imports, not definitions, so the stub's absolute symbols at
+/// the running binary's copies answer every reference to them.
+///
+/// Only the symbol entries change: their visibility, section index, value
+/// and size become those of an undefined symbol, and every relocation keeps
+/// naming
+/// the same entry. The names must be global symbols of the object, which
+/// already sit after its locals.
+///
+/// # Errors
+///
+/// Returns why the object could not be read, parsed or written.
+pub(crate) fn import_statics(
+    path: &Path,
+    names: &std::collections::BTreeSet<String>,
+    out: &Path,
+) -> Result<(), String> {
+    let mut bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut entries = Vec::new();
+    {
+        let file = object::File::parse(&bytes[..]).map_err(|e| e.to_string())?;
+        let Some(table) = file.section_by_name(".symtab") else {
+            return Err(format!(
+                "{}: the object has no symbol table",
+                path.display()
+            ));
+        };
+        let (start, _) = table
+            .file_range()
+            .ok_or_else(|| format!("{}: the symbol table has no file range", path.display()))?;
+        for symbol in file.symbols() {
+            if symbol.is_global()
+                && !symbol.is_undefined()
+                && symbol.name().is_ok_and(|name| names.contains(name))
+            {
+                // An ELF64 symbol entry is 24 bytes: name, info, other,
+                // section index, value and size.
+                entries.push(start as usize + symbol.index().0 * 24);
+            }
+        }
+    }
+    for entry in entries {
+        // From the visibility on: an import of default visibility, which
+        // every linker resolves to the stub's absolute definition through
+        // the global offset table.
+        let Some(fields) = bytes.get_mut(entry + 5..entry + 24) else {
+            return Err(format!(
+                "{}: a symbol entry lies past the file",
+                path.display()
+            ));
+        };
+        fields.fill(0);
+    }
+    record::write_bytes(&bytes, out)
+}
+
+/// Whether `section` holds data the running program writes: data and
+/// zero-initialized data, but not the data that is only writable while the
+/// loader relocates it, which immutable statics holding pointers sit in
+/// and which is read-only from then on.
+fn holds_state(section: &object::Section<'_, '_>) -> bool {
+    let relocated_only = section
+        .name()
+        .is_ok_and(|name| name.starts_with(".data.rel.ro"));
+    !relocated_only
+        && matches!(
+            section.kind(),
+            object::SectionKind::Data
+                | object::SectionKind::UninitializedData
+                | object::SectionKind::Common
+        )
 }
 
 /// Writes the `.rcgu.o` members of every rlib under `target` out to `dir`,

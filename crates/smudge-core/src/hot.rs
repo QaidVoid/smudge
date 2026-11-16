@@ -24,15 +24,19 @@
 //! closures of the function that defines it, and the types of its captures,
 //! so a capture that changes its type reports a mismatch, while an edit of
 //! the body alone keeps the id. A closure inserted before another one of
-//! the same function takes over the place, and with captures of the same
-//! types its id too: a closure the app holds since before the patch then
-//! runs the inserted closure's body. Remounting rebuilds the closures of
-//! the tree, so this reaches only the ones kept outside it, such as those
-//! of a configure step, a timer or a worker. Restarting the app clears it.
-//! The id does not cover the layout of a captured type whose own fields
-//! change: the patch builder must leave such a shim out, which it does by
-//! comparing the debug info of each shim's closure type, as the wire format
-//! requires of the signatures of every function it maps.
+//! the same function, or removed from before it, renumbers it, so another
+//! closure with captures of the same types can take over its id. The patch
+//! builder therefore leaves every closure of a function whose closures
+//! changed in number out of the table, and a closure the app holds since
+//! before the patch keeps its old body until a restart. Two closures that
+//! swap places, or a closure removed while another is added, keep the count
+//! and can still exchange bodies. Remounting rebuilds the closures of the
+//! tree, so either case reaches only the ones kept outside it, such as
+//! those of a configure step, a timer or a worker. The id does not cover
+//! the layout of a captured type whose own fields change: the patch builder
+//! must leave such a shim out, which it does by comparing the debug info of
+//! each shim's closure type, as the wire format requires of the signatures
+//! of every function it maps.
 //!
 //! [`TypeId`]: std::any::TypeId
 //!
