@@ -9,7 +9,7 @@
 //! let heading = label("Account").text_size(22.0).weight(FontWeight::SEMI_BOLD);
 //! ```
 
-pub use smudge_core::element::{Element, IntoElement, for_each, show};
+pub use smudge_core::element::{AnyElement, Element, IntoElement, for_each, show};
 pub use smudge_core::geometry::{Color, Corners, Point, Rect, Size};
 pub use smudge_core::reactive::prelude::*;
 pub use smudge_core::reactive::{Memo, Owner, ReadSignal, RenderEffect, RwSignal, WriteSignal};

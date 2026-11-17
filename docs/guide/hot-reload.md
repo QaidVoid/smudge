@@ -10,6 +10,73 @@ Install the subcommand once:
 cargo install cargo-smudge
 ```
 
+### A new app
+
+`cargo smudge new` makes a package that hot-reloads from the start, and `cargo smudge init` makes one in an existing directory. Both run cargo's own `new` or `init` and pass `--name`, `--vcs` and `--edition` through to it:
+
+```sh
+cargo smudge new counter
+cd counter
+cargo smudge dev
+```
+
+The package depends on the `smudge` version of the `cargo-smudge` that made it, pinned exactly, since the two speak to each other while the app runs. Its manifest declares a `hot-reload` feature, which `cargo smudge dev` turns on by itself, so `cargo run` and release builds carry nothing of hot reload. Its `src/main.rs` is a counter whose count lives in the state the window keeps:
+
+```rust
+//! A counter: a button and a label over a count that lives in the window's
+//! state, so `cargo smudge dev` keeps it across every hot patch.
+
+use smudge::prelude::*;
+
+/// What the window keeps while the app runs, across every hot patch.
+struct State {
+    /// How many times the button was pressed.
+    count: RwSignal<u32>,
+}
+
+/// Builds the window's contents from the state. Edit it while
+/// `cargo smudge dev` runs, and the window follows each save.
+fn view(state: &State) -> AnyElement {
+    let count = state.count.clone();
+    let shown = state.count.clone();
+    column()
+        .padding(px(24.0))
+        .gap(Size {
+            width: 0.0,
+            height: 12.0,
+        })
+        .align_items(Align::Center)
+        .child(
+            button("Count up")
+                .primary()
+                .on_press(move || count.update(|count| *count += 1)),
+        )
+        .child(label(move || format!("Clicked {} times", shown.get())))
+        .into_any()
+}
+
+fn main() -> Result<(), PlatformError> {
+    run_view(
+        WindowOptions {
+            title: String::from("Counter"),
+            size: Size {
+                width: 320.0,
+                height: 160.0,
+            },
+            ..WindowOptions::default()
+        },
+        State {
+            count: RwSignal::new(0),
+        },
+        view,
+    )
+}
+```
+
+`init` refuses to run where a `Cargo.toml`, a `src/main.rs` or a `main.rs` already exists, and names the file.
+
+### An existing app
+
 Give the app a feature that turns on Smudge's `hot-reload` feature, so release builds never carry it:
 
 ```toml
@@ -17,45 +84,21 @@ Give the app a feature that turns on Smudge's `hot-reload` feature, so release b
 hot-reload = ["smudge/hot-reload"]
 ```
 
-Start the app through `run_view`, or through `run_view_with` when it needs a configure step. The view is a plain function that builds the interface from the state:
+Start the app through `run_view`, as the template does, or through `run_view_with` when it needs a configure step. The view is a plain function that builds the interface from the state, and the state is the type the window keeps.
 
-```rust
-use smudge::core::element::AnyElement;
-use smudge::prelude::*;
+### Running it
 
-struct State {
-    count: RwSignal<u32>,
-}
-
-fn view(state: &State) -> AnyElement {
-    let count = state.count.clone();
-    let shown = state.count.clone();
-    column()
-        .child(button("Count up").on_press(move || count.update(|n| *n += 1)))
-        .child(label(move || format!("Clicked {} times", shown.get())))
-        .into_any()
-}
-
-fn main() -> Result<(), PlatformError> {
-    run_view(
-        WindowOptions::default(),
-        State { count: RwSignal::new(0) },
-        view,
-    )
-}
-```
-
-Then run it under the builder instead of `cargo run`:
+Run the app under the builder instead of `cargo run`:
 
 ```sh
-cargo smudge dev --features hot-reload
+cargo smudge dev
 ```
 
-It takes `--bin NAME` or `--example NAME`, `-p NAME`, `--features FEATURES` and `--profile NAME`, as cargo does. The profile must keep the debug information in the objects and link without LTO: `split-debuginfo` must be `"off"` and `lto` must be off, which the default `dev` profile already is. The builder links with the linker cargo is configured to use, or `cc`. While it runs, type `r` and Enter to rebuild and restart the app, and `q` and Enter to quit. Each save prints one line that says whether the patch was applied, how long it took, and what it left out.
+A package that declares a `hot-reload` feature gets it on. A package whose feature has another name passes it with `--features NAME`. The command also takes `--bin NAME` or `--example NAME`, `-p NAME` and `--profile NAME`, as cargo does. The profile must keep the debug information in the objects and link without LTO: `split-debuginfo` must be `"off"` and `lto` must be off, which the default `dev` profile already is. The builder links with the linker cargo is configured to use, or `cc`. While it runs, type `r` and Enter to rebuild and restart the app, and `q` and Enter to quit. Each save prints one line that says whether the patch was applied, how long it took, and what it left out.
 
 Without the feature, `run_view` and `run_view_with` are plain runs, and nothing of hot reload is compiled in. With the feature on but outside `cargo smudge dev`, the app runs as usual and never looks for a builder.
 
-The `hot` example of the `smudge` crate is a short tour. Run it with `cargo smudge dev --example hot -p smudge --features hot-reload`, then edit its helper, its handler and its timer, and type in its notes, while it runs.
+The `hot` example of the `smudge` crate is a short tour. Run it with `cargo smudge dev --example hot -p smudge`, then edit its helper, its handler and its timer, and type in its notes, while it runs.
 
 ## What a patch changes
 

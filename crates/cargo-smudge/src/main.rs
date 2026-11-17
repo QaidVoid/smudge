@@ -1,11 +1,12 @@
-//! The `cargo smudge` subcommand, which builds, runs and hot-patches a
-//! Smudge app.
+//! The `cargo smudge` subcommand: `new` and `init` make a Smudge app from
+//! the template, and `dev` builds, runs and hot-patches it.
 //!
-//! One executable plays three roles, chosen by how it is invoked. The
-//! driver behind `dev` runs cargo with this executable as the rustc
+//! Behind `dev`, one executable plays three roles, chosen by how it is
+//! invoked. The driver runs cargo with this executable as the rustc
 //! wrapper and the linker, so one build produces the original binary and
 //! the records every later patch replays. See the `driver` module for the
-//! session and the `patch` module for one patch step.
+//! session, the `patch` module for one patch step and the `scaffold`
+//! module for `new` and `init`.
 
 #![allow(clippy::print_stdout)]
 // A dev tool reports its progress on stdout, like cargo itself.
@@ -22,6 +23,7 @@ mod patch;
 mod record;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod roles;
+mod scaffold;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod stub;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -32,29 +34,52 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return linux_main(args);
+    if let Some(code) = roles::run(args.clone()) {
+        return code;
+    }
+    let command = subcommand(&args);
+    match scaffold::parse(command) {
+        Some(Ok(scaffold)) => return scaffold::run(&scaffold),
+        Some(Err(reason)) => {
+            eprintln!("cargo smudge: {reason}");
+            return usage();
+        }
+        None => {}
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return linux_main(command);
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    return unsupported_main(args);
+    return unsupported_main();
+}
+
+/// The command's own arguments, from the subcommand name on. Cargo hands
+/// its subcommands their own name first, so `cargo smudge dev` arrives as
+/// `smudge dev`, while a direct invocation of the binary arrives as `dev`
+/// alone.
+fn subcommand(args: &[String]) -> &[String] {
+    match args.first().map(String::as_str) {
+        Some("smudge") => &args[1..],
+        _ => args,
+    }
 }
 
 /// The command on x86-64 Linux, where the roles and the dev session run.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn linux_main(args: Vec<String>) -> ExitCode {
-    if let Some(code) = roles::run(args.clone()) {
-        return code;
-    }
-    match driver_command(&args) {
+fn linux_main(args: &[String]) -> ExitCode {
+    match driver_command(args) {
         Some(options) => driver::run(options),
         None => usage(),
     }
 }
 
-/// The command elsewhere: every role refuses, and names x86-64 Linux.
+/// The command elsewhere, where only `new` and `init` run: `dev` refuses,
+/// and names x86-64 Linux.
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-fn unsupported_main(_args: Vec<String>) -> ExitCode {
+fn unsupported_main() -> ExitCode {
     eprintln!(
-        "cargo smudge builds, runs and hot-patches Smudge apps on x86-64 \
-         Linux, which is the only platform this command supports"
+        "cargo smudge dev builds, runs and hot-patches Smudge apps on x86-64 \
+         Linux, which is the only platform it supports. The new and init \
+         commands work everywhere."
     );
     ExitCode::FAILURE
 }
@@ -63,14 +88,6 @@ fn unsupported_main(_args: Vec<String>) -> ExitCode {
 /// arguments are not a usable `dev` invocation.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn driver_command(args: &[String]) -> Option<driver::Options> {
-    // Cargo hands its subcommands their own name first, so `cargo smudge
-    // dev` arrives here as `smudge dev`, while a direct invocation of the
-    // binary arrives as `dev` alone.
-    let args = if args.first().map(String::as_str) == Some("smudge") {
-        &args[1..]
-    } else {
-        args
-    };
     if args.first().map(String::as_str) != Some("dev") {
         return None;
     }
@@ -100,12 +117,13 @@ fn driver_command(args: &[String]) -> Option<driver::Options> {
 }
 
 /// Reports how to use the command and answers failure.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: cargo smudge dev [--bin NAME | --example NAME] [-p NAME] \
+        "usage: cargo smudge new PATH [--name NAME] [--vcs VCS] [--edition YEAR]\n       \
+         cargo smudge init [PATH] [--name NAME] [--vcs VCS] [--edition YEAR]\n       \
+         cargo smudge dev [--bin NAME | --example NAME] [-p NAME] \
          [--features FEATURES] [--profile NAME]\n\
-         Type `r` to restart the app and `q` to quit."
+         While dev runs, type `r` to restart the app and `q` to quit."
     );
     ExitCode::FAILURE
 }

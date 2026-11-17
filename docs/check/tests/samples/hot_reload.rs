@@ -13,29 +13,8 @@
 #![allow(unused_imports)]
 
 
-use smudge::core::element::AnyElement;
-use smudge::prelude::*;
-
-struct State {
-    count: RwSignal<u32>,
-}
-
-fn view(state: &State) -> AnyElement {
-    let count = state.count.clone();
-    let shown = state.count.clone();
-    column()
-        .child(button("Count up").on_press(move || count.update(|n| *n += 1)))
-        .child(label(move || format!("Clicked {} times", shown.get())))
-        .into_any()
-}
-
-fn main() -> Result<(), PlatformError> {
-    run_view(
-        WindowOptions::default(),
-        State { count: RwSignal::new(0) },
-        view,
-    )
-}
+#[path = "../../../../crates/cargo-smudge/template/main.rs"]
+mod template;
 
 mod worker {
     use smudge::hot;

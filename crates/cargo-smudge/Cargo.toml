@@ -1,6 +1,6 @@
 [package]
 name = "cargo-smudge"
-description = "The cargo subcommand that builds, runs and hot-patches Smudge apps"
+description = "The cargo subcommand that makes, builds, runs and hot-patches Smudge apps"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

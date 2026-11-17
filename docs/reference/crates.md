@@ -12,7 +12,15 @@
 | [`smudge-gpu`](https://crates.io/crates/smudge-gpu) | The GPU renderer. | [docs.rs](https://docs.rs/smudge-gpu) |
 | [`smudge-platform`](https://crates.io/crates/smudge-platform) | Windows, input, presentation, renderer choice, and the web build. | [docs.rs](https://docs.rs/smudge-platform) |
 | [`smudge-a11y`](https://crates.io/crates/smudge-a11y) | The bridge from the widget tree's semantics to the platform accessibility APIs. | [docs.rs](https://docs.rs/smudge-a11y) |
-| [`cargo-smudge`](https://crates.io/crates/cargo-smudge) | The `cargo smudge` subcommand, which builds, runs and hot-patches Smudge apps. | [docs.rs](https://docs.rs/cargo-smudge) |
+| [`cargo-smudge`](https://crates.io/crates/cargo-smudge) | The `cargo smudge` subcommand: `new` and `init` make an app from the template, and `dev` builds, runs and hot-patches it. | [docs.rs](https://docs.rs/cargo-smudge) |
+
+## `cargo smudge`
+
+| Command | What it does |
+|---|---|
+| `cargo smudge new PATH` | Makes a package at `PATH` with `cargo new --bin`, adds `smudge` at the version of this `cargo-smudge`, pinned exactly, declares a `hot-reload` feature, and writes the counter template to `src/main.rs`. Takes `--name`, `--vcs` and `--edition`, which it passes to cargo. Works on every platform. |
+| `cargo smudge init [PATH]` | The same in an existing directory, the current one by default, with `cargo init --bin`. Refuses where a `Cargo.toml`, a `src/main.rs` or a `main.rs` already exists. |
+| `cargo smudge dev` | Builds the app, starts it and patches it on every save, as [Hot reload](/guide/hot-reload) describes. Turns on the package's own `hot-reload` feature when it declares one. Takes `--bin`, `--example`, `-p`, `--features` and `--profile`. Runs on x86-64 Linux. |
 
 The repository also holds three crates that are not published: `smudge-bench`, the benchmark tool, `smudge-test`, shared test helpers, and `docs-check`, which compiles the guide's samples.
 

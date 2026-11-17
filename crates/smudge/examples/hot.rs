@@ -1,8 +1,8 @@
 //! A short tour of hot reload: a window started through `run_view_with`,
 //! which `cargo smudge dev` patches.
 //!
-//! Run it with `cargo smudge dev --example hot -p smudge --features
-//! hot-reload`, then edit while it runs:
+//! Run it with `cargo smudge dev --example hot -p smudge`, which turns the
+//! crate's `hot-reload` feature on, then edit while it runs:
 //!
 //! - change the text `heading` returns, a view helper;
 //! - change what the button's handler adds to the count;
@@ -17,7 +17,6 @@
 
 use std::time::Duration;
 
-use smudge::core::element::AnyElement;
 use smudge::core::timer::every;
 use smudge::prelude::*;
 

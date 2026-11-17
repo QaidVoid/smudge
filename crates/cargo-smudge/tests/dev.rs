@@ -1192,6 +1192,32 @@ fn never_keeps_a_type_that_holds_a_trait_object() {
 }
 
 #[test]
+fn turns_on_the_packages_hot_reload_feature() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let app = fixture("own-feature");
+    // A package that declares the feature, as the template does, gets it
+    // on under a plain `cargo smudge dev`.
+    edit_in(
+        &app,
+        "Cargo.toml",
+        &[("[workspace]", "[features]\nhot-reload = []\n\n[workspace]")],
+    );
+    edit(
+        &app,
+        &[(
+            "fn main() {",
+            "fn main() {\n    println!(\"fixture hot-feature={}\", cfg!(feature = \"hot-reload\"));",
+        )],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    session.wait("fixture hot-feature=true", 1, STEP_TIMEOUT);
+    session.quit();
+}
+
+#[test]
 fn omits_a_changed_signature_and_applies_the_rest() {
     require_linker();
     let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());

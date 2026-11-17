@@ -1063,6 +1063,18 @@ fn cargo_args(app: &Path, options: &Options) -> Vec<String> {
         args.push(String::from("--features"));
         args.push(features.clone());
     }
+    // A package that declares its own `hot-reload` feature, as the
+    // template of `cargo smudge new` does, gets it on, so a plain
+    // `cargo smudge dev` patches it while `cargo run` stays without it.
+    let named = options
+        .features
+        .iter()
+        .flat_map(|features| features.split([',', ' ']))
+        .any(|feature| feature == HOT_RELOAD_FEATURE);
+    if !named && declares_hot_reload(app, options.package.as_deref()) {
+        args.push(String::from("--features"));
+        args.push(String::from(HOT_RELOAD_FEATURE));
+    }
     if let Some(profile) = &options.profile {
         args.push(String::from("--profile"));
         args.push(profile.clone());
@@ -1077,15 +1089,56 @@ fn cargo_args(app: &Path, options: &Options) -> Vec<String> {
     args
 }
 
+/// The feature a package declares to turn hot reload on, which `dev`
+/// turns on by itself.
+const HOT_RELOAD_FEATURE: &str = "hot-reload";
+
+/// Whether the package the request names declares a feature named
+/// [`HOT_RELOAD_FEATURE`].
+fn declares_hot_reload(app: &Path, selected: Option<&str>) -> bool {
+    let Some(metadata) = workspace_metadata(app) else {
+        return false;
+    };
+    selected_package(app, &metadata, selected)
+        .and_then(|package| package.get("features"))
+        .and_then(|features| features.as_object())
+        .is_some_and(|features| features.contains_key(HOT_RELOAD_FEATURE))
+}
+
 /// The one bin target of the package the request names, from cargo's
-/// own answer about the workspace, when it has exactly one: the
-/// package named in `selected`, or the nearest package manifest the
-/// app directory or an ancestor of it carries, which is the package
-/// cargo itself answers for from where the session runs. The selection
-/// may be a package specification with a version, which names the same
-/// package as its name alone.
+/// own answer about the workspace, when it has exactly one.
 fn default_bin(app: &Path, selected: Option<&str>) -> Option<String> {
     let metadata = workspace_metadata(app)?;
+    let package = selected_package(app, &metadata, selected)?;
+    let targets = package.get("targets")?.as_array()?;
+    let bins: Vec<&str> = targets
+        .iter()
+        .filter(|target| {
+            target
+                .get("kind")
+                .and_then(|kind| kind.as_array())
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("bin")))
+        })
+        .filter_map(|target| target.get("name").and_then(|name| name.as_str()))
+        .collect();
+    if bins.len() == 1 {
+        bins.first().map(|name| String::from(*name))
+    } else {
+        None
+    }
+}
+
+/// The package the request names, in cargo's answer `metadata` about the
+/// workspace: the package named in `selected`, or the nearest package
+/// manifest the app directory or an ancestor of it carries, which is the
+/// package cargo itself answers for from where the session runs. The
+/// selection may be a package specification with a version, which names
+/// the same package as its name alone.
+fn selected_package<'a>(
+    app: &Path,
+    metadata: &'a serde_json::Value,
+    selected: Option<&str>,
+) -> Option<&'a serde_json::Value> {
     let selected_name = selected.map(package_spec_name);
     let packages = metadata.get("packages")?.as_array()?;
     let package = if let Some(name) = selected_name {
@@ -1119,22 +1172,7 @@ fn default_bin(app: &Path, selected: Option<&str>) -> Option<String> {
             }
         }
     };
-    let targets = package.get("targets")?.as_array()?;
-    let bins: Vec<&str> = targets
-        .iter()
-        .filter(|target| {
-            target
-                .get("kind")
-                .and_then(|kind| kind.as_array())
-                .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("bin")))
-        })
-        .filter_map(|target| target.get("name").and_then(|name| name.as_str()))
-        .collect();
-    if bins.len() == 1 {
-        bins.first().map(|name| String::from(*name))
-    } else {
-        None
-    }
+    Some(package)
 }
 
 /// The package name a `-p` specification carries, without a version

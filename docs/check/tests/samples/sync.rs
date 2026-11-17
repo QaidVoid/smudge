@@ -29,7 +29,12 @@ const PAGES: &[(&str, &str, &str)] = &[
     (
         "docs/guide/hot-reload.md",
         include_str!("../../../guide/hot-reload.md"),
-        include_str!("hot_reload.rs"),
+        // The page's first sample is the template `cargo smudge new`
+        // writes, which the module compiles from the template itself.
+        concat!(
+            include_str!("hot_reload.rs"),
+            include_str!("../../../../crates/cargo-smudge/template/main.rs")
+        ),
     ),
     (
         "docs/guide/layout.md",
