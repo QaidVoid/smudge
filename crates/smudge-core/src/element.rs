@@ -1109,6 +1109,56 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Runs `handler` with the pointer's position relative to the node while a
+    /// primary press that a node took is held, and the node is the deepest one
+    /// under the pointer that sets this handler.
+    ///
+    /// It runs when the press begins, before the pressed node's
+    /// [`on_pointer_down`](Self::on_pointer_down), on every move while the
+    /// press is held, before the pressed node's
+    /// [`on_pointer_move`](Self::on_pointer_move), and again when a frame
+    /// moves content under a pointer that stays still, as a scroll does.
+    /// When nothing that sets it lies under the pointer, as when a drag left
+    /// the scroll view it began in, the pointer is moved into the visible area
+    /// the press began over first, so the content at that area's edge hears
+    /// it. That area is the visible part of the nearest scroll container
+    /// around where the press began, inside its border, as it is when the
+    /// handler runs. A delivery that would repeat the last one, to the same
+    /// node at the same position, is skipped. Setting it does not make the
+    /// node take presses or hover: a paragraph uses it to tell which
+    /// character a drag that another node owns is over.
+    pub fn on_drag_over(mut self, handler: impl FnMut(Point) + 'static) -> Self {
+        self.handlers.on_drag_over = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
+    /// Runs `handler` while a primary press that a node took is held, when
+    /// the press began over this node or one of its descendants inside its
+    /// rectangle, and once more when the press ends.
+    ///
+    /// Each move arrives as [`Drag::Moved`](crate::input::Drag::Moved) with
+    /// the position relative to the top left of the node's rectangle, which
+    /// lies outside the node when the pointer left it. The observers hear a
+    /// move deepest first, before the pressed node's
+    /// [`on_pointer_move`](Self::on_pointer_move), and one that returns
+    /// [`Handled::Yes`] keeps it from the ones around it, which hear
+    /// [`Drag::Taken`](crate::input::Drag::Taken) instead. A disabled or
+    /// hidden observer skips the moves. The release, or a press taken away,
+    /// arrives as
+    /// [`Drag::Ended`](crate::input::Drag::Ended) at every observer that
+    /// still exists, even one disabled or hidden meanwhile, and even when the
+    /// node that took the press went away. Setting it does not make the node
+    /// take presses or hover: a scroll view uses it to scroll while a drag
+    /// that began inside it is held past its edge, and the innermost view
+    /// that can still scroll that way takes the move.
+    pub fn on_drag(
+        mut self,
+        handler: impl FnMut(crate::input::Drag) -> crate::input::Handled + 'static,
+    ) -> Self {
+        self.handlers.on_drag = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
     /// Limits where the node responds to the pointer to the points `region`
     /// answers `true` for.
     ///

@@ -126,6 +126,11 @@ impl WidgetTree {
                 // that grows the content never shows the end out of view. The
                 // painted heights the bindings read are one frame old.
                 self.resolve_follow();
+                // A held drag hears the content that moved under the pointer,
+                // once the pins and the follow pin put it where it shows.
+                if rects_changed {
+                    self.deliver_drag_over();
+                }
                 true
             }
             None => false,
@@ -234,6 +239,7 @@ impl WidgetTree {
             if self.pointer_inside && self.pressed.is_none() {
                 self.refresh_hover();
             }
+            self.deliver_drag_over();
         }
     }
 
@@ -634,6 +640,14 @@ impl WidgetTree {
             .layout(node.taffy)
             .expect("every node has a live layout node");
         inset(node.paint_rect, layout.border)
+    }
+
+    /// Returns the area the children of `id` show in, in window
+    /// coordinates: its clip, cut to the inside of its border when it clips
+    /// its children. A stale id answers `None`.
+    pub(super) fn children_clip(&self, id: WidgetId) -> Option<Rect> {
+        self.nodes.get(id)?;
+        Some(self.child_frame(id).clip)
     }
 
     /// Returns the origin, the clip and the shifts the walk gives the

@@ -144,6 +144,21 @@ pub enum Key {
     Other,
 }
 
+/// One step of a drag that a node hears through
+/// [`Element::on_drag`](crate::element::Element::on_drag).
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum Drag {
+    /// The pointer moved while the press is held, to this position relative
+    /// to the top left of the node's rectangle. It can lie outside the node.
+    Moved(Point),
+    /// The press ended, released or taken away, so the drag is over.
+    Ended,
+    /// The pointer moved, and an observer inside this node took the move, so
+    /// this one should stop whatever the drag had it doing.
+    Taken,
+}
+
 /// Whether a key event was taken by a handler.
 ///
 /// A key handler returns this to decide whether the event keeps bubbling to

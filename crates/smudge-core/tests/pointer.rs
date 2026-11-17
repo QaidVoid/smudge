@@ -8,9 +8,9 @@ use std::rc::Rc;
 
 use smudge_core::element::{IntoElement, show};
 use smudge_core::geometry::{Color, Point};
-use smudge_core::input::{Handled, InputEvent, PointerButton};
+use smudge_core::input::{Drag, Handled, InputEvent, PointerButton};
 use smudge_core::reactive::{self, prelude::*};
-use smudge_core::style::px;
+use smudge_core::style::{Overflow, px};
 use smudge_core::widget::panel;
 use smudge_core::window::Cursor;
 use smudge_test::Harness;
@@ -943,5 +943,466 @@ fn a_node_shows_its_cursor_only_inside_its_region() {
         harness.app().cursor(),
         Cursor::Text,
         "outside the region the parent's cursor shows"
+    );
+}
+
+/// A log of the drag-over positions a node heard, by the node's name.
+type DragLog = Rc<RefCell<Vec<(&'static str, Point)>>>;
+
+/// A handler that logs the drag-over positions of the node named `name`.
+fn drag_over_log(log: &DragLog, name: &'static str) -> impl FnMut(Point) + 'static {
+    let log = Rc::clone(log);
+    move |at| log.borrow_mut().push((name, at))
+}
+
+#[test]
+fn drag_over_reaches_the_node_under_the_pointer_while_another_holds_the_press() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let (presses, on_press) = press_counter();
+    let first = drag_over_log(&log, "first");
+    let second = drag_over_log(&log, "second");
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_press(on_press)
+                .child(panel().width(px(80.0)).height(px(20.0)).on_drag_over(first))
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(second),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.move_to(Point { x: 10.0, y: 5.0 });
+    assert!(log.borrow().is_empty(), "no drag without a press");
+    harness.button_down(Point { x: 10.0, y: 5.0 });
+    harness.move_to(Point { x: 12.0, y: 25.0 });
+    harness.button_up(Point { x: 12.0, y: 25.0 });
+    harness.move_to(Point { x: 14.0, y: 5.0 });
+
+    assert_eq!(
+        log.borrow().as_slice(),
+        [
+            ("first", Point { x: 10.0, y: 5.0 }),
+            ("second", Point { x: 12.0, y: 5.0 }),
+        ],
+        "the press and the move reach the node under the pointer, and nothing after the release"
+    );
+    assert_eq!(presses.get(), 1, "the parent still took the press");
+}
+
+#[test]
+fn a_drag_past_a_clipped_area_reaches_the_content_at_its_edge() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let top = drag_over_log(&log, "top");
+    let bottom = drag_over_log(&log, "bottom");
+    let mut harness = Harness::new(100.0, 100.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(100.0))
+                .on_press(|| {})
+                .child(panel().width(px(80.0)).height(px(30.0)))
+                .child(
+                    panel()
+                        .column()
+                        .width(px(80.0))
+                        .height(px(40.0))
+                        .overflow(Overflow::Clip)
+                        .child(panel().width(px(80.0)).height(px(20.0)).on_drag_over(top))
+                        .child(
+                            panel()
+                                .width(px(80.0))
+                                .height(px(20.0))
+                                .on_drag_over(bottom),
+                        ),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 35.0 });
+    // Above the clipped area, and below it, where no listener lies.
+    harness.move_to(Point { x: 10.0, y: 5.0 });
+    harness.move_to(Point { x: 10.0, y: 90.0 });
+    harness.button_up(Point { x: 10.0, y: 90.0 });
+
+    let log = log.borrow();
+    assert_eq!(log[0], ("top", Point { x: 10.0, y: 5.0 }), "the press");
+    assert_eq!(
+        log[1],
+        ("top", Point { x: 10.0, y: 0.0 }),
+        "above: the top edge"
+    );
+    assert_eq!(log[2].0, "bottom", "below: the bottom edge");
+    assert!(
+        (log[2].1.y - 19.5).abs() < 0.01,
+        "below lands a hair inside the bottom edge, not {:?}",
+        log[2].1
+    );
+}
+
+#[test]
+fn a_drag_observer_hears_moves_outside_it_and_the_end() {
+    let steps: Rc<RefCell<Vec<Drag>>> = Rc::new(RefCell::new(Vec::new()));
+    let outside: Rc<RefCell<Vec<Drag>>> = Rc::new(RefCell::new(Vec::new()));
+    let observer = Rc::clone(&steps);
+    let other = Rc::clone(&outside);
+    let mut harness = Harness::new(100.0, 100.0, 1.0, move || {
+        let observer = Rc::clone(&observer);
+        let other = Rc::clone(&other);
+        scene(
+            panel()
+                .column()
+                .child(
+                    panel()
+                        .column()
+                        .width(px(60.0))
+                        .height(px(40.0))
+                        .on_drag(move |step| {
+                            observer.borrow_mut().push(step);
+                            Handled::No
+                        })
+                        .child(panel().width(px(60.0)).height(px(20.0)).on_press(|| {})),
+                )
+                .child(
+                    panel()
+                        .width(px(60.0))
+                        .height(px(40.0))
+                        .on_drag(move |step| {
+                            other.borrow_mut().push(step);
+                            Handled::No
+                        }),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 10.0 });
+    harness.move_to(Point { x: 10.0, y: 70.0 });
+    harness.button_up(Point { x: 10.0, y: 70.0 });
+
+    assert_eq!(
+        steps.borrow().as_slice(),
+        [Drag::Moved(Point { x: 10.0, y: 70.0 }), Drag::Ended],
+        "the drag began inside the observer, which hears it past its edge"
+    );
+    assert!(
+        outside.borrow().is_empty(),
+        "the drag began outside the other node"
+    );
+}
+
+#[test]
+fn drag_over_follows_content_that_moves_under_a_still_pointer() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let first = drag_over_log(&log, "first");
+    let second = drag_over_log(&log, "second");
+    let gap = reactive::RwSignal::new(0.0f32);
+    let bound = gap.clone();
+    let mut harness = Harness::new(100.0, 100.0, 1.0, move || {
+        let bound = bound.clone();
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(100.0))
+                .on_press(|| {})
+                .child(panel().width(px(80.0)).height(move || px(bound.get())))
+                .child(panel().width(px(80.0)).height(px(20.0)).on_drag_over(first))
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(second),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 25.0 });
+    assert_eq!(log.borrow().last().map(|entry| entry.0), Some("second"));
+    // The rows move down under the still pointer, so the first row is under
+    // it now.
+    gap.set(20.0);
+    harness.frame();
+
+    assert_eq!(
+        log.borrow().last(),
+        Some(&("first", Point { x: 10.0, y: 5.0 })),
+        "the moved content heard the drag without a pointer move"
+    );
+    harness.button_up(Point { x: 10.0, y: 25.0 });
+}
+
+/// A log of the drag events the nodes of a test heard, in order.
+type EventLog = Rc<RefCell<Vec<String>>>;
+
+/// A drag observer that logs its steps under `name` and answers `answer`.
+fn drag_logger(
+    log: &EventLog,
+    name: &'static str,
+    answer: Handled,
+) -> impl FnMut(Drag) -> Handled + 'static {
+    let log = Rc::clone(log);
+    move |step| {
+        let entry = match step {
+            Drag::Moved(_) => format!("{name} moved"),
+            Drag::Taken => format!("{name} taken"),
+            _ => format!("{name} ended"),
+        };
+        log.borrow_mut().push(entry);
+        answer
+    }
+}
+
+#[test]
+fn drag_handlers_run_before_the_pressed_node_hears_the_pointer() {
+    let log: EventLog = Rc::new(RefCell::new(Vec::new()));
+    let (over, observer, down, moved) = (
+        Rc::clone(&log),
+        drag_logger(&log, "observer", Handled::No),
+        Rc::clone(&log),
+        Rc::clone(&log),
+    );
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        let over = Rc::clone(&over);
+        let down = Rc::clone(&down);
+        let moved = Rc::clone(&moved);
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_drag(observer)
+                .on_pointer_down(move |_| down.borrow_mut().push(String::from("down")))
+                .on_pointer_move(move |_| moved.borrow_mut().push(String::from("move")))
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(move |_| over.borrow_mut().push(String::from("over"))),
+                ),
+        )
+    });
+    harness.frame();
+    harness.button_down(Point { x: 10.0, y: 5.0 });
+    harness.move_to(Point { x: 12.0, y: 6.0 });
+    harness.button_up(Point { x: 12.0, y: 6.0 });
+
+    assert_eq!(
+        log.borrow().as_slice(),
+        // The harness moves the pointer to the press before pressing, which
+        // the node hears as a plain move with no drag yet.
+        [
+            "move",
+            "over",
+            "down",
+            "over",
+            "observer moved",
+            "move",
+            "observer ended"
+        ],
+    );
+}
+
+#[test]
+fn an_inner_observer_that_takes_a_move_keeps_it_from_the_outer_one() {
+    let log: EventLog = Rc::new(RefCell::new(Vec::new()));
+    let outer = drag_logger(&log, "outer", Handled::No);
+    let inner = drag_logger(&log, "inner", Handled::Yes);
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_press(|| {})
+                .on_drag(outer)
+                .child(panel().width(px(80.0)).height(px(20.0)).on_drag(inner)),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 5.0 });
+    harness.move_to(Point { x: 10.0, y: 50.0 });
+    harness.button_up(Point { x: 10.0, y: 50.0 });
+
+    assert_eq!(
+        log.borrow().as_slice(),
+        ["inner moved", "outer taken", "inner ended", "outer ended"],
+        "the inner observer took the move, the outer one heard that, and both heard the end"
+    );
+}
+
+#[test]
+fn a_drag_ends_for_its_observers_however_the_press_goes() {
+    // The press is taken away, a second press replaces it, the node that
+    // took it goes away, or an observer hides: each observer still hears the
+    // end once.
+    for case in ["release_press", "replaced", "removed", "hidden"] {
+        let log: EventLog = Rc::new(RefCell::new(Vec::new()));
+        let observer = drag_logger(&log, "observer", Handled::No);
+        let shown = reactive::RwSignal::new(true);
+        let hidden = reactive::RwSignal::new(false);
+        let (child_shown, view_hidden) = (shown.clone(), hidden.clone());
+        let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+            let child_shown = child_shown.clone();
+            let view_hidden = view_hidden.clone();
+            scene(
+                panel()
+                    .column()
+                    .width(px(80.0))
+                    .height(px(60.0))
+                    .hidden(move || view_hidden.get())
+                    .on_drag(observer)
+                    .child(show(
+                        move || child_shown.get(),
+                        || panel().width(px(80.0)).height(px(20.0)).on_press(|| {}),
+                    )),
+            )
+        });
+        harness.frame();
+        harness.button_down(Point { x: 10.0, y: 5.0 });
+        match case {
+            "release_press" => harness.app().release_press(),
+            "replaced" => harness.button_down(Point { x: 10.0, y: 6.0 }),
+            "removed" => {
+                shown.set(false);
+                harness.frame();
+                harness.button_up(Point { x: 10.0, y: 5.0 });
+            }
+            _ => {
+                hidden.set(true);
+                harness.frame();
+                harness.button_up(Point { x: 10.0, y: 5.0 });
+            }
+        }
+        assert_eq!(
+            log.borrow()
+                .iter()
+                .filter(|entry| *entry == "observer ended")
+                .count(),
+            1,
+            "{case}: the observer heard the end once, in {:?}",
+            log.borrow()
+        );
+    }
+}
+
+#[test]
+fn a_disabled_drag_over_listener_passes_the_drag_to_its_parent() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let parent = drag_over_log(&log, "parent");
+    let child = drag_over_log(&log, "child");
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_press(|| {})
+                .on_drag_over(parent)
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .disabled(true)
+                        .on_drag_over(child),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 5.0 });
+    harness.button_up(Point { x: 10.0, y: 5.0 });
+
+    assert_eq!(log.borrow().first().map(|entry| entry.0), Some("parent"));
+}
+
+#[test]
+fn a_drag_from_a_clipped_block_past_a_scroll_container_reaches_its_edge_row() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let block = drag_over_log(&log, "block");
+    let edge = drag_over_log(&log, "edge");
+    let mut harness = Harness::new(100.0, 200.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(200.0))
+                .on_press(|| {})
+                .child(
+                    panel()
+                        .column()
+                        .width(px(80.0))
+                        .height(px(100.0))
+                        .overflow(Overflow::Scroll)
+                        .child(
+                            panel()
+                                .width(px(80.0))
+                                .height(px(40.0))
+                                .overflow(Overflow::Clip)
+                                .on_drag_over(block),
+                        )
+                        .child(panel().width(px(80.0)).height(px(40.0)))
+                        .child(panel().width(px(80.0)).height(px(40.0)).on_drag_over(edge)),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 10.0 });
+    harness.move_to(Point { x: 10.0, y: 180.0 });
+    harness.button_up(Point { x: 10.0, y: 180.0 });
+
+    assert_eq!(
+        log.borrow().last().map(|entry| entry.0),
+        Some("edge"),
+        "the drag past the scroll container reached the row at its edge, not the block's"
+    );
+}
+
+#[test]
+fn a_drag_past_a_bordered_scroll_container_reaches_its_edge_row() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let first = drag_over_log(&log, "first");
+    let last = drag_over_log(&log, "last");
+    let mut harness = Harness::new(100.0, 200.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(200.0))
+                .on_press(|| {})
+                .child(
+                    panel()
+                        .column()
+                        .width(px(80.0))
+                        .height(px(84.0))
+                        .border(2.0)
+                        .overflow(Overflow::Scroll)
+                        .child(panel().width(px(76.0)).height(px(40.0)).on_drag_over(first))
+                        .child(panel().width(px(76.0)).height(px(40.0)).on_drag_over(last)),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 10.0 });
+    harness.move_to(Point { x: 10.0, y: 150.0 });
+    harness.button_up(Point { x: 10.0, y: 150.0 });
+
+    assert_eq!(
+        log.borrow().last().map(|entry| entry.0),
+        Some("last"),
+        "the drag below the bordered container reached its last row inside the border"
     );
 }

@@ -299,6 +299,8 @@ pub(crate) struct WidgetTree {
     pointer_inside: bool,
     /// The node a primary press captured, while the button is held.
     pressed: Option<WidgetId>,
+    /// The drag the held press makes, while it is held.
+    drag: Option<interaction::DragState>,
     /// Whether a press was released without its release, so a primary
     /// release that arrives with no press held belongs to that press and
     /// reaches no handler. The next primary press clears it.
@@ -366,6 +368,7 @@ impl WidgetTree {
             pointer: Point::default(),
             pointer_inside: false,
             pressed: None,
+            drag: None,
             released_early: false,
             focused: None,
             stale_focus: None,
