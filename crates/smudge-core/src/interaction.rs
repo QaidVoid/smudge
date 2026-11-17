@@ -113,6 +113,10 @@ pub(crate) struct Handlers {
     pub(crate) on_ime_preedit: Option<PreeditHandler>,
     /// Runs when the node gains or loses the keyboard focus.
     pub(crate) on_focus: Option<Box<dyn FnMut(bool)>>,
+    /// Answers whether the node responds to the pointer at a point relative
+    /// to its rectangle. Where it answers `false`, hit testing passes the
+    /// node by as if it had no handlers.
+    pub(crate) responds_at: Option<Box<dyn Fn(Point) -> bool>>,
     /// Runs with the node's new scroll offset when the tree scrolled the node
     /// to bring the focused node into view. Its presence is what lets the
     /// tree scroll the node for that, and it takes no part in hit testing.
@@ -121,6 +125,19 @@ pub(crate) struct Handlers {
     /// [`on_press`](Self::on_press) handler, which is how a button fires from
     /// the keyboard.
     pub(crate) activate_on_keys: bool,
+}
+
+/// Returns whether `position` lies in the region where `node` responds to
+/// the pointer, which is everywhere unless it set
+/// [`responds_at`](Handlers::responds_at).
+fn in_region(node: &super::Node, position: Point) -> bool {
+    node.handlers.responds_at.as_ref().is_none_or(|region| {
+        let origin = node.rect.origin();
+        region(Point {
+            x: position.x - origin.x,
+            y: position.y - origin.y,
+        })
+    })
 }
 
 impl Handlers {
@@ -372,10 +389,12 @@ impl WidgetTree {
     ///
     /// The walk starts at the deepest node the pointer hits, not at the hover
     /// target, so a node that sets only a cursor shows it without becoming a
-    /// target. While a press is held, the walk starts there only when that
-    /// node lies inside the captured node, and at the captured node
-    /// otherwise, because hover stays with the capture during a drag. A
-    /// pointer outside the window shows the default, unless a press is held.
+    /// target. A node whose [`responds_at`](Handlers::responds_at) region
+    /// leaves the pointer out shows no cursor of its own there. While a
+    /// press is held, the walk starts there only when that node lies inside
+    /// the captured node, and at the captured node otherwise, because hover
+    /// stays with the capture during a drag. A pointer outside the window
+    /// shows the default, unless a press is held.
     pub(crate) fn cursor(&self) -> crate::window::Cursor {
         let hit = if self.pointer_inside {
             self.root.and_then(|root| self.hit(root, self.pointer))
@@ -395,6 +414,7 @@ impl WidgetTree {
             };
             if !node.interaction.has(Interaction::DISABLED)
                 && let Some(cursor) = node.cursor
+                && in_region(node, self.pointer)
             {
                 return cursor;
             }
@@ -448,7 +468,7 @@ impl WidgetTree {
     fn target(&self, position: Point) -> Option<WidgetId> {
         let root = self.root?;
         let mut id = self.hit(root, position)?;
-        while !self.can_respond(id) {
+        while !self.can_respond_at(id, position) {
             id = self.nodes.get(id)?.parent?;
         }
         let disabled = self.nodes.get(id)?.interaction.has(Interaction::DISABLED);
@@ -466,7 +486,7 @@ impl WidgetTree {
         let mut id = self.hit(root, position)?;
         loop {
             let node = self.nodes.get(id)?;
-            if self.can_respond(id) && !node.interaction.has(Interaction::DISABLED) {
+            if self.can_respond_at(id, position) && !node.interaction.has(Interaction::DISABLED) {
                 return Some(id);
             }
             id = node.parent?;
@@ -486,6 +506,18 @@ impl WidgetTree {
                 .variants
                 .as_ref()
                 .is_some_and(|variants| !variants.is_empty())
+    }
+
+    /// Returns whether a press or hover at `position` can land on the node:
+    /// it can respond, and its [`responds_at`](Handlers::responds_at) region,
+    /// when it sets one, holds the point.
+    fn can_respond_at(&self, id: WidgetId, position: Point) -> bool {
+        if !self.can_respond(id) {
+            return false;
+        }
+        self.nodes
+            .get(id)
+            .is_some_and(|node| in_region(node, position))
     }
 
     /// Returns whether the node can take the keyboard focus.

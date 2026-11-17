@@ -12,6 +12,7 @@ use smudge_core::input::{Handled, InputEvent, PointerButton};
 use smudge_core::reactive::{self, prelude::*};
 use smudge_core::style::px;
 use smudge_core::widget::panel;
+use smudge_core::window::Cursor;
 use smudge_test::Harness;
 
 /// A counter shared with a handler.
@@ -832,5 +833,115 @@ fn a_wheel_handler_that_declines_lets_the_event_reach_its_ancestor() {
         (inner.get(), outer.get()),
         (2, 1),
         "a taken wheel stops at the handler that took it"
+    );
+}
+
+#[test]
+fn a_press_outside_a_node_s_region_reaches_its_parent() {
+    let (child_presses, on_child) = press_counter();
+    let (parent_presses, on_parent) = press_counter();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(80.0))
+                .height(px(40.0))
+                .on_press(on_parent)
+                .child(
+                    panel()
+                        .width(px(60.0))
+                        .height(px(20.0))
+                        .on_press(on_child)
+                        .responds_at(|point| point.x < 30.0),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.click(Point { x: 10.0, y: 5.0 });
+    assert_eq!(child_presses.get(), 1, "a press inside the region takes it");
+    assert_eq!(
+        parent_presses.get(),
+        0,
+        "the parent did not hear that press"
+    );
+
+    harness.click(Point { x: 50.0, y: 5.0 });
+    assert_eq!(
+        child_presses.get(),
+        1,
+        "a press outside the region passed by"
+    );
+    assert_eq!(parent_presses.get(), 1, "the parent took that press");
+}
+
+#[test]
+fn hover_outside_a_node_s_region_stays_with_its_parent() {
+    let (log, on_parent) = hover_log("parent");
+    let child_log = Rc::clone(&log);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        let child_log = Rc::clone(&child_log);
+        scene(
+            panel()
+                .width(px(80.0))
+                .height(px(40.0))
+                .on_hover(on_parent)
+                .child(
+                    panel()
+                        .width(px(60.0))
+                        .height(px(20.0))
+                        .on_hover(move |hovered| child_log.borrow_mut().push(("child", hovered)))
+                        .responds_at(|point| point.x < 30.0),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.move_to(Point { x: 50.0, y: 5.0 });
+    assert_eq!(
+        log.borrow().as_slice(),
+        [("parent", true)],
+        "outside the region only the parent is hovered"
+    );
+    harness.move_to(Point { x: 10.0, y: 5.0 });
+    assert_eq!(
+        log.borrow().as_slice(),
+        [("parent", true), ("child", true)],
+        "inside the region the child joins the hovered chain"
+    );
+    harness.move_to(Point { x: 50.0, y: 5.0 });
+    assert_eq!(
+        log.borrow().as_slice(),
+        [("parent", true), ("child", true), ("child", false)],
+        "leaving the region leaves the child"
+    );
+}
+
+#[test]
+fn a_node_shows_its_cursor_only_inside_its_region() {
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(80.0))
+                .height(px(40.0))
+                .cursor(Cursor::Text)
+                .child(
+                    panel()
+                        .width(px(60.0))
+                        .height(px(20.0))
+                        .on_press(|| {})
+                        .cursor(Cursor::Pointer)
+                        .responds_at(|point| point.x < 30.0),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.move_to(Point { x: 10.0, y: 5.0 });
+    assert_eq!(harness.app().cursor(), Cursor::Pointer, "inside the region");
+    harness.move_to(Point { x: 50.0, y: 5.0 });
+    assert_eq!(
+        harness.app().cursor(),
+        Cursor::Text,
+        "outside the region the parent's cursor shows"
     );
 }

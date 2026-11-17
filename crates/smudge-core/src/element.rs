@@ -204,6 +204,12 @@ impl From<RadiusToken> for Value<RadiusValue> {
     }
 }
 
+impl<T: 'static> From<Rc<[T]>> for Value<Rc<[T]>> {
+    fn from(items: Rc<[T]>) -> Value<Rc<[T]>> {
+        Value::Static(items)
+    }
+}
+
 impl<F: Fn() -> T + 'static, T: 'static> From<F> for Value<T> {
     fn from(get: F) -> Value<T> {
         Value::Dynamic(Rc::new(crate::hot::wrap(get)))
@@ -1100,6 +1106,38 @@ impl<W: Widget> Element<W> {
     /// view put the node. Other buttons do not run it.
     pub fn on_pointer_down(mut self, handler: impl FnMut(Point) + 'static) -> Self {
         self.handlers.on_pointer_down = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
+    /// Limits where the node responds to the pointer to the points `region`
+    /// answers `true` for.
+    ///
+    /// The point is in logical pixels, relative to the top left of the
+    /// node's rectangle. Where `region` answers `false`, presses, hover and
+    /// pointer moves pass the node by as if it had no handlers, so they land
+    /// on the nearest ancestor that responds, and the pointer shows the
+    /// cursor of the nearest ancestor that sets one. A held press keeps
+    /// going to the node it started on, wherever the pointer moves. A paragraph whose links take
+    /// clicks answers `true` over its links alone, so a press on its plain
+    /// words still reaches the row around it. Without a region the node
+    /// responds over its whole rectangle.
+    ///
+    /// The region runs during hit testing, on every pointer event over the
+    /// node, so keep it cheap, and let it read state without changing any.
+    ///
+    /// ```
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// // Only the left half of the panel takes presses.
+    /// let half = panel()
+    ///     .width(px(80.0))
+    ///     .height(px(24.0))
+    ///     .on_press(|| println!("pressed"))
+    ///     .responds_at(|point| point.x < 40.0);
+    /// ```
+    pub fn responds_at(mut self, region: impl Fn(Point) -> bool + 'static) -> Self {
+        self.handlers.responds_at = Some(Box::new(crate::hot::wrap1(region)));
         self
     }
 
