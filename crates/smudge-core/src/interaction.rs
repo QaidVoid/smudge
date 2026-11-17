@@ -194,6 +194,21 @@ impl Handlers {
             || self.on_pointer_move.is_some()
             || self.on_pointer_up.is_some()
     }
+
+    /// Returns whether any handler is set that makes the node take a press.
+    ///
+    /// The wheel is left out: it reaches the hovered chain, so a node that
+    /// only scrolls, such as a scroll view, lets presses on it pass to the
+    /// nearest ancestor that takes them.
+    pub(crate) fn takes_press(&self) -> bool {
+        self.on_press.is_some()
+            || self.on_hover.is_some()
+            || self.on_pointer_down.is_some()
+            || self.on_press_outside.is_some()
+            || self.on_key.is_some()
+            || self.on_pointer_move.is_some()
+            || self.on_pointer_up.is_some()
+    }
 }
 
 impl WidgetTree {
@@ -504,17 +519,19 @@ impl WidgetTree {
         self.set_bit(id, Interaction::FOCUSABLE, focusable);
     }
 
-    /// Returns the deepest node under `position` that can respond, or `None`
-    /// when no node under the pointer can respond.
+    /// Returns the deepest node under `position` that takes a press, or
+    /// `None` when no node under the pointer takes one.
     ///
-    /// The deepest hit node starts the search, and the first ancestor that can
-    /// respond becomes the target. When that ancestor is disabled, the press
+    /// The deepest hit node starts the search, and the first ancestor that
+    /// takes a press becomes the target. A node that only scrolls with the
+    /// wheel takes none, so a press on a scroll view reaches what is around
+    /// it. When that ancestor is disabled, the press
     /// lands nowhere: a disabled control swallows presses on its content
     /// rather than passing them to the nodes around it.
     fn target(&self, position: Point) -> Option<WidgetId> {
         let root = self.root?;
         let mut id = self.hit(root, position)?;
-        while !self.can_respond_at(id, position) {
+        while !self.takes_press_at(id, position) {
             id = self.nodes.get(id)?.parent?;
         }
         let disabled = self.nodes.get(id)?.interaction.has(Interaction::DISABLED);
@@ -564,6 +581,22 @@ impl WidgetTree {
         self.nodes
             .get(id)
             .is_some_and(|node| in_region(node, position))
+    }
+
+    /// Returns whether a press at `position` can land on the node: its
+    /// handlers, its focus or its style variants take one, and its
+    /// [`responds_at`](Handlers::responds_at) region, when it sets one, holds
+    /// the point.
+    fn takes_press_at(&self, id: WidgetId, position: Point) -> bool {
+        self.nodes.get(id).is_some_and(|node| {
+            (node.handlers.takes_press()
+                || node.interaction.has(Interaction::FOCUSABLE)
+                || node
+                    .variants
+                    .as_ref()
+                    .is_some_and(|variants| !variants.is_empty()))
+                && in_region(node, position)
+        })
     }
 
     /// Returns whether the node can take the keyboard focus.

@@ -1406,3 +1406,33 @@ fn a_drag_past_a_bordered_scroll_container_reaches_its_edge_row() {
         "the drag below the bordered container reached its last row inside the border"
     );
 }
+
+#[test]
+fn a_press_on_a_node_that_only_scrolls_reaches_its_parent() {
+    let (presses, on_press) = press_counter();
+    let wheels = Rc::new(Cell::new(0u32));
+    let wheeled = Rc::clone(&wheels);
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        let wheeled = Rc::clone(&wheeled);
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_press(on_press)
+                .child(panel().width(px(80.0)).height(px(40.0)).on_wheel(move |_| {
+                    wheeled.set(wheeled.get() + 1);
+                    Handled::Yes
+                })),
+        )
+    });
+    harness.frame();
+
+    harness.click(Point { x: 10.0, y: 10.0 });
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: 10.0 },
+    });
+
+    assert_eq!(presses.get(), 1, "the press passed the wheel-only node");
+    assert_eq!(wheels.get(), 1, "and the node still takes the wheel");
+}
