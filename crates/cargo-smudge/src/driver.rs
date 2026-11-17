@@ -26,8 +26,9 @@ const BUILD_ENVIRONMENT: &str = "SMUDGE_HOT_BUILD";
 /// How long the builder waits for the app to connect.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long the builder waits between polls of the sources.
-const POLL: Duration = Duration::from_millis(100);
+/// How long the builder waits between polls of the sources, which a save
+/// waits half of on average before its patch starts.
+const POLL: Duration = Duration::from_millis(25);
 
 /// The shape of the symbol cache, bumped when what it stores changes.
 const CACHE_SHAPE: u32 = 4;
@@ -66,6 +67,8 @@ struct Original {
     symbols: Symbols,
     /// The signature of every function the DWARF describes.
     signatures: Signatures,
+    /// The names the binary defines at each function address.
+    originals: BTreeMap<u64, Vec<String>>,
     /// The address `main` was linked at.
     main: u64,
     /// The initialization image of the binary's thread-locals, with its
@@ -240,6 +243,8 @@ struct Session {
     /// installing, because a failed or refused attempt must not forget
     /// them the way a forgotten scan would.
     pending: std::collections::BTreeSet<String>,
+    /// What this session's replays learned from their objects.
+    objects: patch::ObjectCache,
 }
 
 /// Runs the `dev` session for the app in the current directory.
@@ -288,6 +293,7 @@ pub(crate) fn run(options: Options) -> ExitCode {
             }
         };
         started = true;
+        warm_up(&mut session);
         match supervise(&mut session, &commands) {
             Control::Exited | Control::Quit => return ExitCode::SUCCESS,
             Control::Restart => continue,
@@ -310,7 +316,7 @@ fn wait_for_edit(
             Ok(_) => return Control::Restart,
             Err(_) => {}
         }
-        std::thread::sleep(POLL * 5);
+        std::thread::sleep(Duration::from_millis(500));
         if edit_snapshot(root, output) != before {
             return Control::Restart;
         }
@@ -974,6 +980,7 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
         live: std::collections::BTreeSet::new(),
         told_fresh: std::collections::BTreeSet::new(),
         pending: std::collections::BTreeSet::new(),
+        objects: patch::ObjectCache::new(),
     })
 }
 
@@ -1723,9 +1730,16 @@ fn read_original(
                 .is_some_and(|sym| sym.kind == object::SymbolKind::Tls)
         })
         .collect();
+    let mut originals: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    for (name, sym) in &symbols.map {
+        if sym.defined && sym.kind == object::SymbolKind::Text {
+            originals.entry(sym.address).or_default().push(name.clone());
+        }
+    }
     Ok(Original {
         symbols,
         signatures,
+        originals,
         main,
         tls: elf::tdata_template(&bytes),
         sysroot_tls,
@@ -2091,7 +2105,7 @@ fn supervise(session: &mut Session, commands: &mpsc::Receiver<String>) -> Contro
             // ride along in the same patch. Both scans compare against
             // the state the last patch left behind, so the settle's
             // second scan still answers what the first saw.
-            std::thread::sleep(Duration::from_millis(150));
+            std::thread::sleep(Duration::from_millis(50));
             let (mut fresh, sources_now) = scan_sources(&session.watch, &session.source_times);
             let (file_fresh, files_now) = scan_files(&session.watch_files, &session.source_times);
             fresh.extend(file_fresh);
@@ -2128,6 +2142,35 @@ fn supervise(session: &mut Session, commands: &mpsc::Receiver<String>) -> Contro
         }
         std::thread::sleep(POLL);
     }
+}
+
+/// Replays and links the app crate once, before the first edit, without
+/// sending anything, so the first patch finds every cache warm.
+fn warm_up(session: &mut Session) {
+    let tip_name = session.rustc.crate_name().unwrap_or_default().to_string();
+    let Some(stream) = session.stream.as_mut() else {
+        return;
+    };
+    let Ok(steps) = chain_of(&session.crates, (&tip_name, &session.rustc), &[]) else {
+        return;
+    };
+    let mut plan = Plan {
+        chain: &steps,
+        dir: &session.dir,
+        symbols: &session.original.symbols,
+        signatures: &mut session.original.signatures,
+        originals: &session.original.originals,
+        objects: &mut session.objects,
+        main: session.original.main,
+        runtime_main: session.runtime_main,
+        view: session.view,
+        signature_refused: &mut session.signature_refused,
+        linker: &session.linker,
+        tls: &session.original.tls,
+        sysroot_tls: &session.original.sysroot_tls,
+        stream,
+    };
+    patch::warm(&mut plan);
 }
 
 /// Runs one patch step and reports what it ended with. `changed` names
@@ -2234,6 +2277,8 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
         dir: &session.dir,
         symbols: &session.original.symbols,
         signatures: &mut session.original.signatures,
+        originals: &session.original.originals,
+        objects: &mut session.objects,
         main: session.original.main,
         runtime_main: session.runtime_main,
         view: session.view,
@@ -2333,6 +2378,7 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
             );
             learn(session, tip_name, discovered, true);
         }
+        Outcome::Warmed => {}
         Outcome::ConnectionLost { reason, discovered } => {
             println!("patch {generation}: the connection to the app broke; the app keeps running");
             eprintln!("{reason}");

@@ -9,7 +9,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::dwarf::Signatures;
-use crate::elf::{Sym, Symbols, TlsTemplate};
+use crate::elf::{StaticFacts, Sym, Symbols, TlsTemplate};
 use crate::record::Recorded;
 use crate::stub;
 use crate::wire::{self, APPLIED, FAILED, PATCH};
@@ -89,6 +89,9 @@ pub(crate) enum Outcome {
         /// What the replay learned about its sources.
         discovered: Vec<(String, Vec<PathBuf>)>,
     },
+    /// The dry replay that warms the caches ran as far as it goes, and
+    /// nothing was sent.
+    Warmed,
     /// The connection broke while one frame went over it, so nothing can
     /// be trusted over it anymore and the session drops it.
     ConnectionLost {
@@ -131,6 +134,10 @@ pub(crate) struct Plan<'a> {
     pub symbols: &'a Symbols,
     /// The signatures of the original binary.
     pub signatures: &'a mut Signatures,
+    /// The names the original binary defines at each function address.
+    pub originals: &'a BTreeMap<u64, Vec<String>>,
+    /// What the replays of this session learned from their objects.
+    pub objects: &'a mut ObjectCache,
     /// The address `main` was linked at, which the table is built against.
     pub main: u64,
     /// The address `main` runs at, which slides the stub's targets.
@@ -163,17 +170,28 @@ pub(crate) struct Plan<'a> {
 /// Returns why the step could not run at all, which is a session error
 /// rather than an outcome.
 pub(crate) fn run(plan: &mut Plan<'_>, generation: u32) -> Outcome {
+    replay(plan, generation, false)
+}
+
+/// Replays and links the chain without sending anything, so the first
+/// patch of a session finds the compiler's incremental cache for the
+/// replay directory, the objects' facts and the binary's signatures warm,
+/// and the linker's inputs read once.
+pub(crate) fn warm(plan: &mut Plan<'_>) {
+    let _ = replay(plan, 0, true);
+}
+
+/// Runs one patch step, or only its dry part when `dry` is set.
+fn replay(plan: &mut Plan<'_>, generation: u32, dry: bool) -> Outcome {
     // Every replay writes into a directory of its own, so cargo's
     // artifacts keep the fingerprints of the build they came from, and
     // the directory is emptied before the step, which a killed session
     // can have left it full for, and removed after it, either way. Its
     // name stays the same from patch to patch: the compiler reuses its
-    // incremental cache only for the output directory it last wrote, and
-    // a new one each time made every replay compile from scratch, 0.84 to
-    // 0.97 s against 0.19 s for an edit of the `hot` example's view.
+    // incremental cache only for the output directory it last wrote.
     let replay_dir = plan.dir.join("replay");
     let _ = std::fs::remove_dir_all(&replay_dir);
-    let outcome = step(plan, &replay_dir, generation);
+    let outcome = step(plan, &replay_dir, generation, dry);
     let _ = std::fs::remove_dir_all(&replay_dir);
     outcome
 }
@@ -186,6 +204,67 @@ enum Compiled {
     Failed(String),
 }
 
+/// What the replays of a session learned from their objects, by file.
+///
+/// Incremental compilation hands back the codegen units an edit did not
+/// touch as links to the files it kept, so such an object is the same
+/// file as in the last replay, and a patch parses only the objects that
+/// changed. The compiler never rewrites an object in place: a unit that
+/// changed is a new file, written after the one it replaces.
+pub(crate) type ObjectCache = HashMap<FileId, ObjectFacts>;
+
+/// The identity of one file and of the content it held when it was read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FileId {
+    /// The device the file lives on.
+    device: u64,
+    /// The file's inode on that device.
+    inode: u64,
+    /// The file's length.
+    size: u64,
+    /// The file's modification time, in seconds and nanoseconds.
+    modified: (i64, i64),
+}
+
+impl FileId {
+    /// The identity of the file at `path`, when it can stand for the
+    /// file's content: the file must be a link the compiler kept, and its
+    /// modification time must be finer than a second. A new file can take
+    /// over the inode of a removed one with the same size, which only its
+    /// later modification time tells apart, and a whole second can hold
+    /// both. A file of one link, such as an object extracted from a
+    /// library's archive, is new each replay and parses each time.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the file's metadata could not be read.
+    fn of(path: &Path) -> Result<Option<Self>, String> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if meta.nlink() < 2 || meta.mtime_nsec() == 0 {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            device: meta.dev(),
+            inode: meta.ino(),
+            size: meta.size(),
+            modified: (meta.mtime(), meta.mtime_nsec()),
+        }))
+    }
+}
+
+/// What one object file answers, which an identical file answers again.
+pub(crate) struct ObjectFacts {
+    /// Every symbol the object names.
+    symbols: Symbols,
+    /// The signatures its debug information describes.
+    signatures: Signatures,
+    /// The signature of every function the object defines, by symbol name.
+    answered: HashMap<String, Option<String>>,
+    /// What the object says about sharing statics with the running binary.
+    statics: StaticFacts,
+}
+
 /// One object a patch links, with what its symbols and its debug
 /// information answer.
 struct ObjectInfo {
@@ -193,37 +272,150 @@ struct ObjectInfo {
     path: PathBuf,
     /// The crate the object belongs to.
     krate: String,
-    /// Every symbol the object names.
-    symbols: Symbols,
-    /// The signatures its debug information describes.
-    signatures: Signatures,
+    /// The object file's identity, which keys its facts in the cache,
+    /// when it has one.
+    id: Option<FileId>,
+    /// What the object answers.
+    facts: ObjectFacts,
 }
 
 /// Replays the chain, collects what it produced, and sends the table.
 /// A failure after some steps compiled keeps what those steps learned
 /// about their sources, so the session can still watch them.
-fn step(plan: &mut Plan<'_>, replay_dir: &Path, generation: u32) -> Outcome {
+fn step(plan: &mut Plan<'_>, replay_dir: &Path, generation: u32, dry: bool) -> Outcome {
     let mut discovered: Vec<(String, Vec<PathBuf>)> = Vec::new();
-    match step_inner(plan, replay_dir, generation, &mut discovered) {
+    let mut objects: Vec<ObjectInfo> = Vec::new();
+    let outcome = match step_inner(
+        plan,
+        replay_dir,
+        generation,
+        dry,
+        &mut discovered,
+        &mut objects,
+    ) {
         Ok(outcome) => outcome,
         Err(reason) => Outcome::BuildFailed { reason, discovered },
+    };
+    // Every later patch replays at least the crates this one did, so the
+    // cache keeps this replay's objects alone, and an edited object's
+    // earlier content leaves it.
+    plan.objects.clear();
+    for info in objects {
+        if let Some(id) = info.id {
+            plan.objects.insert(id, info.facts);
+        }
     }
+    outcome
+}
+
+/// Reads the objects at `paths`, which belong to `krate`, taking the facts
+/// of every one an earlier replay read out of `cache` and parsing the
+/// others in parallel.
+fn load_objects(
+    cache: &mut ObjectCache,
+    paths: &[PathBuf],
+    krate: &str,
+    binary: &Symbols,
+) -> Result<Vec<ObjectInfo>, String> {
+    let mut loaded: Vec<Option<ObjectInfo>> = Vec::with_capacity(paths.len());
+    let mut fresh: Vec<(usize, Option<FileId>)> = Vec::new();
+    for (index, path) in paths.iter().enumerate() {
+        let id = FileId::of(path)?;
+        match id.and_then(|id| cache.remove(&id)) {
+            Some(facts) => loaded.push(Some(ObjectInfo {
+                path: path.clone(),
+                krate: krate.to_string(),
+                id,
+                facts,
+            })),
+            None => {
+                loaded.push(None);
+                fresh.push((index, id));
+            }
+        }
+    }
+    // The objects share nothing, so they parse in parallel. Eight workers
+    // at most: more would only add threads to wait on. The signature walk
+    // recurses as deep as the types nest, which the default stack of a
+    // worker is too narrow for.
+    let workers = fresh.len().clamp(1, 8);
+    let chunk = fresh.len().div_ceil(workers).max(1);
+    let mut parsed: Vec<Option<ObjectFacts>> = (0..fresh.len()).map(|_| None).collect();
+    std::thread::scope(|scope| -> Result<(), String> {
+        let mut handles = Vec::new();
+        for (group, slots) in fresh.chunks(chunk).zip(parsed.chunks_mut(chunk)) {
+            handles.push(
+                std::thread::Builder::new()
+                    .stack_size(64 * 1024 * 1024)
+                    .spawn_scoped(scope, move || -> Result<(), String> {
+                        for ((index, _), slot) in group.iter().zip(slots) {
+                            let path = &paths[*index];
+                            let bytes = std::fs::read(path)
+                                .map_err(|e| format!("{}: {e}", path.display()))?;
+                            *slot = Some(object_facts(&bytes, binary)?);
+                        }
+                        Ok(())
+                    })
+                    .map_err(|error| format!("an object reader could not start: {error}"))?,
+            );
+        }
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| String::from("an object reader stopped"))??;
+        }
+        Ok(())
+    })?;
+    for ((index, id), facts) in fresh.into_iter().zip(parsed) {
+        let Some(facts) = facts else {
+            return Err(String::from("an object reader skipped an object"));
+        };
+        loaded[index] = Some(ObjectInfo {
+            path: paths[index].clone(),
+            krate: krate.to_string(),
+            id,
+            facts,
+        });
+    }
+    Ok(loaded.into_iter().flatten().collect())
+}
+
+/// Parses what the object in `bytes` answers, the signature of every
+/// function it defines included.
+fn object_facts(bytes: &[u8], binary: &Symbols) -> Result<ObjectFacts, String> {
+    let symbols = Symbols::read(bytes)?;
+    let mut signatures = Signatures::read(bytes)?;
+    let mut answered = HashMap::new();
+    for (name, sym) in &symbols.map {
+        if sym.defined && sym.kind == object::SymbolKind::Text {
+            answered.insert(name.clone(), signatures.signature_by_name(name)?);
+        }
+    }
+    let statics = crate::elf::static_facts(bytes, binary)?;
+    Ok(ObjectFacts {
+        symbols,
+        signatures,
+        answered,
+        statics,
+    })
 }
 
 /// The body of [`step`], which hands its discoveries back through
-/// `discovered` even when it fails.
+/// `discovered` and the objects it read through `objects`, even when it
+/// fails. A `dry` step stops once the caches are warm.
 fn step_inner(
     plan: &mut Plan<'_>,
     replay_dir: &Path,
     generation: u32,
+    dry: bool,
     discovered: &mut Vec<(String, Vec<PathBuf>)>,
+    objects: &mut Vec<ObjectInfo>,
 ) -> Result<Outcome, String> {
     let started = Instant::now();
     std::fs::create_dir_all(replay_dir).map_err(|e| format!("{}: {e}", replay_dir.display()))?;
     // The replayed library of each crate, which the `--extern` arguments
     // of the crates after it point at.
     let mut outputs: BTreeMap<String, PathBuf> = BTreeMap::new();
-    let mut objects: Vec<ObjectInfo> = Vec::new();
     let mut thin: Vec<String> = Vec::new();
     let mut compile = Duration::ZERO;
     let mut replayed: Vec<String> = Vec::new();
@@ -276,39 +468,7 @@ fn step_inner(
                      invocation no longer matches the app",
                 ));
             }
-            // The objects share nothing, so their reads run in parallel;
-            // the results land in the paths' order either way. Eight
-            // workers at most: more would only add threads to wait on.
-            let workers = paths.len().clamp(1, 8);
-            let chunk = paths.len().div_ceil(workers).max(1);
-            let mut objects_read = Vec::with_capacity(paths.len());
-            std::thread::scope(|scope| -> Result<(), String> {
-                let mut handles = Vec::new();
-                for group in paths.chunks(chunk) {
-                    handles.push(
-                        std::thread::Builder::new()
-                            .spawn_scoped(scope, move || {
-                                group
-                                    .iter()
-                                    .map(|path| read_object(path))
-                                    .collect::<Result<Vec<_>, String>>()
-                            })
-                            .map_err(|error| {
-                                format!("an object reader could not start: {error}")
-                            })?,
-                    );
-                }
-                for handle in handles {
-                    let mut group = handle
-                        .join()
-                        .map_err(|_| String::from("an object reader stopped"))??;
-                    objects_read.append(&mut group);
-                }
-                Ok(())
-            })?;
-            for info in &mut objects_read {
-                info.krate = step.name.clone();
-            }
+            let mut objects_read = load_objects(plan.objects, &paths, &step.name, plan.symbols)?;
             objects.append(&mut objects_read);
             thin = thin_args;
         } else {
@@ -359,32 +519,25 @@ fn step_inner(
                     replay_dir,
                     &dir,
                 )?;
-                let mut infos = Vec::with_capacity(extracted.len());
-                for path in &extracted {
-                    let info = read_object(path)?;
-                    let tls = info
+                let mut infos = load_objects(plan.objects, &extracted, &step.name, plan.symbols)?;
+                let tls = infos.iter().any(|info| {
+                    info.facts
                         .symbols
                         .map
                         .values()
-                        .any(|sym| sym.kind == object::SymbolKind::Tls);
-                    if tls {
-                        return Ok(Outcome::RestartNeeded {
-                            reason: format!(
-                                "the crate {} uses thread-locals, which a patch \
-                                 would give empty copies of; restart the app",
-                                step.name
-                            ),
-                            refused: Some(step.name.clone()),
-                            discovered: std::mem::take(discovered),
-                        });
-                    }
-                    infos.push(info);
-                }
-                // A static every reference reaches through a full address
-                // is the running app's own in the patch; the others the
-                // patch would carry fresh copies of.
-                for info in &mut infos {
-                    info.krate = step.name.clone();
+                        .any(|sym| sym.kind == object::SymbolKind::Tls)
+                });
+                if tls {
+                    objects.append(&mut infos);
+                    return Ok(Outcome::RestartNeeded {
+                        reason: format!(
+                            "the crate {} uses thread-locals, which a patch \
+                             would give empty copies of; restart the app",
+                            step.name
+                        ),
+                        refused: Some(step.name.clone()),
+                        discovered: std::mem::take(discovered),
+                    });
                 }
                 objects.append(&mut infos);
             }
@@ -395,10 +548,9 @@ fn step_inner(
     // address is the running app's own in the patched code. The decision
     // weighs every object the patch links, since a consumer's reference
     // by a 32-bit distance could not reach the running app's copy.
-    let paths: Vec<PathBuf> = objects.iter().map(|info| info.path.clone()).collect();
-    let shared = crate::elf::shared_statics(&paths, plan.symbols)?;
-    let shared = same_static_types(shared, &mut objects, plan.signatures)?;
-    share_statics(&mut objects, &shared, &replay_dir.join("shared"))?;
+    let shared = crate::elf::shared_statics(objects.iter().map(|info| &info.facts.statics));
+    let shared = same_static_types(shared, objects, plan.signatures)?;
+    share_statics(objects, &shared, &replay_dir.join("shared"))?;
     // A static the program writes is state the running app builds since
     // it started, or since the patch that introduced it: a patch that
     // carries its own fresh copy of it resets that state behind the
@@ -415,10 +567,11 @@ fn step_inner(
         .map(|step| step.name.clone())
         .unwrap_or_default();
     for krate in &replayed {
-        let fresh: Vec<String> = fresh_statics(objects.iter().filter(|info| &info.krate == krate))
-            .iter()
-            .map(|name| static_name(&objects, name))
-            .collect();
+        let fresh: Vec<String> =
+            fresh_statics(objects.iter().filter(|info| &info.krate == krate), &shared)
+                .iter()
+                .map(|name| static_name(objects, name))
+                .collect();
         if !fresh.is_empty() {
             return Ok(Outcome::RestartNeeded {
                 reason: format!(
@@ -432,14 +585,16 @@ fn step_inner(
             });
         }
     }
-    let app_fresh: Vec<(String, String)> =
-        fresh_statics(objects.iter().filter(|info| info.krate == tip_name))
-            .into_iter()
-            .map(|name| {
-                let shown = static_name(&objects, &name);
-                (name, shown)
-            })
-            .collect();
+    let app_fresh: Vec<(String, String)> = fresh_statics(
+        objects.iter().filter(|info| info.krate == tip_name),
+        &shared,
+    )
+    .into_iter()
+    .map(|name| {
+        let shown = static_name(objects, &name);
+        (name, shown)
+    })
+    .collect();
 
     // Every object of the replay keeps its own signatures, because an
     // address is relative to its own object: the same number names a
@@ -447,8 +602,10 @@ fn step_inner(
     let mut defined: BTreeMap<String, (Sym, usize)> = BTreeMap::new();
     let mut imported: BTreeMap<String, ()> = BTreeMap::new();
     for (index, object) in objects.iter().enumerate() {
-        for (name, sym) in &object.symbols.map {
-            if sym.defined {
+        for (name, sym) in &object.facts.symbols.map {
+            // A shared static is the running binary's, which the patch
+            // imports.
+            if sym.defined && !shared.contains(name) {
                 defined.insert(name.clone(), (sym.clone(), index));
             } else {
                 imported.insert(name.clone(), ());
@@ -505,56 +662,6 @@ fn step_inner(
         .count();
     let absolutes = imports.len() - missing - trampolines;
 
-    // Every replayed object answers the signatures of its own text
-    // symbols before the pairing walks them, so the per-object work,
-    // which shares nothing between objects, runs in parallel and the
-    // walk against the binary's signatures stays serial.
-    let mut per_object: Vec<Vec<String>> = vec![Vec::new(); objects.len()];
-    for (name, (_, index)) in &defined {
-        per_object[*index].push(name.clone());
-    }
-    let workers = objects.len().clamp(1, 8);
-    let chunk = objects.len().div_ceil(workers).max(1);
-    let mut new_signatures: Vec<HashMap<String, Option<String>>> =
-        (0..objects.len()).map(|_| HashMap::new()).collect();
-    std::thread::scope(|scope| -> Result<(), String> {
-        let mut handles = Vec::new();
-        for (offset, group) in objects.chunks_mut(chunk).enumerate() {
-            let names = &per_object[offset * chunk..];
-            handles.push(
-                std::thread::Builder::new()
-                    .stack_size(64 * 1024 * 1024)
-                    .spawn_scoped(scope, move || -> Result<AnsweredSignatures, String> {
-                        let mut answered = Vec::with_capacity(group.len());
-                        for (local, object) in group.iter_mut().enumerate() {
-                            let mut map = HashMap::new();
-                            for name in &names[local] {
-                                let signature = object.signatures.signature_by_name(name)?;
-                                map.insert(name.clone(), signature);
-                            }
-                            answered.push((offset * chunk + local, map));
-                        }
-                        Ok(answered)
-                    })
-                    .map_err(|error| format!("a signature reader could not start: {error}"))?,
-            );
-        }
-        let mut answers = Vec::new();
-        for handle in handles {
-            answers.push(
-                handle
-                    .join()
-                    .map_err(|_| String::from("a signature reader stopped"))??,
-            );
-        }
-        for group in answers {
-            for (index, map) in group {
-                new_signatures[index] = map;
-            }
-        }
-        Ok(())
-    })?;
-
     // The binary's own signatures answer on a worker of the same
     // breadth the objects get: the walk is the same recursion, and the
     // main thread's stack is no wider than a worker's default one.
@@ -601,8 +708,8 @@ fn step_inner(
         .map(|step| step.name.as_str())
         .collect();
     let mut new_closures = crate::dwarf::ClosureIndices::new();
-    for object in &objects {
-        for (parent, numbers) in object.signatures.closures() {
+    for object in objects.iter() {
+        for (parent, numbers) in object.facts.signatures.closures() {
             new_closures
                 .entry(parent.clone())
                 .or_default()
@@ -643,7 +750,7 @@ fn step_inner(
         let old_signature = old_signatures.get(name).and_then(|entry| entry.as_deref());
         // The object's addresses cannot be compared against the binary's,
         // so its side of the pairing goes by the symbol's name.
-        let Some(new_signature) = new_signatures[*index].get(name) else {
+        let Some(new_signature) = objects[*index].facts.answered.get(name) else {
             continue;
         };
         match (old_signature, new_signature.as_deref()) {
@@ -661,7 +768,7 @@ fn step_inner(
     // A signature change the app announced no view for, or one that lands
     // on the view, is refused once, so the app learns it must rebuild; the
     // later patches omit those functions and keep going.
-    if !changed.is_empty() {
+    if !changed.is_empty() && !dry {
         let attributed = match plan.view {
             Some(view) => changed.iter().any(|(_, address)| *address == view),
             None => true,
@@ -707,6 +814,10 @@ fn step_inner(
     )?;
     let paths: Vec<PathBuf> = objects.iter().map(|object| object.path.clone()).collect();
     link(plan, &paths, &stub_object, &thin, &library)?;
+    if dry {
+        let _ = std::fs::remove_file(&library);
+        return Ok(Outcome::Warmed);
+    }
     let lib_bytes = std::fs::read(&library).map_err(|e| format!("{}: {e}", library.display()))?;
     let lib_symbols = Symbols::read(&lib_bytes)?;
     let Some(new_main) = lib_symbols
@@ -722,15 +833,6 @@ fn step_inner(
     // to the name, so a mapping only serves an address while every
     // name the original defined on it stayed in the replay and
     // answers to the same replacement.
-    let mut originals: BTreeMap<u64, Vec<&str>> = BTreeMap::new();
-    for (name, sym) in &plan.symbols.map {
-        if sym.defined && sym.kind == object::SymbolKind::Text {
-            originals
-                .entry(sym.address)
-                .or_default()
-                .push(name.as_str());
-        }
-    }
     let mut grouped: BTreeMap<u64, Vec<(&str, u64)>> = BTreeMap::new();
     for (name, old) in &tabled {
         let Some(new) = lib_symbols
@@ -746,16 +848,18 @@ fn step_inner(
     let mut table: BTreeMap<u64, u64> = BTreeMap::new();
     let mut shared: Vec<&str> = Vec::new();
     for (old, entries) in &grouped {
-        let Some(names) = originals.get(old) else {
+        let Some(names) = plan.originals.get(old) else {
             continue;
         };
         let agreed = entries.windows(2).all(|pair| pair[0].1 == pair[1].1);
-        let complete =
-            names.len() == entries.len() && entries.iter().all(|(name, _)| names.contains(name));
+        let complete = names.len() == entries.len()
+            && entries
+                .iter()
+                .all(|(name, _)| names.iter().any(|known| known == name));
         if agreed && complete {
             table.insert(*old, entries[0].1);
         } else {
-            shared.extend_from_slice(names);
+            shared.extend(names.iter().map(String::as_str));
         }
     }
     if !shared.is_empty() && !*plan.signature_refused {
@@ -945,20 +1049,6 @@ fn redirected(value: &str, outputs: &BTreeMap<String, PathBuf>) -> String {
     }
 }
 
-/// The signatures one thread answers for its objects, by object index.
-type AnsweredSignatures = Vec<(usize, HashMap<String, Option<String>>)>;
-
-/// Reads one object's symbols and signatures.
-fn read_object(path: &Path) -> Result<ObjectInfo, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(ObjectInfo {
-        path: path.to_path_buf(),
-        krate: String::new(),
-        symbols: Symbols::read(&bytes)?,
-        signatures: Signatures::read(&bytes)?,
-    })
-}
-
 /// Links the patch library from the objects, the stub and the recorded
 /// arguments.
 ///
@@ -984,6 +1074,9 @@ fn link(
             "-Wl,-z,noexecstack",
             "-Wl,-z,relro,-z,now",
             "-nodefaultlibs",
+            // Nothing reads the patch's debug information, and copying it
+            // is most of the link's work.
+            "-Wl,--strip-debug",
             "-Wl,-Bdynamic",
         ]
         .map(String::from),
@@ -1071,7 +1164,7 @@ fn share_statics(
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let defines = shared
             .iter()
-            .any(|name| info.symbols.get(name).is_some_and(|sym| sym.defined));
+            .any(|name| info.facts.symbols.get(name).is_some_and(|sym| sym.defined));
         if !defines {
             continue;
         }
@@ -1083,11 +1176,6 @@ fn share_statics(
         };
         let out = dir.join(file_name);
         crate::elf::import_statics(&info.path, shared, &out)?;
-        for name in shared {
-            if let Some(sym) = info.symbols.map.get_mut(name) {
-                sym.defined = false;
-            }
-        }
         info.path = out;
     }
     Ok(())
@@ -1113,7 +1201,7 @@ fn same_static_types(
         };
         let mut replayed = None;
         for info in infos.iter_mut() {
-            if let Some(found) = info.signatures.static_type(&name)? {
+            if let Some(found) = info.facts.signatures.static_type(&name)? {
                 replayed = Some(found);
                 break;
             }
@@ -1130,19 +1218,24 @@ fn same_static_types(
 fn static_name(infos: &[ObjectInfo], name: &str) -> String {
     infos
         .iter()
-        .find_map(|info| info.signatures.static_name(name))
+        .find_map(|info| info.facts.signatures.static_name(name))
         .unwrap_or_else(|| String::from(name))
 }
 
-/// The writable statics `infos` still define, whose state the patched
-/// code would not see: any symbol in a writable section, whatever its
-/// type, except the personality cell the ABI defines under `DW.ref.`,
-/// which the program never writes.
-fn fresh_statics<'a>(infos: impl IntoIterator<Item = &'a ObjectInfo>) -> Vec<String> {
+/// The writable statics `infos` define apart from the `shared` ones,
+/// whose state the patched code would not see: any symbol in a writable
+/// section, whatever its type, except the personality cell the ABI
+/// defines under `DW.ref.`, which the program never writes.
+fn fresh_statics<'a>(
+    infos: impl IntoIterator<Item = &'a ObjectInfo>,
+    shared: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
     let mut names: Vec<String> = infos
         .into_iter()
-        .flat_map(|info| info.symbols.map.iter())
-        .filter(|(name, sym)| sym.defined && sym.writable && !name.starts_with("DW.ref."))
+        .flat_map(|info| info.facts.symbols.map.iter())
+        .filter(|(name, sym)| {
+            sym.defined && sym.writable && !name.starts_with("DW.ref.") && !shared.contains(*name)
+        })
         .map(|(name, _)| name.clone())
         .collect();
     names.sort();

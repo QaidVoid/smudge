@@ -196,104 +196,119 @@ const FULL_ADDRESS_RELOCATIONS: [u32; 4] = [
     object::elf::R_X86_64_64,
 ];
 
-/// The writable statics of one crate's objects that a patch can take from
-/// the running binary instead of carrying fresh copies of them.
+/// What one object says about sharing its statics with the running binary.
 ///
 /// A static qualifies when it is global and writable, the binary defines a
-/// static of that name and size, and every reference to it in `objects`
-/// reaches it
-/// through a full address: a reference through its section, or one that
-/// encodes a 32-bit distance, names a place in the patch library itself,
-/// which the binary's copy lies too far from.
+/// static of that name and size, and every reference to it in the objects
+/// a patch links reaches it through a full address: a reference through
+/// its section, or one that encodes a 32-bit distance, names a place in
+/// the patch library itself, which the binary's copy lies too far from.
+#[derive(Debug, Default)]
+pub(crate) struct StaticFacts {
+    /// The statics the object defines that could be the binary's.
+    candidates: Vec<String>,
+    /// The binary's writable statics the object reaches through something
+    /// other than a full address: their section, or a 32-bit distance.
+    near: Vec<String>,
+}
+
+/// Reads what the object in `bytes` says about sharing statics with the
+/// running `binary`.
 ///
 /// # Errors
 ///
-/// Returns the first object that could not be read or parsed.
-pub(crate) fn shared_statics(
-    objects: &[PathBuf],
-    binary: &Symbols,
-) -> Result<std::collections::BTreeSet<String>, String> {
-    let mut candidates: BTreeMap<String, (usize, object::SectionIndex)> = BTreeMap::new();
-    let mut files = Vec::with_capacity(objects.len());
-    for path in objects {
-        files.push(std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?);
-    }
-    for (at, bytes) in files.iter().enumerate() {
-        let file = object::File::parse(&bytes[..]).map_err(|e| e.to_string())?;
-        for symbol in file.symbols() {
-            let Ok(name) = symbol.name() else { continue };
-            if !symbol.is_global()
-                || symbol.is_undefined()
-                || name.starts_with("DW.ref.")
-                || !matches!(symbol.kind(), SymbolKind::Data | SymbolKind::Unknown)
-            {
-                continue;
-            }
-            let Some(section) = symbol.section_index() else {
-                continue;
-            };
-            // Only state is shared: an immutable static carries the edit's
-            // new contents, which the patched code must read.
-            let writable = file
-                .section_by_index(section)
-                .is_ok_and(|held| holds_state(&held));
-            if !writable {
-                continue;
-            }
-            let Some(running) = binary.get(name) else {
-                continue;
-            };
-            // The running copy must be state as well: an immutable
-            // static an edit made writable sits in read-only memory.
-            if !running.defined
-                || !running.writable
-                || matches!(running.kind, SymbolKind::Text | SymbolKind::Tls)
-                || running.size != symbol.size()
-            {
-                continue;
-            }
-            candidates.insert(String::from(name), (at, section));
+/// Returns why the object could not be parsed.
+pub(crate) fn static_facts(bytes: &[u8], binary: &Symbols) -> Result<StaticFacts, String> {
+    let file = object::File::parse(bytes).map_err(|e| e.to_string())?;
+    // The running copy must be state as well: an immutable static an edit
+    // made writable sits in read-only memory.
+    let running_state = |name: &str| {
+        binary.get(name).filter(|running| {
+            running.defined
+                && running.writable
+                && !matches!(running.kind, SymbolKind::Text | SymbolKind::Tls)
+        })
+    };
+    let mut candidates: Vec<(String, object::SectionIndex)> = Vec::new();
+    for symbol in file.symbols() {
+        let Ok(name) = symbol.name() else { continue };
+        if !symbol.is_global()
+            || symbol.is_undefined()
+            || name.starts_with("DW.ref.")
+            || !matches!(symbol.kind(), SymbolKind::Data | SymbolKind::Unknown)
+        {
+            continue;
+        }
+        let Some(section) = symbol.section_index() else {
+            continue;
+        };
+        // Only state is shared: an immutable static carries the edit's new
+        // contents, which the patched code must read.
+        let writable = file
+            .section_by_index(section)
+            .is_ok_and(|held| holds_state(&held));
+        if !writable {
+            continue;
+        }
+        if running_state(name).is_some_and(|running| running.size == symbol.size()) {
+            candidates.push((String::from(name), section));
         }
     }
-    let mut ruled_out = std::collections::BTreeSet::new();
-    for (at, bytes) in files.iter().enumerate() {
-        let file = object::File::parse(&bytes[..]).map_err(|e| e.to_string())?;
-        for section in file.sections() {
-            for (_, relocation) in section.relocations() {
-                let object::RelocationTarget::Symbol(index) = relocation.target() else {
-                    continue;
-                };
-                let Ok(target) = file.symbol_by_index(index) else {
-                    continue;
-                };
-                if target.kind() == SymbolKind::Section {
-                    // A reference through the section reaches whatever the
-                    // section holds at an offset, in this object alone.
-                    for (name, (owner, held)) in &candidates {
-                        if *owner == at && Some(*held) == target.section_index() {
-                            ruled_out.insert(name.clone());
-                        }
+    let mut near = Vec::new();
+    for section in file.sections() {
+        for (_, relocation) in section.relocations() {
+            let object::RelocationTarget::Symbol(index) = relocation.target() else {
+                continue;
+            };
+            let Ok(target) = file.symbol_by_index(index) else {
+                continue;
+            };
+            if target.kind() == SymbolKind::Section {
+                // A reference through the section reaches whatever the
+                // section holds at an offset, in this object alone.
+                for (name, held) in &candidates {
+                    if Some(*held) == target.section_index() {
+                        near.push(name.clone());
                     }
-                    continue;
                 }
-                let Ok(name) = target.name() else { continue };
-                if !candidates.contains_key(name) {
-                    continue;
-                }
-                let full = matches!(
-                    relocation.flags(),
-                    object::RelocationFlags::Elf { r_type } if FULL_ADDRESS_RELOCATIONS.contains(&r_type)
-                );
-                if !full {
-                    ruled_out.insert(String::from(name));
-                }
+                continue;
+            }
+            let Ok(name) = target.name() else { continue };
+            let full = matches!(
+                relocation.flags(),
+                object::RelocationFlags::Elf { r_type } if FULL_ADDRESS_RELOCATIONS.contains(&r_type)
+            );
+            if !full && running_state(name).is_some() {
+                near.push(String::from(name));
             }
         }
     }
-    Ok(candidates
-        .into_keys()
-        .filter(|name| !ruled_out.contains(name))
-        .collect())
+    near.sort();
+    near.dedup();
+    Ok(StaticFacts {
+        candidates: candidates.into_iter().map(|(name, _)| name).collect(),
+        near,
+    })
+}
+
+/// The writable statics of the objects whose `facts` are given that a
+/// patch can take from the running binary instead of carrying fresh
+/// copies of them: the candidates no object reaches but through a full
+/// address.
+pub(crate) fn shared_statics<'a>(
+    facts: impl IntoIterator<Item = &'a StaticFacts> + Clone,
+) -> std::collections::BTreeSet<String> {
+    let near: std::collections::BTreeSet<&str> = facts
+        .clone()
+        .into_iter()
+        .flat_map(|facts| facts.near.iter().map(String::as_str))
+        .collect();
+    facts
+        .into_iter()
+        .flat_map(|facts| facts.candidates.iter())
+        .filter(|name| !near.contains(name.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Writes a copy of the object at `path` to `out` in which the statics
