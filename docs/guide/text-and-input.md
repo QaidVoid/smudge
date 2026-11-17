@@ -91,6 +91,35 @@ The paragraph takes `text_size`, `weight` and `family` like a label, through `Ri
 
 A link paints in the theme's accent color unless it sets one, and is underlined, so color is not its only cue. The pointer shows the pointing cursor over it, and a press and a release over the same link run its handler once. The paragraph responds to the pointer over its links alone, so a press on its plain words reaches the row or button around it. Links are not reachable with the keyboard yet. The accessible value is the paragraph's whole text.
 
+## Selecting text
+
+Labels and rich text are read-only, and a `selection_scope` lets the user select across many of them and copy the selection:
+
+```rust
+use std::rc::Rc;
+
+use smudge::prelude::*;
+
+let lines: Rc<[String]> = Rc::from([
+    String::from("The build started."),
+    String::from("All 412 tests passed."),
+]);
+let texts = Rc::clone(&lines);
+let transcript = selection_scope(
+    || Rc::from([0usize, 1]),
+    move |at: &usize| texts[*at].clone(),
+    move || {
+        column()
+            .child(label(lines[0].clone()).selectable(0usize))
+            .child(label(lines[1].clone()).selectable(1usize))
+    },
+);
+```
+
+The scope takes the keys of every block in order, mounted or not, and a way to read any block's text. The keys closure must read the signals its list changes with, and return the same `Rc` until the list changes, since the scope reads the order again only then. A label or a paragraph takes part with `.selectable(key)`, with the key it has in that list, from the `SelectableExt` trait. Outside a scope, `.selectable` does nothing.
+
+A press on a block starts a selection, and a drag extends it across blocks. Dragged past the edge of a scroll view inside the scope, the view scrolls and the selection follows the rows that pass its edge. A double click selects a word. The scope takes the keyboard focus, and Ctrl+C, or Cmd+C on macOS, copies the selected text of every block in order, with a newline between blocks. The selection is kept by key and offset, so it survives a virtual list unmounting the rows it covers: copy reads their text through the scope, and a row that mounts again shows its part. When the keys change, the selection keeps the blocks that remain, so trimming the oldest lines of a log keeps the rest of it. `text_of` must return the text a block shows: a label's text, or a paragraph's span texts joined with nothing between them. A press on a link still goes to the link.
+
 ## Fonts
 
 The default build embeds Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, so text looks the same on every machine and nothing is read from the system. Enable the `system-fonts` feature of `smudge` to add the fonts installed on the machine, for scripts and families the bundled fonts do not cover. It is not available on the web. The generic families resolve to the system's choices first and, with `bundled-fonts` on as it is by default, keep the bundled faces as the fallback, so a machine without usable fonts still lays text out. [Shipping a small binary](./small-binary) covers turning the bundled faces off.

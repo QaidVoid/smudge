@@ -17,6 +17,7 @@
 //! color, which defaults to the theme's text token.
 
 use std::cell::RefCell;
+use std::ops::Range;
 use std::rc::Rc;
 
 use parley::FontFamily;
@@ -62,7 +63,7 @@ pub struct Label {
     /// The layout holds the shaped text once; measuring at another offered
     /// width re-breaks its lines instead of shaping the text again, which is
     /// what keeps a layout engine's repeated measure calls for one node cheap.
-    layout: Option<TextLayout>,
+    layout: LayoutSlot,
     /// The width the lines of [`Label::layout`] were last broken at, `None`
     /// for max content, or `None` inside `None` when nothing is laid out.
     broken_width: Option<Option<f32>>,
@@ -75,6 +76,63 @@ pub struct Label {
     /// The glyph runs of the current layout, with the origin and the resolved
     /// color they were built at. Paint operations share them through an `Rc`.
     runs: RefCell<Option<CachedRuns>>,
+}
+
+/// Where a label keeps its layout: in itself, or, once a selection scope
+/// made it selectable, in a cell the scope's drag handler reads too, next to
+/// the range the scope selected. A label outside a scope pays only for the
+/// choice.
+// The own variant holds the layout inline, as every label always did. Boxing
+// it would add an allocation to every label outside a selection scope.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum LayoutSlot {
+    /// The label alone holds the layout.
+    Own(Option<TextLayout>),
+    /// The label shares the layout with its selection.
+    Shared {
+        /// The layout, which the scope's drag handler reads.
+        layout: Rc<RefCell<Option<TextLayout>>>,
+        /// The byte range of the text the scope selected, painted under the
+        /// glyphs, or `None`.
+        selected: Option<Range<usize>>,
+    },
+}
+
+impl LayoutSlot {
+    /// Runs `f` with the layout, when there is one.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a shared layout is borrowed mutably, which only the
+    /// label's own measure does, never while it paints or a handler reads.
+    fn with<R>(&self, f: impl FnOnce(Option<&TextLayout>) -> R) -> R {
+        match self {
+            LayoutSlot::Own(layout) => f(layout.as_ref()),
+            LayoutSlot::Shared { layout, .. } => f(layout.borrow().as_ref()),
+        }
+    }
+
+    /// Returns the range a selection scope selected, when the label is
+    /// selectable and part of the selection.
+    fn selected(&self) -> Option<&Range<usize>> {
+        match self {
+            LayoutSlot::Own(_) => None,
+            LayoutSlot::Shared { selected, .. } => selected.as_ref(),
+        }
+    }
+
+    /// Runs `f` with the layout to change.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a shared layout is already borrowed, which a handler
+    /// reading it never is while the label measures.
+    fn with_mut<R>(&mut self, f: impl FnOnce(&mut Option<TextLayout>) -> R) -> R {
+        match self {
+            LayoutSlot::Own(layout) => f(layout),
+            LayoutSlot::Shared { layout, .. } => f(&mut layout.borrow_mut()),
+        }
+    }
 }
 
 /// The glyph runs of one layout, with the origin and resolved color they were
@@ -97,7 +155,7 @@ impl Label {
             style: TextStyle::default(),
             explicit: ExplicitStyle::default(),
             max_lines: None,
-            layout: None,
+            layout: LayoutSlot::Own(None),
             broken_width: None,
             min_content: None,
             runs: RefCell::new(None),
@@ -107,7 +165,7 @@ impl Label {
     /// Drops the cached layout, the glyph runs built from it and the cached
     /// min-content size.
     fn invalidate_layout(&mut self) {
-        self.layout = None;
+        self.layout.with_mut(|layout| *layout = None);
         self.broken_width = None;
         self.min_content = None;
         *self.runs.borrow_mut() = None;
@@ -161,14 +219,17 @@ impl Widget for Label {
             if self.min_content.is_none() {
                 let painted = self.broken_width;
                 self.shape_and_break(Some(0.0));
-                let layout = self
-                    .layout
-                    .as_mut()
-                    .expect("the layout was just built or is cached");
-                if matches!(self.max_lines, Some(0 | 1)) {
-                    layout.truncate(self.max_lines, Some(0.0), &self.style);
-                }
-                self.min_content = Some(layout.size());
+                let (max_lines, style) = (self.max_lines, &self.style);
+                let size = self.layout.with_mut(|layout| {
+                    let layout = layout
+                        .as_mut()
+                        .expect("the layout was just built or is cached");
+                    if matches!(max_lines, Some(0 | 1)) {
+                        layout.truncate(max_lines, Some(0.0), style);
+                    }
+                    layout.size()
+                });
+                self.min_content = Some(size);
                 // Paint draws the lines the layout holds, so they go back to
                 // the width the label was last measured at, truncated as the
                 // label was last shown. A label measured nowhere yet goes
@@ -182,11 +243,11 @@ impl Widget for Label {
         if self.broken_width != Some(max_width) {
             self.shape_and_show(max_width);
         }
-        let layout = self
-            .layout
-            .as_ref()
-            .expect("the layout was just built or is cached");
-        Some(layout.size())
+        Some(self.layout.with(|layout| {
+            layout
+                .expect("the layout was just built or is cached")
+                .size()
+        }))
     }
 
     /// Appends one [`PaintOp::Glyphs`] per run of the current layout.
@@ -204,9 +265,21 @@ impl Widget for Label {
     /// the paint pass cannot do: it paints one node at a time and a widget
     /// never paints its own node again from inside the call.
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
-        let Some(layout) = &self.layout else {
+        self.layout
+            .with(|layout| self.paint_layout(layout, cx, out));
+    }
+}
+
+impl Label {
+    /// Paints `layout`, the label's current layout when it has one, as
+    /// [`Widget::paint`] describes, with the selected range under the glyphs.
+    fn paint_layout(&self, layout: Option<&TextLayout>, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
+        let Some(layout) = layout else {
             return;
         };
+        if let Some(range) = self.layout.selected() {
+            crate::selection::paint_selected(&layout.layout, range.clone(), cx, out);
+        }
         let color = self.text_color(cx);
         let origin = cx.rect.origin();
         let mut cache = self.runs.borrow_mut();
@@ -244,9 +317,12 @@ impl Label {
     /// the line positions in, are dropped here.
     fn shape_and_show(&mut self, max_width: Option<f32>) {
         self.shape_and_break(max_width);
-        if let Some(layout) = &mut self.layout {
-            layout.truncate(self.max_lines, max_width, &self.style);
-        }
+        let (max_lines, style) = (self.max_lines, &self.style);
+        self.layout.with_mut(|layout| {
+            if let Some(layout) = layout {
+                layout.truncate(max_lines, max_width, style);
+            }
+        });
     }
 
     /// Shapes [`Label::text`] with [`Label::style`] when no shaped layout is
@@ -256,12 +332,11 @@ impl Label {
     /// longest unbreakable word off the lines, which truncation would
     /// shorten, so it asks for the untruncated break.
     fn shape_and_break(&mut self, max_width: Option<f32>) {
-        match &mut self.layout {
+        let (text, style) = (&self.text, &self.style);
+        self.layout.with_mut(|layout| match layout {
             Some(layout) => layout.rebreak(max_width),
-            None => {
-                self.layout = Some(TextLayout::new(&self.text, &self.style, max_width));
-            }
-        }
+            None => *layout = Some(TextLayout::new(text, style, max_width)),
+        });
         self.broken_width = Some(max_width);
         *self.runs.borrow_mut() = None;
     }
@@ -499,6 +574,31 @@ fn wrap_width(space: AvailableSpace) -> Option<f32> {
         AvailableSpace::MaxContent => None,
         AvailableSpace::MinContent => Some(0.0),
     }
+}
+
+/// Moves the label's layout into `shared`, which its selection reads, so a
+/// drag over the label can find the character under the pointer.
+pub(crate) fn share_layout(label: &mut Label, shared: Rc<RefCell<Option<TextLayout>>>) -> Dirty {
+    if let LayoutSlot::Own(layout) = &mut label.layout {
+        *shared.borrow_mut() = layout.take();
+        label.layout = LayoutSlot::Shared {
+            layout: shared,
+            selected: None,
+        };
+    }
+    Dirty::Clean
+}
+
+/// Writes the range a selection scope selected, and repaints when it changed.
+pub(crate) fn set_selected(label: &mut Label, range: Option<Range<usize>>) -> Dirty {
+    let LayoutSlot::Shared { selected, .. } = &mut label.layout else {
+        return Dirty::Clean;
+    };
+    if *selected == range {
+        return Dirty::Clean;
+    }
+    *selected = range;
+    Dirty::Paint
 }
 
 #[cfg(test)]

@@ -89,6 +89,28 @@ fn rich_text_sample() {
 }
 
 #[test]
+fn selection_sample() {
+    use std::rc::Rc;
+    
+    use smudge::prelude::*;
+    
+    let lines: Rc<[String]> = Rc::from([
+        String::from("The build started."),
+        String::from("All 412 tests passed."),
+    ]);
+    let texts = Rc::clone(&lines);
+    let transcript = selection_scope(
+        || Rc::from([0usize, 1]),
+        move |at: &usize| texts[*at].clone(),
+        move || {
+            column()
+                .child(label(lines[0].clone()).selectable(0usize))
+                .child(label(lines[1].clone()).selectable(1usize))
+        },
+    );
+}
+
+#[test]
 fn form() {
     let email = RwSignal::new(String::new());
     let preview = email.clone();

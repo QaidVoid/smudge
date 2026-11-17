@@ -158,6 +158,9 @@ pub struct RichText {
     /// The paint operations of the current layout, with the origin and the
     /// colors they were built at.
     painted: RefCell<Option<Painted>>,
+    /// The byte range of the joined text a selection scope selected, painted
+    /// under the glyphs, or `None`.
+    selected: Option<Range<usize>>,
 }
 
 /// The paint operations of one layout, with the origin and the resolved
@@ -228,6 +231,7 @@ impl RichText {
             min_content: None,
             links,
             painted: RefCell::new(None),
+            selected: None,
         }
     }
 
@@ -333,6 +337,9 @@ impl Widget for RichText {
             None => self.style.color.resolve(cx.theme),
         };
         let origin = cx.rect.origin();
+        if let Some(range) = &self.selected {
+            crate::selection::paint_selected(&layout.layout, range.clone(), cx, out);
+        }
         let mut painted = self.painted.borrow_mut();
         let current = painted.as_ref().is_some_and(|painted| {
             painted.origin == origin
@@ -611,6 +618,28 @@ fn apply_ambient_style(rich: &mut RichText, mut ambient: TextStyle) -> Dirty {
     rich.style = ambient;
     rich.invalidate_layout();
     Dirty::Layout
+}
+
+/// The layout of a paragraph, shared with its pointer handlers.
+pub(crate) type SharedLayout = Rc<RefCell<Option<RichLayout>>>;
+
+/// Where a paragraph hands its shared layout to a selection scope.
+pub(crate) type LayoutSink = Rc<RefCell<Option<SharedLayout>>>;
+
+/// Hands the paragraph's layout to `sink`, so a selection scope can find the
+/// character under a drag.
+pub(crate) fn share_layout(rich: &mut RichText, sink: LayoutSink) -> Dirty {
+    *sink.borrow_mut() = Some(Rc::clone(&rich.layout));
+    Dirty::Clean
+}
+
+/// Writes the range a selection scope selected, and repaints when it changed.
+pub(crate) fn set_selected(rich: &mut RichText, selected: Option<Range<usize>>) -> Dirty {
+    if rich.selected == selected {
+        return Dirty::Clean;
+    }
+    rich.selected = selected;
+    Dirty::Paint
 }
 
 #[cfg(test)]

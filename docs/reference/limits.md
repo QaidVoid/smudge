@@ -4,7 +4,8 @@
 
 ## Widgets
 
-- **Rich text is read-only and per paragraph.** `rich_text` shows mixed bold, italic, monospace, colored and link runs in one paragraph, but text cannot be selected or copied from it, its links are not reachable with the keyboard, and `text_area` edits plain text only. Spans share one font size.
+- **Selections start from the scope's own presses.** A row inside a selection scope that takes presses itself, with a press or hover handler or a hover style, keeps them, so a selection cannot start on it. A press on a link inside a scope takes the keyboard focus, so copying needs a press on the scope's text again.
+- **Rich text is read-only and per paragraph.** `rich_text` shows mixed bold, italic, monospace, colored and link runs in one paragraph, and a selection scope selects and copies it with the pointer, but not yet with the keyboard. Its links are not reachable with the keyboard, `text_area` edits plain text only, and spans share one font size.
 - **Vertical scrolling only.** The scroll view scrolls up and down. Content wider than the view is clipped, not scrolled.
 - **The scroll thumb is an indicator.** It shows the position but cannot be dragged.
 - **No popups that escape a clip.** There is no overlay layer yet, so a menu, tooltip or dropdown is clipped by any ancestor that clips.

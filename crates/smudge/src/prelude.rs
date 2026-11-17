@@ -18,9 +18,9 @@ pub use smudge_core::theme::{ColorToken, RadiusToken, Theme};
 pub use smudge_core::widget::{Panel, panel};
 pub use smudge_core::window::Cursor;
 pub use smudge_text::{
-    FontWeight, Label, LabelExt, RichText, RichTextExt, Span, SpanStyle, TextAreaExt, TextInputExt,
-    TextLayout, TextStyle, TextSystem, current_text_style, label, provide_text_style, rich_text,
-    text_area, text_input,
+    FontWeight, Label, LabelExt, RichText, RichTextExt, SelectableExt, Span, SpanStyle,
+    TextAreaExt, TextInputExt, TextLayout, TextStyle, TextSystem, current_text_style, label,
+    provide_text_style, rich_text, selection_scope, text_area, text_input,
 };
 pub use smudge_widgets::{
     ButtonExt, ScrollView, button, column, image, row, scroll, spacer, stack, virtual_list,
