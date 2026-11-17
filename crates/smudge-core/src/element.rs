@@ -1828,7 +1828,7 @@ pub(crate) fn mount(
     queue: &UpdateQueue,
     parent: Option<WidgetId>,
 ) -> WidgetId {
-    mount_named(element, tree, queue, parent, None)
+    mount_named(element, tree, queue, parent, None, None)
 }
 
 /// How a list row's owners stand in the key of a value carried across a
@@ -1864,6 +1864,7 @@ fn mount_named(
     queue: &UpdateQueue,
     parent: Option<WidgetId>,
     row: Option<RowKey>,
+    owner: Option<&Owner>,
 ) -> WidgetId {
     let AnyElement {
         widget,
@@ -1882,7 +1883,7 @@ fn mount_named(
         scroll_offset,
         children,
     } = element;
-    let id = tree.insert(parent, widget, style);
+    let id = tree.insert_owned(parent, owner, widget, style);
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     if let Some(row) = &row
         && let Some(owner) = tree.owner(id)
@@ -1955,8 +1956,8 @@ fn mount_under_slot(
     build: impl FnOnce() -> AnyElement,
 ) -> Option<(WidgetId, Owner)> {
     let slot_owner = tree.owner(slot)?;
-    // The row's owner and the owner of the node it mounts both sit under
-    // the slot's own owner.
+    // The row's owner sits under the slot's own owner, and the nodes the row
+    // mounts sit under the row's owner.
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     let _mounting = crate::reactive::carry::Mounting::enter(slot_owner.data());
     let owner = slot_owner.child();
@@ -1965,7 +1966,10 @@ fn mount_under_slot(
         crate::reactive::carry::name_owner(owner.data(), name, false);
     }
     let element = owner.with(build);
-    let child = mount_named(element, tree, queue, Some(slot), name);
+    // The child's nodes hang under the owner its build ran in, so what the
+    // build provided as context reaches what the subtree builds later, such
+    // as the rows of a list inside it.
+    let child = mount_named(element, tree, queue, Some(slot), name, Some(&owner));
     Some((child, owner))
 }
 

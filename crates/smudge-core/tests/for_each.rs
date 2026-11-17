@@ -225,3 +225,48 @@ fn reordering_overlapping_children_swaps_which_one_is_on_top() {
     swapped.frame();
     harness.assert_matches(&swapped);
 }
+
+#[test]
+fn context_a_slot_s_build_provides_reaches_the_rows_it_mounts_later() {
+    use smudge_core::element::show;
+    use smudge_core::reactive::{provide_context, use_context};
+
+    let inside = Rc::new(Cell::new(None));
+    let outside = Rc::new(Cell::new(None));
+    let (row_saw, sibling_saw) = (Rc::clone(&inside), Rc::clone(&outside));
+    let mut harness = Harness::new(100.0, 100.0, 1.0, move || {
+        let row_saw = Rc::clone(&row_saw);
+        let sibling_saw = Rc::clone(&sibling_saw);
+        panel()
+            .child(show(
+                || true,
+                move || {
+                    provide_context(7u32);
+                    let row_saw = Rc::clone(&row_saw);
+                    for_each(
+                        || vec![1u32],
+                        |key| *key,
+                        move |_| {
+                            row_saw.set(use_context::<u32>());
+                            panel()
+                        },
+                    )
+                },
+            ))
+            .child(show(
+                || true,
+                move || {
+                    sibling_saw.set(Some(use_context::<u32>()));
+                    panel()
+                },
+            ))
+    });
+    harness.frame();
+
+    assert_eq!(
+        inside.get(),
+        Some(7),
+        "the row built later found the context"
+    );
+    assert_eq!(outside.get(), Some(None), "the sibling slot did not");
+}

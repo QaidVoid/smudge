@@ -53,8 +53,8 @@ pub(crate) struct Carried {
 }
 
 /// The name a list gives the owners of one of its rows. A row has two:
-/// the owner its build runs in, and the owner of the node it mounts, which
-/// sit side by side under the list's own node.
+/// the owner its build runs in, under the list's own node, and the owner of
+/// the node it mounts, under the build's owner.
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub(crate) enum OwnerName {
     /// The owner the row's build runs in, by the hash of the row's key.

@@ -384,8 +384,26 @@ impl WidgetTree {
         }
     }
 
+    /// Adds a node as [`WidgetTree::insert_owned`] does, with its owner under
+    /// the parent node's owner. Only tests build trees this way.
+    #[cfg(test)]
+    pub(crate) fn insert(
+        &mut self,
+        parent: Option<WidgetId>,
+        widget: Box<dyn Widget>,
+        style: Style,
+    ) -> WidgetId {
+        self.insert_owned(parent, None, widget, style)
+    }
+
     /// Adds a node for `widget` under `parent`, or as the root when `parent` is
     /// `None`, and returns the new node's id.
+    ///
+    /// The node's owner is created under `owner` when one is given, and under
+    /// the parent node's owner otherwise. A slot mounts the child its build
+    /// returned with the build's owner, so the child's subtree hangs under
+    /// it, and what that build provided as context reaches everything the
+    /// subtree builds later.
     ///
     /// The node starts [`Dirty::Layout`], because it has never been laid out.
     ///
@@ -394,9 +412,10 @@ impl WidgetTree {
     /// Panics when `parent` is not a live id, or when `parent` is `None` and
     /// the tree already has a root. Both are internal invariants: callers pass
     /// ids that this tree handed out.
-    pub(crate) fn insert(
+    pub(crate) fn insert_owned(
         &mut self,
         parent: Option<WidgetId>,
+        owner: Option<&Owner>,
         widget: Box<dyn Widget>,
         style: Style,
     ) -> WidgetId {
@@ -415,14 +434,15 @@ impl WidgetTree {
             .taffy
             .new_leaf(style.layout.to_taffy())
             .expect("the layout engine accepts a new leaf node");
-        let owner = match parent {
-            Some(parent) => self
+        let owner = match (owner, parent) {
+            (Some(owner), _) => owner.child(),
+            (None, Some(parent)) => self
                 .nodes
                 .get(parent)
                 .expect("the parent id is a live node")
                 .owner
                 .child(),
-            None => Owner::new(),
+            (None, None) => Owner::new(),
         };
         let node = Node {
             widget,
