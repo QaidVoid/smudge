@@ -124,6 +124,8 @@ A press on a block starts a selection, and a drag extends it across blocks. Drag
 
 The default build embeds Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, so text looks the same on every machine and nothing is read from the system. Enable the `system-fonts` feature of `smudge` to add the fonts installed on the machine, for scripts and families the bundled fonts do not cover. It is not available on the web. The generic families resolve to the system's choices first and, with `bundled-fonts` on as it is by default, keep the bundled faces as the fallback, so a machine without usable fonts still lays text out. [Shipping a small binary](./small-binary) covers turning the bundled faces off.
 
+Text that asks for an italic that no face of its family has is drawn slanted, and text that asks for a weight more than 200 above the closest face's is drawn widened, unless that face has a weight axis. Noto Sans Mono has a regular face only, so bold or italic monospace text is drawn this way, while a semibold over a regular face draws at the regular weight.
+
 Turning on `system-fonts` makes the installed fonts available but does not change the default style, which names the bundled sans so text never depends on the host. Name a generic family to use the host's faces, for example its interface font for a subtree:
 
 ```rust

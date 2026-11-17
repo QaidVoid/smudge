@@ -72,3 +72,93 @@ fn glyphs_claim_ink_and_whitespace_does_not() {
         );
     }
 }
+
+/// Collects the points of a glyph outline, control points included, in font
+/// coordinates scaled to the size it was drawn at, where y grows up.
+#[derive(Default)]
+struct Points(Vec<(f32, f32)>);
+
+impl skrifa::outline::OutlinePen for Points {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.0.push((x, y));
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.0.push((x, y));
+    }
+    fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+        self.0.extend([(cx0, cy0), (x, y)]);
+    }
+    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+        self.0.extend([(cx0, cy0), (cx1, cy1), (x, y)]);
+    }
+    fn close(&mut self) {}
+}
+
+#[test]
+fn a_slanted_bold_run_claims_the_ink_of_its_widened_sheared_outlines() {
+    use crate::layout::{RichLayout, SpanFont};
+    use skrifa::MetadataProvider;
+    use skrifa::instance::{LocationRef, Size};
+    use skrifa::outline::DrawSettings;
+    use smudge_core::paint::EMBOLDEN_MITER_LIMIT;
+
+    setup();
+    let text = "Wolf jumped |/{}";
+    let mono = TextStyle {
+        family: parley::FontFamily::named("Noto Sans Mono"),
+        ..TextStyle::default()
+    };
+    let font = SpanFont {
+        weight: Some(parley::FontWeight::BOLD),
+        italic: true,
+        monospace: false,
+        underline: false,
+    };
+    let layout = RichLayout::new(text, &mono, &[(0..text.len(), font)], None);
+    let (runs, _) = crate::glyphs::rich_glyph_runs(&layout, Point { x: 10.0, y: 10.0 }, &[]);
+
+    assert!(!runs.is_empty());
+    for run in &runs {
+        assert!(run.embolden > 0.0, "the mono has no bold face");
+        assert_eq!(run.skew, 14.0, "the mono has no italic face");
+        let face = skrifa::FontRef::from_index(run.font.data.as_ref().as_ref(), run.font.index)
+            .expect("the run's font parses");
+        let outlines = face.outline_glyphs();
+        let slope = run.skew.to_radians().tan();
+        let reach = run.embolden * EMBOLDEN_MITER_LIMIT;
+        for glyph in &run.glyphs {
+            let mut points = Points::default();
+            if let Some(outline) = outlines.get(skrifa::GlyphId::new(glyph.id)) {
+                outline
+                    .draw(
+                        DrawSettings::unhinted(Size::new(run.size), LocationRef::default()),
+                        &mut points,
+                    )
+                    .expect("the outline draws");
+            }
+            for (x, y) in points.0 {
+                for (dx, dy) in [
+                    (-reach, -reach),
+                    (-reach, reach),
+                    (reach, -reach),
+                    (reach, reach),
+                ] {
+                    let (x, y) = (x + dx, y + dy);
+                    let at = Point {
+                        x: glyph.x + x + y * slope,
+                        y: glyph.y - y,
+                    };
+                    let bounds = run.ink_bounds;
+                    assert!(
+                        at.x >= bounds.x0
+                            && at.x <= bounds.x1
+                            && at.y >= bounds.y0
+                            && at.y <= bounds.y1,
+                        "glyph {} reaches {at:?} outside the claimed {bounds:?}",
+                        glyph.id
+                    );
+                }
+            }
+        }
+    }
+}

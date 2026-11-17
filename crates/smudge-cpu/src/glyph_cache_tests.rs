@@ -32,6 +32,8 @@ fn keys(text: &str, index: usize, count: usize) -> (FontBlob, Vec<MaskKey>) {
             font_index: run.font.index,
             glyph_id: glyph.id,
             size: 64 * 64 + step as i32,
+            embolden: 0,
+            skew: 0,
             subpixel: 0,
         })
         .collect();
@@ -87,6 +89,8 @@ fn a_glyph_without_outline_is_cached_as_empty() {
             font_index: run.font.index,
             glyph_id: glyph.id,
             size: 14 * 64,
+            embolden: 0,
+            skew: 0,
             subpixel: 0,
         })
         .collect();

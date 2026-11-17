@@ -12,7 +12,7 @@ use smudge_core::paint::{DisplayList, FontBlob, GlyphRun, PaintOp, PositionedGly
 use smudge_core::renderer::Renderer;
 use smudge_cpu::CpuRenderer;
 use smudge_gpu::GpuRenderer;
-use smudge_text::{TextSystem, label};
+use smudge_text::{FontWeight, Span, SpanStyle, TextSystem, label, rich_text};
 
 /// The size of the test surface, in physical pixels.
 const SIZE: u32 = 64;
@@ -346,6 +346,8 @@ fn a_run_in_a_font_that_does_not_parse_draws_nothing() {
         },
         size: 16.0,
         color: Color::BLACK,
+        embolden: 0.0,
+        skew: 0.0,
         glyphs: vec![PositionedGlyph {
             id: 1,
             x: 8.0,
@@ -361,5 +363,92 @@ fn a_run_in_a_font_that_does_not_parse_draws_nothing() {
             .iter()
             .all(|pixel| *pixel == [255; 4]),
         "a face that does not parse leaves the surface clear"
+    );
+}
+
+/// How many pixels of a white surface text darkened.
+fn dark_pixels(pixels: &[u8]) -> usize {
+    pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel[..3].iter().any(|&channel| channel <= 128))
+        .count()
+}
+
+/// Renders `text` in the bundled mono, which has a regular face only, at
+/// `weight` and slanted when `italic`, on both renderers, and returns the
+/// CPU's pixels and the GPU's.
+fn mono_on_both(
+    gpu: &mut GpuRenderer,
+    text: &'static str,
+    weight: Option<FontWeight>,
+    italic: bool,
+) -> (Vec<u8>, Vec<u8>) {
+    TextSystem::bundled_only().install();
+    let mut app = App::new(
+        AppConfig {
+            viewport: Size {
+                width: 160.0,
+                height: 40.0,
+            },
+            scale: 2.0,
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Full,
+        },
+        move || {
+            rich_text(move || {
+                Rc::from([Span::new(
+                    text,
+                    SpanStyle {
+                        monospace: true,
+                        weight,
+                        italic,
+                        ..SpanStyle::default()
+                    },
+                )])
+            })
+        },
+    );
+    let frame = app.frame();
+    let mut cpu = CpuRenderer::new(320, 80);
+    cpu.render(&frame);
+    gpu.render(&frame);
+    (cpu.pixels().to_vec(), gpu.read_pixels())
+}
+
+#[test]
+fn synthetic_bold_and_slant_match_the_cpu_renderer() {
+    let Some(mut gpu) = headless_renderer(320, 80) else {
+        eprintln!("skipping: no GPU adapter available for the headless renderer");
+        return;
+    };
+    let (cpu_regular, gpu_regular) = mono_on_both(&mut gpu, "Smudge", None, false);
+    let (cpu_bold, gpu_bold) = mono_on_both(&mut gpu, "Smudge", Some(FontWeight::BOLD), true);
+
+    let expected = ink_bounds(&cpu_bold, 320).expect("the CPU renderer drew the text");
+    let actual = ink_bounds(&gpu_bold, 320).expect("the GPU renderer drew the text");
+    let close = |a: usize, b: usize| a.abs_diff(b) <= 2;
+    assert!(
+        close(actual.0, expected.0)
+            && close(actual.1, expected.1)
+            && close(actual.2, expected.2)
+            && close(actual.3, expected.3),
+        "the slanted glyphs landed at {actual:?} on the GPU and at {expected:?} on the CPU"
+    );
+    for (renderer, regular, bold) in [
+        ("CPU", &cpu_regular, &cpu_bold),
+        ("GPU", &gpu_regular, &gpu_bold),
+    ] {
+        let (regular, bold) = (dark_pixels(regular), dark_pixels(bold));
+        assert!(
+            bold * 100 > regular * 115,
+            "the {renderer} renderer drew the bold {bold} dark pixels against {regular} regular"
+        );
+    }
+    let (cpu, gpu) = (dark_pixels(&cpu_bold), dark_pixels(&gpu_bold));
+    assert!(
+        cpu.abs_diff(gpu) * 10 <= cpu,
+        "the renderers disagree on the bold's weight: {cpu} dark pixels on the CPU, {gpu} on the GPU"
     );
 }

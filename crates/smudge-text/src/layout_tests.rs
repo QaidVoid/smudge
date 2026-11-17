@@ -7,7 +7,7 @@ use crate::layout::{TextLayout, line_width, style_ellipsis};
 use crate::style::TextStyle;
 use crate::system::TextSystem;
 use proptest::prelude::*;
-use smudge_core::geometry::{Point, Size};
+use smudge_core::geometry::{Color, Point, Size};
 
 /// Installs a bundled-only system on this test thread.
 fn setup() {
@@ -517,7 +517,7 @@ fn a_cut_without_any_ellipsis_still_keeps_the_cap() {
     let text = "the quick brown fox jumps over the lazy dog";
     let mut layout = TextLayout::new(text, &style, Some(120.0));
     assert!(layout.line_count() > 1);
-    layout.truncate_with(Some(1), Some(120.0), &mut |_, _| None);
+    layout.truncate_with(Some(1), Some(120.0), &mut |_, _, _| None);
 
     assert_eq!(layout.line_count(), 1);
     assert_eq!(painted_lines(&layout), 1);
@@ -542,7 +542,7 @@ fn an_ellipsis_from_another_font_paints_with_that_font() {
     let foreign = style_ellipsis(&mono).expect("the bundled mono maps an ellipsis");
     let text = "the quick brown fox jumps over the lazy dog";
     let mut layout = TextLayout::new(text, &style, Some(120.0));
-    layout.truncate_with(Some(1), Some(120.0), &mut |_, _| Some(foreign.clone()));
+    layout.truncate_with(Some(1), Some(120.0), &mut |_, _, _| Some(foreign.clone()));
 
     let runs = layout.glyph_runs_at(
         Point { x: 10.0, y: 20.0 },
@@ -598,7 +598,7 @@ fn the_cut_falls_back_to_the_style_ellipsis_resolved_once() {
 
     let mut layout = TextLayout::new(text, &style, Some(120.0));
     let before = shapes();
-    layout.truncate_resolving(Some(1), Some(120.0), &style, &mut |_, _| None);
+    layout.truncate_resolving(Some(1), Some(120.0), &style, &mut |_, _, _| None);
     assert_eq!(shapes(), before + 1, "the fallback is laid out once");
     let positions = glyph_positions(&layout);
     assert_eq!(
@@ -610,7 +610,7 @@ fn the_cut_falls_back_to_the_style_ellipsis_resolved_once() {
 
     let before = shapes();
     layout.rebreak(Some(100.0));
-    layout.truncate_resolving(Some(1), Some(100.0), &style, &mut |_, _| None);
+    layout.truncate_resolving(Some(1), Some(100.0), &style, &mut |_, _, _| None);
     assert_eq!(
         shapes(),
         before,
@@ -623,4 +623,23 @@ fn the_cut_falls_back_to_the_style_ellipsis_resolved_once() {
             .0,
         ellipsis
     );
+}
+
+/// A run drawn emboldened ends in an ellipsis drawn emboldened too.
+#[test]
+fn truncation_ends_an_emboldened_run_in_an_emboldened_ellipsis() {
+    setup();
+    let style = TextStyle {
+        family: parley::FontFamily::named("Noto Sans Mono"),
+        weight: parley::FontWeight::BOLD,
+        ..TextStyle::default()
+    };
+    let text = "the quick brown fox jumps over the lazy dog";
+    let mut layout = TextLayout::new(text, &style, Some(120.0));
+    layout.truncate(Some(1), Some(120.0), &style);
+
+    let runs = layout.glyph_runs_at(Point { x: 0.0, y: 0.0 }, Color::BLACK);
+    let ellipsis = runs.last().expect("the cut line paints runs");
+    assert_eq!(ellipsis.glyphs.len(), 1, "the ellipsis paints alone");
+    assert!(ellipsis.embolden > 0.0, "the mono has no bold face");
 }

@@ -454,3 +454,39 @@ fn a_link_that_moves_under_a_still_pointer_shows_the_pointing_cursor() {
         "the link moved under the pointer"
     );
 }
+
+#[test]
+fn monospace_draws_its_missing_bold_and_italic_synthesized() {
+    let mono = |text: &str, weight: Option<FontWeight>, italic: bool| {
+        Span::new(
+            text,
+            SpanStyle {
+                monospace: true,
+                weight,
+                italic,
+                ..SpanStyle::default()
+            },
+        )
+    };
+    let synthesized = RwSignal::new(true);
+    let read = synthesized.clone();
+    let mut harness = harness(move || {
+        let synthesized = read.get();
+        let weight = synthesized.then_some(FontWeight::BOLD);
+        Rc::from([
+            mono("regular ", None, false),
+            mono("bold ", weight, false),
+            mono("italic ", None, synthesized),
+            mono("bold italic", weight, synthesized),
+        ])
+    });
+    harness.frame();
+    assert_binary_snapshot!(".png", harness.png());
+
+    for synthesized_now in [false, true] {
+        synthesized.set(synthesized_now);
+        let report = harness.frame();
+        assert!(!report.full, "the change repaints only what it damaged");
+        harness.assert_matches_full_repaint();
+    }
+}

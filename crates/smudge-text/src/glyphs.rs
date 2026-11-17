@@ -16,7 +16,7 @@ use skrifa::GlyphId;
 use skrifa::MetadataProvider;
 use skrifa::instance::{LocationRef, Size};
 use smudge_core::geometry::{Color, Point, Rect};
-use smudge_core::paint::{FontBlob, GlyphRun, PositionedGlyph};
+use smudge_core::paint::{EMBOLDEN_MITER_LIMIT, FontBlob, GlyphRun, PositionedGlyph};
 
 use crate::layout::Cut;
 use crate::layout::Ellipsis;
@@ -111,6 +111,7 @@ pub(crate) fn glyph_runs_with<B: parley::Brush>(
             runs.push(paint_run(
                 run.run().font(),
                 run.run().font_size(),
+                run.run().synthesis(),
                 glyphs,
                 color,
             ));
@@ -127,7 +128,13 @@ pub(crate) fn glyph_runs_with<B: parley::Brush>(
                 let dot_x = origin.x + x + dot as f32 * ellipsis.advance;
                 (ellipsis.glyph, dot_x, y)
             });
-            runs.push(paint_run(&ellipsis.font, ellipsis.size, dots, color));
+            runs.push(paint_run(
+                &ellipsis.font,
+                ellipsis.size,
+                ellipsis.synthesis,
+                dots,
+                color,
+            ));
         }
     }
     runs
@@ -164,6 +171,7 @@ pub(crate) fn rich_glyph_runs(
             runs.push(paint_run(
                 run.run().font(),
                 run.run().font_size(),
+                run.run().synthesis(),
                 glyphs,
                 color,
             ));
@@ -191,16 +199,33 @@ pub(crate) fn rich_glyph_runs(
     (runs, underlines)
 }
 
+/// How far an emboldened outline is pushed outward on every side, as a share
+/// of the font size: a stroke of a twenty-fourth of the em, half of it on
+/// each side, which brings a regular face close to its bold.
+const EMBOLDEN_SHARE: f32 = 1.0 / 48.0;
+
 /// Builds one [`GlyphRun`] out of the glyph identifiers and absolute pen
-/// positions `glyphs` yields, painted with `font` at `size`.
+/// positions `glyphs` yields, painted with `font` at `size`, emboldened and
+/// slanted as `synthesis` asks.
 ///
-/// Every glyph's ink is measured with skrifa against that font and size.
+/// Every glyph's ink is measured with skrifa against that font and size,
+/// then grown by the farthest a mitered corner of the embolden reaches and
+/// sheared by the slant.
 fn paint_run(
     font: &FontData,
     size: f32,
+    synthesis: parley::fontique::Synthesis,
     glyphs: impl Iterator<Item = (u32, f32, f32)>,
     color: Color,
 ) -> GlyphRun {
+    let embolden = if synthesis.embolden() {
+        size * EMBOLDEN_SHARE
+    } else {
+        0.0
+    };
+    let skew = synthesis.skew().unwrap_or(0.0);
+    let slope = skew.to_radians().tan();
+    let reach = embolden * EMBOLDEN_MITER_LIMIT;
     // skrifa reads the font once per run, not once per glyph.
     let metrics = skrifa::FontRef::from_index(font.data.as_ref(), font.index)
         .ok()
@@ -212,12 +237,17 @@ fn paint_run(
             .as_ref()
             .and_then(|metrics| metrics.bounds(GlyphId::new(id)))
         {
+            let (x_min, y_min) = (bounds.x_min - reach, bounds.y_min - reach);
+            let (x_max, y_max) = (bounds.x_max + reach, bounds.y_max + reach);
+            // The slant moves a point right by its height above the baseline
+            // times the slope.
+            let (low, high) = (y_min * slope, y_max * slope);
             // Font coordinates grow up, window coordinates down.
             ink = ink.union(Rect::new(
-                x + bounds.x_min,
-                y - bounds.y_max,
-                x + bounds.x_max,
-                y - bounds.y_min,
+                x + x_min + low.min(high),
+                y - y_max,
+                x + x_max + low.max(high),
+                y - y_min,
             ));
         }
         painted.push(PositionedGlyph { id, x, y });
@@ -227,6 +257,8 @@ fn paint_run(
         size,
         color,
         glyphs: painted,
+        embolden,
+        skew,
         ink_bounds: expand(ink, 1.0),
     }
 }
@@ -237,7 +269,11 @@ fn paint_run(
 /// The horizontal ellipsis stands in for the cut text, or three full stops
 /// when the font maps no ellipsis. Returns `None` when the font maps
 /// neither, so truncation looks for the ellipsis elsewhere.
-pub(crate) fn ellipsis_glyph(font: &FontData, font_size: f32) -> Option<Ellipsis> {
+pub(crate) fn ellipsis_glyph(
+    font: &FontData,
+    font_size: f32,
+    synthesis: parley::fontique::Synthesis,
+) -> Option<Ellipsis> {
     let face = skrifa::FontRef::from_index(font.data.as_ref(), font.index).ok()?;
     let charmap = face.charmap();
     let (glyph, dots) = match charmap.map('\u{2026}') {
@@ -249,6 +285,7 @@ pub(crate) fn ellipsis_glyph(font: &FontData, font_size: f32) -> Option<Ellipsis
     Some(Ellipsis {
         font: font.clone(),
         size: font_size,
+        synthesis,
         glyph,
         dots,
         advance,

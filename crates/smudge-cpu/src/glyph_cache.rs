@@ -2,9 +2,9 @@
 //!
 //! Outlining a glyph and filling its path is the expensive part of drawing
 //! text, so each glyph is rasterized once into an 8-bit alpha mask and blitted
-//! from the cache afterwards. A mask depends on the glyph, its quantized size
-//! and its subpixel x phase only, never on the area being drawn, so a damaged
-//! repaint blits the same bytes a full repaint would.
+//! from the cache afterwards. A mask depends on the glyph, its quantized size,
+//! embolden and slant, and its subpixel x phase only, never on the area being
+//! drawn, so a damaged repaint blits the same bytes a full repaint would.
 //!
 //! Rasterization is unhinted, at the exact quantized size, with grayscale
 //! anti-aliasing only. y is snapped to whole physical pixels and x keeps a
@@ -18,8 +18,8 @@ use skrifa::MetadataProvider;
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::pen::PathElement;
 use skrifa::outline::{DrawSettings, OutlinePen};
-use smudge_core::paint::FontBlob;
-use tiny_skia::{FillRule, Mask, PathBuilder, Transform};
+use smudge_core::paint::{EMBOLDEN_MITER_LIMIT, FontBlob};
+use tiny_skia::{FillRule, LineJoin, Mask, PathBuilder, Stroke, Transform};
 
 /// The largest font size a glyph is rasterized at, in physical pixels.
 ///
@@ -56,6 +56,10 @@ pub(crate) struct MaskKey {
     pub(crate) glyph_id: u32,
     /// The font size in 1/64 physical pixels.
     pub(crate) size: i32,
+    /// How far the outline is pushed outward, in 1/64 physical pixels.
+    pub(crate) embolden: i32,
+    /// The slant in 1/64 degrees, positive to lean the top right.
+    pub(crate) skew: i32,
     /// The quarter-pixel phase of the x origin, from 0 to 3.
     pub(crate) subpixel: u32,
 }
@@ -210,9 +214,10 @@ impl GlyphCache {
 /// Rasterizes one glyph into an alpha mask.
 ///
 /// The outline is drawn unhinted at the key's quantized size, flipped for a
-/// coordinate system whose y grows down, and shifted by the key's subpixel
-/// phase. The mask spans the outline's bounds with one pixel of slack on
-/// every side, so every anti-aliased edge pixel it can shade is inside the
+/// coordinate system whose y grows down, widened by the key's embolden,
+/// sheared by its slant about the baseline origin, and shifted by its
+/// subpixel phase. The mask spans the result's bounds with one pixel of slack
+/// on every side, so every anti-aliased edge pixel it can shade is inside the
 /// mask, and the bearings report where that rectangle sits relative to the
 /// glyph's baseline origin.
 fn rasterize(key: MaskKey, font: &FontBlob) -> Option<GlyphMask> {
@@ -231,10 +236,17 @@ fn rasterize(key: MaskKey, font: &FontBlob) -> Option<GlyphMask> {
     let Some((x_min, y_min, x_max, y_max)) = collector.bounds() else {
         return Some(GlyphMask::empty());
     };
+    let embolden = key.embolden.max(0) as f32 / 64.0;
+    let reach = embolden * EMBOLDEN_MITER_LIMIT;
+    let (x_min, y_min, x_max, y_max) = (x_min - reach, y_min - reach, x_max + reach, y_max + reach);
+    // With y growing down, leaning the top right moves a point left by its y
+    // times the slope.
+    let slope = (key.skew as f32 / 64.0).to_radians().tan();
+    let (top, bottom) = (-y_min * slope, -y_max * slope);
     let shift = key.subpixel as f32 / 4.0;
-    let x0 = (x_min + shift).floor() - 1.0;
+    let x0 = (x_min + top.min(bottom) + shift).floor() - 1.0;
     let y0 = y_min.floor() - 1.0;
-    let width = ((x_max + shift).ceil() + 1.0 - x0) as u32;
+    let width = ((x_max + top.max(bottom) + shift).ceil() + 1.0 - x0) as u32;
     let height = (y_max.ceil() + 1.0 - y0) as u32;
     if width == 0 || height == 0 || width > MAX_MASK_DIMENSION || height > MAX_MASK_DIMENSION {
         return None;
@@ -243,11 +255,9 @@ fn rasterize(key: MaskKey, font: &FontBlob) -> Option<GlyphMask> {
     let mut builder = PathBuilder::new();
     for element in &collector.elements {
         match *element {
-            PathElement::MoveTo { x, y } => builder.move_to(x + shift - x0, y - y0),
-            PathElement::LineTo { x, y } => builder.line_to(x + shift - x0, y - y0),
-            PathElement::QuadTo { cx0, cy0, x, y } => {
-                builder.quad_to(cx0 + shift - x0, cy0 - y0, x + shift - x0, y - y0);
-            }
+            PathElement::MoveTo { x, y } => builder.move_to(x, y),
+            PathElement::LineTo { x, y } => builder.line_to(x, y),
+            PathElement::QuadTo { cx0, cy0, x, y } => builder.quad_to(cx0, cy0, x, y),
             PathElement::CurveTo {
                 cx0,
                 cy0,
@@ -255,22 +265,29 @@ fn rasterize(key: MaskKey, font: &FontBlob) -> Option<GlyphMask> {
                 cy1,
                 x,
                 y,
-            } => builder.cubic_to(
-                cx0 + shift - x0,
-                cy0 - y0,
-                cx1 + shift - x0,
-                cy1 - y0,
-                x + shift - x0,
-                y - y0,
-            ),
+            } => builder.cubic_to(cx0, cy0, cx1, cy1, x, y),
             PathElement::Close => builder.close(),
         }
     }
     let Some(path) = builder.finish() else {
         return Some(GlyphMask::empty());
     };
+    let placement = Transform::from_row(1.0, 0.0, -slope, 1.0, shift - x0, -y0);
     let mut mask = Mask::new(width, height)?;
-    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    mask.fill_path(&path, FillRule::Winding, true, placement);
+    if embolden > 0.0 {
+        // The fill and a stroke as wide as twice the embolden, centered on
+        // the outline, together cover the outline pushed out by the embolden.
+        let stroke = Stroke {
+            width: embolden * 2.0,
+            line_join: LineJoin::Miter,
+            miter_limit: EMBOLDEN_MITER_LIMIT,
+            ..Stroke::default()
+        };
+        if let Some(widened) = path.stroke(&stroke, 1.0) {
+            mask.fill_path(&widened, FillRule::Winding, true, placement);
+        }
+    }
     Some(GlyphMask {
         data: mask.data().to_vec(),
         width,

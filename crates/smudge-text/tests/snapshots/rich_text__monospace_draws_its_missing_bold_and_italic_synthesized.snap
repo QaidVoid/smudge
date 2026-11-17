@@ -1,0 +1,7 @@
+---
+source: crates/smudge-text/tests/rich_text.rs
+assertion_line: 481
+expression: harness.png()
+extension: png
+snapshot_kind: binary
+---

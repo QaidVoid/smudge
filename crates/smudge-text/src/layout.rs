@@ -13,6 +13,7 @@ use crate::style::TextStyle;
 use crate::system::TextSystem;
 use parley::PositionedLayoutItem;
 use parley::StyleProperty;
+use parley::fontique::Synthesis;
 use parley::style::LineHeight;
 use smudge_core::geometry::Size;
 
@@ -84,6 +85,9 @@ pub(crate) struct Ellipsis {
     pub(crate) font: parley::FontData,
     /// The font size the glyph paints at.
     pub(crate) size: f32,
+    /// The embolden and slant the face needs for the style that asked for
+    /// the ellipsis.
+    pub(crate) synthesis: Synthesis,
     /// The glyph identifier of the horizontal ellipsis, or of the full stop
     /// when the font lacks one.
     pub(crate) glyph: u32,
@@ -232,11 +236,11 @@ impl TextLayout {
         max_lines: Option<u32>,
         width: Option<f32>,
         style: &TextStyle,
-        own: &mut dyn FnMut(&parley::FontData, f32) -> Option<Ellipsis>,
+        own: &mut dyn FnMut(&parley::FontData, f32, Synthesis) -> Option<Ellipsis>,
     ) {
         let mut fallback = self.fallback_ellipsis.take();
-        self.truncate_with(max_lines, width, &mut |font, size| {
-            own(font, size).or_else(|| {
+        self.truncate_with(max_lines, width, &mut |font, size, synthesis| {
+            own(font, size, synthesis).or_else(|| {
                 fallback
                     .get_or_insert_with(|| style_ellipsis(style))
                     .clone()
@@ -246,13 +250,13 @@ impl TextLayout {
     }
 
     /// Cuts the layout as [`TextLayout::truncate`] does, with the ellipsis
-    /// that `ellipsis_for` resolves for a run's font and size, or none when
-    /// it returns `None`.
+    /// that `ellipsis_for` resolves for a run's font, size and synthesis, or
+    /// none when it returns `None`.
     pub(crate) fn truncate_with(
         &mut self,
         max_lines: Option<u32>,
         width: Option<f32>,
-        ellipsis_for: &mut dyn FnMut(&parley::FontData, f32) -> Option<Ellipsis>,
+        ellipsis_for: &mut dyn FnMut(&parley::FontData, f32, Synthesis) -> Option<Ellipsis>,
     ) {
         self.truncation = None;
         let Some(max_lines) = max_lines else {
@@ -401,7 +405,7 @@ fn line_width(line: &parley::Line<'_, ()>) -> f32 {
 fn cut_line(
     line: &parley::Line<'_, ()>,
     width: f32,
-    ellipsis_for: &mut dyn FnMut(&parley::FontData, f32) -> Option<Ellipsis>,
+    ellipsis_for: &mut dyn FnMut(&parley::FontData, f32, Synthesis) -> Option<Ellipsis>,
 ) -> Option<(Cut, f32)> {
     let mut best: Option<Candidate> = None;
     let mut best_ellipsis: Option<Ellipsis> = None;
@@ -412,7 +416,7 @@ fn cut_line(
             continue;
         };
         let run = glyph_run.run();
-        let ellipsis = ellipsis_for(run.font(), run.font_size());
+        let ellipsis = ellipsis_for(run.font(), run.font_size(), run.synthesis());
         let dots = ellipsis.as_ref().map_or(0.0, Ellipsis::width);
         if best.is_none() {
             best = Some(Candidate {
@@ -487,7 +491,11 @@ fn cut_line(
 pub(crate) fn style_ellipsis(style: &TextStyle) -> Option<Ellipsis> {
     let layout = TextLayout::new("\u{2026}", style, None);
     let run = layout.glyph_runs().next()?;
-    ellipsis_glyph(run.run().font(), run.run().font_size())
+    ellipsis_glyph(
+        run.run().font(),
+        run.run().font_size(),
+        run.run().synthesis(),
+    )
 }
 
 #[cfg(test)]

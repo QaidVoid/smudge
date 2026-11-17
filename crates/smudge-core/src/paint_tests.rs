@@ -41,3 +41,46 @@ fn finish_accepts_a_balanced_list() {
     list.finish();
     assert_eq!(list.len(), 5);
 }
+
+/// A run at 16 logical pixels carrying `embolden` and `skew`, with no glyphs.
+fn synthetic(embolden: f32, skew: f32) -> crate::paint::GlyphRun {
+    crate::paint::GlyphRun {
+        font: crate::paint::FontBlob {
+            id: 0,
+            data: std::sync::Arc::new(Vec::new()),
+            index: 0,
+        },
+        size: 16.0,
+        color: Color::BLACK,
+        glyphs: Vec::new(),
+        embolden,
+        skew,
+        ink_bounds: Rect::default(),
+    }
+}
+
+#[test]
+fn a_hand_built_run_draws_within_the_synthesis_limits() {
+    use crate::paint::{MAX_EMBOLDEN, MAX_EMBOLDEN_SHARE, MAX_SKEW};
+
+    assert_eq!(
+        synthetic(0.5, 14.0).synthesis(),
+        (0.5, 14.0),
+        "text's values pass"
+    );
+    assert_eq!(
+        synthetic(1.0e30, 90.0).synthesis(),
+        (16.0 * MAX_EMBOLDEN_SHARE, MAX_SKEW)
+    );
+    assert_eq!(synthetic(-3.0, -90.0).synthesis(), (0.0, -MAX_SKEW));
+    assert_eq!(synthetic(f32::NAN, f32::INFINITY).synthesis(), (0.0, 0.0));
+    let huge = crate::paint::GlyphRun {
+        size: 1.0e30,
+        ..synthetic(f32::MAX, 0.0)
+    };
+    assert_eq!(
+        huge.synthesis(),
+        (MAX_EMBOLDEN, 0.0),
+        "a huge size does not lift the cap"
+    );
+}

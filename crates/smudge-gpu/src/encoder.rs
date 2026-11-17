@@ -6,12 +6,14 @@ use std::sync::Arc;
 
 use smudge_core::app::FrameOutput;
 use smudge_core::geometry::{Color, Corners, Rect};
-use smudge_core::paint::{DisplayItem, FontBlob, PaintOp};
-use vello::kurbo::{Affine, BezPath, Rect as KurboRect, RoundedRect, RoundedRectRadii, Shape};
+use smudge_core::paint::{DisplayItem, EMBOLDEN_MITER_LIMIT, FontBlob, PaintOp};
+use vello::kurbo::{
+    Affine, BezPath, Diagonal2, Rect as KurboRect, RoundedRect, RoundedRectRadii, Shape,
+};
 use vello::peniko::{
     Blob, Color as PenikoColor, Fill, FontData, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
 };
-use vello::{Glyph, Scene};
+use vello::{FontEmbolden, Glyph, Scene};
 
 /// A vello scene with the font data of the runs encoded into it.
 ///
@@ -183,10 +185,21 @@ fn encode_op(
             let Some(font) = font_data(fonts, &run.font) else {
                 return;
             };
+            let (embolden, skew) = run.synthesis();
+            let embolden = f64::from(embolden);
+            let slant =
+                (skew != 0.0).then(|| Affine::skew(f64::from(skew).to_radians().tan(), 0.0));
             scene
                 .draw_glyphs(font)
                 .transform(transform)
                 .font_size(run.size)
+                .font_embolden(
+                    FontEmbolden::new(Diagonal2::new(embolden, embolden))
+                        .with_miter_limit(f64::from(EMBOLDEN_MITER_LIMIT)),
+                )
+                // The glyph transform applies in the outline's own space,
+                // where y grows up, so a positive shear leans the top right.
+                .glyph_transform(slant)
                 .brush(peniko_color(run.color))
                 .draw(
                     Fill::NonZero,

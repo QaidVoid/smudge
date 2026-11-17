@@ -83,12 +83,73 @@ pub struct GlyphRun {
     pub color: Color,
     /// The glyphs of the run, in paint order.
     pub glyphs: Vec<PositionedGlyph>,
+    /// How far each glyph's outline is pushed outward, in logical pixels, to
+    /// draw it heavier than its face, or zero to draw it as the face has it.
+    ///
+    /// Text carries it when it asks for a weight more than 200 above the
+    /// weight of the face it got, and that face has no weight axis. A
+    /// renderer widens each outline by this much on every side, with mitered
+    /// corners reaching no more than [`EMBOLDEN_MITER_LIMIT`] times this
+    /// distance past it, within the limits [`GlyphRun::synthesis`] sets.
+    pub embolden: f32,
+    /// The slant of each glyph, in degrees, or zero to draw it upright.
+    ///
+    /// Text carries it when it asks for an italic or oblique style that no
+    /// face of its family has. A positive angle leans the top of each glyph
+    /// toward the right, shearing it about its baseline origin, within the
+    /// limits [`GlyphRun::synthesis`] sets.
+    pub skew: f32,
     /// The rectangle in the run's paint coordinates that covers the ink of
-    /// every glyph, plus one logical pixel on every side for anti-aliasing.
+    /// every glyph, emboldened and slanted, plus one logical pixel on every
+    /// side for anti-aliasing.
     ///
     /// A renderer may rely on it as the area the run can change: ink outside
     /// it is not guaranteed to be drawn.
     pub ink_bounds: Rect,
+}
+
+/// How far a mitered corner of an emboldened outline may reach past the
+/// outline, as a multiple of [`GlyphRun::embolden`]. A sharper corner is
+/// cut off.
+pub const EMBOLDEN_MITER_LIMIT: f32 = 4.0;
+
+/// The largest embolden a renderer draws, as a share of the font size.
+pub const MAX_EMBOLDEN_SHARE: f32 = 1.0 / 12.0;
+
+/// The largest embolden a renderer draws at any size, in logical pixels.
+pub const MAX_EMBOLDEN: f32 = 32.0;
+
+/// The steepest slant a renderer draws, in degrees either way.
+pub const MAX_SKEW: f32 = 45.0;
+
+impl GlyphRun {
+    /// Returns the embolden and the slant a renderer draws the run with:
+    /// [`GlyphRun::embolden`] held to at most [`MAX_EMBOLDEN_SHARE`] of the
+    /// size and at most [`MAX_EMBOLDEN`], and [`GlyphRun::skew`] held to
+    /// [`MAX_SKEW`] either way. An embolden that is negative or not finite,
+    /// or a slant that is not finite, is zero.
+    ///
+    /// Text asks for more only above 1536 logical pixels, where its embolden
+    /// is drawn at the cap. The limits bound what a run built by hand can
+    /// cost a renderer, and keep the renderers drawing it alike.
+    pub fn synthesis(&self) -> (f32, f32) {
+        let largest = if self.size.is_finite() && self.size > 0.0 {
+            (self.size * MAX_EMBOLDEN_SHARE).min(MAX_EMBOLDEN)
+        } else {
+            0.0
+        };
+        let embolden = if self.embolden.is_finite() {
+            self.embolden.clamp(0.0, largest)
+        } else {
+            0.0
+        };
+        let skew = if self.skew.is_finite() {
+            self.skew.clamp(-MAX_SKEW, MAX_SKEW)
+        } else {
+            0.0
+        };
+        (embolden, skew)
+    }
 }
 
 /// A single drawing operation in paint coordinates, which leave out the

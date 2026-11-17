@@ -352,16 +352,18 @@ impl Canvas<'_> {
     /// logical `offset`.
     ///
     /// Each glyph is drawn from its cached alpha mask at its own physical
-    /// position. A glyph's mask depends on the glyph, its quantized size and
-    /// its subpixel x phase only, so the same text blits the same bytes
-    /// whichever part of the surface is drawn. Glyphs whose ink bounds claim
-    /// no pixels draw nothing, which keeps a run inside the damage its bounds
-    /// produced even when a font's metrics disagree with its outlines.
+    /// position. A glyph's mask depends on the glyph, its quantized size,
+    /// embolden and slant, and its subpixel x phase only, so the same text
+    /// blits the same bytes whichever part of the surface is drawn. Glyphs
+    /// whose ink bounds claim no pixels draw nothing, which keeps a run inside
+    /// the damage its bounds produced even when a font's metrics disagree
+    /// with its outlines.
     ///
     /// A glyph whose size or position is not finite, whose size exceeds
     /// [`MAX_GLYPH_SIZE`] physical pixels, or whose origin lies more than
     /// [`PLACEMENT_LIMIT`] physical pixels from the surface origin draws
-    /// nothing.
+    /// nothing, and so does a glyph whose mask, widened and slanted, would be
+    /// wider or taller than the largest mask the cache rasterizes.
     fn draw_glyphs(&mut self, run: &GlyphRun, area: PixelRect, offset: Point) {
         let size_px = run.size * self.scale;
         if !run.size.is_finite()
@@ -378,6 +380,9 @@ impl Canvas<'_> {
         if size <= 0 {
             return;
         }
+        let (embolden, skew) = run.synthesis();
+        let embolden = (embolden * self.scale * 64.0).round() as i32;
+        let skew = (skew * 64.0).round() as i32;
         let Canvas {
             pixels,
             width,
@@ -407,6 +412,8 @@ impl Canvas<'_> {
                 font_index: run.font.index,
                 glyph_id: glyph.id,
                 size,
+                embolden,
+                skew,
                 subpixel,
             };
             let Some(entry) = glyphs.entry(key, &run.font) else {

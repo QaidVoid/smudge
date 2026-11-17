@@ -758,6 +758,8 @@ fn text_under_an_offset_draws_the_same_bytes_as_translated_text() {
             size: run.size,
             color: run.color,
             glyphs,
+            embolden: run.embolden,
+            skew: run.skew,
             ink_bounds: run.ink_bounds.translated(Point { x: 10.0, y: 12.0 }),
         }
     };
