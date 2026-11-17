@@ -4,7 +4,7 @@
 
 ## The release profile
 
-The default release profile builds quickly and runs quickly. A profile tuned for size builds the same application at a little over half the size. Set it through environment variables, without touching any manifest:
+The default release profile builds quickly and runs quickly. A profile tuned for size builds the same application at under three fifths of the size. Set it through environment variables, without touching any manifest:
 
 ```sh
 CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
@@ -34,7 +34,7 @@ strip = true
 | `panic = "abort"` | Ends the process at once when a panic happens, and drops the unwinding landing pads from the application's own code. | A panic cannot be recovered from, and destructors on the panicking call stack do not run. |
 | `strip = true` | Removes symbol tables and debug information from the binary. | Backtraces lose their symbol names. |
 
-On the `lists` example (see [Measured sizes](#measured-sizes)), these settings took the stripped binary from 11,169,280 to 6,212,200 bytes.
+On the `lists` example (see [Measured sizes](#measured-sizes)), these settings took the stripped binary from 12,035,352 to 7,043,688 bytes.
 
 ## The opt-out features
 
@@ -83,31 +83,31 @@ With this manifest, `cargo build --release` builds the defaults, `--no-default-f
 
 ### `a11y`
 
-The accessibility projection that screen readers read. Without it, the build drops the stack that talks to the platform's accessibility APIs. The feature costs 3,806,128 bytes on the default release profile and 1,510,240 on the size profile, the largest single opt-out. What is lost: a screen reader can no longer see, read or operate the interface. Keyboard navigation still works, without narration. Leave it off only where no assistive tool will ever connect, such as a dedicated appliance build.
+The accessibility projection that screen readers read. Without it, the build drops the stack that talks to the platform's accessibility APIs. The feature costs 3,802,320 bytes on the default release profile and 1,509,168 on the size profile, the largest single opt-out. What is lost: a screen reader can no longer see, read or operate the interface. Keyboard navigation still works, without narration. Leave it off only where no assistive tool will ever connect, such as a dedicated appliance build.
 
 ### `bundled-fonts`
 
-The three embedded font faces that make text layout produce the same result on every machine. With the feature off, the application needs another font source, which today means the `system-fonts` feature.
+The five embedded font faces, Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, that make text layout produce the same result on every machine. With the feature off, the application needs another font source, which today means the `system-fonts` feature.
 
-Replacing the embedded faces with system font discovery saves 1,021,840 bytes on the default release profile and 1,046,544 on the size profile. What is lost: determinism. Layout wraps and breaks lines for whichever faces the host has, so text settles differently on machines with different fonts, and a machine without a face that covers the application's text draws missing glyphs.
+Replacing the embedded faces with system font discovery saves 1,827,728 bytes on the default release profile and 1,848,720 on the size profile. What is lost: determinism. Layout wraps and breaks lines for whichever faces the host has, so text settles differently on machines with different fonts, and a machine without a face that covers the application's text draws missing glyphs.
 
 System fonts are found on Linux, FreeBSD, Windows, Android and Apple platforms. Elsewhere, the web included, `system-fonts` finds nothing, so an application there keeps `bundled-fonts` on, and a build that relies on system fonts alone fails.
 
 ### `system-fonts`
 
-Discovery for the fonts installed on the machine. Adding it on top of the bundled faces costs 124,400 bytes on the default release profile and 88,688 on the size profile, about a tenth of what the three embedded faces cost on the default release profile and a thirteenth on the size profile. Turn it on together with `bundled-fonts` when the application should use the fonts the user has installed, with the bundled faces as the fallback. Discovery only makes the installed fonts available: text keeps the bundled sans by default, and uses the host's interface font where its style names the `SystemUi` family, as [Text and input](./text-and-input#fonts) describes. Turn it on instead of `bundled-fonts` only when the host is known to carry suitable faces.
+Discovery for the fonts installed on the machine. Adding it on top of the bundled faces costs 126,704 bytes on the default release profile and 88,688 on the size profile, about a fifteenth of what the five embedded faces cost on the default release profile and a twenty-second on the size profile. Turn it on together with `bundled-fonts` when the application should use the fonts the user has installed, with the bundled faces as the fallback. Discovery only makes the installed fonts available: text keeps the bundled sans by default, and uses the host's interface font where its style names the `SystemUi` family, as [Text and input](./text-and-input#fonts) describes. Turn it on instead of `bundled-fonts` only when the host is known to carry suitable faces.
 
 ## Measured sizes
 
-The numbers above are stripped release binaries of the `lists` example in the Smudge repository, drawn by the CPU renderer. They were measured on 2026-11-13 on Linux on an AMD Ryzen 7 7700, with the stable toolchain the repository pins.
+The numbers above are stripped release binaries of the `lists` example in the Smudge repository, drawn by the CPU renderer. They were measured on 2026-11-17 on Linux on an AMD Ryzen 7 7700, with the stable toolchain the repository pins.
 
 | Feature set | Default release profile | Size profile |
 |---|---|---|
-| Defaults (`a11y` and `bundled-fonts` on) | 11,169,280 | 6,212,200 |
-| `a11y` off | 7,363,152 | 4,701,960 |
-| `bundled-fonts` off, `system-fonts` on | 10,147,440 | 5,165,656 |
-| Both off, `system-fonts` on | 6,341,416 | 3,655,960 |
-| Defaults and `system-fonts` | 11,293,680 | 6,300,888 |
+| Defaults (`a11y` and `bundled-fonts` on) | 12,035,352 | 7,043,688 |
+| `a11y` off | 8,233,032 | 5,534,520 |
+| `bundled-fonts` off, `system-fonts` on | 10,207,624 | 5,194,968 |
+| Both off, `system-fonts` on | 6,404,824 | 3,686,232 |
+| Defaults and `system-fonts` | 12,162,056 | 7,132,376 |
 
 To reproduce a row, build the example in a checkout of the repository with that row's features:
 
@@ -125,20 +125,20 @@ The defaults row splits into these areas, in bytes of the stripped binary. Each 
 
 | Area | Default release profile | Size profile |
 |---|---|---|
-| Accessibility: the projection and the bus client screen readers talk to | 2,783,020 | 1,108,243 |
-| Text shaping, font reading and line breaking | 1,724,247 | 928,240 |
-| Windowing: the window, its Wayland and X11 clients and software presentation | 1,543,710 | 812,693 |
-| Unwind tables | 1,260,368 | 606,904 |
-| The three bundled font faces | 1,125,752 | 1,125,752 |
-| The standard library | 614,473 | 415,589 |
-| Smudge itself, with its layout and rasterizer | 620,451 | 419,003 |
-| Relocations and dynamic linking | 494,817 | 233,949 |
-| Clipboard | 132,670 | 67,278 |
-| Everything else: string literals, unnamed constants, C symbols and headers | 869,772 | 494,549 |
-| Total | 11,169,280 | 6,212,200 |
+| Accessibility: the projection and the bus client screen readers talk to | 2,785,145 | 1,106,273 |
+| The five bundled font faces | 1,928,320 | 1,928,320 |
+| Windowing: the window, its Wayland and X11 clients and software presentation | 1,600,704 | 807,651 |
+| Text shaping, font reading and line breaking | 1,559,244 | 847,427 |
+| Unwind tables | 1,269,120 | 613,656 |
+| Smudge itself, with its layout and rasterizer | 840,616 | 557,054 |
+| The standard library | 571,384 | 397,386 |
+| Relocations and dynamic linking | 496,397 | 235,025 |
+| Clipboard | 117,896 | 60,261 |
+| Everything else: string literals, unnamed constants, C symbols and headers | 866,526 | 490,635 |
+| Total | 12,035,352 | 7,043,688 |
 
-The unwind tables follow the application's panic setting and the toolchain's standard library, not anything Smudge chooses. The clipboard costs more than its row shows, because its share of the Wayland and X11 client code, the unwind tables and the relocations is counted in those rows. Removing it altogether would save 368,896 bytes on the default release profile and 200,704 on the size profile. Of that, the Wayland path accounts for 158,336 bytes on the default release profile and 72,448 on the size profile, and the X11 path for the rest.
+The unwind tables follow the application's panic setting and the toolchain's standard library, not anything Smudge chooses. The clipboard costs more than its row shows, because its share of the Wayland and X11 client code, the unwind tables and the relocations is counted in those rows. Measured on 2026-11-13, removing it altogether saved 368,896 bytes on the default release profile and 200,704 on the size profile. Of that, the Wayland path accounts for 158,336 bytes on the default release profile and 72,448 on the size profile, and the X11 path for the rest.
 
-The font faces are embedded byte for byte, so they cost the same on both profiles. Their glyph names are already removed, because nothing reads them. Trimming the faces down to fewer characters would save about 330 KB of outlines across the three, but it would drop the phonetic letters, the symbols and the alternate glyphs they carry today, so the faces keep their full coverage.
+The font faces are embedded byte for byte, so they cost the same on both profiles. Their glyph names are already removed, because nothing reads them. Measured on 2026-11-13, trimming the three faces bundled then down to fewer characters would have saved about 330 KB of outlines, but it would drop the phonetic letters, the symbols and the alternate glyphs they carry, so the faces keep their full coverage.
 
 See [Cargo features](/reference/features) for the complete feature tables of every crate.
