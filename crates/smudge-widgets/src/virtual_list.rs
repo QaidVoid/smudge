@@ -102,7 +102,10 @@ pub fn virtual_list<E: IntoElement>(
         },
         |&index| index,
         move |index| {
+            // A column stretches the row's content to the list's width, as
+            // any column does with its children.
             panel()
+                .column()
                 .absolute()
                 .inset(Edges {
                     top: px(index as f32 * row_height),

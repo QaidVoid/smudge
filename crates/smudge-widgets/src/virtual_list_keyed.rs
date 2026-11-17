@@ -482,9 +482,12 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                         report_signal.update(|count| *count += 1);
                     }
                 };
+                // A column stretches the row's content to the list's width,
+                // as any column does with its children.
                 Element::new(MeasureRow {
                     report: Rc::new(report),
                 })
+                .column()
                 .shrink(0.0)
                 .child(content)
             },
