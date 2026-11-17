@@ -339,6 +339,65 @@ impl Signatures {
         self.parser().first_type_parameter(index, offset)
     }
 
+    /// Whether the function whose mangled name is `name` takes a type
+    /// parameter, which tells a generic probe from a function folded onto
+    /// its address.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the function could not be read.
+    pub(crate) fn takes_type_parameter(&mut self, name: &str) -> Result<bool, String> {
+        let Some(&(index, offset)) = self.names.get(name) else {
+            return Ok(false);
+        };
+        let mut parser = self.parser();
+        let Some(unit) = parser.unit(index) else {
+            return Err(String::from("the subprogram's unit is missing"));
+        };
+        Ok(!parser.parameters(unit, offset)?.1.is_empty())
+    }
+
+    /// The mangled names of every instance of the generic function whose
+    /// instance has the mangled name `name`, that one included: the
+    /// functions of the same path whose names differ only in their type
+    /// arguments. Every name counts, so two instances a folding link gave
+    /// one address are both found.
+    ///
+    /// # Errors
+    ///
+    /// Returns why a function's name could not be read.
+    pub(crate) fn instances_of_name(&mut self, name: &str) -> Result<Vec<String>, String> {
+        let Some(&(index, offset)) = self.names.get(name) else {
+            return Ok(Vec::new());
+        };
+        let Some(wanted) = self.parser().generic_path(index, offset)? else {
+            return Ok(Vec::new());
+        };
+        let base = wanted.rsplit("::").next().unwrap_or(&wanted).to_owned();
+        let candidates: Vec<(String, usize, UnitOffset)> = self
+            .names
+            .iter()
+            .map(|(name, (index, offset))| (name.clone(), *index, *offset))
+            .collect();
+        let mut parser = self.parser();
+        let mut found = Vec::new();
+        for (name, index, offset) in candidates {
+            // The plain name decides before the path is spelled, which
+            // spares spelling the path of every function the file holds.
+            let Some(plain) = parser.subprogram_name(index, offset)? else {
+                continue;
+            };
+            if plain.split('<').next() != Some(base.as_str()) {
+                continue;
+            }
+            if parser.generic_path(index, offset)?.as_deref() == Some(wanted.as_str()) {
+                found.push(name);
+            }
+        }
+        found.sort_unstable();
+        Ok(found)
+    }
+
     /// The crate root of the unit that holds the function at `address`,
     /// as [`Signatures::crate_roots`] spells it.
     ///
@@ -347,6 +406,19 @@ impl Signatures {
     /// Returns why the unit could not be read.
     pub(crate) fn crate_root_of(&self, address: u64) -> Result<Option<String>, String> {
         let Some(&index) = self.entries.get(&address) else {
+            return Ok(None);
+        };
+        crate_root(&self.dwarf, &self.units[index].1)
+    }
+
+    /// The crate root of the unit that holds the function whose mangled name
+    /// is `name`, as [`Signatures::crate_roots`] spells it.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the unit could not be read.
+    pub(crate) fn crate_root_of_name(&self, name: &str) -> Result<Option<String>, String> {
+        let Some(&(index, _)) = self.names.get(name) else {
             return Ok(None);
         };
         crate_root(&self.dwarf, &self.units[index].1)
@@ -548,6 +620,42 @@ impl<'a> Parser<'a> {
                 .and_then(unsigned_of);
         }
         Ok(found)
+    }
+
+    /// The name the subprogram at `offset` of unit `index` carries, on its
+    /// own die or on the declaration its specification names.
+    fn subprogram_name(&self, index: usize, offset: UnitOffset) -> Result<Option<String>, String> {
+        let Some(unit) = self.unit(index) else {
+            return Err(String::from("the subprogram's unit is missing"));
+        };
+        let die = unit.entry(offset).map_err(string)?;
+        self.name_of(unit, &die)
+    }
+
+    /// The path of the generic function the subprogram at `offset` of unit
+    /// `index` is an instance of: the namespaces and types it sits under,
+    /// and its name without type arguments.
+    fn generic_path(&mut self, index: usize, offset: UnitOffset) -> Result<Option<String>, String> {
+        let Some(name) = self.subprogram_name(index, offset)? else {
+            return Ok(None);
+        };
+        let Some(unit) = self.unit(index) else {
+            return Err(String::from("the subprogram's unit is missing"));
+        };
+        // A definition that describes itself through a specification sits
+        // where its declaration does.
+        let die = unit.entry(offset).map_err(string)?;
+        let place = match die.attr_value(gimli::DW_AT_specification).map_err(string)? {
+            Some(AttributeValue::UnitRef(specified)) => specified,
+            _ => offset,
+        };
+        let base = name.split('<').next().unwrap_or(&name).to_owned();
+        let scope = self.qualified_name(index, place)?;
+        Ok(Some(if scope == "<unnamed>" {
+            base
+        } else {
+            format!("{scope}::{base}")
+        }))
     }
 
     /// The type the first type parameter of the subprogram at `offset`

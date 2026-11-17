@@ -326,6 +326,91 @@ pub unsafe fn note_patch_installed() {
     imp::note_installed();
 }
 
+/// The size, the alignment and the name of a type, as the code compiled with
+/// it sees the type.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+pub type Shape = (usize, usize, &'static str);
+
+/// Returns the shape of `T`, as this instance was compiled.
+///
+/// Every instance is the probe of its type. The window announces the
+/// instance for the app's state type to the patch builder, which finds
+/// every other instance in the binary from it, compares the type each one
+/// names with the patch, and lists the ones that kept their layout. The
+/// window's state guard calls the patched instance for the state type, and
+/// a remount carries a signal's value into the new build only when the
+/// probe of its type is listed, which [`note_kept_types`] records.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[inline(never)]
+pub fn shape<T>() -> Shape {
+    (
+        std::mem::size_of::<T>(),
+        std::mem::align_of::<T>(),
+        std::any::type_name::<T>(),
+    )
+}
+
+/// The runtime address of the probe of `T` that the code calling this
+/// reaches, mapped to the binary the app started with when a patch
+/// replaced it, which is what a remount records for a signal of type `T`
+/// and checks against the type probes a patch kept. A type the app first
+/// used after a patch has its probe only in a patch library, and its
+/// address there matches no probe a patch keeps.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+pub fn probe_of<T>() -> usize {
+    original_address(shape::<T> as fn() -> Shape as usize)
+}
+
+/// Records the type probes a patch kept in the layout the app's live values
+/// hold, by their runtime addresses in the binary the app started with, as
+/// the patch builder listed them, for the next remount on this thread.
+///
+/// The window calls this on the thread that applies patches, right after
+/// [`note_patch_installed`] and before it remounts. That remount carries
+/// the values of the signals of exactly those types into the new build, as
+/// [`App::remount`](crate::app::App::remount) describes, and every later
+/// one starts its signals fresh until the next patch. When the remount does
+/// not run, [`forget_kept_types`] drops the list.
+///
+/// # Safety
+///
+/// Every probe listed must name a type whose layout the patched code reads
+/// exactly as the values the current build holds were laid out, which only
+/// the patch builder can tell. A value of a type listed wrongly is read in
+/// another layout by the new build, which is undefined behavior.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[allow(unsafe_code)]
+#[inline(never)]
+pub unsafe fn note_kept_types(probes: std::collections::HashSet<usize>) {
+    imp::note_kept(probes);
+}
+
+/// Drops the type probes [`note_kept_types`] recorded, so a remount that
+/// does not follow a patch carries nothing.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[inline(never)]
+pub fn forget_kept_types() {
+    drop(imp::take_kept());
+}
+
+/// The type probes the last patch kept, which the remount that follows it
+/// takes, or none when no patch came since the last remount.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+pub(crate) fn take_kept() -> Option<std::collections::HashSet<usize>> {
+    imp::take_kept()
+}
+
+/// The address in the binary the app started with of the function at
+/// `address`: the function the installed table maps to `address`, or
+/// `address` itself when the table maps nothing to it. Code a patch
+/// compiled runs at the address its library was loaded at, and this finds
+/// the original it replaces.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[inline(never)]
+pub(crate) fn original_address(address: usize) -> usize {
+    imp::original(address)
+}
+
 /// Runs every live hook that [`on_hot_patch`] registered, inside the owners
 /// the hooks belong to.
 ///
@@ -406,10 +491,54 @@ mod imp {
     /// installed: the release store of the pointer hands every write that
     /// filled the table in to whoever acquires it.
     pub(super) fn note_installed() {
-        let published = table().map_or(std::ptr::null_mut(), |table| {
+        let installed = table();
+        let published = installed.map_or(std::ptr::null_mut(), |table| {
             std::ptr::from_ref(table).cast_mut()
         });
         PUBLISHED.store(published, Ordering::Release);
+        ORIGINALS.with(|originals| {
+            let mut originals = originals.borrow_mut();
+            originals.clear();
+            if let Some(table) = installed {
+                for (old, new) in &table.map {
+                    // Two originals a folding link gave one replacement
+                    // cannot be told apart, so that replacement maps to no
+                    // original, and a probe on it vouches for nothing.
+                    originals
+                        .entry(*new as usize)
+                        .and_modify(|original| *original = usize::MAX)
+                        .or_insert(*old as usize);
+                }
+            }
+        });
+    }
+
+    thread_local! {
+        /// The original address of every function the installed table maps,
+        /// by the address of its patched version, which only the thread
+        /// that applies patches keeps.
+        static ORIGINALS: RefCell<std::collections::HashMap<usize, usize>> =
+            RefCell::new(std::collections::HashMap::new());
+        /// The type probes the last patch kept in the running layout,
+        /// until the remount that follows it takes them.
+        static KEPT: RefCell<Option<std::collections::HashSet<usize>>> =
+            const { RefCell::new(None) };
+    }
+
+    /// Records the type probes the last patch kept.
+    pub(super) fn note_kept(probes: std::collections::HashSet<usize>) {
+        KEPT.with(|kept| *kept.borrow_mut() = Some(probes));
+    }
+
+    /// Takes the type probes the last patch kept.
+    pub(super) fn take_kept() -> Option<std::collections::HashSet<usize>> {
+        KEPT.with(|kept| kept.borrow_mut().take())
+    }
+
+    /// The original address of the function at `address`.
+    #[inline(never)]
+    pub(super) fn original(address: usize) -> usize {
+        ORIGINALS.with(|originals| originals.borrow().get(&address).copied().unwrap_or(address))
     }
 
     /// Reads the jump table of the running process, which only the thread

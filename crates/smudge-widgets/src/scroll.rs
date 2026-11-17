@@ -50,7 +50,7 @@ const FOLLOW_SLACK: f32 = 4.0;
 
 /// The heights a scroll view measures when it paints.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Viewport {
+pub(crate) struct Viewport {
     /// The height of the view's content box, the part of the content that
     /// fits on screen at once.
     visible: f32,
@@ -247,12 +247,26 @@ pub(crate) fn scroll_with_visible_height(
     visible_height: RwSignal<Option<f32>>,
     content_extent: Option<RwSignal<f32>>,
 ) -> Element<ScrollView> {
+    let content_height = RwSignal::new(None);
+    let viewport = RwSignal::new(None);
+    // A remount after a hot patch can hand these the measurements of the
+    // old build's layout, which say nothing of the new one, and would clamp
+    // a carried offset before the new view measured itself.
+    if content_height.read(Option::is_some) {
+        content_height.set(None);
+    }
+    if viewport.read(Option::is_some) {
+        viewport.set(None);
+    }
+    if visible_height.read(Option::is_some) {
+        visible_height.set(None);
+    }
     let chrome = Rc::new(ScrollChrome {
         offset: RefCell::new(RwSignal::new(0.0)),
         following: RefCell::new(None),
-        content_height: RwSignal::new(None),
+        content_height,
         content_extent,
-        viewport: RwSignal::new(None),
+        viewport,
         visible_height,
     });
 

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use crate::dwarf::Signatures;
+use crate::dwarf::{Described, Signatures};
 use crate::elf::{StaticFacts, Sym, Symbols, TlsTemplate};
 use crate::record::Recorded;
 use crate::stub;
@@ -34,6 +34,9 @@ pub(crate) enum Outcome {
         changed_captures: usize,
         /// The closures whose captures changed, by path.
         recaptured: Vec<String>,
+        /// The layouts the app's live values of each probe's type hold now
+        /// that the patch is applied, for the probes it changed.
+        type_layouts: Vec<LiveLayout>,
         /// Functions left out because they name a closure of a function
         /// whose closures the edit renumbered.
         renumbered: usize,
@@ -154,6 +157,18 @@ pub(crate) struct Plan<'a> {
     /// The linked address of the state probe the app announced, whose
     /// type parameter is the state type, when the hello carried it.
     pub state_probe: Option<u64>,
+    /// Every instance of the state probe's generic function, each a probe
+    /// of the type it is instantiated with, which the app records for every
+    /// value it carries across a remount, by linked address and mangled
+    /// name.
+    pub type_probes: &'a [(u64, String)],
+    /// The layout the app's live values of each probe's type hold, by the
+    /// probe, where a patch changed it: none when the layout is unknown. A
+    /// probe missing here holds the original binary's layout.
+    pub type_layouts: &'a HashMap<ProbeId, Option<String>>,
+    /// Whether the type of each layout digest reaches no runtime handle,
+    /// for the layouts a patch already answered.
+    pub handle_free: &'a mut HashMap<String, bool>,
     /// Whether a patch was already refused over a signature change, which
     /// the later patches omit the changed functions for instead of
     /// refusing again.
@@ -690,8 +705,14 @@ fn step_inner(
         let answers = &mut old_signatures;
         let signatures = &mut *plan.signatures;
         on_wide_stack(move || {
+            // A folding link can give one address to several functions, so
+            // each is read by its own name, and by its address only where
+            // the debug information names it nowhere.
             for (name, address) in &wanted {
-                let signature = signatures.signature(*address)?;
+                let signature = match signatures.signature_by_name(name)? {
+                    Some(signature) => Some(signature),
+                    None => signatures.signature(*address)?,
+                };
                 answers.insert(name.clone(), signature);
             }
             Ok(())
@@ -757,8 +778,20 @@ fn step_inner(
         let Some(new_signature) = objects[*index].facts.answered.get(name) else {
             continue;
         };
+        // A type probe takes nothing and answers the same tuple whatever its
+        // type, so it maps even when its type changed: the app finds the
+        // original of a probe the patched code reaches through the table,
+        // and the kept types say what may cross.
+        let probe_only = |old_sig: &str, new_sig: &str| {
+            plan.type_probes
+                .iter()
+                .any(|(address, probe)| *address == old.address && probe == name)
+                && without_type_parameters(old_sig) == without_type_parameters(new_sig)
+        };
         match (old_signature, new_signature.as_deref()) {
-            (Some(old_sig), Some(new_sig)) if old_sig == new_sig => {
+            (Some(old_sig), Some(new_sig))
+                if old_sig == new_sig || probe_only(old_sig, new_sig) =>
+            {
                 if names_a_closure_of(new_sig, &renumbered_parents) {
                     renumbered += 1;
                 } else {
@@ -943,6 +976,16 @@ fn step_inner(
         table.remove(&view);
     }
     let entries = table.len();
+    let (mut kept_probes, mut type_layouts) = kept_types(plan, objects, &defined)?;
+    // Without the view the remount runs the original one, whose values
+    // hold the original layouts while the closures it stores run the
+    // patch's code, so no layout can be vouched for, and none crosses.
+    if plan.view.is_some_and(|view| !table.contains_key(&view)) {
+        kept_probes.clear();
+        for (_, layout) in &mut type_layouts {
+            *layout = None;
+        }
+    }
     let mut payload = Vec::new();
     payload.extend_from_slice(&plan.main.to_le_bytes());
     payload.extend_from_slice(&new_main.to_le_bytes());
@@ -950,6 +993,10 @@ fn step_inner(
     for (old, new) in &table {
         payload.extend_from_slice(&old.to_le_bytes());
         payload.extend_from_slice(&new.to_le_bytes());
+    }
+    payload.extend_from_slice(&(kept_probes.len() as u64).to_le_bytes());
+    for probe in &kept_probes {
+        payload.extend_from_slice(&probe.to_le_bytes());
     }
     payload.extend_from_slice(library.as_os_str().as_encoded_bytes());
     if let Err(error) = wire::write_frame(plan.stream, PATCH, &payload) {
@@ -967,6 +1014,7 @@ fn step_inner(
             changed_signature: changed.len() - changed_captures,
             changed_captures,
             recaptured,
+            type_layouts,
             renumbered,
             fresh_statics: app_fresh,
             unverified,
@@ -1330,19 +1378,147 @@ fn on_wide_stack<T: Send>(work: impl FnOnce() -> Result<T, String> + Send) -> Re
     })
 }
 
+/// How the type a probe names compares between the original binary and a
+/// patch.
+enum ProbeChange {
+    /// The patch did not rebuild the probe's crate, so the type keeps the
+    /// layout the original binary describes.
+    NotRebuilt(Described),
+    /// The patch rebuilt the probe's crate without the probe, so the type
+    /// was renamed, moved or replaced.
+    Gone(Described),
+    /// The patch rebuilt the probe. Its description sits in the object at
+    /// `index`.
+    Rebuilt {
+        /// The original binary's description.
+        old: Described,
+        /// The patch's description.
+        new: Described,
+        /// The object whose debug information holds `new`.
+        index: usize,
+    },
+    /// The debug information does not describe the probe's type parameter.
+    Unreadable,
+    /// The type reaches two types the debug information cannot tell apart,
+    /// as the error says, in the original binary when `running` is set and
+    /// in the patch otherwise.
+    Ambiguous {
+        /// What the reader reported.
+        error: String,
+        /// Whether the original binary's description is the ambiguous one.
+        running: bool,
+    },
+}
+
+/// Compares the type parameter of the probe at `probe`, whose original
+/// names are `names`, between the original binary and the patch, whose
+/// objects come from the crate roots `rebuilt`.
+///
+/// The probe's symbol names its type, so the patch defines it under the
+/// same name while the type keeps its name, and its type parameter there
+/// is the new layout. A folding link can give the probe's address to other
+/// functions too, so the probe is the name whose description carries a type
+/// parameter, and the patch is read under that same name. A patch that did
+/// not rebuild the probe's crate rebuilt nothing the type depends on.
+///
+/// # Errors
+///
+/// Returns why a type could not be read.
+fn compare_probe(
+    running: &mut Signatures,
+    objects: &mut [ObjectInfo],
+    defined: &BTreeMap<String, (Sym, usize)>,
+    rebuilt: &std::collections::BTreeSet<String>,
+    names: &[String],
+    probe: u64,
+) -> Result<ProbeChange, String> {
+    let ambiguous = |error: String, running: bool| {
+        if error.starts_with(crate::dwarf::AMBIGUOUS) {
+            Ok(ProbeChange::Ambiguous { error, running })
+        } else {
+            Err(error)
+        }
+    };
+    let mut found = None;
+    for name in names {
+        match running.first_type_parameter_by_name(name) {
+            // Two generic functions on the probe's address cannot be told
+            // apart, so the comparison fails closed.
+            Ok(Some(_)) if found.is_some() => {
+                return Ok(ProbeChange::Ambiguous {
+                    error: String::from("several generic functions share the probe's address"),
+                    running: true,
+                });
+            }
+            Ok(Some(old)) => found = Some((Some(name), old)),
+            Ok(None) => {}
+            Err(error) => return ambiguous(error, true),
+        }
+    }
+    if found.is_none() {
+        match running.first_type_parameter(probe) {
+            Ok(Some(old)) => found = Some((None, old)),
+            Ok(None) => return Ok(ProbeChange::Unreadable),
+            Err(error) => return ambiguous(error, true),
+        }
+    }
+    let Some((probe_name, old)) = found else {
+        return Ok(ProbeChange::Unreadable);
+    };
+    let in_patch = match probe_name {
+        Some(name) => defined.get(name).map(|(_, index)| (name, *index)),
+        None => names
+            .iter()
+            .find_map(|name| defined.get(name).map(|(_, index)| (name, *index))),
+    };
+    let Some((name, index)) = in_patch else {
+        let root = match probe_name {
+            Some(name) => running.crate_root_of_name(name)?,
+            None => running.crate_root_of(probe)?,
+        };
+        let Some(root) = root else {
+            return Ok(ProbeChange::Unreadable);
+        };
+        return Ok(if rebuilt.contains(&root) {
+            ProbeChange::Gone(old)
+        } else {
+            ProbeChange::NotRebuilt(old)
+        });
+    };
+    let new = match objects[index]
+        .facts
+        .signatures
+        .first_type_parameter_by_name(name)
+    {
+        Ok(Some(new)) => new,
+        Ok(None) => return Ok(ProbeChange::Unreadable),
+        Err(error) => return ambiguous(error, false),
+    };
+    Ok(ProbeChange::Rebuilt { old, new, index })
+}
+
+/// The crate roots the patch's objects were compiled from.
+///
+/// # Errors
+///
+/// Returns why a unit could not be read.
+fn rebuilt_roots(objects: &[ObjectInfo]) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut roots = std::collections::BTreeSet::new();
+    for object in objects {
+        roots.extend(object.facts.signatures.crate_roots()?);
+    }
+    Ok(roots)
+}
+
 /// Why the state the running app holds no longer fits the patched code, or
 /// none when the state type kept its layout.
 ///
-/// The state type is the type parameter of the state probe at `probe` in
-/// the original binary, and every type it reaches counts, since the app's
-/// value holds them all in the old layout. The probe's symbol names the
-/// state type, so the patch defines it under the same name while the type
-/// keeps its name, and its type parameter there is the new layout. A patch
-/// that rebuilt the probe's crate without the probe renamed, moved or
-/// replaced the state type, and is refused too. A patch that did not
-/// rebuild the probe's crate rebuilt nothing the state type depends on. A
-/// probe or a state type the debug information does not spell is refused,
-/// since nothing could show the layout unchanged.
+/// The state type is the type parameter of the state probe at `probe`, as
+/// [`compare_probe`] reads it, and every type it reaches counts, since the
+/// app's value holds them all in the original layout. A renamed, moved or
+/// replaced state type is refused too, and so is a probe or a state type
+/// the debug information does not spell, since nothing could show the
+/// layout unchanged.
 ///
 /// # Errors
 ///
@@ -1357,86 +1533,48 @@ fn state_change(
     let running = &mut *plan.signatures;
     on_wide_stack(move || {
         let restart = "and the running app holds its state in the old one; restart the app";
-        let unreadable = "patching is off, because the debug information of the crate \
-                          that calls run_view does not describe the state probe's type \
-                          parameter, so the state's layout cannot be checked; build that \
-                          crate with full debug information, `debug = true` in the dev \
-                          profile";
-        let ambiguous = |error: &str| {
-            format!(
-                "the state type reaches two types the debug information cannot tell \
-                 apart ({error}), so no patch can be checked against it, and patching \
-                 stays off until the state's types differ in name"
-            )
-        };
-        // A folding link can give the probe's address to other functions
-        // too, so the probe is the name whose description carries a type
-        // parameter, and the patch is read under that same name.
-        let mut found = None;
-        for name in &names {
-            match running.first_type_parameter_by_name(name) {
-                Ok(Some(old)) => {
-                    found = Some((Some(name), old));
-                    break;
-                }
-                Ok(None) => {}
-                Err(error) if error.starts_with(crate::dwarf::AMBIGUOUS) => {
-                    return Ok(Some(ambiguous(&error)));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        if found.is_none() {
-            match running.first_type_parameter(probe) {
-                Ok(Some(old)) => found = Some((None, old)),
-                Ok(None) => return Ok(Some(String::from(unreadable))),
-                Err(error) if error.starts_with(crate::dwarf::AMBIGUOUS) => {
-                    return Ok(Some(ambiguous(&error)));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        let Some((probe_name, old)) = found else {
-            return Ok(Some(String::from(unreadable)));
-        };
-        let in_patch = match probe_name {
-            Some(name) => defined.get(name).map(|(_, index)| (name, *index)),
-            None => names
-                .iter()
-                .find_map(|name| defined.get(name).map(|(_, index)| (name, *index))),
-        };
-        let Some((name, index)) = in_patch else {
-            let Some(root) = running.crate_root_of(probe)? else {
-                return Ok(Some(String::from(unreadable)));
-            };
-            for object in objects.iter() {
-                if object.facts.signatures.crate_roots()?.contains(&root) {
-                    return Ok(Some(format!(
-                        "the state type `{}` was renamed, moved or replaced, {restart}",
-                        old.name
-                    )));
-                }
-            }
-            return Ok(None);
-        };
-        let patched = &mut objects[index].facts.signatures;
-        let new = match patched.first_type_parameter_by_name(name) {
-            Ok(Some(new)) => new,
-            Ok(None) => return Ok(Some(String::from(unreadable))),
-            Err(error) if error.starts_with(crate::dwarf::AMBIGUOUS) => {
+        let rebuilt = rebuilt_roots(objects)?;
+        let change = compare_probe(running, objects, defined, &rebuilt, &names, probe)?;
+        let (old, new, index) = match change {
+            ProbeChange::NotRebuilt(_) => return Ok(None),
+            ProbeChange::Rebuilt { old, new, .. } if new.digest == old.digest => return Ok(None),
+            ProbeChange::Rebuilt { old, new, index } => (old, new, index),
+            ProbeChange::Gone(old) => {
                 return Ok(Some(format!(
-                    "the layout of the state type `{}` cannot be told from the patch's \
-                     debug information ({error}), {restart}",
+                    "the state type `{}` was renamed, moved or replaced, {restart}",
                     old.name
                 )));
             }
-            Err(error) => return Err(error),
+            ProbeChange::Unreadable => {
+                return Ok(Some(String::from(
+                    "patching is off, because the debug information of the crate that \
+                     calls run_view does not describe the state probe's type parameter, \
+                     so the state's layout cannot be checked; build that crate with full \
+                     debug information, `debug = true` in the dev profile",
+                )));
+            }
+            ProbeChange::Ambiguous {
+                error,
+                running: true,
+            } => {
+                return Ok(Some(format!(
+                    "the state type reaches two types the debug information cannot tell \
+                     apart ({error}), so no patch can be checked against it, and patching \
+                     stays off until the state's types differ in name"
+                )));
+            }
+            ProbeChange::Ambiguous {
+                error,
+                running: false,
+            } => {
+                return Ok(Some(format!(
+                    "the layout of the state type cannot be told from the patch's debug \
+                     information ({error}), {restart}"
+                )));
+            }
         };
-        if new.digest == old.digest {
-            return Ok(None);
-        }
         let before = running.shapes(&old)?;
-        let after = patched.shapes(&new)?;
+        let after = objects[index].facts.signatures.shapes(&new)?;
         let through: Vec<String> = before
             .iter()
             .filter(|(name, shape)| {
@@ -1454,6 +1592,132 @@ fn state_change(
             old.name
         )))
     })
+}
+
+/// One type probe: its address as linked and its mangled name, since a
+/// folding link can give two probes one address.
+pub(crate) type ProbeId = (u64, String);
+
+/// The layout the app's live values of one probe's type hold: the probe,
+/// and the layout's digest, or none when it is unknown.
+pub(crate) type LiveLayout = (ProbeId, Option<String>);
+
+/// The paths of the core's modules whose types are handles into the
+/// runtime of the build that made them: a value that holds one of them
+/// would bring the old build's disposed signals, owners, effects, timers
+/// or channels into the new build, which notify nothing.
+const HANDLE_MODULES: [&str; 3] = [
+    "smudge_core::reactive::",
+    "smudge_core::timer::",
+    "smudge_core::channel::",
+];
+
+/// Which type probes the patch keeps in the layout the app's live values
+/// hold, by their addresses as linked, and the layouts the live values hold
+/// once the patch is applied. A type that reaches a runtime handle or a
+/// trait object is never kept.
+///
+/// The live layout of a probe's type is the original binary's until a
+/// patch rebuilds it, and the patch's from then on, since the remount after
+/// each applied patch remakes the build's values with the patch's code. A
+/// type is kept only when the patch spells it in the live layout and none of
+/// the types it reaches is a runtime handle. A probe the patch cannot
+/// compare is not kept, and its live layout becomes unknown, so its values
+/// start fresh until a patch spells the type again.
+///
+/// # Errors
+///
+/// Returns why the patch's crate roots could not be read.
+fn kept_types(
+    plan: &mut Plan<'_>,
+    objects: &mut [ObjectInfo],
+    defined: &BTreeMap<String, (Sym, usize)>,
+) -> Result<(Vec<u64>, Vec<LiveLayout>), String> {
+    let probes: Vec<(u64, Vec<String>)> = plan
+        .type_probes
+        .iter()
+        .map(|(probe, name)| (*probe, vec![name.clone()]))
+        .collect();
+    let running = &mut *plan.signatures;
+    let live = plan.type_layouts;
+    let handle_free = &mut *plan.handle_free;
+    on_wide_stack(move || {
+        let rebuilt = rebuilt_roots(objects)?;
+        let mut kept = Vec::new();
+        let mut layouts = Vec::new();
+        for (probe, names) in &probes {
+            // A type the reader cannot answer for is not carried, and the
+            // other probes still are.
+            let change = compare_probe(running, objects, defined, &rebuilt, names, *probe)
+                .unwrap_or(ProbeChange::Unreadable);
+            let (original, spelled, index) = match change {
+                ProbeChange::NotRebuilt(old) => (old.digest.clone(), old, None),
+                ProbeChange::Rebuilt { old, new, index } => (old.digest, new, Some(index)),
+                ProbeChange::Gone(_) | ProbeChange::Unreadable | ProbeChange::Ambiguous { .. } => {
+                    layouts.push(((*probe, names[0].clone()), None));
+                    continue;
+                }
+            };
+            let holds = match live.get(&(*probe, names[0].clone())) {
+                Some(layout) => layout.as_deref(),
+                None => Some(original.as_str()),
+            };
+            let same = holds == Some(spelled.digest.as_str());
+            if index.is_some() {
+                layouts.push(((*probe, names[0].clone()), Some(spelled.digest.clone())));
+            }
+            if !same {
+                continue;
+            }
+            let free = match handle_free.get(&spelled.digest) {
+                Some(free) => *free,
+                None => {
+                    let shapes = match index {
+                        Some(index) => objects[index].facts.signatures.shapes(&spelled),
+                        None => running.shapes(&spelled),
+                    };
+                    // A trait object hides the type of what it holds, whose
+                    // layout and handles no digest can answer for.
+                    let free = shapes.is_ok_and(|shapes| {
+                        shapes.iter().all(|(name, shape)| {
+                            !HANDLE_MODULES.iter().any(|module| name.starts_with(module))
+                                && !name.contains("dyn ")
+                                && !shape.contains("dyn ")
+                        })
+                    });
+                    handle_free.insert(spelled.digest.clone(), free);
+                    free
+                }
+            };
+            if free {
+                kept.push(*probe);
+            }
+        }
+        // The app keeps types by the probe's address, so an address two
+        // folded probes share is kept only when both are.
+        let mut counts: HashMap<u64, (usize, usize)> = HashMap::new();
+        for (probe, _) in &probes {
+            counts.entry(*probe).or_default().0 += 1;
+        }
+        for probe in &kept {
+            counts.entry(*probe).or_default().1 += 1;
+        }
+        let mut listed: Vec<u64> = counts
+            .into_iter()
+            .filter(|(_, (all, kept))| all == kept)
+            .map(|(probe, _)| probe)
+            .collect();
+        listed.sort_unstable();
+        Ok((listed, layouts))
+    })
+}
+
+/// The parts of `signature` that are not a type parameter's.
+fn without_type_parameters(signature: &str) -> Vec<&str> {
+    signature
+        .split('|')
+        .filter(|part| !part.starts_with("T:"))
+        .collect()
 }
 
 /// The closure environments `signature` names among its parts, a type

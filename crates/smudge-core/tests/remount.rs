@@ -710,3 +710,990 @@ fn an_autofocus_whose_handler_moves_it_after_a_remount_is_revealed() {
         "the autofocused square, moved to 100..120 by its own handler, ends at the bottom edge"
     );
 }
+
+/// A slot a build stores the signal it created in, so a test can read it.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+type Slot<T> = Rc<RefCell<Option<RwSignal<T>>>>;
+
+/// Records that a patch kept the layouts of the types whose probes are
+/// `probes`, as the window does after a patch.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+fn keep(probes: &[usize]) {
+    // SAFETY: the tests never change a type, so every layout they list is
+    // the one the values hold.
+    unsafe { smudge_core::hot::note_kept_types(probes.iter().copied().collect()) }
+}
+
+/// Reads the signal a build stored in `slot`.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+fn read<T: Clone + 'static>(slot: &Slot<T>) -> T {
+    slot.borrow()
+        .as_ref()
+        .expect("the build stored its signal")
+        .read(T::clone)
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_remount_after_a_patch_keeps_a_signal_created_inside_the_build() {
+    let slot: Slot<u32> = Rc::new(RefCell::new(None));
+    let build = {
+        let slot = Rc::clone(&slot);
+        move || {
+            *slot.borrow_mut() = Some(RwSignal::new(1u32));
+            square()
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    slot.borrow().as_ref().expect("a signal").set(7);
+
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount(build.clone());
+    assert_eq!(read(&slot), 7, "the new build's signal took the old value");
+
+    // A remount no patch came before starts the signal fresh, as a reset
+    // of the interface expects.
+    harness.app().remount(build);
+    assert_eq!(read(&slot), 1, "a remount without a patch carried a value");
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_remount_resets_a_signal_whose_type_changed() {
+    let before: Slot<u32> = Rc::new(RefCell::new(None));
+    let after: Slot<i32> = Rc::new(RefCell::new(None));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, {
+        let before = Rc::clone(&before);
+        move || {
+            *before.borrow_mut() = Some(RwSignal::new(1u32));
+            square()
+        }
+    });
+    harness.frame();
+    before.borrow().as_ref().expect("a signal").set(7);
+
+    keep(&[
+        smudge_core::hot::probe_of::<u32>(),
+        smudge_core::hot::probe_of::<i32>(),
+    ]);
+    harness.app().remount({
+        let after = Rc::clone(&after);
+        move || {
+            *after.borrow_mut() = Some(RwSignal::new(-1i32));
+            square()
+        }
+    });
+    assert_eq!(read(&after), -1, "a signal of another type took the value");
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_remount_resets_a_signal_whose_layout_the_patch_changed() {
+    let slot: Slot<u32> = Rc::new(RefCell::new(None));
+    let build = {
+        let slot = Rc::clone(&slot);
+        move || {
+            *slot.borrow_mut() = Some(RwSignal::new(1u32));
+            square()
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    slot.borrow().as_ref().expect("a signal").set(7);
+
+    // The patch listed no probe, so no type kept a layout it could vouch for.
+    keep(&[]);
+    harness.app().remount(build);
+    assert_eq!(
+        read(&slot),
+        1,
+        "a value of a type the patch did not keep was carried"
+    );
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_remount_resets_a_signal_whose_call_site_moved_to_another_owner() {
+    let slot: Slot<u32> = Rc::new(RefCell::new(None));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, {
+        let slot = Rc::clone(&slot);
+        move || {
+            *slot.borrow_mut() = Some(RwSignal::new(1u32));
+            square()
+        }
+    });
+    harness.frame();
+    slot.borrow().as_ref().expect("a signal").set(7);
+
+    // The owner lives as long as the test, as a node's owner lives as long
+    // as its node.
+    let inner: Rc<RefCell<Option<smudge_core::reactive::Owner>>> = Rc::new(RefCell::new(None));
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount({
+        let slot = Rc::clone(&slot);
+        let inner = Rc::clone(&inner);
+        move || {
+            let owner = smudge_core::reactive::Owner::new();
+            *slot.borrow_mut() = Some(owner.with(|| RwSignal::new(1u32)));
+            *inner.borrow_mut() = Some(owner);
+            square()
+        }
+    });
+    assert_eq!(
+        read(&slot),
+        1,
+        "a signal under another owner took the value"
+    );
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_remount_finds_a_list_rows_value_after_the_rows_moved() {
+    use smudge_core::element::for_each;
+    use std::collections::HashMap;
+
+    let rows: Rc<RefCell<HashMap<&'static str, RwSignal<u32>>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let items = RwSignal::new(vec!["a", "b"]);
+    let build = {
+        let rows = Rc::clone(&rows);
+        let items = items.clone();
+        move || {
+            let rows = Rc::clone(&rows);
+            let items = items.clone();
+            panel().child(for_each(
+                move || items.get(),
+                |name| *name,
+                move |name| {
+                    rows.borrow_mut().insert(name, RwSignal::new(0u32));
+                    square()
+                },
+            ))
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    rows.borrow()["a"].set(1);
+    rows.borrow()["b"].set(2);
+    // The rows keep their owners when they move, and the new build makes
+    // them in the new order.
+    items.set(vec!["b", "a"]);
+    harness.frame();
+
+    keep(&[
+        smudge_core::hot::probe_of::<u32>(),
+        smudge_core::hot::probe_of::<&'static str>(),
+    ]);
+    harness.app().remount(build);
+    assert_eq!(read_row(&rows, "a"), 1, "row a lost its value");
+    assert_eq!(read_row(&rows, "b"), 2, "row b lost its value");
+}
+
+/// Reads the value of the row `name` of a list a build made.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+fn read_row(
+    rows: &Rc<RefCell<std::collections::HashMap<&'static str, RwSignal<u32>>>>,
+    name: &str,
+) -> u32 {
+    rows.borrow()[name].read(|value| *value)
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_remount_keeps_a_value_of_a_branch_that_was_shown_again() {
+    use smudge_core::element::show;
+
+    let slot: Slot<u32> = Rc::new(RefCell::new(None));
+    let shown = RwSignal::new(true);
+    let build = {
+        let slot = Rc::clone(&slot);
+        let shown = shown.clone();
+        move || {
+            let slot = Rc::clone(&slot);
+            let shown = shown.clone();
+            panel().child(show(
+                move || shown.get(),
+                move || {
+                    *slot.borrow_mut() = Some(RwSignal::new(0u32));
+                    square()
+                },
+            ))
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    shown.set(false);
+    harness.frame();
+    shown.set(true);
+    harness.frame();
+    slot.borrow().as_ref().expect("a signal").set(5);
+
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount(build);
+    assert_eq!(read(&slot), 5, "the branch shown again lost its value");
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_handle_kept_from_the_old_build_names_the_carried_signal() {
+    let slot: Slot<u32> = Rc::new(RefCell::new(None));
+    let build = {
+        let slot = Rc::clone(&slot);
+        move || {
+            *slot.borrow_mut() = Some(RwSignal::new(1u32));
+            square()
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    let kept = slot.borrow().clone().expect("a signal");
+    kept.set(7);
+
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount(build);
+    assert_eq!(
+        kept.read(|value| *value),
+        7,
+        "the old handle lost the value"
+    );
+    kept.set(9);
+    assert_eq!(
+        read(&slot),
+        9,
+        "the old handle writes another signal than the new one"
+    );
+}
+
+/// A row key whose every value hashes alike, as a lawful hash may.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[derive(Clone, PartialEq, Eq)]
+struct Colliding(&'static str);
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+impl std::hash::Hash for Colliding {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u8(0);
+    }
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn rows_whose_keys_hash_alike_carry_nothing() {
+    use smudge_core::element::for_each;
+    use std::collections::HashMap;
+
+    let rows: Rc<RefCell<HashMap<&'static str, RwSignal<u32>>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let build = {
+        let rows = Rc::clone(&rows);
+        move || {
+            let rows = Rc::clone(&rows);
+            panel().child(for_each(
+                || vec![Colliding("a"), Colliding("b")],
+                Colliding::clone,
+                move |key| {
+                    rows.borrow_mut().insert(key.0, RwSignal::new(0u32));
+                    square()
+                },
+            ))
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    rows.borrow()["a"].set(1);
+    rows.borrow()["b"].set(2);
+
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount(build);
+    harness.frame();
+    assert_eq!(
+        read_row(&rows, "a"),
+        0,
+        "a row took a value it cannot be told to own"
+    );
+    assert_eq!(
+        read_row(&rows, "b"),
+        0,
+        "a row took a value it cannot be told to own"
+    );
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_signal_keeps_its_value_across_two_patches() {
+    let slot: Slot<u32> = Rc::new(RefCell::new(None));
+    let build = {
+        let slot = Rc::clone(&slot);
+        move || {
+            *slot.borrow_mut() = Some(RwSignal::new(1u32));
+            square()
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    slot.borrow().as_ref().expect("a signal").set(7);
+
+    for patch in 1..=2 {
+        keep(&[smudge_core::hot::probe_of::<u32>()]);
+        harness.app().remount(build.clone());
+        harness.frame();
+        assert_eq!(read(&slot), 7, "patch {patch} lost the value");
+    }
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_signal_a_handler_creates_after_a_patch_takes_no_old_value() {
+    let made: Rc<RefCell<Vec<RwSignal<u32>>>> = Rc::new(RefCell::new(Vec::new()));
+    let build = {
+        let made = Rc::clone(&made);
+        move || {
+            let made = Rc::clone(&made);
+            square().on_press(move || {
+                let next = 100 + made.borrow().len() as u32;
+                made.borrow_mut().push(RwSignal::new(next));
+            })
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    harness.click(in_square(0));
+    harness.click(in_square(0));
+
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount(build);
+    harness.click(in_square(0));
+    let values: Vec<u32> = made
+        .borrow()
+        .iter()
+        .map(|signal| signal.read(|value| *value))
+        .collect();
+    assert_eq!(
+        values,
+        [100, 101, 102],
+        "a handler's signal took an old value"
+    );
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn what_a_row_shows_follows_its_row_when_a_row_comes_before_it() {
+    use smudge_core::element::for_each;
+    use std::collections::HashMap;
+
+    let rows: Rc<RefCell<HashMap<&'static str, RwSignal<u32>>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let items = RwSignal::new(vec!["a", "b"]);
+    let build = {
+        let rows = Rc::clone(&rows);
+        let items = items.clone();
+        move || {
+            let rows = Rc::clone(&rows);
+            let items = items.clone();
+            panel().child(for_each(
+                move || items.get(),
+                |name| *name,
+                move |name| {
+                    let rows = Rc::clone(&rows);
+                    panel().child(show(
+                        || true,
+                        move || {
+                            rows.borrow_mut().insert(name, RwSignal::new(9u32));
+                            square()
+                        },
+                    ))
+                },
+            ))
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    rows.borrow()["a"].set(1);
+    rows.borrow()["b"].set(2);
+    items.set(vec!["x", "a", "b"]);
+    harness.frame();
+
+    keep(&[
+        smudge_core::hot::probe_of::<u32>(),
+        smudge_core::hot::probe_of::<&'static str>(),
+    ]);
+    harness.app().remount(build);
+    harness.frame();
+    let values: Vec<u32> = ["x", "a", "b"]
+        .iter()
+        .map(|name| read_row(&rows, name))
+        .collect();
+    assert_eq!(
+        values,
+        [9, 1, 2],
+        "a row's shown branch took another row's value"
+    );
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_row_whose_key_hashes_like_a_new_one_takes_nothing() {
+    use smudge_core::element::for_each;
+    use std::collections::HashMap;
+
+    let rows: Rc<RefCell<HashMap<&'static str, RwSignal<u32>>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let items = RwSignal::new(vec![Colliding("a")]);
+    let build = {
+        let rows = Rc::clone(&rows);
+        let items = items.clone();
+        move || {
+            let rows = Rc::clone(&rows);
+            let items = items.clone();
+            panel().child(for_each(
+                move || items.get(),
+                Colliding::clone,
+                move |key| {
+                    rows.borrow_mut().insert(key.0, RwSignal::new(0u32));
+                    square()
+                },
+            ))
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    rows.borrow()["a"].set(1);
+    // The new key hashes like the old one and comes first.
+    items.set(vec![Colliding("b"), Colliding("a")]);
+    harness.frame();
+
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount(build);
+    harness.frame();
+    assert_eq!(read_row(&rows, "b"), 0, "a new row took an old row's value");
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_row_whose_key_came_to_hash_like_another_carries_nothing() {
+    use smudge_core::element::for_each;
+    use std::collections::HashMap;
+
+    let rows: Rc<RefCell<HashMap<&'static str, RwSignal<u32>>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let items = RwSignal::new(vec![Colliding("a")]);
+    let build = {
+        let rows = Rc::clone(&rows);
+        let items = items.clone();
+        move || {
+            let rows = Rc::clone(&rows);
+            let items = items.clone();
+            panel().child(for_each(
+                move || items.get(),
+                Colliding::clone,
+                move |key| {
+                    rows.borrow_mut().insert(key.0, RwSignal::new(0u32));
+                    square()
+                },
+            ))
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    rows.borrow()["a"].set(7);
+    // A key that hashes like the mounted one joins the list.
+    items.set(vec![Colliding("b"), Colliding("a")]);
+    harness.frame();
+    // The new build shows only the newcomer, which no key shares a hash
+    // with any more.
+    items.set(vec![Colliding("b")]);
+
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount(build);
+    harness.frame();
+    assert_eq!(
+        read_row(&rows, "b"),
+        0,
+        "a row took the value of the row it collided with"
+    );
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_signal_an_effect_creates_while_the_build_mounts_takes_no_value() {
+    let slot: Slot<u32> = Rc::new(RefCell::new(None));
+    let effects: Rc<RefCell<Vec<RenderEffect>>> = Rc::new(RefCell::new(Vec::new()));
+    let build = {
+        let slot = Rc::clone(&slot);
+        let effects = Rc::clone(&effects);
+        move || {
+            let slot = Rc::clone(&slot);
+            effects.borrow_mut().push(RenderEffect::new(move || {
+                *slot.borrow_mut() = Some(RwSignal::new(1u32));
+            }));
+            square()
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    slot.borrow().as_ref().expect("a signal").set(7);
+
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount(build);
+    harness.frame();
+    assert_eq!(read(&slot), 1, "an effect's signal took a carried value");
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn an_app_dropped_on_the_thread_leaves_another_apps_offer_open() {
+    use smudge_core::element::for_each;
+    use std::collections::HashMap;
+
+    /// A list that shows its one row only while `ready` holds.
+    fn app(
+        rows: &Rc<RefCell<HashMap<&'static str, RwSignal<u32>>>>,
+        ready: &RwSignal<bool>,
+    ) -> impl Fn() -> Element<Panel> + Clone + 'static {
+        let rows = Rc::clone(rows);
+        let ready = ready.clone();
+        move || {
+            let rows = Rc::clone(&rows);
+            let ready = ready.clone();
+            panel().child(for_each(
+                move || if ready.get() { vec!["a"] } else { Vec::new() },
+                |name| *name,
+                move |name| {
+                    rows.borrow_mut().insert(name, RwSignal::new(0u32));
+                    square()
+                },
+            ))
+        }
+    }
+
+    let first_rows = Rc::new(RefCell::new(HashMap::new()));
+    let second_rows = Rc::new(RefCell::new(HashMap::new()));
+    let first_ready = RwSignal::new(true);
+    let second_ready = RwSignal::new(true);
+    let mut first = Harness::new(100.0, 60.0, 1.0, app(&first_rows, &first_ready));
+    let mut second = Harness::new(100.0, 60.0, 1.0, app(&second_rows, &second_ready));
+    first.frame();
+    second.frame();
+    second_rows.borrow()["a"].set(5);
+
+    // The row of the second app mounts only frames after its remount.
+    keep(&[
+        smudge_core::hot::probe_of::<u32>(),
+        smudge_core::hot::probe_of::<&'static str>(),
+    ]);
+    first.app().remount(app(&first_rows, &first_ready));
+    second_ready.set(false);
+    keep(&[
+        smudge_core::hot::probe_of::<u32>(),
+        smudge_core::hot::probe_of::<&'static str>(),
+    ]);
+    second.app().remount(app(&second_rows, &second_ready));
+    drop(first);
+    second_ready.set(true);
+    second.frame();
+    assert_eq!(
+        read_row(&second_rows, "a"),
+        5,
+        "the other app's offer ended this one"
+    );
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn an_effect_that_outlives_the_build_still_hears_a_carried_signal() {
+    let slot: Slot<u32> = Rc::new(RefCell::new(None));
+    let build = {
+        let slot = Rc::clone(&slot);
+        move || {
+            *slot.borrow_mut() = Some(RwSignal::new(1u32));
+            square()
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    let held = slot.borrow().clone().expect("a signal");
+    // An effect outside the build, as a configure step installs, reads the
+    // build's signal through a handle it keeps.
+    let seen = Rc::new(Cell::new(0u32));
+    let outside = smudge_core::reactive::Owner::new();
+    let _effect = {
+        let held = held.clone();
+        let seen = Rc::clone(&seen);
+        outside.with(|| RenderEffect::new(move || seen.set(held.get())))
+    };
+    smudge_core::reactive::flush();
+    held.set(7);
+    smudge_core::reactive::flush();
+
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount(build);
+    harness.frame();
+    slot.borrow().as_ref().expect("a signal").set(9);
+    smudge_core::reactive::flush();
+    assert_eq!(
+        seen.get(),
+        9,
+        "the outliving effect no longer hears the signal"
+    );
+}
+
+/// A value whose drop creates a signal of the type the build's next signal
+/// has.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+struct MakesASignal;
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+impl Drop for MakesASignal {
+    fn drop(&mut self) {
+        let _ = RwSignal::new(0u32);
+    }
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_dropped_initial_value_takes_no_place_among_the_builds_signals() {
+    let slot: Slot<u32> = Rc::new(RefCell::new(None));
+    let maker: Slot<MakesASignal> = Rc::new(RefCell::new(None));
+    let build = {
+        let slot = Rc::clone(&slot);
+        let maker = Rc::clone(&maker);
+        move || {
+            *maker.borrow_mut() = Some(RwSignal::new(MakesASignal));
+            *slot.borrow_mut() = Some(RwSignal::new(1u32));
+            square()
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    slot.borrow().as_ref().expect("a signal").set(7);
+
+    keep(&[
+        smudge_core::hot::probe_of::<u32>(),
+        smudge_core::hot::probe_of::<MakesASignal>(),
+    ]);
+    harness.app().remount(build);
+    harness.frame();
+    assert_eq!(
+        read_u32(&slot),
+        7,
+        "the dropped value's signal took the build's place"
+    );
+}
+
+/// Reads a `u32` signal a build stored in `slot`.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+fn read_u32(slot: &Slot<u32>) -> u32 {
+    slot.borrow()
+        .as_ref()
+        .expect("the build stored its signal")
+        .read(|value| *value)
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_row_of_an_unequal_key_that_hashes_alike_takes_nothing() {
+    use smudge_core::element::for_each;
+    use std::collections::HashMap;
+
+    let rows: Rc<RefCell<HashMap<&'static str, RwSignal<u32>>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let items = RwSignal::new(vec![Colliding("a")]);
+    let build = {
+        let rows = Rc::clone(&rows);
+        let items = items.clone();
+        move || {
+            let rows = Rc::clone(&rows);
+            let items = items.clone();
+            panel().child(for_each(
+                move || items.get(),
+                Colliding::clone,
+                move |key| {
+                    rows.borrow_mut().insert(key.0, RwSignal::new(0u32));
+                    square()
+                },
+            ))
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    rows.borrow()["a"].set(7);
+    // The new build shows another key that hashes alike, alone.
+    items.set(vec![Colliding("b")]);
+
+    keep(&[
+        smudge_core::hot::probe_of::<u32>(),
+        smudge_core::hot::probe_of::<Colliding>(),
+    ]);
+    harness.app().remount(build);
+    harness.frame();
+    assert_eq!(
+        read_row(&rows, "b"),
+        0,
+        "an unequal key's row took the value"
+    );
+}
+
+/// A row key whose comparison creates a signal, as a key's own code may.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[derive(Clone, Eq)]
+struct ComparesWithASignal(&'static str);
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+impl std::hash::Hash for ComparesWithASignal {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+impl PartialEq for ComparesWithASignal {
+    fn eq(&self, other: &Self) -> bool {
+        let _ = RwSignal::new(0u8);
+        self.0 == other.0
+    }
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_row_key_whose_comparison_creates_a_signal_still_carries() {
+    use smudge_core::element::for_each;
+    use std::collections::HashMap;
+
+    let rows: Rc<RefCell<HashMap<&'static str, RwSignal<u32>>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let build = {
+        let rows = Rc::clone(&rows);
+        move || {
+            let rows = Rc::clone(&rows);
+            panel().child(for_each(
+                || vec![ComparesWithASignal("a")],
+                ComparesWithASignal::clone,
+                move |key| {
+                    rows.borrow_mut().insert(key.0, RwSignal::new(0u32));
+                    square()
+                },
+            ))
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    rows.borrow()["a"].set(7);
+
+    for patch in 1..=2 {
+        keep(&[
+            smudge_core::hot::probe_of::<u32>(),
+            smudge_core::hot::probe_of::<u8>(),
+            smudge_core::hot::probe_of::<ComparesWithASignal>(),
+        ]);
+        harness.app().remount(build.clone());
+        harness.frame();
+        assert_eq!(
+            read_row(&rows, "a"),
+            7,
+            "patch {patch} lost the row's value"
+        );
+    }
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_handler_another_apps_build_runs_takes_no_value() {
+    let made: Rc<RefCell<Vec<RwSignal<u32>>>> = Rc::new(RefCell::new(Vec::new()));
+    let build = {
+        let made = Rc::clone(&made);
+        move || {
+            let made = Rc::clone(&made);
+            square().on_press(move || {
+                let next = 100 + made.borrow().len() as u32;
+                made.borrow_mut().push(RwSignal::new(next));
+            })
+        }
+    };
+    let pressed = Rc::new(RefCell::new(Harness::new(100.0, 60.0, 1.0, build.clone())));
+    pressed.borrow_mut().frame();
+    pressed.borrow_mut().click(in_square(0));
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    pressed.borrow_mut().app().remount(build);
+
+    // Another app's build presses the first app's square while the first
+    // app's offer is open.
+    let _other = Harness::new(100.0, 60.0, 1.0, {
+        let pressed = Rc::clone(&pressed);
+        move || {
+            pressed.borrow_mut().click(in_square(0));
+            square()
+        }
+    });
+    let values: Vec<u32> = made
+        .borrow()
+        .iter()
+        .map(|signal| signal.read(|value| *value))
+        .collect();
+    assert_eq!(values, [100, 101], "a handler's signal took an old value");
+}
+
+/// Where a drop keeps the app it made and the signal that app's build made.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+type MadeApp = Rc<RefCell<Option<(Harness, Slot<u32>)>>>;
+
+/// A value whose drop makes an app, once, and keeps it with the signal its
+/// build made.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+struct MakesAnApp(MadeApp);
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+impl Drop for MakesAnApp {
+    fn drop(&mut self) {
+        if self.0.borrow().is_some() {
+            return;
+        }
+        let slot: Slot<u32> = Rc::new(RefCell::new(None));
+        let harness = Harness::new(100.0, 60.0, 1.0, {
+            let slot = Rc::clone(&slot);
+            move || {
+                *slot.borrow_mut() = Some(RwSignal::new(1u32));
+                square()
+            }
+        });
+        *self.0.borrow_mut() = Some((harness, slot));
+    }
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn an_app_made_while_a_value_is_dropped_still_carries_its_values() {
+    let made: MadeApp = Rc::new(RefCell::new(None));
+    let maker: Slot<MakesAnApp> = Rc::new(RefCell::new(None));
+    let build = {
+        let made = Rc::clone(&made);
+        let maker = Rc::clone(&maker);
+        move || {
+            *maker.borrow_mut() = Some(RwSignal::new(MakesAnApp(Rc::clone(&made))));
+            square()
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    // The remount drops the new build's initial value, whose drop makes the
+    // other app.
+    keep(&[
+        smudge_core::hot::probe_of::<u32>(),
+        smudge_core::hot::probe_of::<MakesAnApp>(),
+    ]);
+    harness.app().remount(build);
+    let (mut other, slot) = made.borrow_mut().take().expect("the drop made an app");
+    other.frame();
+    slot.borrow().as_ref().expect("a signal").set(42);
+    let rebuild = {
+        let slot = Rc::clone(&slot);
+        move || {
+            *slot.borrow_mut() = Some(RwSignal::new(1u32));
+            square()
+        }
+    };
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    other.app().remount(rebuild);
+    assert_eq!(read_u32(&slot), 42, "the app made in a drop lost its value");
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_signal_beside_a_passing_owner_keeps_its_value() {
+    let slot: Slot<u32> = Rc::new(RefCell::new(None));
+    let kept_owners: Rc<RefCell<Vec<smudge_core::reactive::Owner>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let build = {
+        let slot = Rc::clone(&slot);
+        let kept_owners = Rc::clone(&kept_owners);
+        move || {
+            let holder = smudge_core::reactive::Owner::new();
+            let lasting = holder.with(|| {
+                // An owner that lives only while the next one is made.
+                let passing = smudge_core::reactive::Owner::new();
+                let lasting = smudge_core::reactive::Owner::new();
+                *slot.borrow_mut() = Some(lasting.with(|| RwSignal::new(1u32)));
+                drop(passing);
+                lasting
+            });
+            // The owners live as long as the build, as a node's owner lives
+            // as long as its node.
+            *kept_owners.borrow_mut() = vec![holder, lasting];
+            square()
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    slot.borrow().as_ref().expect("a signal").set(7);
+
+    keep(&[smudge_core::hot::probe_of::<u32>()]);
+    harness.app().remount(build);
+    assert_eq!(
+        read_u32(&slot),
+        7,
+        "the passing owner moved the signal's place"
+    );
+}
+
+/// A row key whose comparison creates a signal of the type its row's own
+/// signals have.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[derive(Clone, Eq)]
+struct ComparesWithAU32(&'static str);
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+impl PartialEq for ComparesWithAU32 {
+    fn eq(&self, other: &Self) -> bool {
+        let _ = RwSignal::new(0u32);
+        self.0 == other.0
+    }
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+impl std::hash::Hash for ComparesWithAU32 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+#[test]
+fn a_row_key_comparison_takes_no_value_of_its_rows_signals() {
+    use smudge_core::element::for_each;
+
+    let first: Slot<u32> = Rc::new(RefCell::new(None));
+    let second: Slot<u32> = Rc::new(RefCell::new(None));
+    let build = {
+        let first = Rc::clone(&first);
+        let second = Rc::clone(&second);
+        move || {
+            let first = Rc::clone(&first);
+            let second = Rc::clone(&second);
+            panel().child(for_each(
+                || vec![ComparesWithAU32("a")],
+                ComparesWithAU32::clone,
+                move |_| {
+                    *first.borrow_mut() = Some(RwSignal::new(1u32));
+                    *second.borrow_mut() = Some(RwSignal::new(2u32));
+                    square()
+                },
+            ))
+        }
+    };
+    let mut harness = Harness::new(100.0, 60.0, 1.0, build.clone());
+    harness.frame();
+    first.borrow().as_ref().expect("a signal").set(7);
+    second.borrow().as_ref().expect("a signal").set(8);
+
+    keep(&[
+        smudge_core::hot::probe_of::<u32>(),
+        smudge_core::hot::probe_of::<ComparesWithAU32>(),
+    ]);
+    harness.app().remount(build);
+    harness.frame();
+    assert_eq!(
+        [read_u32(&first), read_u32(&second)],
+        [7, 8],
+        "the comparison's signal took a row's value"
+    );
+}

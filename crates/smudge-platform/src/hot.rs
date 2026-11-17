@@ -44,7 +44,7 @@ use subsecond::JumpTable;
 /// | Kind | Sent by | Payload |
 /// |---|---|---|
 /// | 1, hello | the app | the format version as a `u32`, the process id as a `u32`, the runtime address of `main` as a `u64`, the runtime address of the view as a `u64`, the runtime address of the state probe as a `u64`, and then the build id, the value of [`HOT_BUILD_ENVIRONMENT`], to the end |
-/// | 2, patch | the builder | the address of `main` in the binary as linked, as a `u64`, the address of `main` in the patch library as linked, as a `u64`, the entry count as a `u64`, that many pairs of `u64` mapping the address of a function in the binary as linked to the address of its new version in the patch library as linked, and then the path of the patch library to the end |
+/// | 2, patch | the builder | the address of `main` in the binary as linked, as a `u64`, the address of `main` in the patch library as linked, as a `u64`, the entry count as a `u64`, that many pairs of `u64` mapping the address of a function in the binary as linked to the address of its new version in the patch library as linked, the count of kept type probes as a `u64`, that many addresses of type probes in the binary as linked, as `u64`, and then the path of the patch library to the end |
 /// | 3, applied | the app | empty |
 /// | 4, failed | the app | why the patch was not applied, in UTF-8 |
 ///
@@ -68,19 +68,25 @@ use subsecond::JumpTable;
 /// to every entry. A builder must also leave out every function whose
 /// signature, its parameter and return types, changed, because the app calls
 /// a mapped function with the signature it has in the binary and cannot
-/// check it: symbol names do not record signatures. When the view's own
-/// signature changed, the builder reports that the change needs a restart
-/// instead of sending the patch. The hello tells the builder which function
-/// is the view: version 2 carries the view's runtime address, which the
-/// builder rebases against the address of `main` like every other runtime
-/// address. Against a version 1 hello a builder cannot attribute a
-/// signature change to the view or to anything else, so it must refuse
-/// every signature change and ask for a restart instead. Version 2 also
-/// carries the runtime address of the state probe: the instance of a
-/// function generic over the state type that `run_view` compiles for the
-/// app's state, whose debug information names the state type as its type
-/// parameter. The builder reads the state type there to keep the layout
-/// rule below.
+/// check it: symbol names do not record signatures. A type probe, described
+/// below, is the one exception: it takes nothing and returns the same tuple
+/// whatever type it names, so it is mapped even when only that type
+/// changed. When the view's own signature changed, the builder reports that
+/// the change needs a restart instead of sending the patch.
+///
+/// The hello tells the builder which function is the view and which is the
+/// state probe, by their runtime addresses, which the builder rebases
+/// against the address of `main` like every other runtime address. The
+/// state probe is the instance of a function generic over the state type
+/// that `run_view` compiles for the app's state, whose debug information
+/// names the state type as its type parameter. The builder reads the state
+/// type there to keep the layout rule below. Every other instance of the
+/// same function in the binary probes the type it is instantiated with, and
+/// each patch lists the type probes whose types it kept in the layout the
+/// app's live values hold. The remount after the patch carries the value of
+/// a signal the old build created into the new build only when its type's
+/// probe is listed, so a builder lists a probe only when it compared the
+/// type and found that layout unchanged.
 ///
 /// A builder must not send a patch that changes the layout of the state
 /// type or of any type its values reach, directly or through signals, `Rc`,
@@ -188,6 +194,9 @@ const MAX_PAYLOAD: u32 = 64 << 20;
 pub(crate) struct Patch {
     /// The table the builder sent, as linked.
     table: JumpTable,
+    /// The type probes whose types the patch kept in the running layout,
+    /// as linked.
+    kept: Vec<u64>,
     /// Where the outcome goes: `Ok` for applied, or why it was not.
     answer: mpsc::Sender<Result<(), String>>,
 }
@@ -200,9 +209,26 @@ impl Patch {
     /// that reads the table through [`current`]. `then` rebuilds the root
     /// through the patched view, and its error is the answer when it fails.
     pub(crate) fn apply(self, then: impl FnOnce() -> Result<(), String>) {
+        // The probes are linked addresses, which move by the same distance
+        // as `main` did.
+        let linked_main = self.table.aslr_reference;
+        let runtime_main = subsecond::aslr_reference() as u64;
+        let kept: std::collections::HashSet<usize> = self
+            .kept
+            .iter()
+            .map(|probe| probe.wrapping_sub(linked_main).wrapping_add(runtime_main) as usize)
+            .collect();
         let outcome = install(self.table).and_then(|()| {
             note_patch_installed();
-            then()
+            // SAFETY: the builder lists a type probe only when it compared
+            // the type the probe names with the patch and found the layout
+            // the app's live values hold, as the wire format requires.
+            unsafe { smudge_core::hot::note_kept_types(kept) };
+            let remounted = then();
+            // A view the guard refused leaves the build unmounted, and the
+            // next remount, one the app asks for itself, carries nothing.
+            smudge_core::hot::forget_kept_types();
+            remounted
         });
         let _ = self.answer.send(outcome);
     }
@@ -334,9 +360,13 @@ fn receive(mut stream: UnixStream, deliver: impl Fn(Patch)) {
         if kind != PATCH {
             continue;
         }
-        let outcome = decode_patch(&payload).and_then(|table| {
+        let outcome = decode_patch(&payload).and_then(|(table, kept)| {
             let (answer, answered) = mpsc::channel();
-            deliver(Patch { table, answer });
+            deliver(Patch {
+                table,
+                kept,
+                answer,
+            });
             answered
                 .recv()
                 .unwrap_or_else(|_| Err(String::from("the app closed before it applied the patch")))
@@ -433,8 +463,9 @@ fn write_frame(stream: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<
     stream.write_all(&frame)
 }
 
-/// Reads the jump table a patch frame carries.
-fn decode_patch(payload: &[u8]) -> Result<JumpTable, String> {
+/// Reads the jump table a patch frame carries, and the type probes it
+/// kept.
+fn decode_patch(payload: &[u8]) -> Result<(JumpTable, Vec<u64>), String> {
     let mut rest = payload;
     let aslr_reference = take_u64(&mut rest)?;
     let new_base_address = take_u64(&mut rest)?;
@@ -442,16 +473,21 @@ fn decode_patch(payload: &[u8]) -> Result<JumpTable, String> {
     let map = (0..count)
         .map(|_| Ok((take_u64(&mut rest)?, take_u64(&mut rest)?)))
         .collect::<Result<_, String>>()?;
+    let kept_count = take_u64(&mut rest)?;
+    let kept = (0..kept_count)
+        .map(|_| take_u64(&mut rest))
+        .collect::<Result<_, String>>()?;
     if rest.is_empty() {
         return Err(String::from("the patch names no library"));
     }
-    Ok(JumpTable {
+    let table = JumpTable {
         lib: PathBuf::from(OsString::from_vec(rest.to_vec())),
         map,
         aslr_reference,
         new_base_address,
         ifunc_count: 0,
-    })
+    };
+    Ok((table, kept))
 }
 
 /// Takes a little-endian `u64` off the front of `rest`.
@@ -465,31 +501,22 @@ fn take_u64(rest: &mut &[u8]) -> Result<u64, String> {
 
 /// The size, the alignment and the name of a type, as the code compiled with
 /// it sees the type.
-pub(crate) type Shape = (usize, usize, &'static str);
-
-/// Returns the shape of `S`, as this instance was compiled.
-///
-/// This is the probe of the state guard. [`current`] is generic over the
-/// state and `run_view` instantiates it with the app's state type, so this
-/// function's instance for that type is compiled in the crate that calls
-/// `run_view`, which is not always the crate that defines the view. A patch
-/// that rebuilds that crate maps the instance to its new
-/// version like any other function, and the new version reports the state
-/// type as the new code sees it. When the new code no longer uses the type,
-/// the instance is gone from the patch, and the table maps it to nothing.
-#[inline(never)]
-fn state_shape<S>() -> Shape {
-    (
-        std::mem::size_of::<S>(),
-        std::mem::align_of::<S>(),
-        std::any::type_name::<S>(),
-    )
-}
+pub(crate) use smudge_core::hot::Shape;
 
 /// Returns the runtime address of the state probe for `S`, the instance of
-/// [`state_shape`] that [`current`] checks, which the hello announces.
+/// [`smudge_core::hot::shape`] that [`current`] checks, which the hello
+/// announces.
+///
+/// [`current`] is generic over the state and `run_view` instantiates it
+/// with the app's state type, so the probe's instance for that type is
+/// compiled in the crate that calls `run_view`, which is not always the
+/// crate that defines the view. A patch that rebuilds that crate maps the
+/// instance to its new version like any other function, and the new
+/// version reports the state type as the new code sees it. When the new
+/// code no longer uses the type, the instance is gone from the patch, and
+/// the table maps it to nothing.
 pub(crate) fn state_probe<S>() -> usize {
-    state_shape::<S> as fn() -> Shape as usize
+    smudge_core::hot::shape::<S> as fn() -> Shape as usize
 }
 
 /// Returns the newest version of `view`: the version the last applied patch
@@ -523,7 +550,7 @@ pub(crate) fn current<S, E>(view: fn(&S) -> E) -> Result<fn(&S) -> E, String> {
     // breaks the signature or the layout rule of the wire format is
     // undefined behavior, which `run_view` documents as a change that needs
     // a restart.
-    unsafe { patched(table, view, state_shape::<S>) }
+    unsafe { patched(table, view, smudge_core::hot::shape::<S>) }
 }
 
 /// Returns the function `table` maps `view` to, or `view` when it maps it to

@@ -139,6 +139,18 @@ fn main() {
     }
 }
 
+/// The runtime addresses of the type probes the last patch kept.
+static KEPT: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether the last patch kept the type probe at `address`.
+// Only the tests that add a report line call it.
+#[allow(dead_code)]
+fn kept(address: usize) -> bool {
+    KEPT.lock()
+        .expect("fixture: the kept probes lock")
+        .contains(&(address as u64))
+}
+
 /// Decodes a patch frame and installs its table.
 ///
 /// # Errors
@@ -152,6 +164,12 @@ fn apply(payload: &[u8]) -> Result<(), String> {
     let map = (0..count)
         .map(|_| Ok((take_u64(&mut rest)?, take_u64(&mut rest)?)))
         .collect::<Result<_, String>>()?;
+    let kept_count = take_u64(&mut rest)?;
+    let runtime_main = subsecond::aslr_reference() as u64;
+    let kept: Vec<u64> = (0..kept_count)
+        .map(|_| Ok(take_u64(&mut rest)?.wrapping_sub(aslr_reference).wrapping_add(runtime_main)))
+        .collect::<Result<_, String>>()?;
+    *KEPT.lock().expect("fixture: the kept probes lock") = kept;
     if rest.is_empty() {
         return Err(String::from("the patch names no library"));
     }

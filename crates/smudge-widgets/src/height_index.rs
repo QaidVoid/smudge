@@ -227,6 +227,13 @@ impl<K: Eq + Hash + Clone> HeightIndex<K> {
 
     /// Rebuilds the tree, the key positions and the total from the keys and
     /// heights, in O(n).
+    /// Builds the key lookup and the sums again from the keys and heights it
+    /// holds, as this code hashes the keys, for an index the code before a
+    /// hot patch built.
+    pub(crate) fn rehash(&mut self) {
+        self.rebuild();
+    }
+
     fn rebuild(&mut self) {
         self.positions = self
             .keys

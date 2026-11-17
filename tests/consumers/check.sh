@@ -84,7 +84,9 @@ for profile in dev release; do
     # one. One codegen unit makes rustc write one file there. The pass with
     # the hot-reload feature covers a wrapped closure: its shim must be
     # compiled here, and its lookup must go through the non-generic,
-    # non-inlined getter of the core.
+    # non-inlined getter of the core. It covers a signal's registration for
+    # carrying across a remount too, which must reach the core's stash
+    # through the core's own non-inlined call.
     for set in "" "-hot"; do
         if [ "$set" = "-hot" ]; then
             features="--features hot-reload"
@@ -120,6 +122,10 @@ for profile in dev release; do
         if [ "$set" = "-hot" ] && [ "$(uname -s)" = "Linux" ]; then
             grep -q 'call.*smudge_core3hot3imp9published' "$ir" || {
                 echo "the $profile IR of runtime-entry reaches the jump table without the non-inlined published getter of the core, so a patch would read a stale copy of the table" >&2
+                exit 1
+            }
+            grep -Eq '(call|invoke) .*smudge_core8reactive5carry15register_erased' "$ir" || {
+                echo "the $profile IR of runtime-entry registers its signals for carrying without the non-inlined call into the core, so a patch could carry empty copies of the core's thread-locals" >&2
                 exit 1
             }
             grep -q 'define .*smudge_core3hot3imp11shim_shared' "$ir" || {

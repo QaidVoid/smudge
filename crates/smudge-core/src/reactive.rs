@@ -74,6 +74,9 @@ use std::rc::{Rc, Weak};
 
 pub(crate) mod runtime;
 
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+pub(crate) mod carry;
+
 use runtime::{CurrentOwnerGuard, EffectCell, MemoData, NodeId, OwnerData, OwnerState, SignalData};
 
 /// Installs the runtime on the calling thread.
@@ -253,14 +256,21 @@ impl<T: 'static> RwSignal<T> {
     /// outlive it keep the value readable but notify nothing. With no current
     /// owner nothing disposes it, and its entry in the runtime stays until the
     /// thread ends.
+    ///
+    /// With the `hot-reload` feature on Linux, a remount after a hot patch
+    /// hands the new signal the value of the signal the previous build
+    /// created at the same place, as [`App::remount`](crate::app::App::remount)
+    /// describes.
+    #[cfg_attr(all(feature = "hot-reload", target_os = "linux"), track_caller)]
     pub fn new(value: T) -> RwSignal<T> {
         let node = runtime::new_signal();
-        RwSignal {
-            data: Rc::new(SignalData {
-                value: RefCell::new(value),
-                node: Cell::new(node),
-            }),
-        }
+        let data = Rc::new(SignalData {
+            value: RefCell::new(value),
+            node: Cell::new(node),
+        });
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        let data = carry::register(std::panic::Location::caller().file(), data);
+        RwSignal { data }
     }
 }
 
@@ -359,6 +369,10 @@ impl<T: 'static> Update<T> for WriteSignal<T> {
 /// owner nothing disposes it, and its entry in the runtime stays until the
 /// thread ends.
 ///
+/// With the `hot-reload` feature on Linux, a remount after a hot patch hands
+/// the new signal the value of the signal the previous build created at the
+/// same place, as [`App::remount`](crate::app::App::remount) describes.
+///
 /// ```
 /// use smudge_core::reactive::{self, Owner, RenderEffect, prelude::*};
 /// use std::cell::Cell;
@@ -376,12 +390,15 @@ impl<T: 'static> Update<T> for WriteSignal<T> {
 /// reactive::flush();
 /// assert_eq!(seen.get(), 4);
 /// ```
+#[cfg_attr(all(feature = "hot-reload", target_os = "linux"), track_caller)]
 pub fn signal_local<T: 'static>(value: T) -> (ReadSignal<T>, WriteSignal<T>) {
     let node = runtime::new_signal();
     let data = Rc::new(SignalData {
         value: RefCell::new(value),
         node: Cell::new(node),
     });
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    let data = carry::register(std::panic::Location::caller().file(), data);
     (
         ReadSignal {
             data: Rc::clone(&data),
@@ -575,6 +592,20 @@ impl Owner {
             window_book: RefCell::new(None),
             #[cfg(all(feature = "hot-reload", target_os = "linux"))]
             hot_patch_book: RefCell::new(None),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            name: Cell::new(None),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            row: RefCell::new(None),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            unnamed_children: Cell::new(0),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            place: Cell::new(
+                parent
+                    .as_ref()
+                    .map_or(0, |parent| parent.count_unnamed_child()),
+            ),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            counted: Cell::new(parent.is_some()),
         });
         if let Some(parent) = parent {
             parent.adopt(&inner);

@@ -1740,6 +1740,43 @@ pub(crate) fn mount(
     queue: &UpdateQueue,
     parent: Option<WidgetId>,
 ) -> WidgetId {
+    mount_named(element, tree, queue, parent, None)
+}
+
+/// How a list row's owners stand in the key of a value carried across a
+/// remount.
+#[cfg(all(feature = "hot-reload", target_os = "linux"))]
+use crate::reactive::carry::RowKey;
+
+/// How a list row's owners stand in the key of a value carried across a
+/// remount, which only hot reload knows of: no other build names a row.
+#[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
+type RowKey = std::convert::Infallible;
+
+/// Gives the owners of the mounted row `child`, the one its build ran in
+/// and the one of its node, the names `row` stands for.
+fn name_row(tree: &WidgetTree, child: WidgetId, owner: &Owner, row: Option<RowKey>) {
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    if let Some(row) = row {
+        crate::reactive::carry::name_owner(owner.data(), &row, false);
+        if let Some(node_owner) = tree.owner(child) {
+            crate::reactive::carry::name_owner(node_owner.data(), &row, true);
+        }
+    }
+    #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
+    let _ = (tree, child, owner, row);
+}
+
+/// Mounts `element` like [`mount`], and gives the owner of its node the
+/// name of the list row it is, before anything under the node creates a
+/// value.
+fn mount_named(
+    element: AnyElement,
+    tree: &mut WidgetTree,
+    queue: &UpdateQueue,
+    parent: Option<WidgetId>,
+    row: Option<RowKey>,
+) -> WidgetId {
     let AnyElement {
         widget,
         style,
@@ -1758,6 +1795,14 @@ pub(crate) fn mount(
         children,
     } = element;
     let id = tree.insert(parent, widget, style);
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    if let Some(row) = &row
+        && let Some(owner) = tree.owner(id)
+    {
+        crate::reactive::carry::name_owner(owner.data(), row, true);
+    }
+    #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
+    let _ = row;
     tree.set_variants(id, variants.map(Rc::new));
     tree.set_disabled(id, disabled);
     tree.set_cursor(id, cursor);
@@ -1818,11 +1863,21 @@ fn mount_under_slot(
     slot: WidgetId,
     tree: &mut WidgetTree,
     queue: &UpdateQueue,
+    name: Option<RowKey>,
     build: impl FnOnce() -> AnyElement,
 ) -> Option<(WidgetId, Owner)> {
-    let owner = tree.owner(slot)?.child();
+    let slot_owner = tree.owner(slot)?;
+    // The row's owner and the owner of the node it mounts both sit under
+    // the slot's own owner.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    let _mounting = crate::reactive::carry::Mounting::enter(slot_owner.data());
+    let owner = slot_owner.child();
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    if let Some(name) = &name {
+        crate::reactive::carry::name_owner(owner.data(), name, false);
+    }
     let element = owner.with(build);
-    let child = mount(element, tree, queue, Some(slot));
+    let child = mount_named(element, tree, queue, Some(slot), name);
     Some((child, owner))
 }
 
@@ -1877,7 +1932,7 @@ pub fn show<E: IntoElement>(
                     match (visible, mounted.take()) {
                         (true, None) => {
                             if let Some(child) =
-                                mount_under_slot(id, tree, &child_queue, || build())
+                                mount_under_slot(id, tree, &child_queue, None, || build())
                             {
                                 *mounted = Some(child);
                             }
@@ -1984,18 +2039,54 @@ where
                         kept
                     });
 
+                    // A row goes by the hash of its key only while no other
+                    // key of the list hashes alike, since two rows of one
+                    // name could take each other's carried values.
+                    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+                    let names: HashMap<u64, usize> = {
+                        let mut names = HashMap::with_capacity(keys.len());
+                        for item_key in &keys {
+                            *names
+                                .entry(crate::reactive::carry::name_of(item_key))
+                                .or_default() += 1;
+                        }
+                        names
+                    };
                     let mut new_order = Vec::with_capacity(last.len());
                     let mut children = Vec::with_capacity(last.len());
                     for (at, (item, item_key)) in items.into_iter().zip(keys).enumerate() {
                         if last[&item_key] != at {
                             continue;
                         }
+                        // A row's owners go by its key, so a carried value
+                        // finds its row wherever the rows moved.
+                        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+                        let name = {
+                            let hash = crate::reactive::carry::name_of(&item_key);
+                            Some(if names[&hash] == 1 {
+                                RowKey::Hashed(
+                                    hash,
+                                    crate::reactive::carry::RowIdentity::of(&item_key),
+                                )
+                            } else {
+                                RowKey::Ambiguous
+                            })
+                        };
+                        #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
+                        let name = None;
                         let child = match mounted.get(&item_key) {
-                            Some((child, _)) => *child,
+                            Some((child, owner)) => {
+                                // A key another key of the list came to hash
+                                // like leaves the row it names unkeyed too.
+                                name_row(tree, *child, owner, name);
+                                *child
+                            }
                             None => {
                                 let row = Rc::clone(&row);
                                 let Some((child, owner)) =
-                                    mount_under_slot(slot, tree, &child_queue, move || row(item))
+                                    mount_under_slot(slot, tree, &child_queue, name, move || {
+                                        row(item)
+                                    })
                                 else {
                                     continue;
                                 };

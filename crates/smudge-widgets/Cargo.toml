@@ -20,6 +20,9 @@ default = ["bundled-fonts"]
 # find a font even when no other dependency provides one. An application
 # that turns it off must enable a font feature on the text crate itself.
 bundled-fonts = ["smudge-text/bundled-fonts"]
+# Hot reload, as the feature of the same name in the core crate describes.
+# Turned on by the facade's feature of the same name.
+hot-reload = ["smudge-core/hot-reload"]
 
 [dev-dependencies]
 insta = "1.49.0"

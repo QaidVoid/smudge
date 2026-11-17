@@ -166,6 +166,10 @@ pub struct App {
     hooks: Rc<RefCell<crate::hot::HotPatchBook>>,
     /// Whether the next frame repaints the whole surface.
     force_full: bool,
+    /// The old build's signal values, still on offer to the parts of the
+    /// new build that mount in the frames after a remount.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    carrying: Option<crate::reactive::carry::Offered>,
     /// The system color scheme the last report named, even when the app does
     /// not follow it, so a follower that arrives later starts on it.
     scheme: Option<ColorScheme>,
@@ -262,7 +266,13 @@ impl App {
         tree.set_scale(config.scale);
         let queue = UpdateQueue::default();
         let build_owner = root.child();
-        build_owner.with(|| mount(build().into_any(), &mut tree, &queue, None));
+        {
+            // A first build made inside a value's drop still registers its
+            // signals for carrying.
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            let _mounting = crate::reactive::carry::Mounting::enter(build_owner.data());
+            build_owner.with(|| mount(build().into_any(), &mut tree, &queue, None));
+        }
 
         App {
             tree,
@@ -280,6 +290,8 @@ impl App {
             #[cfg(all(feature = "hot-reload", target_os = "linux"))]
             hooks,
             force_full: true,
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            carrying: None,
             scheme: None,
             scheme_follow: None,
             ime_reset: false,
@@ -362,6 +374,43 @@ impl App {
     /// its first state keeps the application's data in signals outside the
     /// build and remounts the same build.
     ///
+    /// With the `hot-reload` feature on Linux, the remount that follows a
+    /// hot patch carries the values of the signals the old build created
+    /// into the new one. A signal the new build creates while it mounts
+    /// takes over the old build's signal with the same key: the path of its
+    /// owner from the build's owner, each owner by its place among its
+    /// parent's live children when it was created, the source file that
+    /// called [`RwSignal::new`] or [`signal_local`], its ordinal among the
+    /// signals of that file and type under that owner, and its type. The
+    /// owners of a [`for_each`](crate::element::for_each) row go by the
+    /// row's key, so a row finds its values wherever the rows moved, and a
+    /// value crosses only to the row of a key equal to its old row's. Two
+    /// siblings that stand alike, two rows whose keys hash alike or two
+    /// owners that took one place at different times, carry nothing. The
+    /// line is not part of the key, so a line added above a signal keeps its
+    /// value, while two signals of one type in one owner and file that swap
+    /// places swap their values. The new signal adopts the old one's
+    /// storage, so a handle kept from the old build names it too.
+    ///
+    /// A value is carried only when its type kept its size, its alignment
+    /// and, as the patch builder reports through `hot::note_kept_types`, the
+    /// layout the live values hold. The builder never vouches for a type
+    /// that holds a signal, an owner, an effect, a timer or a channel, whose
+    /// handles would point into the old build, nor for one that holds a
+    /// trait object, whose contents no layout of the holder describes, nor
+    /// for a type whose probe
+    /// the binary the app started with lacks, such as one first used after
+    /// a patch, or one a patch reaches through a copy of the probe no
+    /// earlier build compiled. The parts of the new build that mount in the
+    /// frames after the remount, such as a list's rows, claim their values
+    /// then: the offer lasts until every value was claimed or two frames in
+    /// a row claim none. A signal a handler, an effect or a timer creates
+    /// never claims a value. Every other remount, and a signal no key
+    /// matches, starts from the value the new build gives it.
+    ///
+    /// [`RwSignal::new`]: crate::reactive::RwSignal::new
+    /// [`signal_local`]: crate::reactive::signal_local
+    ///
     /// # Panics
     ///
     /// Panics when `build` panics, or when code the remount runs for the
@@ -407,13 +456,33 @@ impl App {
     /// assert_eq!(widths[1], 50.0, "the signal kept outside the build kept its value");
     /// ```
     pub fn remount<E: IntoElement>(&mut self, build: impl FnOnce() -> E) {
+        // The values are taken before the tree is unmounted, which cleans
+        // up the owners of the nodes it removes.
+        // An offer an earlier remount left ends first, so its values never
+        // reach this build. The patch's list of kept types is taken before,
+        // since ending the offer drops values whose drop can run any code,
+        // a remount of another app included.
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        let carried = {
+            let kept = crate::hot::take_kept();
+            self.carrying = None;
+            kept.map(|kept| crate::reactive::carry::take(self.build_owner.data(), kept))
+        };
         let focus = self.tree.focus_path();
         self.tree.unmount_root();
         self.build_owner.cleanup();
         self.build_owner = self._root.child();
-        self.build_owner
-            .with(|| mount(build().into_any(), &mut self.tree, &self.queue, None));
-        self.queue.apply(&mut self.tree);
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        {
+            self.carrying = carried.map(|taken| taken.offer(self.build_owner.data()));
+        }
+        {
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            let _mounting = crate::reactive::carry::Mounting::enter(self.build_owner.data());
+            self.build_owner
+                .with(|| mount(build().into_any(), &mut self.tree, &self.queue, None));
+            self.queue.apply(&mut self.tree);
+        }
         if let Some(path) = focus {
             self.tree.restore_focus(&path);
         }
@@ -830,6 +899,12 @@ impl App {
     /// nothing, and asking for a frame every time would present the window
     /// for nothing.
     pub fn needs_frame(&self) -> bool {
+        // An open offer of the old build's values ends only with frames, so
+        // an idle app draws the few it takes rather than keep them.
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        if self.carrying.is_some() {
+            return true;
+        }
         self.tree.has_pending_work() || crate::channel::has_pending(&self.channels)
     }
 
@@ -1068,6 +1143,15 @@ impl App {
 
         if full {
             self.damage.add_full();
+        }
+
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        if self
+            .carrying
+            .as_mut()
+            .is_some_and(|carrying| !carrying.frame_ended())
+        {
+            self.carrying = None;
         }
 
         let (width, height) = self.surface_size();

@@ -73,6 +73,14 @@ pub(crate) struct OwnerState {
     pub(crate) nodes: Vec<NodeId>,
     /// The context values, one per type.
     pub(crate) contexts: Vec<(TypeId, Rc<dyn Any>)>,
+    /// The signals created under this owner whose values a remount can
+    /// carry into the next build.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) carried: Vec<super::carry::Carried>,
+    /// How many carried signals this owner made per source file and type,
+    /// which numbers the next one.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) ordinals: Vec<((&'static str, TypeId), u32)>,
 }
 
 /// The data of one owner: its parent, its scope and everything it holds.
@@ -112,6 +120,29 @@ pub(crate) struct OwnerData {
     /// book of the root its owner chain leads to.
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     pub(crate) hot_patch_book: RefCell<Option<Weak<RefCell<crate::hot::HotPatchBook>>>>,
+    /// The name a list gives the owners of one of its rows, from the hash
+    /// of the row's key, which stands for the owner in a carried signal's
+    /// key in place of its position among its siblings.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) name: Cell<Option<super::carry::OwnerName>>,
+    /// The key of the list row this owner belongs to, which a carried
+    /// value's row must equal, since two keys can hash alike.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) row: RefCell<Option<Rc<super::carry::RowIdentity>>>,
+    /// How many live children without a name this owner has, which numbers
+    /// the next one.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) unnamed_children: Cell<u32>,
+    /// This owner's place among its parent's live children without a name
+    /// when it was created, which stands for it in a carried signal's key.
+    /// Taken at creation, it reads the same when the old build is taken and
+    /// when the new build makes the owner again.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) place: Cell<u32>,
+    /// Whether the parent counts this owner among its live children
+    /// without a name.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) counted: Cell<bool>,
 }
 
 impl OwnerData {
@@ -146,6 +177,8 @@ impl OwnerData {
             return;
         }
         self.cleaned.set(true);
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        self.uncount();
         let state = std::mem::take(&mut *self.state.borrow_mut());
         self.dead_children.set(0);
         for child in &state.children {
@@ -178,9 +211,43 @@ impl OwnerData {
             window_book: RefCell::new(None),
             #[cfg(all(feature = "hot-reload", target_os = "linux"))]
             hot_patch_book: RefCell::new(None),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            name: Cell::new(None),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            row: RefCell::new(None),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            unnamed_children: Cell::new(0),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            place: Cell::new(self.count_unnamed_child()),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            counted: Cell::new(true),
         });
         self.adopt(&inner);
         Owner { inner }
+    }
+}
+
+impl OwnerData {
+    /// Counts a new child without a name, and answers its place among the
+    /// live ones.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) fn count_unnamed_child(&self) -> u32 {
+        let place = self.unnamed_children.get();
+        self.unnamed_children.set(place + 1);
+        place
+    }
+
+    /// Stops the parent counting this owner among its live children without
+    /// a name, once it is named, cleaned up or dropped.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) fn uncount(&self) {
+        if self.counted.replace(false)
+            && let Some(parent) = self.parent.as_ref().and_then(Weak::upgrade)
+        {
+            parent
+                .unnamed_children
+                .set(parent.unnamed_children.get().saturating_sub(1));
+        }
     }
 }
 
@@ -188,6 +255,8 @@ impl Drop for OwnerData {
     /// Counts this owner as a dead link on its parent, so the parent's next
     /// adopt knows when sweeping its links pays off.
     fn drop(&mut self) {
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        self.uncount();
         if let Some(parent) = self.parent.as_ref().and_then(Weak::upgrade) {
             parent.dead_children.set(parent.dead_children.get() + 1);
         }
@@ -1066,6 +1135,8 @@ fn run_effect(id: NodeId) {
 #[inline(never)]
 pub(crate) fn run_body(cell: &Rc<EffectCell>, node: NodeId) {
     let _observer = ObserverGuard::enter(Some(node));
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    let _paused = super::carry::Paused::enter();
     let mut borrow = cell
         .run
         .try_borrow_mut()

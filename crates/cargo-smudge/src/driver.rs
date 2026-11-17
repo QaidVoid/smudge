@@ -181,6 +181,15 @@ struct Session {
     view: Option<u64>,
     /// The linked address of the state probe, when the hello carried it.
     state_probe: Option<u64>,
+    /// Every instance of the state probe's function, by its linked address
+    /// and its mangled name, which probe the types the app carries across a
+    /// remount.
+    type_probes: Vec<(u64, String)>,
+    /// The layout the app's live values of each probe's type hold, where an
+    /// applied patch changed it, as [`patch::Plan`] describes.
+    type_layouts: HashMap<patch::ProbeId, Option<String>>,
+    /// Whether the type of each layout digest reaches no runtime handle.
+    handle_free: HashMap<String, bool>,
     /// Whether a patch was already refused over a signature change, which
     /// the later patches omit the changed functions for instead of
     /// refusing again.
@@ -909,7 +918,7 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
     let fat = record::RecordedLink::load(&dir.join("link-fat.json"))?;
     let exe = output_of(&fat)?;
     let linker = crate::roles::real_linker(&dir);
-    let original = read_original(&dir, &exe, &fat, &target, sysroot_of(&rustc).as_deref())?;
+    let mut original = read_original(&dir, &exe, &fat, &target, sysroot_of(&rustc).as_deref())?;
 
     let socket = socket_path(&dir)?;
     let _ = record::remove_file(&socket);
@@ -962,6 +971,21 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
         Some((_, hand)) => (hand.runtime_main, hand.view, hand.probe),
         None => (0, None, None),
     };
+    // Every instance of the state probe's function probes the type it is
+    // instantiated with, the types of the values the app carries included.
+    // A probe the reader cannot list leaves the values of its type to start
+    // fresh after each patch, which is no reason to end the session.
+    let type_probes = match state_probe.map(|probe| type_probes_of(&mut original, probe)) {
+        Some(Ok(probes)) => probes,
+        Some(Err(error)) => {
+            println!(
+                "note: the type probes could not be read ({error}), so the signals a \
+                 build creates start fresh after every patch"
+            );
+            Vec::new()
+        }
+        None => Vec::new(),
+    };
     let carried = announced_owners(
         &original,
         &crates,
@@ -979,6 +1003,9 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
         runtime_main,
         view,
         state_probe,
+        type_probes,
+        type_layouts: HashMap::new(),
+        handle_free: HashMap::new(),
         signature_refused: false,
         scripts_stale: false,
         script_dirs,
@@ -2062,7 +2089,6 @@ fn handshake(
             Some(linked(24, "state probe")?),
             hello.get(32..).unwrap_or_default(),
         ),
-        1 => (None, None, hello.get(16..).unwrap_or_default()),
         other => return Err(err(&format!("it names the unknown version {other}"))),
     };
     if announced != build.as_bytes() {
@@ -2083,6 +2109,43 @@ fn handshake(
     ))
 }
 
+/// Every instance of the generic function the state probe at `probe` is an
+/// instance of. A folding link can give the probe's address to other
+/// functions too, so the probe is the name whose function takes a type
+/// parameter.
+///
+/// # Errors
+///
+/// Returns why a function could not be read.
+fn type_probes_of(original: &mut Original, probe: u64) -> Result<Vec<(u64, String)>, String> {
+    let names = original.originals.get(&probe).cloned().unwrap_or_default();
+    let mut generic = Vec::new();
+    for name in &names {
+        if original.signatures.takes_type_parameter(name)? {
+            generic.push(name);
+        }
+    }
+    // Two generic functions on the probe's address cannot be told apart,
+    // and a probe read from the wrong one would vouch for the wrong type.
+    let [probe_name] = generic.as_slice() else {
+        return Err(format!(
+            "{} generic functions share the state probe's address",
+            generic.len()
+        ));
+    };
+    let mut probes = Vec::new();
+    for name in original.signatures.instances_of_name(probe_name)? {
+        if let Some(sym) = original
+            .symbols
+            .get(&name)
+            .filter(|sym| sym.defined && sym.kind == object::SymbolKind::Text)
+        {
+            probes.push((sym.address, name));
+        }
+    }
+    Ok(probes)
+}
+
 /// The libraries whose compiled code holds the functions at `addresses`,
 /// found by the crate root of the unit each one sits in, apart from the
 /// ones no patch could replay, which it names on the way.
@@ -2094,17 +2157,32 @@ fn announced_owners(
 ) -> std::collections::BTreeSet<String> {
     let mut owners = std::collections::BTreeSet::new();
     for address in addresses {
-        let Ok(Some(root)) = original.signatures.crate_root_of(address) else {
-            continue;
-        };
+        // A folding link can give one address to functions of several
+        // crates, so the crate of every name on it counts.
+        let mut roots: Vec<String> = original
+            .originals
+            .get(&address)
+            .into_iter()
+            .flatten()
+            .filter_map(|name| original.signatures.crate_root_of_name(name).ok().flatten())
+            .collect();
+        if roots.is_empty()
+            && let Ok(Some(root)) = original.signatures.crate_root_of(address)
+        {
+            roots.push(root);
+        }
         for record in crates {
             // The debug information spells the root under the remappings
             // the compile recorded, and the record spells it as the file.
             let remaps = crate::record::unremap_of(&record.record.args);
             let candidate: PathBuf = record.root.components().collect();
-            let matched = std::iter::once(root.clone())
-                .chain(crate::record::unremap_of_name(&root, &remaps))
-                .any(|spelled| Path::new(&spelled).components().collect::<PathBuf>() == candidate);
+            let matched = roots.iter().any(|root| {
+                std::iter::once(root.clone())
+                    .chain(crate::record::unremap_of_name(root, &remaps))
+                    .any(|spelled| {
+                        Path::new(&spelled).components().collect::<PathBuf>() == candidate
+                    })
+            });
             if !matched || record.proc_macro || owners.contains(&record.name) {
                 continue;
             }
@@ -2289,6 +2367,9 @@ fn dry_run(session: &mut Session, names: &[String]) -> Option<String> {
         runtime_main: session.runtime_main,
         view: session.view,
         state_probe: session.state_probe,
+        type_probes: &session.type_probes,
+        type_layouts: &session.type_layouts,
+        handle_free: &mut session.handle_free,
         signature_refused: &mut session.signature_refused,
         linker: &session.linker,
         tls: &session.original.tls,
@@ -2417,6 +2498,9 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
         runtime_main: session.runtime_main,
         view: session.view,
         state_probe: session.state_probe,
+        type_probes: &session.type_probes,
+        type_layouts: &session.type_layouts,
+        handle_free: &mut session.handle_free,
         signature_refused: &mut session.signature_refused,
         linker: &session.linker,
         tls: &session.original.tls,
@@ -2433,6 +2517,7 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
             changed_signature,
             changed_captures,
             recaptured,
+            type_layouts,
             renumbered,
             fresh_statics,
             unverified,
@@ -2484,6 +2569,7 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
             // replays with its own unedited code, so it counts as installed
             // only once the edits need it, and leaves the patches with the
             // carried set.
+            session.type_layouts.extend(type_layouts);
             let needed = edited_chain(session);
             session
                 .live

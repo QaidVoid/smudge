@@ -1092,6 +1092,106 @@ fn drops_a_probe_library_whose_dependent_the_replay_cannot_serve() {
 }
 
 #[test]
+fn lists_the_type_probes_a_patch_kept() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let app = fixture("type-probes");
+    // Every instance of the announced probe's function probes its type.
+    edit(
+        &app,
+        &[
+            (
+                "fn main() {",
+                "/// A type whose layout the test keeps.\nstruct Steady {\n    value: u32,\n}\n\n/// A type whose layout the test changes.\nstruct Shifting {\n    first: u32,\n    second: u32,\n}\n\nfn main() {\n    let steady = std::hint::black_box(state_shape::<Steady> as fn() -> usize as usize);\n    let shifting = std::hint::black_box(state_shape::<Shifting> as fn() -> usize as usize);",
+            ),
+            (
+                "        let _ = io::stdout().flush();",
+                "        println!(\n            \"fixture steady_kept={} shifting_kept={} shifting_mapped={}\",\n            kept(steady),\n            kept(shifting),\n            table.is_some_and(|table| table.map.contains_key(&(shifting as u64)))\n        );\n        let _ = io::stdout().flush();",
+            ),
+        ],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit(&app, &[("\"alpha-1\"", "\"alpha-2\"")]);
+    session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    session.wait(
+        "fixture steady_kept=true shifting_kept=true",
+        1,
+        STEP_TIMEOUT,
+    );
+    // Two fields of one size swapped keep the size and the alignment, so
+    // only the builder can tell the app not to carry the type's values.
+    edit(
+        &app,
+        &[(
+            "    first: u32,\n    second: u32,",
+            "    second: u32,\n    first: u32,",
+        )],
+    );
+    session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    // The probe of the changed type still maps, so the app finds the
+    // original of the probe the patched code reaches.
+    session.wait(
+        "fixture steady_kept=true shifting_kept=false shifting_mapped=true",
+        1,
+        STEP_TIMEOUT,
+    );
+    // Swapping them back matches the binary the app started with, but the
+    // values the last patch made hold its layout, so they still do not
+    // cross; the patch after that keeps the layout the values now hold.
+    edit(
+        &app,
+        &[(
+            "    second: u32,\n    first: u32,",
+            "    first: u32,\n    second: u32,",
+        )],
+    );
+    session.wait("patch 3: applied", 1, STEP_TIMEOUT);
+    session.wait(
+        "fixture steady_kept=true shifting_kept=false",
+        2,
+        STEP_TIMEOUT,
+    );
+    edit(&app, &[("\"alpha-2\"", "\"alpha-3\"")]);
+    session.wait("patch 4: applied", 1, STEP_TIMEOUT);
+    session.wait(
+        "fixture steady_kept=true shifting_kept=true",
+        2,
+        STEP_TIMEOUT,
+    );
+    session.quit();
+}
+
+#[test]
+fn never_keeps_a_type_that_holds_a_trait_object() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let app = fixture("type-probes-erased");
+    // What a trait object holds has a layout no digest of the holder covers.
+    edit(
+        &app,
+        &[
+            (
+                "fn main() {",
+                "/// A type that holds a value behind a trait object.\nstruct Erased {\n    _inner: Box<dyn std::any::Any>,\n}\n\n/// A type that holds plain data.\nstruct Plain {\n    _value: u32,\n}\n\nfn main() {\n    let erased = std::hint::black_box(state_shape::<Erased> as fn() -> usize as usize);\n    let plain = std::hint::black_box(state_shape::<Plain> as fn() -> usize as usize);",
+            ),
+            (
+                "        let _ = io::stdout().flush();",
+                "        println!(\n            \"fixture erased_kept={} plain_kept={}\",\n            kept(erased),\n            kept(plain)\n        );\n        let _ = io::stdout().flush();",
+            ),
+        ],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit(&app, &[("\"alpha-1\"", "\"alpha-2\"")]);
+    session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    session.wait("fixture erased_kept=false plain_kept=true", 1, STEP_TIMEOUT);
+    session.quit();
+}
+
+#[test]
 fn omits_a_changed_signature_and_applies_the_rest() {
     require_linker();
     let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
@@ -7058,9 +7158,11 @@ fn patches_a_deep_acyclic_type_chain() {
             index - 1
         ));
     }
-    chain.push_str(
-        "#[inline(never)]\npub fn depth_probe(p: *const Link0) -> *const Link0 {\n    p\n}\n",
-    );
+    // The probe takes the deep end, so its signature reaches every link.
+    chain.push_str(&format!(
+        "#[inline(never)]\npub fn depth_probe(p: *const Link{last}) -> *const Link{last} {{\n    p\n}}\n",
+        last = depth - 1
+    ));
     edit_in(
         &ws,
         "ui/src/lib.rs",
@@ -7072,8 +7174,31 @@ fn patches_a_deep_acyclic_type_chain() {
     let mut session = Session::start(&app, &target);
     session.wait("app running as pid", 1, FAT_TIMEOUT);
     edit_in(&ws, "ui/src/lib.rs", &[("    \"ui-1\"", "    \"ui-2\"")]);
-    session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    let out = session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    assert_eq!(
+        omitted_for(
+            &line_of(&out, "patch 1: applied"),
+            "omitted for a changed signature"
+        ),
+        0,
+        "an unchanged chain was read as changed"
+    );
     session.wait("fixture ui=ui-2 ui_hot=true", 1, STEP_TIMEOUT);
+    // A change at the far end of the chain reaches the probe's signature
+    // only through every link.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[("    pub tail: *const (),", "    pub tail: usize,")],
+    );
+    let out = session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    assert!(
+        omitted_for(
+            &line_of(&out, "patch 2: applied"),
+            "omitted for a changed signature"
+        ) > 0,
+        "the change at the end of the chain did not reach the probe"
+    );
     session.quit();
 }
 
@@ -7381,9 +7506,12 @@ fn retries_an_outside_source_a_remap_hides() {
     );
     session.wait("patch 1: compile failed", 1, STEP_TIMEOUT);
     fs::write(ws.join("ui/late_out.rs"), "pub const TAG: u32 = 5;\n").unwrap();
-    let out = session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    // The two writes above can reach the session as two saves, each of
+    // which fails, so the repair is the first patch that applies, whatever
+    // its number.
+    let out = session.wait(": applied", 1, STEP_TIMEOUT);
     assert!(
-        out.contains("replayed ui"),
+        line_of(&out, ": applied").contains("replayed ui"),
         "the repaired outside source did not retry the library:\n{out}"
     );
     session.quit();

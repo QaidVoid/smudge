@@ -41,7 +41,7 @@ system-fonts = ["smudge-text/system-fonts"]
 # Hot reload for apps started with `run_view` or `run_view_with`, on Linux.
 # Implies `window`. Elsewhere both stay plain runs. Never on by default, and
 # meant for development builds only.
-hot-reload = ["window", "smudge-platform/hot-reload"]
+hot-reload = ["window", "smudge-platform/hot-reload", "smudge-widgets/hot-reload"]
 
 [package.metadata.docs.rs]
 all-features = true

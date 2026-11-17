@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use smudge_core::element::{Element, IntoElement, for_each};
 use smudge_core::paint::PaintOp;
-use smudge_core::reactive::{Memo, RenderEffect, RwSignal, prelude::*};
+use smudge_core::reactive::{Memo, Owner, RenderEffect, RwSignal, prelude::*};
 use smudge_core::style::px;
 use smudge_core::widget::{PaintCx, Widget, panel};
 
@@ -64,6 +64,9 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
     /// The first visible key and the offset into it, which the offset is
     /// recomputed from after an edit or a measurement.
     anchor: Option<(K, f32)>,
+    /// The height the index gave the rows no measurement reached, which a
+    /// remount after a hot patch can find changed in the state it carried.
+    estimate: f32,
 }
 
 /// Creates a list of keyed rows of different heights inside a scroll view,
@@ -173,14 +176,29 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
     let key = Rc::new(smudge_core::hot::wrap1_ref(key));
     let row = Rc::new(smudge_core::hot::wrap1_ref(row));
 
-    let state: Rc<RefCell<KeyedList<T, K>>> = Rc::new(RefCell::new(KeyedList {
+    // The state sits in a signal so the remount after a hot patch carries
+    // it, measured heights and anchor included, and the view comes back on
+    // the row it showed instead of re-aiming against estimates. The owner
+    // keeps the signal until it cleans up, since a remount carries only the
+    // signals that still live when it takes the old build's values.
+    let carried = RwSignal::new(Rc::new(RefCell::new(KeyedList {
         items: RefCell::new(Rc::from([])),
         index: HeightIndex::new(),
         measured: HashMap::new(),
         anchor: None,
-    }));
+        estimate,
+    })));
+    let state: Rc<RefCell<KeyedList<T, K>>> = carried.read(Rc::clone);
+    Owner::on_cleanup(move || drop(carried));
     let offset = RwSignal::new(0.0);
     let visible: RwSignal<Option<f32>> = RwSignal::new(None);
+    // A remount after a hot patch can hand this the measurement of the old
+    // build's layout, which says nothing of the new one. Dropped before the
+    // list's first run, it neither clamps a carried offset nor mounts rows
+    // a later reset of the measurement would take down again.
+    if visible.read(Option::is_some) {
+        visible.set(None);
+    }
     let total = RwSignal::new(0.0);
     let window: RwSignal<Vec<K>> = RwSignal::new(Vec::new());
     let pin: RwSignal<Option<(usize, f32)>> = RwSignal::new(None);
@@ -203,6 +221,10 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
         let pin = pin.clone();
         let reported = reported.clone();
         let pending = Rc::clone(&pending);
+        // The state a remount carried was built by the old code, whose key
+        // and estimate this list's first run must check, even when the items
+        // are the very ones the old list last saw.
+        let first_run = std::cell::Cell::new(true);
         RenderEffect::new(move || {
             let snapshot = current_items.with(|snapshot| Rc::clone(&snapshot.0));
             // The counter is the tracked read that a report at paint wakes.
@@ -229,12 +251,31 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                     let within = wanted - state.index.offset_of(at);
                     state.anchor = Some((state.index.key(at).clone(), within));
                 }
-                let same_items = Rc::ptr_eq(&*state.items.borrow(), &snapshot);
+                let first = first_run.replace(false);
+                if first && !state.index.is_empty() {
+                    // The carried maps were hashed by the old code, whose
+                    // hash of a key the patch may have changed, so they are
+                    // hashed again by this code, heights kept.
+                    let list = &mut *state;
+                    list.measured = std::mem::take(&mut list.measured).into_iter().collect();
+                    list.index.rehash();
+                }
+                let same_items = !first && Rc::ptr_eq(&*state.items.borrow(), &snapshot);
                 *state.items.borrow_mut() = snapshot;
                 if estimate == 0.0 {
                     state.index = HeightIndex::new();
                     state.anchor = None;
                 } else {
+                    if state.estimate != estimate {
+                        let list = &mut *state;
+                        let keys: Vec<K> = list.index.keys().to_vec();
+                        let measured = &list.measured;
+                        list.index = HeightIndex::from_heights(keys, |key| {
+                            measured.get(key).copied().unwrap_or(estimate)
+                        });
+                        list.estimate = estimate;
+                        geometry_changed = true;
+                    }
                     if !same_items {
                         let list = &mut *state;
                         let items = Rc::clone(&*list.items.borrow());
@@ -478,3 +519,7 @@ impl Widget for MeasureRow {
         (self.report)(cx.rect.height());
     }
 }
+
+#[cfg(test)]
+#[path = "virtual_list_keyed_tests.rs"]
+mod tests;

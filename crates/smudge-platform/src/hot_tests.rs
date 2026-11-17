@@ -25,7 +25,7 @@ use smudge_core::widget::panel;
 
 use super::{
     APPLIED, FAILED, HELLO, MAX_PAYLOAD, PATCH, Patch, Shape, current, decode_patch, patched,
-    read_frame, start_from, state_shape, write_frame,
+    read_frame, start_from, write_frame,
 };
 use subsecond::JumpTable;
 
@@ -100,6 +100,17 @@ fn patch_payload(
     entries: &[(u64, u64)],
     lib: &str,
 ) -> Vec<u8> {
+    patch_payload_keeping(aslr_reference, new_base_address, entries, &[], lib)
+}
+
+/// Encodes a patch frame's payload that lists `kept` type probes.
+fn patch_payload_keeping(
+    aslr_reference: u64,
+    new_base_address: u64,
+    entries: &[(u64, u64)],
+    kept: &[u64],
+    lib: &str,
+) -> Vec<u8> {
     let mut payload = Vec::new();
     payload.extend_from_slice(&aslr_reference.to_le_bytes());
     payload.extend_from_slice(&new_base_address.to_le_bytes());
@@ -107,6 +118,10 @@ fn patch_payload(
     for (old, new) in entries {
         payload.extend_from_slice(&old.to_le_bytes());
         payload.extend_from_slice(&new.to_le_bytes());
+    }
+    payload.extend_from_slice(&(kept.len() as u64).to_le_bytes());
+    for probe in kept {
+        payload.extend_from_slice(&probe.to_le_bytes());
     }
     payload.extend_from_slice(lib.as_bytes());
     payload
@@ -316,14 +331,32 @@ fn a_patch_frame_decodes_into_the_jump_table_it_describes() {
         "/target/smudge/patch-3.so",
     );
 
-    let table = decode_patch(&payload).expect("a whole patch decodes");
+    let (table, kept) = decode_patch(&payload).expect("a whole patch decodes");
 
+    assert!(kept.is_empty(), "the patch lists no kept type probes");
     assert_eq!(table.lib, PathBuf::from("/target/smudge/patch-3.so"));
     assert_eq!(table.aslr_reference, 0x5_5000);
     assert_eq!(table.new_base_address, 0x7_0000);
     assert_eq!(table.map.len(), 2);
     assert_eq!(table.map.get(&0x5_5100), Some(&0x7_0100));
     assert_eq!(table.map.get(&0x5_5200), Some(&0x7_0200));
+}
+
+#[test]
+fn a_patch_frame_decodes_the_type_probes_it_kept() {
+    let payload = patch_payload_keeping(
+        0x5_5000,
+        0x7_0000,
+        &[(0x5_5100, 0x7_0100)],
+        &[0x5_6000, 0x5_6010],
+        "/target/smudge/patch-4.so",
+    );
+
+    let (table, kept) = decode_patch(&payload).expect("a whole patch decodes");
+
+    assert_eq!(kept, vec![0x5_6000, 0x5_6010]);
+    assert_eq!(table.lib, PathBuf::from("/target/smudge/patch-4.so"));
+    assert_eq!(table.map.get(&0x5_5100), Some(&0x7_0100));
 }
 
 #[test]
@@ -398,23 +431,23 @@ fn probe_at(probe: fn() -> Shape) -> usize {
 
 /// The original probe for `State`, as `current` uses it.
 fn probe() -> fn() -> Shape {
-    state_shape::<State>
+    smudge_core::hot::shape::<State>
 }
 
 /// A new version of the probe that reports the original shape.
 fn same_shape() -> Shape {
-    state_shape::<State>()
+    smudge_core::hot::shape::<State>()
 }
 
 /// A new version of the probe that reports a larger state.
 fn grown() -> Shape {
-    let (size, align, name) = state_shape::<State>();
+    let (size, align, name) = smudge_core::hot::shape::<State>();
     (size + 8, align, name)
 }
 
 /// A new version of the probe that reports a more strictly aligned state.
 fn realigned() -> Shape {
-    let (size, align, name) = state_shape::<State>();
+    let (size, align, name) = smudge_core::hot::shape::<State>();
     (size, align * 2, name)
 }
 
@@ -471,7 +504,10 @@ fn a_patch_that_changes_the_state_size_or_alignment_keeps_the_view() {
 fn a_patch_that_renames_the_state_type_keeps_the_view() {
     let table = table(&[
         (at(view_before), at(view_after)),
-        (probe_at(probe()), probe_at(state_shape::<Renamed>)),
+        (
+            probe_at(probe()),
+            probe_at(smudge_core::hot::shape::<Renamed>),
+        ),
     ]);
 
     let reason = lookup(&table).expect_err("a renamed state type must not reach the view");
