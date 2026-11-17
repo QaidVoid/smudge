@@ -37,7 +37,7 @@ let title = label("Settings").text_size(22.0);
 let status = label(move || format!("{} unread", unread.get()));
 ```
 
-A label shows one string, plain or bound to a closure. It wraps to the width its parent gives it. See [Text and input](./text-and-input) for sizes and fonts.
+A label shows one string, plain or bound to a closure. It wraps to the width its parent gives it. See [Text and input](./text-and-input) for sizes and fonts, and for `rich_text`, which mixes weights, slants, colors and links in one paragraph.
 
 ## Text input
 

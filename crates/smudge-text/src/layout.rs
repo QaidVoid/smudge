@@ -6,6 +6,8 @@
 //! rest of Smudge sees this wrapper, the font style types this crate
 //! re-exports, and, through the run iterator, parley's own public run types.
 
+use std::ops::Range;
+
 use crate::glyphs::ellipsis_glyph;
 use crate::style::TextStyle;
 use crate::system::TextSystem;
@@ -493,6 +495,117 @@ thread_local! {
     /// How many times this thread shaped text, which tests read to tell a
     /// re-break from a reshape.
     pub(crate) static SHAPES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The font style one span of a [`RichLayout`] sets over the base style.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SpanFont {
+    /// The weight, or `None` for the base style's.
+    pub(crate) weight: Option<parley::FontWeight>,
+    /// Whether the span is set in the family's italic face.
+    pub(crate) italic: bool,
+    /// Whether the span is set in the generic monospace family.
+    pub(crate) monospace: bool,
+    /// Whether the span is underlined, which a link is.
+    pub(crate) underline: bool,
+}
+
+/// A block of text whose spans each set their own font style, laid out in
+/// logical pixels.
+///
+/// Every glyph run carries the index of the span it belongs to as its brush,
+/// so parley splits the runs where a span ends, even between two spans that
+/// differ only in color, and paint colors each run by its span. Like
+/// [`TextLayout`], it carries no color itself.
+pub(crate) struct RichLayout {
+    /// The shaped and line-broken text.
+    pub(crate) layout: parley::Layout<u32>,
+}
+
+impl RichLayout {
+    /// Lays out `text` with `base`, giving the byte range of each span the
+    /// font style it sets, and wraps lines at `max_width` logical pixels, or
+    /// not at all when it is `None`.
+    ///
+    /// The spans' ranges must lie on character boundaries of `text`.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the conditions of [`TextSystem::with`], in particular
+    /// when called from inside another `with` call on the same thread.
+    pub(crate) fn new(
+        text: &str,
+        base: &TextStyle,
+        spans: &[(Range<usize>, SpanFont)],
+        max_width: Option<f32>,
+    ) -> RichLayout {
+        TextSystem::with(|system| {
+            let mut builder =
+                system
+                    .rich_layouts
+                    .ranged_builder(&mut system.fonts, text, 1.0, false);
+            builder.push_default(StyleProperty::FontFamily(base.family.clone()));
+            builder.push_default(StyleProperty::FontSize(base.size));
+            builder.push_default(StyleProperty::FontWeight(base.weight));
+            builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
+                base.line_height,
+            )));
+            for (index, (range, font)) in spans.iter().enumerate() {
+                let brush = u32::try_from(index).unwrap_or(u32::MAX);
+                builder.push(StyleProperty::Brush(brush), range.clone());
+                if let Some(weight) = font.weight {
+                    builder.push(StyleProperty::FontWeight(weight), range.clone());
+                }
+                if font.italic {
+                    builder.push(
+                        StyleProperty::FontStyle(parley::FontStyle::Italic),
+                        range.clone(),
+                    );
+                }
+                if font.monospace {
+                    builder.push(
+                        StyleProperty::FontFamily(parley::FontFamily::from(
+                            parley::GenericFamily::Monospace,
+                        )),
+                        range.clone(),
+                    );
+                }
+                if font.underline {
+                    builder.push(StyleProperty::Underline(true), range.clone());
+                }
+            }
+            let mut layout = builder.build(text);
+            layout.break_all_lines(max_width);
+            RichLayout { layout }
+        })
+    }
+
+    /// Re-wraps the laid out text at `max_width` without shaping it again.
+    pub(crate) fn rebreak(&mut self, max_width: Option<f32>) {
+        self.layout.break_all_lines(max_width);
+    }
+
+    /// Returns the size of the laid out text in logical pixels.
+    pub(crate) fn size(&self) -> Size {
+        Size {
+            width: self.layout.width(),
+            height: self.layout.height(),
+        }
+    }
+
+    /// Returns the span under the point `(x, y)`, relative to the layout's
+    /// top left, or `None` when the point is over no glyph.
+    ///
+    /// parley maps a point above the first line to that line, and one below
+    /// the last line to that one, so the point is checked against the text's
+    /// height first.
+    pub(crate) fn span_at(&self, x: f32, y: f32) -> Option<usize> {
+        if !(0.0..self.layout.height()).contains(&y) {
+            return None;
+        }
+        let (cluster, _) = parley::Cluster::from_point_exact(&self.layout, x, y)?;
+        Some(cluster.style().brush as usize)
+    }
 }
 
 #[cfg(test)]

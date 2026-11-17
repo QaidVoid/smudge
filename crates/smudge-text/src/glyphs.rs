@@ -20,6 +20,7 @@ use smudge_core::paint::{FontBlob, GlyphRun, PositionedGlyph};
 
 use crate::layout::Cut;
 use crate::layout::Ellipsis;
+use crate::layout::RichLayout;
 use crate::layout::TextLayout;
 use crate::layout::Truncation;
 
@@ -130,6 +131,64 @@ pub(crate) fn glyph_runs_with<B: parley::Brush>(
         }
     }
     runs
+}
+
+/// Converts the glyph runs of a rich layout into paint operations' runs,
+/// each painted with the color `colors` gives the span it belongs to, and
+/// returns them with the underline of every underlined run.
+///
+/// An underline is a rectangle under its run's glyphs, placed and sized by
+/// the run font's underline metrics, and paints in its span's color too.
+pub(crate) fn rich_glyph_runs(
+    layout: &RichLayout,
+    origin: Point,
+    colors: &[Color],
+) -> (Vec<GlyphRun>, Vec<(Rect, Color)>) {
+    let mut runs = Vec::new();
+    let mut underlines = Vec::new();
+    let rtl = layout.layout.is_rtl();
+    for line in layout.layout.lines() {
+        let hanging = line.metrics().hanging_advance;
+        let items = line.items().count();
+        for (at, item) in line.items().enumerate() {
+            let PositionedLayoutItem::GlyphRun(run) = item else {
+                continue;
+            };
+            let color = colors
+                .get(run.style().brush as usize)
+                .copied()
+                .unwrap_or(Color::BLACK);
+            let glyphs = run
+                .positioned_glyphs()
+                .map(|glyph| (glyph.id, origin.x + glyph.x, origin.y + glyph.y));
+            runs.push(paint_run(
+                run.run().font(),
+                run.run().font_size(),
+                glyphs,
+                color,
+            ));
+            if run.style().underline.is_some() {
+                let metrics = run.run().font_metrics();
+                let top = origin.y + run.baseline() - metrics.underline_offset;
+                let mut left = origin.x + run.offset();
+                let mut right = left + run.advance();
+                // The whitespace a wrapped line ends with hangs past its end
+                // edge, inside the run that carries it, and is not underlined.
+                if rtl && at == 0 {
+                    left = (left + hanging).min(right);
+                } else if !rtl && at + 1 == items {
+                    right = (right - hanging).max(left);
+                }
+                if right > left {
+                    underlines.push((
+                        Rect::new(left, top, right, top + metrics.underline_size.max(1.0)),
+                        color,
+                    ));
+                }
+            }
+        }
+    }
+    (runs, underlines)
 }
 
 /// Builds one [`GlyphRun`] out of the glyph identifiers and absolute pen

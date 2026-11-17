@@ -42,9 +42,58 @@ provide_text_style(TextStyle {
 });
 ```
 
+## Rich text
+
+`rich_text` shows one wrapping paragraph made of spans, each with its own weight, slant, family, color or link:
+
+```rust
+use std::rc::Rc;
+
+use smudge::prelude::*;
+
+let status = RwSignal::new(String::from("passing"));
+let shown = status.clone();
+let summary = rich_text(move || {
+    Rc::from([
+        Span::new("The build is ", SpanStyle::default()),
+        Span::new(
+            shown.get(),
+            SpanStyle {
+                weight: Some(FontWeight::BOLD),
+                color: Some(ColorToken::ACCENT.into()),
+                ..SpanStyle::default()
+            },
+        ),
+        Span::new(". Read the ", SpanStyle::default()),
+        Span::link("log", || println!("open the log")),
+        Span::new(" or run ", SpanStyle::default()),
+        Span::new(
+            "cargo test",
+            SpanStyle {
+                monospace: true,
+                ..SpanStyle::default()
+            },
+        ),
+        Span::new(" again.", SpanStyle::default()),
+    ])
+});
+```
+
+| `SpanStyle` field | Effect |
+|---|---|
+| `weight` | The span's weight, or `None` for the paragraph's. |
+| `italic` | Sets the span in the italic face of its family. |
+| `monospace` | Sets the span in the generic monospace family. |
+| `color` | The span's color, a `Color` or a token, or `None` for the paragraph's text color. |
+| `link` | A handler a click on the span runs, which makes the span a link. `Span::link(text, handler)` builds one, and keeps the handler running the newest code across hot patches. |
+
+The paragraph takes `text_size`, `weight` and `family` like a label, through `RichTextExt`, and `text_color` for the spans that set no color. A change that touches only span colors repaints the paragraph without laying it out again, and so does a theme switch. Any change to the text, a weight, a slant, a family or which spans are links lays it out again.
+
+A link paints in the theme's accent color unless it sets one, and is underlined, so color is not its only cue. The pointer shows the pointing cursor over it, and a press and a release over the same link run its handler once. The paragraph responds to the pointer over its links alone, so a press on its plain words reaches the row or button around it. Links are not reachable with the keyboard yet. The accessible value is the paragraph's whole text.
+
 ## Fonts
 
-The default build embeds Noto Sans, Noto Sans Bold and Noto Sans Mono, so text looks the same on every machine and nothing is read from the system. Enable the `system-fonts` feature of `smudge` to add the fonts installed on the machine, for scripts and families the bundled fonts do not cover. It is not available on the web. The generic families resolve to the system's choices first and, with `bundled-fonts` on as it is by default, keep the bundled faces as the fallback, so a machine without usable fonts still lays text out. [Shipping a small binary](./small-binary) covers turning the bundled faces off.
+The default build embeds Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, so text looks the same on every machine and nothing is read from the system. Enable the `system-fonts` feature of `smudge` to add the fonts installed on the machine, for scripts and families the bundled fonts do not cover. It is not available on the web. The generic families resolve to the system's choices first and, with `bundled-fonts` on as it is by default, keep the bundled faces as the fallback, so a machine without usable fonts still lays text out. [Shipping a small binary](./small-binary) covers turning the bundled faces off.
 
 Turning on `system-fonts` makes the installed fonts available but does not change the default style, which names the bundled sans so text never depends on the host. Name a generic family to use the host's faces, for example its interface font for a subtree:
 
@@ -162,6 +211,8 @@ Any element can handle input:
 | `on_key(f)` | A `KeyEvent`. Return `Handled::Yes` to stop it, `Handled::No` to let it bubble. |
 | `on_focus(f)` | `true` when the node gains keyboard focus, `false` when it loses it. |
 | `on_reveal(f)` | The node's new scroll offset, after the node scrolled to show the focused node inside it. Only a node that sets it scrolls for the focus. |
+
+A node with any of these handlers takes the pointer over its whole rectangle. `responds_at(f)` narrows that to the points `f` answers `true` for, given the position relative to the node's top left corner, and lets presses and hover elsewhere reach the nearest ancestor that responds. That is how a paragraph's links take clicks while its plain words leave them to the row around it.
 
 `focusable()` puts a node in the Tab order. A node that captures the pointer with a press keeps receiving moves and the release even when the pointer leaves it, and positions keep following the node if it scrolls.
 

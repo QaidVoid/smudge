@@ -55,6 +55,40 @@ fn default_style() {
 }
 
 #[test]
+fn rich_text_sample() {
+    use std::rc::Rc;
+    
+    use smudge::prelude::*;
+    
+    let status = RwSignal::new(String::from("passing"));
+    let shown = status.clone();
+    let summary = rich_text(move || {
+        Rc::from([
+            Span::new("The build is ", SpanStyle::default()),
+            Span::new(
+                shown.get(),
+                SpanStyle {
+                    weight: Some(FontWeight::BOLD),
+                    color: Some(ColorToken::ACCENT.into()),
+                    ..SpanStyle::default()
+                },
+            ),
+            Span::new(". Read the ", SpanStyle::default()),
+            Span::link("log", || println!("open the log")),
+            Span::new(" or run ", SpanStyle::default()),
+            Span::new(
+                "cargo test",
+                SpanStyle {
+                    monospace: true,
+                    ..SpanStyle::default()
+                },
+            ),
+            Span::new(" again.", SpanStyle::default()),
+        ])
+    });
+}
+
+#[test]
 fn form() {
     let email = RwSignal::new(String::new());
     let preview = email.clone();

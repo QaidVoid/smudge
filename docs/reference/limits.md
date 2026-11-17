@@ -4,7 +4,7 @@
 
 ## Widgets
 
-- **Rich text spans.** `label` styles one run of text and `text_area` edits plain multi-line text. Text with mixed bold, monospace or link runs inside one paragraph is not there yet.
+- **Rich text is read-only and per paragraph.** `rich_text` shows mixed bold, italic, monospace, colored and link runs in one paragraph, but text cannot be selected or copied from it, its links are not reachable with the keyboard, and `text_area` edits plain text only. Spans share one font size.
 - **Vertical scrolling only.** The scroll view scrolls up and down. Content wider than the view is clipped, not scrolled.
 - **The scroll thumb is an indicator.** It shows the position but cannot be dragged.
 - **No popups that escape a clip.** There is no overlay layer yet, so a menu, tooltip or dropdown is clipped by any ancestor that clips.

@@ -23,6 +23,9 @@ pub struct TextSystem {
     pub(crate) fonts: parley::FontContext,
     /// Scratch space reused across layouts.
     pub(crate) layouts: parley::LayoutContext<()>,
+    /// Scratch space reused across rich layouts, whose brush is the index of
+    /// the span a run belongs to.
+    pub(crate) rich_layouts: parley::LayoutContext<u32>,
 }
 
 impl TextSystem {
@@ -44,6 +47,7 @@ impl TextSystem {
                 source_cache,
             },
             layouts: parley::LayoutContext::new(),
+            rich_layouts: parley::LayoutContext::new(),
         };
         system.register_bundled_fonts();
         system
@@ -61,6 +65,7 @@ impl TextSystem {
         let mut system = TextSystem {
             fonts: parley::FontContext::default(),
             layouts: parley::LayoutContext::new(),
+            rich_layouts: parley::LayoutContext::new(),
         };
         system.register_bundled_fonts();
         system
@@ -118,21 +123,26 @@ impl TextSystem {
         };
 
         let sans = register(self, crate::fonts::SANS_REGULAR);
-        let sans_bold = register(self, crate::fonts::SANS_BOLD);
         let mono = register(self, crate::fonts::MONO_REGULAR);
 
         let sans_family = sans
             .first()
             .map(|(family, _)| *family)
             .expect("a font file yields at least one family");
-        let sans_bold_family = sans_bold
-            .first()
-            .map(|(family, _)| *family)
-            .expect("a font file yields at least one family");
-        debug_assert_eq!(
-            sans_family, sans_bold_family,
-            "the bundled sans faces share a family name"
-        );
+        for face in [
+            crate::fonts::SANS_BOLD,
+            crate::fonts::SANS_ITALIC,
+            crate::fonts::SANS_BOLD_ITALIC,
+        ] {
+            let family = register(self, face)
+                .first()
+                .map(|(family, _)| *family)
+                .expect("a font file yields at least one family");
+            debug_assert_eq!(
+                sans_family, family,
+                "the bundled sans faces share a family name"
+            );
+        }
         let mono_family = mono
             .first()
             .map(|(family, _)| *family)

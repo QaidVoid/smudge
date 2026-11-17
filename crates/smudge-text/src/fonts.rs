@@ -20,4 +20,11 @@ pub(crate) static SANS_REGULAR: &[u8] = include_bytes!("../assets/fonts/NotoSans
 pub(crate) static SANS_BOLD: &[u8] = include_bytes!("../assets/fonts/NotoSans-Bold.ttf");
 
 #[cfg(feature = "bundled-fonts")]
+pub(crate) static SANS_ITALIC: &[u8] = include_bytes!("../assets/fonts/NotoSans-Italic.ttf");
+
+#[cfg(feature = "bundled-fonts")]
+pub(crate) static SANS_BOLD_ITALIC: &[u8] =
+    include_bytes!("../assets/fonts/NotoSans-BoldItalic.ttf");
+
+#[cfg(feature = "bundled-fonts")]
 pub(crate) static MONO_REGULAR: &[u8] = include_bytes!("../assets/fonts/NotoSansMono-Regular.ttf");
