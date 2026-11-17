@@ -22,7 +22,7 @@ use smudge_core::widget::panel;
 use smudge_test::Harness;
 use smudge_text::{TextSystem, label};
 
-use smudge_widgets::virtual_list_keyed;
+use smudge_widgets::{ScrollExt, virtual_list_keyed};
 
 /// The height of the list, in logical pixels.
 const VIEWPORT_HEIGHT: f32 = 480.0;
@@ -122,26 +122,40 @@ fn static_harness(items: RwSignal<Vec<u64>>, seed: u64, estimate: f32) -> Harnes
 /// Builds a keyed list whose row of `key` reads its height from
 /// `heights[key]`, so a test can grow a row while it stays mounted.
 fn keyed_harness(items: RwSignal<Vec<u64>>, heights: Vec<RwSignal<f32>>, estimate: f32) -> Harness {
+    keyed_harness_following(items, heights, estimate, None)
+}
+
+/// Builds the list of [`keyed_harness`], following its end through
+/// `following` when one is given.
+fn keyed_harness_following(
+    items: RwSignal<Vec<u64>>,
+    heights: Vec<RwSignal<f32>>,
+    estimate: f32,
+    following: Option<RwSignal<bool>>,
+) -> Harness {
     let bound_items = items;
     let bound_heights: Rc<[RwSignal<f32>]> = Rc::from(heights);
     Harness::new(WINDOW.width, WINDOW.height, 1.0, move || {
         let items = bound_items.clone();
         let heights = Rc::clone(&bound_heights);
-        panel().column().child(
-            virtual_list_keyed(
-                move || Rc::from(items.get().as_slice()),
-                |item| *item,
-                estimate,
-                move |item| {
-                    let key = *item as usize;
-                    let heights = Rc::clone(&heights);
-                    panel()
-                        .height(move || px(heights[key].get()))
-                        .child(label(format!("Key {key}")))
-                },
-            )
-            .height(px(VIEWPORT_HEIGHT)),
+        let list = virtual_list_keyed(
+            move || Rc::from(items.get().as_slice()),
+            |item| *item,
+            estimate,
+            move |item| {
+                let key = *item as usize;
+                let heights = Rc::clone(&heights);
+                panel()
+                    .height(move || px(heights[key].get()))
+                    .child(label(format!("Key {key}")))
+            },
         )
+        .height(px(VIEWPORT_HEIGHT));
+        let list = match following.clone() {
+            Some(following) => list.follow_end(following),
+            None => list,
+        };
+        panel().column().child(list)
     })
 }
 
@@ -938,4 +952,358 @@ fn no_frame_shows_overlapping_rows_while_rows_grow() {
     }
     settle(&mut harness);
     harness.assert_matches_full_repaint();
+}
+
+/// The bottom edge of the lowest mounted row on screen.
+fn last_bottom(harness: &Harness) -> f32 {
+    let rows = rows_by_position(harness);
+    let last = rows.last().expect("the list mounts rows");
+    last.0 + last.1
+}
+
+/// The mounted rows that show in the viewport.
+fn visible_rows(harness: &Harness) -> Vec<(f32, f32)> {
+    rows_by_position(harness)
+        .into_iter()
+        .filter(|row| row.0 + row.1 > 0.0 && row.0 < VIEWPORT_HEIGHT)
+        .collect()
+}
+
+/// A following list in its harness, with the signals that drive it.
+struct Following {
+    /// The harness the list runs in.
+    harness: Harness,
+    /// The keys the list shows.
+    items: RwSignal<Vec<u64>>,
+    /// The height of the row of each key.
+    heights: Vec<RwSignal<f32>>,
+    /// The list's follow signal.
+    following: RwSignal<bool>,
+}
+
+/// Builds a following list of the first `count` of `total` rows, settled at
+/// its end.
+fn following_list(count: u64, total: u64) -> Following {
+    TextSystem::bundled_only().install();
+    let items = RwSignal::new((0..count).collect::<Vec<u64>>());
+    let heights = height_signals_for(total, 0);
+    let following = RwSignal::new(true);
+    let mut harness = keyed_harness_following(
+        items.clone(),
+        heights.clone(),
+        ESTIMATE,
+        Some(following.clone()),
+    );
+    harness.frame();
+    settle(&mut harness);
+    harness.move_to(POINTER);
+    Following {
+        harness,
+        items,
+        heights,
+        following,
+    }
+}
+
+/// Appends the next `count` keys to `items`.
+fn append(items: &RwSignal<Vec<u64>>, count: u64) {
+    items.update(|items| {
+        let next = items.len() as u64;
+        items.extend(next..next + count);
+    });
+}
+
+#[test]
+fn appends_while_following_keep_the_last_row_at_the_bottom_edge() {
+    let Following {
+        mut harness, items, ..
+    } = following_list(20, 60);
+    assert_eq!(
+        last_bottom(&harness),
+        VIEWPORT_HEIGHT,
+        "the list starts at its end"
+    );
+    for round in 0..10 {
+        // Each append mounts rows taller or shorter than the estimate,
+        // which the frame that mounts them lays out before any of their
+        // measurements reach the index.
+        append(&items, 1 + round % 3);
+        harness.frame();
+        assert_eq!(
+            last_bottom(&harness),
+            VIEWPORT_HEIGHT,
+            "the frame of append {round} shows the last row off the bottom edge"
+        );
+        settle(&mut harness);
+        assert_eq!(
+            last_bottom(&harness),
+            VIEWPORT_HEIGHT,
+            "append {round} settled with the last row off the bottom edge"
+        );
+    }
+}
+
+#[test]
+fn appending_after_a_wheel_step_up_moves_nothing_in_view() {
+    let Following {
+        mut harness,
+        items,
+        following,
+        ..
+    } = following_list(20, 60);
+    wheel(&mut harness, -50.0);
+    harness.frame();
+    settle(&mut harness);
+    assert!(!following.get(), "a step up from the end stops following");
+    let before = visible_rows(&harness);
+
+    append(&items, 3);
+    harness.frame();
+    assert_eq!(
+        visible_rows(&harness),
+        before,
+        "the frame of the append moved the rows in view of a list that stopped following"
+    );
+    settle(&mut harness);
+
+    assert_eq!(
+        visible_rows(&harness),
+        before,
+        "an append moved the rows in view of a list that stopped following"
+    );
+    assert!(!following.get(), "an append turned following back on");
+}
+
+#[test]
+fn a_wheel_step_back_to_the_end_follows_the_next_append() {
+    let Following {
+        mut harness,
+        items,
+        following,
+        ..
+    } = following_list(20, 60);
+    wheel(&mut harness, -50.0);
+    harness.frame();
+    settle(&mut harness);
+    wheel(&mut harness, 100.0);
+    harness.frame();
+    settle(&mut harness);
+    assert!(following.get(), "a step down to the end follows again");
+
+    append(&items, 2);
+    harness.frame();
+    assert_eq!(
+        last_bottom(&harness),
+        VIEWPORT_HEIGHT,
+        "the append after the step back was not followed"
+    );
+    settle(&mut harness);
+    assert_eq!(last_bottom(&harness), VIEWPORT_HEIGHT);
+}
+
+#[test]
+fn a_last_row_growing_every_frame_keeps_its_bottom_edge_in_view() {
+    let Following {
+        mut harness,
+        heights,
+        ..
+    } = following_list(20, 60);
+    for frame in 0..30 {
+        heights[19].update(|height| *height += 13.0);
+        harness.frame();
+        assert_eq!(
+            last_bottom(&harness),
+            VIEWPORT_HEIGHT,
+            "frame {frame} of the growth shows the last row's bottom edge out of view"
+        );
+        harness.assert_matches_full_repaint();
+    }
+    settle(&mut harness);
+    assert_eq!(last_bottom(&harness), VIEWPORT_HEIGHT);
+}
+
+#[test]
+fn a_following_list_receiving_appends_matches_a_full_repaint() {
+    let Following {
+        mut harness, items, ..
+    } = following_list(20, 60);
+    for _ in 0..12 {
+        append(&items, 2);
+        harness.frame();
+        harness.assert_matches_full_repaint();
+        settle(&mut harness);
+    }
+}
+
+/// Streams appends of rows far taller than the estimate into a following
+/// list, so the newest row's measurement is always still on its way.
+fn stream_tall_rows(harness: &mut Harness, items: &RwSignal<Vec<u64>>, heights: &[RwSignal<f32>]) {
+    for _ in 0..6 {
+        let next = items.read(|items| items.len());
+        heights[next].set(300.0);
+        append(items, 1);
+        harness.frame();
+    }
+    assert_eq!(
+        last_bottom(harness),
+        VIEWPORT_HEIGHT,
+        "the list followed the stream"
+    );
+}
+
+/// The item edit that lands in the frame a test stops following in.
+#[derive(Clone, Copy, Debug)]
+enum Edit {
+    /// No edit.
+    Nothing,
+    /// One key appended.
+    Append,
+    /// The first key removed and one appended, as a capped log does.
+    Roll,
+}
+
+impl Edit {
+    /// Every edit a test runs through.
+    const ALL: [Edit; 3] = [Edit::Nothing, Edit::Append, Edit::Roll];
+
+    /// Applies the edit to `items`.
+    fn apply(self, items: &RwSignal<Vec<u64>>) {
+        match self {
+            Edit::Nothing => {}
+            Edit::Append => append(items, 1),
+            Edit::Roll => items.update(|items| {
+                let next = items.last().map_or(0, |last| last + 1);
+                items.remove(0);
+                items.push(next);
+            }),
+        }
+    }
+}
+
+/// The tops of the visible rows.
+fn visible_tops(harness: &Harness) -> Vec<f32> {
+    visible_rows(harness).iter().map(|row| row.0).collect()
+}
+
+#[test]
+fn a_wheel_step_off_a_stream_of_tall_rows_moves_the_view_by_the_step() {
+    // The step lands in a frame of its own, then in frames that also edit
+    // the items, as every step does into a list that grows every frame.
+    for edit in Edit::ALL {
+        let Following {
+            mut harness,
+            items,
+            heights,
+            ..
+        } = following_list(20, 60);
+        stream_tall_rows(&mut harness, &items, &heights);
+        let before = visible_rows(&harness);
+
+        edit.apply(&items);
+        wheel(&mut harness, -10.0);
+        harness.frame();
+        settle(&mut harness);
+
+        // The step moved the view up by ten pixels, so every row that stayed
+        // in view sits ten pixels lower.
+        let moved: Vec<(f32, f32)> = before
+            .iter()
+            .map(|row| (row.0 + 10.0, row.1))
+            .filter(|row| row.0 < VIEWPORT_HEIGHT)
+            .collect();
+        assert_eq!(
+            visible_rows(&harness),
+            moved,
+            "the step off the end moved the view by more than the step, edit: {edit:?}"
+        );
+    }
+}
+
+#[test]
+fn stopping_a_follow_off_a_stream_of_tall_rows_moves_nothing() {
+    for edit in Edit::ALL {
+        let Following {
+            mut harness,
+            items,
+            heights,
+            following,
+        } = following_list(20, 60);
+        stream_tall_rows(&mut harness, &items, &heights);
+        let before = visible_tops(&harness);
+
+        edit.apply(&items);
+        following.set(false);
+        harness.frame();
+        assert_eq!(
+            visible_tops(&harness),
+            before,
+            "the frame that stopped following moved the rows in view, edit: {edit:?}"
+        );
+        settle(&mut harness);
+        assert_eq!(
+            visible_tops(&harness),
+            before,
+            "stopping the follow moved the rows in view, edit: {edit:?}"
+        );
+    }
+}
+
+#[test]
+fn a_tiny_row_seen_once_does_not_widen_a_measured_following_window() {
+    TextSystem::bundled_only().install();
+    let items = RwSignal::new((0..200).collect::<Vec<u64>>());
+    let heights: Vec<RwSignal<f32>> = (0..200)
+        .map(|key| RwSignal::new(if key == 0 { 1.0 } else { 100.0 }))
+        .collect();
+    let following = RwSignal::new(false);
+    let mut harness = keyed_harness_following(items, heights, ESTIMATE, Some(following.clone()));
+    harness.frame();
+    settle(&mut harness);
+    following.set(true);
+    harness.frame();
+    settle(&mut harness);
+
+    assert_eq!(
+        last_bottom(&harness),
+        VIEWPORT_HEIGHT,
+        "the list follows its end"
+    );
+    // Five rows of 100 pixels fill the viewport, and the overscan adds four
+    // above them.
+    assert!(
+        row_rects(&harness).len() <= 10,
+        "a following window of measured rows mounted {} rows",
+        row_rects(&harness).len()
+    );
+}
+
+#[test]
+fn a_batch_of_short_rows_appended_while_following_fills_the_viewport() {
+    let Following {
+        mut harness,
+        items,
+        heights,
+        ..
+    } = following_list(20, 60);
+    // The last row, which shows, measures 20 pixels, and the batch lays out
+    // at 24 against an estimate of 100.
+    heights[19].set(20.0);
+    harness.frame();
+    settle(&mut harness);
+    for height in &heights[20..50] {
+        height.set(24.0);
+    }
+    append(&items, 30);
+    for frame in 0..4 {
+        harness.frame();
+        let rows = rows_by_position(&harness);
+        let first = rows.first().expect("the list mounts rows");
+        assert!(
+            first.0 <= 0.0,
+            "frame {frame} after the batch leaves the top {} pixels of the viewport empty",
+            first.0
+        );
+        assert_eq!(last_bottom(&harness), VIEWPORT_HEIGHT);
+    }
+    settle(&mut harness);
 }

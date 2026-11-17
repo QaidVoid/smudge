@@ -66,8 +66,11 @@ struct ScrollChrome {
     /// while the view is built.
     offset: RefCell<RwSignal<f32>>,
     /// The signal that reports and sets whether the view follows the end of
-    /// its content, when [`ScrollExt::follow_end`] set one.
-    following: RefCell<Option<RwSignal<bool>>>,
+    /// its content, when [`ScrollExt::follow_end`] set one. It sits in a
+    /// signal of its own, so a list that lays its content out differently
+    /// while the view follows learns of a follow signal installed after it
+    /// was built.
+    following: RwSignal<Option<RwSignal<bool>>>,
     /// The height of the content, once the content has painted.
     content_height: RwSignal<Option<f32>>,
     /// The height the content takes in the coming layout, when the view's
@@ -107,8 +110,9 @@ impl ScrollChrome {
     }
 
     /// Returns the follow signal, when [`ScrollExt::follow_end`] set one.
+    /// Reading it tracks the slot the signal sits in.
     fn following(&self) -> Option<RwSignal<bool>> {
-        self.following.borrow().clone()
+        self.following.get()
     }
 }
 
@@ -227,7 +231,7 @@ fn clamp_offset(desired: f32, max: f32) -> f32 {
 /// Before that, it applies any offset that is not negative as it is, which
 /// lets a view mount at a remembered position.
 pub fn scroll(content: impl IntoElement) -> Element<ScrollView> {
-    scroll_with_visible_height(content, RwSignal::new(None), None)
+    scroll_with_visible_height(content, RwSignal::new(None), None, RwSignal::new(None))
 }
 
 /// Creates a view like [`scroll`] that reports the visible height of its
@@ -242,10 +246,15 @@ pub fn scroll(content: impl IntoElement) -> Element<ScrollView> {
 /// `content_extent`, and the view clamps its offset with it instead of the
 /// content height it painted last frame. Otherwise an offset the list moves
 /// in the frame that grows the content would be clamped to the old end.
+///
+/// The view writes the signal [`ScrollExt::follow_end`] installs to
+/// `following`, so a list that reads the slot learns whether the view
+/// follows its end.
 pub(crate) fn scroll_with_visible_height(
     content: impl IntoElement,
     visible_height: RwSignal<Option<f32>>,
     content_extent: Option<RwSignal<f32>>,
+    following: RwSignal<Option<RwSignal<bool>>>,
 ) -> Element<ScrollView> {
     let content_height = RwSignal::new(None);
     let viewport = RwSignal::new(None);
@@ -261,9 +270,14 @@ pub(crate) fn scroll_with_visible_height(
     if visible_height.read(Option::is_some) {
         visible_height.set(None);
     }
+    // A remount after a hot patch can hand the slot the old build's follow
+    // signal, which the new build may no longer give the view.
+    if following.read(Option::is_some) {
+        following.set(None);
+    }
     let chrome = Rc::new(ScrollChrome {
         offset: RefCell::new(RwSignal::new(0.0)),
-        following: RefCell::new(None),
+        following,
         content_height,
         content_extent,
         viewport,
@@ -476,7 +490,7 @@ fn use_offset_signal(view: &mut ScrollView, signal: RwSignal<f32>) -> Dirty {
 ///
 /// This runs while the view is built, before any wheel event can arrive.
 fn use_follow_signal(view: &mut ScrollView, signal: RwSignal<bool>) -> Dirty {
-    *view.chrome.following.borrow_mut() = Some(signal);
+    view.chrome.following.set(Some(signal));
     Dirty::Clean
 }
 

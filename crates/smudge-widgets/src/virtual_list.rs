@@ -122,5 +122,5 @@ pub fn virtual_list<E: IntoElement>(
         .height(move || px(height_count() as f32 * row_height))
         .child(rows);
 
-    scroll_with_visible_height(content, visible, None).offset(offset)
+    scroll_with_visible_height(content, visible, None, RwSignal::new(None)).offset(offset)
 }

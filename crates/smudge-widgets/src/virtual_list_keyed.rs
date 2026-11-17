@@ -22,7 +22,7 @@ use std::rc::Rc;
 use smudge_core::element::{Element, IntoElement, for_each};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{Memo, Owner, RenderEffect, RwSignal, prelude::*};
-use smudge_core::style::px;
+use smudge_core::style::{Length, px};
 use smudge_core::widget::{PaintCx, Widget, panel};
 
 use crate::height_index::HeightIndex;
@@ -67,6 +67,9 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
     /// The height the index gave the rows no measurement reached, which a
     /// remount after a hot patch can find changed in the state it carried.
     estimate: f32,
+    /// The smallest positive height a row has measured. It never grows, so
+    /// it stays a bound after the row that set it goes.
+    smallest: f32,
 }
 
 /// Creates a list of keyed rows of different heights inside a scroll view,
@@ -74,8 +77,8 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 ///
 /// The returned element is the scroll view; give it a height, either directly
 /// or through a parent that sizes it. It scrolls with the wheel like any
-/// scroll view, and it shows a thumb for the whole list, because its content
-/// is a panel as tall as the height index says the rows are.
+/// scroll view, and it shows a thumb for the whole list, whose length
+/// follows the total height the index gives the rows.
 ///
 /// `items` runs inside a memo of its own, so an edit to the signals it reads
 /// remeasures the list and a scroll never runs it. Every update calls `key`
@@ -132,10 +135,14 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// The list owns its scroll offset; do not call
 /// [`ScrollExt::offset`](crate::ScrollExt::offset) on the returned view,
 /// because the anchor would fight the signal the call installs.
-/// [`ScrollExt::follow_end`](crate::ScrollExt::follow_end) works, with one
-/// limit: the end it pins to is the end the index knows, so a row that
-/// mounts at the end taller than its estimate shows its bottom one frame
-/// later, once its measurement lands.
+/// [`ScrollExt::follow_end`](crate::ScrollExt::follow_end) works as it does
+/// on a plain scroll view: while the view follows and the last item is
+/// mounted, the rows flow from where the index puts the first mounted one,
+/// and the view pins to the bottom of the last row as laid out, so a row
+/// that mounts at the end taller than its estimate, or grows there, never
+/// shows its end out of view. Rows that mount there shorter than any row
+/// the list has measured can leave the top of the viewport empty for the
+/// frame they mount in, until their measurements land.
 ///
 /// Pick this list over [`virtual_list`](crate::virtual_list) when the rows
 /// differ in height or the item list edits in the middle: insertions,
@@ -187,6 +194,7 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
         measured: HashMap::new(),
         anchor: None,
         estimate,
+        smallest: f32::INFINITY,
     })));
     let state: Rc<RefCell<KeyedList<T, K>>> = carried.read(Rc::clone);
     Owner::on_cleanup(move || drop(carried));
@@ -202,6 +210,13 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
     let total = RwSignal::new(0.0);
     let window: RwSignal<Vec<K>> = RwSignal::new(Vec::new());
     let pin: RwSignal<Option<(usize, f32)>> = RwSignal::new(None);
+    // Where the first mounted row starts while the rows flow, which they do
+    // while the view follows and the last row is mounted. The content then
+    // ends at the laid-out bottom of the last row, which the follow pin
+    // reaches in the frame the row grows, where the index's end would lag
+    // until the measurement lands.
+    let lead: RwSignal<Option<f32>> = RwSignal::new(None);
+    let following: RwSignal<Option<RwSignal<bool>>> = RwSignal::new(None);
     let reported = RwSignal::new(0u64);
     let pending: Rc<RefCell<Vec<(K, f32)>>> = Rc::new(RefCell::new(Vec::new()));
 
@@ -219,6 +234,8 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
         let total = total.clone();
         let window = window.clone();
         let pin = pin.clone();
+        let lead = lead.clone();
+        let following = following.clone();
         let reported = reported.clone();
         let pending = Rc::clone(&pending);
         // The state a remount carried was built by the old code, whose key
@@ -238,10 +255,25 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
             };
             let viewport = visible.get();
             let mut wanted: f32 = offset.get();
+            let follows = following.get().is_some_and(|signal| signal.get());
 
             let mut geometry_changed = false;
             {
                 let mut state = state.borrow_mut();
+                // Flowing rows put the screen at the laid-out end, which an
+                // index still waiting on measurements places too high or
+                // too low. The distance from the bottom of the last row,
+                // which the scroll binding and the wheel measure against the
+                // index, is what the view keeps when it stops flowing, so
+                // the measurements that land next move nothing on screen.
+                // The row is found again by its key, so rows an edit appends
+                // below it or removes above it move nothing either.
+                let from_end = viewport
+                    .filter(|_| lead.read(Option::is_some))
+                    .zip(state.index.keys().last().cloned())
+                    .map(|(viewport, last)| {
+                        ((state.index.total() - viewport).max(0.0) - wanted, last)
+                    });
                 // The scroll of this frame joins the anchor before anything
                 // re-aims it, so a measurement that lands in the same frame
                 // compensates around where the view is now, not where it
@@ -310,6 +342,9 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                         }
                     }
                     for (item_key, height) in batch {
+                        if height > 0.0 && height < state.smallest {
+                            state.smallest = height;
+                        }
                         if state.measured.get(&item_key) != Some(&height) {
                             state.measured.insert(item_key.clone(), height);
                             if let Some(at) = state.index.position(&item_key) {
@@ -326,6 +361,12 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                         && let Some(at) = state.index.position(&anchor_key)
                     {
                         wanted = state.index.offset_of(at) + within;
+                    }
+                    if let Some(((from_end, last), viewport)) = from_end.zip(viewport)
+                        && let Some(at) = state.index.position(&last)
+                    {
+                        let flowed_end = state.index.offset_of(at + 1);
+                        wanted = (flowed_end - viewport).max(0.0) - from_end;
                     }
                 }
             }
@@ -363,14 +404,34 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                 }
                 _ => None,
             };
+            let flows = follows && range.is_some_and(|(_, end)| end + 1 == state.index.len());
+            // Flowing rows stack up from the start of the window, so rows
+            // that lay out shorter than the index says would leave the top of
+            // the viewport empty. The window reaches back far enough to fill
+            // it, counting each row no measurement reached at the smallest
+            // height a row has shown.
+            let range = match (range, viewport) {
+                (Some((start, end)), Some(viewport)) if flows => {
+                    let reach = flow_reach(&state, end, viewport, estimate);
+                    Some((start.min(reach), end))
+                }
+                _ => range,
+            };
             let next = range.map_or(&[][..], |(start, end)| &state.index.keys()[start..=end]);
+            let next_lead = range
+                .filter(|_| flows)
+                .map(|(start, _)| state.index.offset_of(start));
             // The anchored row sits where the index puts it, and the rows
             // around it stack from it with their laid-out heights, so a row
             // that grows before its measurement reaches the index pushes its
-            // neighbours away instead of covering them.
-            let next_pin = anchor_at
-                .zip(range)
-                .map(|((at, top), (start, _))| (at - start, top));
+            // neighbours away instead of covering them. Flowing rows start
+            // at the lead instead, so the first one stays in place.
+            let next_pin = match next_lead {
+                Some(_) => Some((0, 0.0)),
+                None => anchor_at
+                    .zip(range)
+                    .map(|((at, top), (start, _))| (at - start, top)),
+            };
             // A scroll inside the mounted rows keeps the window, so the keys
             // are compared before anything is copied, and a new window
             // reuses the buffer of the old one.
@@ -382,6 +443,9 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
             }
             if pin.read(|value| *value != next_pin) {
                 pin.set(next_pin);
+            }
+            if lead.read(|value| *value != next_lead) {
+                lead.set(next_lead);
             }
         });
     }
@@ -434,14 +498,23 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
         .column()
         .height({
             let total = total.clone();
-            move || px(total.get())
+            let lead = lead.clone();
+            move || match lead.get() {
+                Some(_) => Length::Auto,
+                None => px(total.get()),
+            }
         })
+        .child(
+            panel()
+                .shrink(0.0)
+                .height(move || px(lead.get().unwrap_or(0.0))),
+        )
         .child(rows);
 
     // The view clamps the offset with the total the content panel takes in
     // this frame's layout. The painted content height lags a frame, and a
     // re-aim that grows the list at its end would be clamped back by it.
-    scroll_with_visible_height(content, visible, Some(total)).offset(offset)
+    scroll_with_visible_height(content, visible, Some(total), following).offset(offset)
 }
 
 /// Returns the most rows the window mounts for a viewport `viewport`
@@ -451,6 +524,38 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
 /// so a full viewport is never cut.
 fn window_cap(viewport: f32) -> usize {
     MIN_WINDOW_CAP.max((viewport.ceil() as usize).saturating_add(1)) + 2 * OVERSCAN
+}
+
+/// Returns the first row a flowing window mounts so the rows up to `end`
+/// fill a viewport `viewport` logical pixels tall, the overscan included and
+/// within the window cap.
+///
+/// A measured row counts its height. A row no measurement reached counts
+/// the smallest height any row has shown, or `estimate` when that is less,
+/// since it may lay out that short.
+fn flow_reach<T, K: Eq + Hash + Clone>(
+    state: &KeyedList<T, K>,
+    end: usize,
+    viewport: f32,
+    estimate: f32,
+) -> usize {
+    let unmeasured = state.smallest.min(estimate);
+    let lowest = (end + 1).saturating_sub(window_cap(viewport) - 2 * OVERSCAN);
+    let mut reach = end;
+    let mut covered = 0.0;
+    loop {
+        let key = state.index.key(reach);
+        covered += if state.measured.contains_key(key) {
+            state.index.height(reach)
+        } else {
+            unmeasured
+        };
+        if covered >= viewport || reach <= lowest {
+            break;
+        }
+        reach -= 1;
+    }
+    reach.saturating_sub(OVERSCAN)
 }
 
 /// Returns the row the list anchors on at `offset`: the row that holds the

@@ -19,11 +19,11 @@ use smudge_core::app::App;
 use smudge_core::element::Element;
 use smudge_core::geometry::{Color, Point, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
-use smudge_core::reactive::{self, prelude::*};
+use smudge_core::reactive::{self, RwSignal, prelude::*};
 use smudge_core::style::{Align, px};
 use smudge_core::widget::{Panel, panel};
 use smudge_text::{TextInputExt, label, text_input};
-use smudge_widgets::{column, row, scroll, virtual_list, virtual_list_keyed};
+use smudge_widgets::{ScrollExt, column, row, scroll, virtual_list, virtual_list_keyed};
 
 /// The columns and rows of the box grid the first two scenes share.
 const GRID: (usize, usize) = (30, 20);
@@ -79,6 +79,10 @@ const KEYED_WHEEL_STEP: f32 = 110.0;
 /// lasts.
 const KEYED_SWEEP_FRAMES: u64 = 150;
 
+/// How many frames the keyed list scene appends a row per frame, after its
+/// two sweeps.
+const KEYED_APPEND_FRAMES: u64 = 150;
+
 /// The tallest height a seeded row of the keyed list scene can have.
 const KEYED_MAX_ROW_HEIGHT: f32 = 200.0;
 
@@ -117,6 +121,18 @@ pub(crate) struct Driver {
     /// The clock time the last scripted event was injected at, for the
     /// latency record of the input scene.
     injected_at: Option<Instant>,
+    /// The signals the keyed list scene writes, once it mounted.
+    keyed: Option<KeyedScene>,
+}
+
+/// The signals the keyed list scene's driver writes.
+struct KeyedScene {
+    /// The items the list shows.
+    items: RwSignal<Rc<[u64]>>,
+    /// Whether the list follows its end.
+    following: RwSignal<bool>,
+    /// The items every repeat starts from.
+    original: Rc<[u64]>,
 }
 
 impl Driver {
@@ -126,6 +142,7 @@ impl Driver {
             colors: Vec::new(),
             texts: Vec::new(),
             injected_at: None,
+            keyed: None,
         }
     }
 
@@ -214,7 +231,8 @@ impl Scene {
 /// fifth and sixth scroll long content with scripted wheel events: a
 /// thousand mixed rows, and a virtual list of a hundred thousand rows. The
 /// seventh scrolls a keyed list of a hundred thousand rows of seeded
-/// heights. The last types into a focused text field, one keystroke per
+/// heights, then follows its end while a row is appended every frame. The
+/// last types into a focused text field, one keystroke per
 /// frame.
 static SCENES: [Scene; 8] = [
     Scene {
@@ -455,20 +473,28 @@ fn step_fixed_list(_driver: &Shared, app: &mut App, frame: u64) {
     });
 }
 
-/// Mounts the keyed list scene: a hundred thousand rows of seeded heights.
+/// Mounts the keyed list scene: a hundred thousand rows of seeded heights,
+/// in a list that follows its end while the driver says so.
 ///
-/// The items and the heights are fixed, so the closure that reads the items
-/// hands back the same `Rc` every frame and the list skips walking it.
+/// The items sit in a signal the driver writes. Between appends the closure
+/// that reads them hands back the same `Rc`, so the list skips walking it.
 ///
 /// A window run mounts once, so its first repeat carries the rows' first
 /// measurements and the later repeats reuse them; headless repeats mount
 /// fresh and measure identical work.
-fn mount_keyed_list(_driver: &mut Driver) -> Element<Panel> {
+fn mount_keyed_list(driver: &mut Driver) -> Element<Panel> {
     let heights: Rc<[f32]> = keyed_heights().into();
-    let items: Rc<[u64]> = (0..KEYED_ROWS as u64).collect();
+    let original: Rc<[u64]> = (0..KEYED_ROWS as u64).collect();
+    let items = RwSignal::new(Rc::clone(&original));
+    let following = RwSignal::new(false);
+    driver.keyed = Some(KeyedScene {
+        items: items.clone(),
+        following: following.clone(),
+        original,
+    });
     panel().child(
         virtual_list_keyed(
-            move || items.clone(),
+            move || items.get(),
             |item| *item,
             KEYED_ESTIMATE,
             move |item| {
@@ -477,38 +503,65 @@ fn mount_keyed_list(_driver: &mut Driver) -> Element<Panel> {
                     .child(label(format!("Item {item:06}")))
             },
         )
+        .follow_end(following)
         .width(px(VIEWPORT.0))
         .height(px(VIEWPORT.1)),
     )
 }
 
-/// Scrolls the keyed list scene for one sweep down and one up.
+/// Drives the keyed list scene: a sweep down, the same sweep up, then an
+/// append phase.
 ///
-/// One repeat starts with the sweep down for [`KEYED_SWEEP_FRAMES`] frames
-/// and continues with the same sweep up, from the top at the start of every
-/// repeat.
-fn step_keyed_list(_driver: &Shared, app: &mut App, frame: u64) {
+/// One repeat starts from the original items at the top, sweeps down for
+/// [`KEYED_SWEEP_FRAMES`] frames and up for as many, then follows the end
+/// while it appends one row per frame for [`KEYED_APPEND_FRAMES`] frames.
+/// The new items are built here, before the frame, so the frame's time is
+/// the list's alone. Frames past the append phase change nothing.
+fn step_keyed_list(driver: &Shared, app: &mut App, frame: u64) {
+    let driver = driver.borrow();
+    let scene = driver
+        .keyed
+        .as_ref()
+        .expect("the keyed list scene mounted before its first step");
+    let sweeps = 2 * KEYED_SWEEP_FRAMES;
     if frame == 0 {
+        scene.following.set(false);
+        if !Rc::ptr_eq(&scene.items.read(Rc::clone), &scene.original) {
+            scene.items.set(Rc::clone(&scene.original));
+        }
         // The tallest seeded row bounds the content height, so this rewind
         // passes the top from anywhere in the list.
         start_scroll_repeat(app, KEYED_ROWS as f32 * KEYED_MAX_ROW_HEIGHT);
     }
-    let down = (frame / KEYED_SWEEP_FRAMES).is_multiple_of(2);
-    let delta = if down {
-        KEYED_WHEEL_STEP
-    } else {
-        -KEYED_WHEEL_STEP
-    };
-    app.handle_event(InputEvent::Wheel {
-        delta: Point { x: 0.0, y: delta },
-    });
+    if frame < sweeps {
+        let down = (frame / KEYED_SWEEP_FRAMES).is_multiple_of(2);
+        let delta = if down {
+            KEYED_WHEEL_STEP
+        } else {
+            -KEYED_WHEEL_STEP
+        };
+        app.handle_event(InputEvent::Wheel {
+            delta: Point { x: 0.0, y: delta },
+        });
+    } else if frame < sweeps + KEYED_APPEND_FRAMES {
+        if frame == sweeps {
+            scene.following.set(true);
+        }
+        let next = scene.items.read(|items| {
+            let mut next = Vec::with_capacity(items.len() + 1);
+            next.extend_from_slice(items);
+            next.push(items.len() as u64);
+            Rc::<[u64]>::from(next)
+        });
+        scene.items.set(next);
+    }
 }
 
 /// The seeded height of every row of the keyed list scene, between 20 and
-/// 200.
+/// 200, the rows its append phase adds included.
 fn keyed_heights() -> Vec<f32> {
     let mut rng = Xorshift::new(S7_SEED);
-    (0..KEYED_ROWS)
+    (0..KEYED_ROWS + KEYED_APPEND_FRAMES as usize)
         .map(|_| 20.0 + (rng.next() % 181) as f32)
         .collect()
 }
