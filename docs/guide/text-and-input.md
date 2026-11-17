@@ -139,6 +139,33 @@ fn root() -> Element<Panel> {
 }
 ```
 
+### Your own fonts
+
+An application ships fonts of its own by embedding the files with `include_bytes!` and registering them with the text system, which works the same on the desktop and on the web. `register_font` takes a font file or a font collection file, and answers the names of the families it carries, or an error when the data holds no font. Text uses a registered face wherever its style names the family, through `FontFamily::named`, here for the whole window:
+
+```rust
+use smudge::prelude::*;
+use smudge::text::{FontFamily, TextSystem};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    TextSystem::with(|system| system.register_font(include_bytes!("../assets/Brand.ttf")))?;
+    run(WindowOptions::default(), || {
+        provide_text_style(TextStyle {
+            family: FontFamily::named("Brand"),
+            ..TextStyle::default()
+        });
+        column().child(label("Drawn in the brand font"))
+    })?;
+    Ok(())
+}
+```
+
+`prefer_family(generic, family)` makes a family the first choice of a generic family such as sans serif, so text whose style names the generic family uses it, and the families behind it cover what it lacks.
+
+A registered face joins the family of the same name registered before it, a bundled one included, behind that family's faces. For each character, text uses the first face of the right weight and style that has a glyph for it, so a font split into one file per script works by registering every file. A registered family takes the place of an installed family of the same name, so text that names it lays out the same on every machine, which means registering every face of it the application uses. Register fonts on the thread that runs the window, before it shows, as above: text laid out before a registration keeps the faces it found until its style or its text changes.
+
+The bundled faces stay compiled in. A build needs `bundled-fonts` or `system-fonts` on, so an application that registers its own fonts keeps one of them as the fallback for text its fonts do not cover.
+
 ### Scripts without spaces
 
 Chinese and Japanese wrap between characters out of the box. Thai, Lao, Khmer and Burmese write words without spaces between them, so finding a place to wrap needs a dictionary. Turn on the `complex-scripts` feature of `smudge` to compile the dictionaries in:

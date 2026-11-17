@@ -87,7 +87,7 @@ The accessibility projection that screen readers read. Without it, the build dro
 
 ### `bundled-fonts`
 
-The five embedded font faces, Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, that make text layout produce the same result on every machine. With the feature off, the application needs another font source, which today means the `system-fonts` feature.
+The five embedded font faces, Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, that make text layout produce the same result on every machine. With the feature off, the application needs another font source, which today means the `system-fonts` feature. Fonts an application registers itself, as [Text and input](./text-and-input#your-own-fonts) describes, add to the bundled or system faces but do not replace the need for one of them.
 
 Replacing the embedded faces with system font discovery saves 1,827,728 bytes on the default release profile and 1,848,720 on the size profile. What is lost: determinism. Layout wraps and breaks lines for whichever faces the host has, so text settles differently on machines with different fonts, and a machine without a face that covers the application's text draws missing glyphs.
 

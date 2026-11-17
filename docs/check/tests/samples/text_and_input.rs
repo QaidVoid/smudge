@@ -38,6 +38,31 @@ fn system_ui() {
 }
 
 #[test]
+fn own_fonts() {
+    // The page embeds a font file of the application's own. The bundled
+    // mono stands in for it.
+    macro_rules! include_bytes {
+        ($path:literal) => {
+            std::include_bytes!("../../../../crates/smudge-text/assets/fonts/NotoSansMono-Regular.ttf")
+        };
+    }
+    use smudge::prelude::*;
+    use smudge::text::{FontFamily, TextSystem};
+    
+    fn main() -> Result<(), Box<dyn std::error::Error>> {
+        TextSystem::with(|system| system.register_font(include_bytes!("../assets/Brand.ttf")))?;
+        run(WindowOptions::default(), || {
+            provide_text_style(TextStyle {
+                family: FontFamily::named("Brand"),
+                ..TextStyle::default()
+            });
+            column().child(label("Drawn in the brand font"))
+        })?;
+        Ok(())
+    }
+}
+
+#[test]
 fn max_lines() {
     use smudge::prelude::*;
     

@@ -6,6 +6,8 @@
 
 use crate::layout::TextLayout;
 use crate::style::{TextStyle, current_text_style, provide_text_style};
+#[cfg(feature = "bundled-fonts")]
+use crate::system::FontError;
 use crate::system::TextSystem;
 use parley::FontFamily;
 use parley::FontWeight;
@@ -225,4 +227,102 @@ fn system_ui_resolves_to_the_system_faces_that_carry_its_weights() {
             "the semibold face is the system's"
         );
     }
+}
+
+#[cfg(feature = "bundled-fonts")]
+/// A style that names the family `name`.
+fn named(name: &str) -> TextStyle {
+    TextStyle {
+        family: FontFamily::named(name).into_owned(),
+        ..TextStyle::default()
+    }
+}
+
+#[cfg(feature = "bundled-fonts")]
+/// Installs a system with no fonts on this test thread and makes a new
+/// owner current.
+fn setup_empty() -> Owner {
+    TextSystem::empty().install();
+    let owner = Owner::new();
+    owner.set();
+    owner
+}
+
+#[cfg(feature = "bundled-fonts")]
+#[test]
+fn a_registered_font_lays_text_out_by_its_family_name() {
+    let _owner = setup_empty();
+    assert_eq!(
+        first_font(&TextLayout::new("Smudge", &named("Noto Sans Mono"), None)),
+        None,
+        "the empty system has no face for the text"
+    );
+
+    let families =
+        TextSystem::with(|system| system.register_font(crate::fonts::MONO_REGULAR.to_vec()));
+
+    assert_eq!(families, Ok(vec!["Noto Sans Mono".to_owned()]));
+    assert!(
+        first_font(&TextLayout::new("Smudge", &named("Noto Sans Mono"), None)).is_some(),
+        "the registered face lays the text out"
+    );
+}
+
+#[cfg(feature = "bundled-fonts")]
+#[test]
+fn data_without_a_font_is_refused() {
+    let _owner = setup_empty();
+    let refused = TextSystem::with(|system| system.register_font(b"not a font".as_slice()));
+    assert_eq!(refused, Err(FontError::NoFace));
+}
+
+#[cfg(feature = "bundled-fonts")]
+#[test]
+fn a_preferred_family_serves_sans_serif() {
+    let _owner = setup();
+    let sans_serif = TextStyle {
+        family: FontFamily::from(GenericFamily::SansSerif),
+        ..TextStyle::default()
+    };
+    let mono = first_font(&TextLayout::new("Smudge", &named("Noto Sans Mono"), None));
+    assert_ne!(
+        first_font(&TextLayout::new("Smudge", &sans_serif, None)),
+        mono,
+        "sans serif starts at the bundled sans"
+    );
+
+    TextSystem::with(|system| {
+        assert_eq!(
+            system.prefer_family(GenericFamily::SansSerif, "No Such Family"),
+            Err(FontError::UnknownFamily)
+        );
+        for _ in 0..2 {
+            system
+                .prefer_family(GenericFamily::SansSerif, "Noto Sans Mono")
+                .expect("the family is bundled");
+        }
+    });
+
+    assert_eq!(
+        first_font(&TextLayout::new("Smudge", &sans_serif, None)),
+        mono,
+        "sans serif text reaches the preferred family first"
+    );
+}
+
+#[cfg(feature = "bundled-fonts")]
+#[test]
+fn a_registered_face_joins_its_family_behind_the_earlier_faces() {
+    let _owner = setup();
+    let bundled = first_font(&TextLayout::new("Smudge", &TextStyle::default(), None));
+
+    let families =
+        TextSystem::with(|system| system.register_font(crate::fonts::SANS_REGULAR.to_vec()));
+
+    assert_eq!(families, Ok(vec!["Noto Sans".to_owned()]));
+    assert_eq!(
+        first_font(&TextLayout::new("Smudge", &TextStyle::default(), None)),
+        bundled,
+        "the bundled face still comes first for the text it covers"
+    );
 }

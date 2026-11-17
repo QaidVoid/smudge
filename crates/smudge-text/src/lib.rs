@@ -82,6 +82,6 @@ pub use parley::GenericFamily;
 pub use rich_text::{RichText, RichTextExt, Span, SpanStyle, rich_text};
 pub use selection::{SelectableExt, selection_scope};
 pub use style::{TextStyle, current_text_style, provide_text_style};
-pub use system::TextSystem;
+pub use system::{FontError, TextSystem};
 pub use text_area::{TextArea, TextAreaExt, text_area};
 pub use text_input::{TextInput, TextInputExt, text_input};
