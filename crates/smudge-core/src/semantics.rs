@@ -40,6 +40,8 @@ pub enum Role {
     List,
     /// One entry of a list.
     ListItem,
+    /// A divider between two panes that moves to resize them.
+    Splitter,
 }
 
 /// The accessibility description a widget reports about itself.

@@ -1825,6 +1825,8 @@ fn cursor_icon(cursor: Cursor) -> CursorIcon {
         Cursor::Pointer => CursorIcon::Pointer,
         Cursor::Text => CursorIcon::Text,
         Cursor::Resize(edge) => CursorIcon::from(resize_direction(edge)),
+        Cursor::ColumnResize => CursorIcon::ColResize,
+        Cursor::RowResize => CursorIcon::RowResize,
         // A cursor added after this layer shows the default.
         _ => CursorIcon::Default,
     }

@@ -148,6 +148,10 @@ pub enum Cursor {
     Text,
     /// A window edge or corner that resizes in that direction.
     Resize(ResizeEdge),
+    /// A divider between two columns, which a drag moves left and right.
+    ColumnResize,
+    /// A divider between two rows, which a drag moves up and down.
+    RowResize,
 }
 
 /// Queues a command to start an interactive move of the window.

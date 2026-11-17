@@ -287,6 +287,7 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::ScrollView => AccessKitRole::ScrollView,
         Role::List => AccessKitRole::List,
         Role::ListItem => AccessKitRole::ListItem,
+        Role::Splitter => AccessKitRole::Splitter,
         // A role added after this mapping reports as a plain group.
         _ => AccessKitRole::Group,
     }
