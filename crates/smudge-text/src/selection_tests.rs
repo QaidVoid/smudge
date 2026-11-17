@@ -86,3 +86,28 @@ fn a_selection_keeps_the_blocks_that_remain_when_its_ends_leave() {
     // Every selected block goes.
     assert_eq!(carried(&old, &order(&[0, 4]), &end(1, 3), &end(3, 2)), None);
 }
+
+#[test]
+fn a_block_without_a_layout_steps_through_its_text() {
+    use super::{Step, step_text};
+
+    let text = "one two\nthree";
+    assert_eq!(step_text(text, 0, Step::Right), Some(1));
+    assert_eq!(step_text(text, 0, Step::Left), None, "the start is an edge");
+    assert_eq!(step_text(text, 0, Step::WordRight), Some(3));
+    assert_eq!(step_text(text, 7, Step::WordLeft), Some(4));
+    assert_eq!(
+        step_text(text, 2, Step::Down),
+        Some(8),
+        "to the next hard line"
+    );
+    assert_eq!(step_text(text, 10, Step::Up), Some(7));
+    assert_eq!(step_text(text, 10, Step::LineStart), Some(8));
+    assert_eq!(step_text(text, 2, Step::LineEnd), Some(7));
+    assert_eq!(step_text(text, 13, Step::Right), None, "the end is an edge");
+    assert_eq!(
+        step_text("aé", 1, Step::Right),
+        Some(3),
+        "a whole character"
+    );
+}

@@ -198,6 +198,224 @@ fn floor_boundary(text: &str, offset: usize) -> usize {
 /// The signal of a mounted block's selected range.
 type RangeSignal = RwSignal<Option<Range<usize>>>;
 
+/// The signal of where the keyboard last moved the selection's moving end
+/// inside a mounted block: the offset, and whether the caret sits at the end
+/// of the line before it rather than the start of the line it begins. A
+/// signal notifies on every write, so the block shows the same place again
+/// when the end comes back to it.
+type RevealSignal = RwSignal<Option<(usize, bool)>>;
+
+/// One step the keyboard moves the selection's moving end by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// One grapheme back.
+    Left,
+    /// One grapheme on.
+    Right,
+    /// To the start of the word, or of the word before.
+    WordLeft,
+    /// To the end of the word, or of the word after.
+    WordRight,
+    /// One line up.
+    Up,
+    /// One line down.
+    Down,
+    /// To the start of the line.
+    LineStart,
+    /// To the end of the line.
+    LineEnd,
+}
+
+impl Step {
+    /// Whether the step goes toward the start of the text in a block whose
+    /// text runs right to left when `rtl` is set. Left and right are visual,
+    /// so they go the other way through such a block.
+    fn backward(self, rtl: bool) -> bool {
+        match self {
+            Step::Left | Step::WordLeft => !rtl,
+            Step::Right | Step::WordRight => rtl,
+            Step::Up | Step::LineStart => true,
+            Step::Down | Step::LineEnd => false,
+        }
+    }
+
+    /// Whether the step crosses into the next block at an edge, which a
+    /// move to a line's start or end never does.
+    fn crosses(self) -> bool {
+        !matches!(self, Step::LineStart | Step::LineEnd)
+    }
+}
+
+/// What a keyboard step did inside a mounted block.
+pub(crate) enum Stepped {
+    /// The block has no layout yet, so its text has to answer.
+    NoLayout,
+    /// The step would leave the block.
+    Edge,
+    /// The step moved to this selection's focus.
+    Moved(ParagraphSelection),
+}
+
+/// What a mounted block answers about its own text, from its layout.
+pub(crate) trait Nav {
+    /// Steps from `offset`, continuing `from` when it ends there, which keeps
+    /// the line a caret at a soft wrap belongs to and the column a run of
+    /// vertical steps holds.
+    fn step(&self, from: Option<ParagraphSelection>, offset: usize, step: Step) -> Stepped;
+
+    /// Returns the caret at `offset`, at the end of the line before it when
+    /// `upstream` is set, relative to the block's rectangle.
+    fn caret(&self, offset: usize, upstream: bool) -> Option<Rect>;
+
+    /// Returns whether the block's text runs right to left, or `None` before
+    /// it has a layout.
+    fn rtl(&self) -> Option<bool>;
+
+    /// Returns the length of the block's text, or `None` before it has a
+    /// layout.
+    fn len(&self) -> Option<usize>;
+}
+
+/// Steps from `offset` in `layout`, as [`Nav::step`] describes.
+///
+/// Left and right, by a character or a word, move through the text in its
+/// logical order, toward its start or its end as the arrow points in the
+/// paragraph's direction. Moving visually loses its way in a wrapped
+/// paragraph whose runs go against its direction, while a selection that
+/// grows in text order cannot. Lines, and their starts and ends, move
+/// visually.
+fn step_in<B: Brush>(
+    layout: &parley::Layout<B>,
+    carried: Option<ParagraphSelection>,
+    offset: usize,
+    step: Step,
+) -> Stepped {
+    let from = carried
+        .filter(|selection| selection.focus().index() == offset)
+        .unwrap_or_else(|| {
+            ParagraphSelection::from_byte_index(layout, offset, Affinity::Downstream)
+        });
+    let cursor = from.focus();
+    let backward = step.backward(layout.is_rtl());
+    let logical = |at: Option<usize>| match at.filter(|&at| at != cursor.index()) {
+        Some(at) => Stepped::Moved(ParagraphSelection::new(
+            from.anchor(),
+            Cursor::from_byte_index(layout, at, Affinity::Downstream),
+        )),
+        None => Stepped::Edge,
+    };
+    let moved = match step {
+        Step::Left | Step::Right if backward => {
+            return logical(
+                cursor
+                    .upstream_cluster(layout)
+                    .map(|cluster| cluster.text_range().start),
+            );
+        }
+        Step::Left | Step::Right => {
+            return logical(
+                cursor
+                    .downstream_cluster(layout)
+                    .map(|cluster| cluster.text_range().end),
+            );
+        }
+        Step::WordLeft | Step::WordRight if backward => {
+            // At the text's end, a word one character long that ends it is
+            // a stop of its own, which the logical word move steps past.
+            let last_word = cursor
+                .downstream_cluster(layout)
+                .is_none()
+                .then(|| cursor.upstream_cluster(layout))
+                .flatten()
+                .filter(|cluster| cluster.is_word_boundary() && !cluster.is_space_or_nbsp())
+                .map(|cluster| cluster.text_range().start);
+            return logical(
+                last_word.or_else(|| Some(cursor.previous_logical_word(layout).index())),
+            );
+        }
+        Step::WordLeft | Step::WordRight => {
+            return logical(Some(cursor.next_logical_word(layout).index()));
+        }
+        Step::Up => from.previous_line(layout, true),
+        Step::Down => from.next_line(layout, true),
+        Step::LineStart => from.line_start(layout, true),
+        Step::LineEnd => from.line_end(layout, true),
+    };
+    if moved.focus() == from.focus() {
+        Stepped::Edge
+    } else {
+        Stepped::Moved(moved)
+    }
+}
+
+/// Returns the length of the text of `layout`.
+fn len_in<B: Brush>(layout: &parley::Layout<B>) -> usize {
+    Cursor::from_byte_index(layout, usize::MAX, Affinity::Downstream).index()
+}
+
+/// Returns the caret at `offset` in `layout`, at the end of the line before
+/// it when `upstream` is set.
+fn caret_in<B: Brush>(layout: &parley::Layout<B>, offset: usize, upstream: bool) -> Rect {
+    let affinity = if upstream {
+        Affinity::Upstream
+    } else {
+        Affinity::Downstream
+    };
+    let area = Cursor::from_byte_index(layout, offset, affinity).geometry(layout, 1.0);
+    Rect::new(
+        area.x0 as f32,
+        area.y0 as f32,
+        area.x1 as f32,
+        area.y1 as f32,
+    )
+}
+
+/// Returns the offset `step` reaches from `offset` in `text`, a block with
+/// no layout because it is not mounted, by characters, by runs of
+/// whitespace and the rest, and by hard lines, or `None` when the step would
+/// leave the text.
+pub(crate) fn step_text(text: &str, offset: usize, step: Step) -> Option<usize> {
+    let offset = floor_boundary(text, offset);
+    let before = &text[..offset];
+    let after = &text[offset..];
+    let moved = match step {
+        Step::Left => before.char_indices().next_back().map(|(at, _)| at),
+        Step::Right => after.chars().next().map(|c| offset + c.len_utf8()),
+        Step::WordLeft => {
+            let trimmed = before.trim_end();
+            (!before.is_empty()).then(|| {
+                trimmed.rfind(char::is_whitespace).map_or(0, |at| {
+                    at + trimmed[at..].chars().next().map_or(1, char::len_utf8)
+                })
+            })
+        }
+        Step::WordRight => {
+            let skipped = after.len() - after.trim_start().len();
+            (!after.is_empty()).then(|| {
+                let rest = &after[skipped..];
+                offset + skipped + rest.find(char::is_whitespace).unwrap_or(rest.len())
+            })
+        }
+        Step::Up => before.rfind('\n'),
+        Step::Down => after.find('\n').map(|at| offset + at + 1),
+        Step::LineStart => Some(before.rfind('\n').map_or(0, |at| at + 1)),
+        Step::LineEnd => Some(after.find('\n').map_or(text.len(), |at| offset + at)),
+    };
+    moved.filter(|&end| end != offset)
+}
+
+/// One mounted block of a scope.
+struct Block {
+    /// The id the block registered with.
+    id: u64,
+    /// The block's selected range.
+    range: RangeSignal,
+    /// Where the keyboard moved the selection's end inside the block.
+    reveal: RevealSignal,
+    /// The block's own answers about its text.
+    nav: Rc<dyn Nav>,
+}
+
 /// The selection a scope holds, shared with its blocks through reactive
 /// context.
 pub(crate) struct Scope<K> {
@@ -214,9 +432,12 @@ pub(crate) struct Scope<K> {
     /// What the drag found under the pointer last, cleared when the drag
     /// ends, whichever node took its press.
     over: RefCell<Option<Hit<K>>>,
-    /// The selected range of each mounted block, by key, then by the id it
-    /// registered with, since one key can be mounted more than once.
-    blocks: RefCell<HashMap<K, Vec<(u64, RangeSignal)>>>,
+    /// The mounted blocks, by key, then by the id each registered with, since
+    /// one key can be mounted more than once.
+    blocks: RefCell<HashMap<K, Vec<Block>>>,
+    /// The last selection the keyboard stepped to in a mounted block, which
+    /// the next step continues while the moving end is still there.
+    stepped: RefCell<Option<(K, ParagraphSelection)>>,
     /// The id the next registration takes.
     next_block: Cell<u64>,
     /// Whether a press the scope took is held.
@@ -280,9 +501,9 @@ impl<K: Clone + Eq + Hash + 'static> Scope<K> {
             let range = ends
                 .as_ref()
                 .and_then(|(start, end)| block_range(&order, start, end, key));
-            for (_, signal) in blocks {
-                if signal.read(|current| *current != range) {
-                    changes.push((signal.clone(), range.clone()));
+            for block in blocks {
+                if block.range.read(|current| *current != range) {
+                    changes.push((block.range.clone(), range.clone()));
                 }
             }
         }
@@ -293,20 +514,26 @@ impl<K: Clone + Eq + Hash + 'static> Scope<K> {
 
     /// Registers a mounted block of `key`, and returns its id and the signal
     /// of its selected range, starting from the selection as it is.
-    fn register(&self, key: &K) -> (u64, RangeSignal) {
+    fn register(&self, key: &K, nav: Rc<dyn Nav>) -> (u64, RangeSignal, RevealSignal) {
         let order = Rc::clone(&self.order.borrow());
         let range = self
             .ends_in(&order)
             .and_then(|(start, end)| block_range(&order, &start, &end, key));
-        let signal = RwSignal::new(range);
+        let range = RwSignal::new(range);
+        let reveal = RwSignal::new(None);
         let id = self.next_block.get();
         self.next_block.set(id + 1);
         self.blocks
             .borrow_mut()
             .entry(key.clone())
             .or_default()
-            .push((id, signal.clone()));
-        (id, signal)
+            .push(Block {
+                id,
+                range: range.clone(),
+                reveal: reveal.clone(),
+                nav,
+            });
+        (id, range, reveal)
     }
 
     /// Forgets the block of `key` that registered as `id`, leaving any other
@@ -314,7 +541,7 @@ impl<K: Clone + Eq + Hash + 'static> Scope<K> {
     fn unregister(&self, key: &K, id: u64) {
         let mut blocks = self.blocks.borrow_mut();
         if let Some(list) = blocks.get_mut(key) {
-            list.retain(|(block, _)| *block != id);
+            list.retain(|block| block.id != id);
             if list.is_empty() {
                 blocks.remove(key);
             }
@@ -349,6 +576,7 @@ impl<K: Clone + Eq + Hash + 'static> Scope<K> {
         };
         *self.anchor.borrow_mut() = anchor;
         *self.focus.borrow_mut() = focus;
+        *self.stepped.borrow_mut() = None;
         self.update();
     }
 
@@ -364,8 +592,207 @@ impl<K: Clone + Eq + Hash + 'static> Scope<K> {
         }
         if self.focus.borrow().as_ref() != Some(&at) {
             *self.focus.borrow_mut() = Some(at);
+            *self.stepped.borrow_mut() = None;
             self.update();
         }
+    }
+
+    /// Handles a key event the scope's focus received: copy, select all,
+    /// clear, and the moves of the selection's moving end. Answers whether
+    /// it took the event.
+    fn key(&self, event: &KeyEvent) -> Handled {
+        if !event.pressed {
+            return Handled::No;
+        }
+        let modifiers = event.modifiers;
+        if modifiers.command() && is_letter(&event.key, "c") {
+            self.copy();
+            return Handled::Yes;
+        }
+        if modifiers.command() && is_letter(&event.key, "a") {
+            self.select_all();
+            return Handled::Yes;
+        }
+        if event.key == Key::Escape {
+            let order = Rc::clone(&self.order.borrow());
+            let selected = self.ends_in(&order).is_some();
+            *self.anchor.borrow_mut() = None;
+            *self.focus.borrow_mut() = None;
+            *self.stepped.borrow_mut() = None;
+            self.update();
+            return if selected { Handled::Yes } else { Handled::No };
+        }
+        if !modifiers.shift || self.anchor.borrow().is_none() {
+            return Handled::No;
+        }
+        // The modifiers mean what they mean in the text inputs: Ctrl or Alt
+        // moves by word, and Ctrl or Cmd with Home or End goes to the start
+        // or the end of the whole text, here the whole scope.
+        let word = modifiers.control || modifiers.alt;
+        let whole = modifiers.control || modifiers.meta;
+        let step = match &event.key {
+            Key::ArrowLeft if word => Step::WordLeft,
+            Key::ArrowRight if word => Step::WordRight,
+            Key::ArrowLeft => Step::Left,
+            Key::ArrowRight => Step::Right,
+            Key::ArrowUp => Step::Up,
+            Key::ArrowDown => Step::Down,
+            Key::Home if whole => return self.move_focus_to_edge(false),
+            Key::End if whole => return self.move_focus_to_edge(true),
+            Key::Home => Step::LineStart,
+            Key::End => Step::LineEnd,
+            _ => return Handled::No,
+        };
+        self.move_focus(step);
+        Handled::Yes
+    }
+
+    /// Selects every block of the scope.
+    fn select_all(&self) {
+        let order = Rc::clone(&self.order.borrow());
+        let (Some(first), Some(last)) = (order.keys.first(), order.keys.last()) else {
+            return;
+        };
+        *self.anchor.borrow_mut() = Some(Endpoint {
+            key: first.clone(),
+            offset: 0,
+        });
+        *self.focus.borrow_mut() = Some(Endpoint {
+            key: last.clone(),
+            offset: self.text_len(last),
+        });
+        *self.stepped.borrow_mut() = None;
+        self.update();
+    }
+
+    /// Returns the length of the text of the block of `key`, from its layout
+    /// when it is mounted and from `text_of` when it is not.
+    fn text_len(&self, key: &K) -> usize {
+        self.nav_of(key)
+            .and_then(|nav| nav.len())
+            .unwrap_or_else(|| (self.text_of)(key).len())
+    }
+
+    /// Returns the navigator of a mounted block of `key`.
+    fn nav_of(&self, key: &K) -> Option<Rc<dyn Nav>> {
+        self.blocks
+            .borrow()
+            .get(key)
+            .and_then(|list| list.first().map(|block| Rc::clone(&block.nav)))
+    }
+
+    /// Moves the selection's moving end to the start or the end of the whole
+    /// scope.
+    fn move_focus_to_edge(&self, end: bool) -> Handled {
+        let order = Rc::clone(&self.order.borrow());
+        let key = if end {
+            order.keys.last()
+        } else {
+            order.keys.first()
+        };
+        let Some(key) = key else {
+            return Handled::No;
+        };
+        let at = Endpoint {
+            key: key.clone(),
+            offset: if end { self.text_len(key) } else { 0 },
+        };
+        *self.stepped.borrow_mut() = None;
+        self.set_focus(at, false);
+        Handled::Yes
+    }
+
+    /// Moves the selection's moving end by `step`, inside its block through
+    /// the block's own layout when it is mounted and through its text when it
+    /// is not, and into the next block in that direction at an edge.
+    fn move_focus(&self, step: Step) {
+        let Some(focus) = self.focus.borrow().clone() else {
+            return;
+        };
+        let order = Rc::clone(&self.order.borrow());
+        let nav = self.nav_of(&focus.key);
+        let carried = self
+            .stepped
+            .borrow()
+            .as_ref()
+            .filter(|(key, _)| *key == focus.key)
+            .map(|(_, selection)| *selection);
+        let text_step = || step_text(&(self.text_of)(&focus.key), focus.offset, step);
+        // The move inside the block, as the layout's selection when the block
+        // has one and as an offset into its text when it has none.
+        let inside = match nav
+            .as_ref()
+            .map(|nav| nav.step(carried, focus.offset, step))
+        {
+            Some(Stepped::Moved(selection)) => Some(Ok(selection)),
+            Some(Stepped::Edge) => None,
+            Some(Stepped::NoLayout) | None => text_step().map(Err),
+        };
+        let (at, upstream) = match inside {
+            Some(Ok(selection)) => {
+                let cursor = selection.focus();
+                *self.stepped.borrow_mut() = Some((focus.key.clone(), selection));
+                (
+                    Endpoint {
+                        key: focus.key.clone(),
+                        offset: cursor.index(),
+                    },
+                    cursor.affinity() == Affinity::Upstream,
+                )
+            }
+            Some(Err(offset)) => {
+                *self.stepped.borrow_mut() = None;
+                (
+                    Endpoint {
+                        key: focus.key.clone(),
+                        offset,
+                    },
+                    false,
+                )
+            }
+            None if step.crosses() => {
+                let rtl = nav.as_ref().and_then(|nav| nav.rtl()).unwrap_or(false);
+                let backward = step.backward(rtl);
+                let Some(position) = order.position(&focus.key) else {
+                    return;
+                };
+                let neighbour = if backward {
+                    position.checked_sub(1).and_then(|at| order.keys.get(at))
+                } else {
+                    order.keys.get(position + 1)
+                };
+                let Some(neighbour) = neighbour else {
+                    return;
+                };
+                *self.stepped.borrow_mut() = None;
+                let offset = if backward {
+                    self.text_len(neighbour)
+                } else {
+                    0
+                };
+                (
+                    Endpoint {
+                        key: neighbour.clone(),
+                        offset,
+                    },
+                    false,
+                )
+            }
+            None => return,
+        };
+        self.set_focus(at, upstream);
+    }
+
+    /// Puts the selection's moving end at `at`, and has the block that holds
+    /// it show it, at the end of the line before it when `upstream` is set.
+    fn set_focus(&self, at: Endpoint<K>, upstream: bool) {
+        if let Some(list) = self.blocks.borrow().get(&at.key) {
+            for block in list {
+                block.reveal.set(Some((at.offset, upstream)));
+            }
+        }
+        *self.focus.borrow_mut() = Some(at);
+        self.update();
     }
 
     /// Ends the drag, whichever node took its press.
@@ -451,7 +878,16 @@ fn hit<K, B: Brush>(key: K, layout: &parley::Layout<B>, at: Point) -> Hit<K> {
 /// held past its edge. A double click selects a word. The scope takes the
 /// keyboard focus, and Ctrl+C, or Cmd+C on macOS, copies the selected text
 /// of every block in order, with a newline between blocks. A press that
-/// finds no block clears the selection. When `keys` changes, an end whose
+/// finds no block clears the selection.
+///
+/// With the focus, Shift and the arrow keys extend the selection by a
+/// character or a line, and with Ctrl or Alt by a word, crossing into the
+/// next block at a block's edge. Shift and Home or End extend it to the start
+/// or the end of the line, and with Ctrl or Cmd to the start or the end of
+/// the whole scope. The scroll views around the block that holds the moving
+/// end follow it. Ctrl+A, or Cmd+A, selects every block, and Escape clears
+/// the selection. With nothing selected, the arrow keys pass to the nodes
+/// around the scope. When `keys` changes, an end whose
 /// block left moves to the nearest block of the selection that remains, so
 /// trimming the oldest lines of a log keeps the rest of the selection, and a
 /// selection none of whose blocks remains is cleared. A block that mounts
@@ -505,6 +941,7 @@ pub fn selection_scope<K: Clone + Eq + Hash + 'static, E: IntoElement>(
         over: RefCell::new(None),
         blocks: RefCell::new(HashMap::new()),
         next_block: Cell::new(0),
+        stepped: RefCell::new(None),
         pressing: Cell::new(false),
         last_press: Cell::new(None),
     });
@@ -530,13 +967,7 @@ pub fn selection_scope<K: Clone + Eq + Hash + 'static, E: IntoElement>(
             }
             Handled::No
         })
-        .on_key(move |event: &KeyEvent| {
-            if event.pressed && event.modifiers.command() && is_copy(&event.key) {
-                keys.copy();
-                return Handled::Yes;
-            }
-            Handled::No
-        })
+        .on_key(move |event: &KeyEvent| keys.key(event))
         // The content mounts under an owner of its own, which carries the
         // scope, so blocks built inside it later, such as a virtual list's
         // rows, find the scope and siblings outside it do not.
@@ -555,9 +986,9 @@ pub fn selection_scope<K: Clone + Eq + Hash + 'static, E: IntoElement>(
         )
 }
 
-/// Returns whether `key` is the C of the copy shortcut.
-fn is_copy(key: &Key) -> bool {
-    matches!(key, Key::Character(text) if text.eq_ignore_ascii_case("c"))
+/// Returns whether `key` is the letter `letter`, in either case.
+fn is_letter(key: &Key, letter: &str) -> bool {
+    matches!(key, Key::Character(text) if text.eq_ignore_ascii_case(letter))
 }
 
 /// Makes a label or a rich text paragraph a block of the selection scope
@@ -583,12 +1014,76 @@ struct SelectedKey;
 
 /// Registers the block of `key` with `scope` for the current owner's
 /// lifetime, and returns the signal of its selected range.
-fn join_scope<K: Clone + Eq + Hash + 'static>(scope: &Rc<Scope<K>>, key: &K) -> RangeSignal {
-    let (id, range) = scope.register(key);
+fn join_scope<K: Clone + Eq + Hash + 'static>(
+    scope: &Rc<Scope<K>>,
+    key: &K,
+    nav: Rc<dyn Nav>,
+) -> (RangeSignal, RevealSignal) {
+    let (id, range, reveal) = scope.register(key, nav);
     let scope = Rc::clone(scope);
     let key = key.clone();
     Owner::on_cleanup(move || scope.unregister(&key, id));
-    range
+    (range, reveal)
+}
+
+/// The keyboard's view of a selectable label, through the layout it shares.
+struct LabelNav(Rc<RefCell<Option<TextLayout>>>);
+
+impl Nav for LabelNav {
+    fn step(&self, from: Option<ParagraphSelection>, offset: usize, step: Step) -> Stepped {
+        match self.0.borrow().as_ref() {
+            Some(layout) => step_in(&layout.layout, from, offset, step),
+            None => Stepped::NoLayout,
+        }
+    }
+
+    fn caret(&self, offset: usize, upstream: bool) -> Option<Rect> {
+        Some(caret_in(
+            &self.0.borrow().as_ref()?.layout,
+            offset,
+            upstream,
+        ))
+    }
+
+    fn rtl(&self) -> Option<bool> {
+        Some(self.0.borrow().as_ref()?.layout.is_rtl())
+    }
+
+    fn len(&self) -> Option<usize> {
+        Some(len_in(&self.0.borrow().as_ref()?.layout))
+    }
+}
+
+/// The keyboard's view of a selectable paragraph, through the layout it
+/// hands over.
+struct RichNav(LayoutSink);
+
+impl RichNav {
+    /// Runs `f` with the paragraph's layout, when it has one.
+    fn with<R>(&self, f: impl FnOnce(&parley::Layout<u32>) -> R) -> Option<R> {
+        let shared = self.0.borrow();
+        let layout = shared.as_ref()?.borrow();
+        Some(f(&layout.as_ref()?.layout))
+    }
+}
+
+impl Nav for RichNav {
+    fn step(&self, from: Option<ParagraphSelection>, offset: usize, step: Step) -> Stepped {
+        self.with(|layout| step_in(layout, from, offset, step))
+            .unwrap_or(Stepped::NoLayout)
+    }
+
+    fn caret(&self, offset: usize, upstream: bool) -> Option<Rect> {
+        self.with(|layout| caret_in(layout, offset, upstream))
+    }
+
+    fn rtl(&self) -> Option<bool> {
+        self.with(|layout| layout.is_rtl())
+    }
+
+    fn len(&self) -> Option<usize> {
+        self.with(len_in)
+    }
 }
 
 impl SelectableExt for Element<Label> {
@@ -596,11 +1091,17 @@ impl SelectableExt for Element<Label> {
         let Some(scope) = use_context::<Rc<Scope<K>>>() else {
             return self;
         };
-        let range = join_scope(&scope, &key);
         let shared: Rc<RefCell<Option<TextLayout>>> = Rc::new(RefCell::new(None));
+        let nav: Rc<dyn Nav> = Rc::new(LabelNav(Rc::clone(&shared)));
+        let (range, reveal) = join_scope(&scope, &key, Rc::clone(&nav));
         let layout = Rc::clone(&shared);
         self.bind(ShareKey, Value::Static(shared), crate::label::share_layout)
             .bind(SelectedKey, move || range.get(), crate::label::set_selected)
+            .reveal(move || {
+                reveal
+                    .get()
+                    .and_then(|(offset, upstream)| nav.caret(offset, upstream))
+            })
             .on_drag_over(move |at| {
                 if let Some(layout) = layout.borrow().as_ref() {
                     scope.drag_over(hit(key.clone(), &layout.layout, at));
@@ -614,8 +1115,9 @@ impl SelectableExt for Element<RichText> {
         let Some(scope) = use_context::<Rc<Scope<K>>>() else {
             return self;
         };
-        let range = join_scope(&scope, &key);
         let sink: LayoutSink = Rc::new(RefCell::new(None));
+        let nav: Rc<dyn Nav> = Rc::new(RichNav(Rc::clone(&sink)));
+        let (range, reveal) = join_scope(&scope, &key, Rc::clone(&nav));
         let layout = Rc::clone(&sink);
         self.bind(
             ShareKey,
@@ -627,6 +1129,11 @@ impl SelectableExt for Element<RichText> {
             move || range.get(),
             crate::rich_text::set_selected,
         )
+        .reveal(move || {
+            reveal
+                .get()
+                .and_then(|(offset, upstream)| nav.caret(offset, upstream))
+        })
         .on_drag_over(move |at| {
             let shared = layout.borrow();
             let Some(shared) = shared.as_ref() else {
