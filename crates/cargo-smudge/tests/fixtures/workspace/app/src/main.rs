@@ -26,11 +26,18 @@ const PATCH: u8 = 2;
 const APPLIED: u8 = 3;
 const FAILED: u8 = 4;
 
-/// The function whose address the hello announces. It is never called, so
-/// a signature change to it compiles.
+/// The function whose address the hello announces. The report calls it
+/// through the table, as the app's remount calls its view.
 #[inline(never)]
 fn view() -> &'static str {
     "view-1"
+}
+
+/// The state probe whose address the hello announces: its type parameter
+/// is the state type the builder checks the layout of.
+#[inline(never)]
+fn state_shape<S>() -> usize {
+    std::mem::size_of::<S>()
 }
 
 fn main() {
@@ -51,6 +58,7 @@ fn main() {
     hello.extend_from_slice(&std::process::id().to_le_bytes());
     hello.extend_from_slice(&(subsecond::aslr_reference() as u64).to_le_bytes());
     hello.extend_from_slice(&(view as *const () as usize as u64).to_le_bytes());
+    hello.extend_from_slice(&(state_shape::<()> as fn() -> usize as usize as u64).to_le_bytes());
     hello.extend_from_slice(build.as_bytes());
     if write_frame(&mut stream, HELLO, &hello).is_err() {
         return;
@@ -80,6 +88,7 @@ fn main() {
     let tls_address = tls::label as *const () as usize;
     let branded_address = ui::branded as *const () as usize;
     let bin_address = bin_only::tag as *const () as usize;
+    let view_address = view as *const () as usize;
 
     for (kind, payload) in frames {
         if kind != PATCH {
@@ -105,12 +114,14 @@ fn main() {
         let (tls_value, tls_hot) = through(table, tls_address);
         let (branded_value, branded_hot) = through(table, branded_address);
         let (bin_value, bin_hot) = through(table, bin_address);
+        let (view_value, view_hot) = through(table, view_address);
         println!(
             "fixture ui={ui_value} ui_hot={ui_hot} deep={deep_value} \
              deep_hot={deep_hot} tls={tls_value} tls_hot={tls_hot} \
              branded={branded_value} branded_hot={branded_hot} \
              bin={bin_value} bin_hot={bin_hot}"
         );
+        println!("fixture view={view_value} view_hot={view_hot}");
         let _ = io::stdout().flush();
     }
 }

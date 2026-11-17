@@ -96,7 +96,7 @@ const CUT: char = '\u{0}';
 /// replacement compiled for the other member's layout would map. The
 /// signature readers answer `None` for such a function, which leaves
 /// it out of the table, instead of failing the whole patch.
-const AMBIGUOUS: &str = "the component's members share the name ";
+pub(crate) const AMBIGUOUS: &str = "the component's members share the name ";
 
 /// The signatures of one file: which address has which signature.
 ///
@@ -288,19 +288,7 @@ impl Signatures {
         let Some(value) = die.attr_value(gimli::DW_AT_type).map_err(string)? else {
             return Ok(None);
         };
-        let mut parser = Parser {
-            dwarf: &self.dwarf,
-            units: &self.units,
-            answers: &mut self.answers,
-            component: &mut self.component,
-            members: &mut self.members,
-            ambiguous: &mut self.ambiguous,
-            wrappers: &mut self.wrappers,
-            next_order: &mut self.next_order,
-            next_component: &mut self.next_component,
-            parents: &mut self.parents,
-            qualified: &mut self.qualified,
-        };
+        let mut parser = self.parser();
         match parser.describe(index, Some(value)) {
             Err(error) if error.starts_with(AMBIGUOUS) => Ok(None),
             other => other.map(Some),
@@ -316,9 +304,95 @@ impl Signatures {
         die_name(&self.dwarf, unit, &die).ok().flatten()
     }
 
-    /// The signature of the subprogram at `offset` of unit `index`.
-    fn signature_at(&mut self, index: usize, offset: UnitOffset) -> Result<Option<String>, String> {
-        let mut parser = Parser {
+    /// The type the first type parameter of the function at `address`
+    /// names, which is the state type for the state probe the app
+    /// announces, or none when the DWARF describes no type parameter there.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the type could not be serialized.
+    pub(crate) fn first_type_parameter(
+        &mut self,
+        address: u64,
+    ) -> Result<Option<Described>, String> {
+        let Some(&index) = self.entries.get(&address) else {
+            return Ok(None);
+        };
+        let offset = self.offsets[&index][&address];
+        self.parser().first_type_parameter(index, offset)
+    }
+
+    /// The type the first type parameter of the function whose mangled
+    /// name is `name` names, as [`Signatures::first_type_parameter`]
+    /// answers it.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the type could not be serialized.
+    pub(crate) fn first_type_parameter_by_name(
+        &mut self,
+        name: &str,
+    ) -> Result<Option<Described>, String> {
+        let Some(&(index, offset)) = self.names.get(name) else {
+            return Ok(None);
+        };
+        self.parser().first_type_parameter(index, offset)
+    }
+
+    /// The crate root of the unit that holds the function at `address`,
+    /// as [`Signatures::crate_roots`] spells it.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the unit could not be read.
+    pub(crate) fn crate_root_of(&self, address: u64) -> Result<Option<String>, String> {
+        let Some(&index) = self.entries.get(&address) else {
+            return Ok(None);
+        };
+        crate_root(&self.dwarf, &self.units[index].1)
+    }
+
+    /// The crate roots this file's units were compiled from: each unit's
+    /// compilation directory joined with the source of its crate root,
+    /// which the compiler names its units after. Two builds of one crate
+    /// from the same sources spell the same root. A build that remaps its
+    /// compilation directory can give two crates one root, which only makes
+    /// the state gate refuse where it need not.
+    ///
+    /// # Errors
+    ///
+    /// Returns why a unit could not be read.
+    pub(crate) fn crate_roots(&self) -> Result<std::collections::BTreeSet<String>, String> {
+        let mut roots = std::collections::BTreeSet::new();
+        for (_, unit) in &self.units {
+            if let Some(root) = crate_root(&self.dwarf, unit)? {
+                roots.insert(root);
+            }
+        }
+        Ok(roots)
+    }
+
+    /// The own shape of every named struct, union and enum `described`
+    /// reaches, itself included, by qualified name: its size, its
+    /// alignment and its members, each member's type given by name, so a
+    /// type's shape changes only when its own definition does. Two types
+    /// of one name join their distinct shapes. The shapes only name the types a
+    /// layout change went through; the digest decides whether it changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns why a type could not be read.
+    pub(crate) fn shapes(
+        &mut self,
+        described: &Described,
+    ) -> Result<std::collections::BTreeMap<String, String>, String> {
+        let (index, offset) = described.at;
+        self.parser().shapes(index, offset)
+    }
+
+    /// A parser over this file's DWARF that fills its caches.
+    fn parser(&mut self) -> Parser<'_> {
+        Parser {
             dwarf: &self.dwarf,
             units: &self.units,
             answers: &mut self.answers,
@@ -330,10 +404,30 @@ impl Signatures {
             next_component: &mut self.next_component,
             parents: &mut self.parents,
             qualified: &mut self.qualified,
-        };
+        }
+    }
+
+    /// The signature of the subprogram at `offset` of unit `index`.
+    fn signature_at(&mut self, index: usize, offset: UnitOffset) -> Result<Option<String>, String> {
+        let mut parser = self.parser();
         parser.signature(index, offset)
     }
 }
+
+/// A type one file's DWARF describes.
+pub(crate) struct Described {
+    /// The unit and the offset its description dies at.
+    at: (usize, UnitOffset),
+    /// Its namespace-qualified name.
+    pub(crate) name: String,
+    /// The digest of its full reachable layout, which changes when the
+    /// type or anything it reaches changes its layout.
+    pub(crate) digest: String,
+}
+
+/// The most nested pointers, arrays and modifiers a member's type label
+/// spells before it stops.
+const LABEL_DEPTH_LIMIT: usize = 64;
 
 /// The type attributes of a list of dies, as a subprogram's parameters
 /// name them.
@@ -454,6 +548,247 @@ impl<'a> Parser<'a> {
                 .and_then(unsigned_of);
         }
         Ok(found)
+    }
+
+    /// The type the first type parameter of the subprogram at `offset`
+    /// of unit `index` names, which the specification carries when the
+    /// definition leaves it out.
+    fn first_type_parameter(
+        &mut self,
+        index: usize,
+        offset: UnitOffset,
+    ) -> Result<Option<Described>, String> {
+        let Some(unit) = self.unit(index) else {
+            return Err(String::from("the subprogram's unit is missing"));
+        };
+        let mut templates = self.parameters(unit, offset)?.1;
+        if templates.is_empty()
+            && let Some(AttributeValue::UnitRef(specified)) = unit
+                .entry(offset)
+                .map_err(string)?
+                .attr_value(gimli::DW_AT_specification)
+                .map_err(string)?
+        {
+            templates = self.parameters(unit, specified)?.1;
+        }
+        let Some(Some(value)) = templates.into_iter().next() else {
+            return Ok(None);
+        };
+        let Some(at) = self.type_ref(index, value.clone()) else {
+            return Ok(None);
+        };
+        let mut name = self.qualified_name(at.0, at.1)?;
+        if name == "<unnamed>" {
+            name = self.label_of(index, Some(value), 0)?;
+        }
+        let digest = self.layout_digest(at.0, at.1)?;
+        Ok(Some(Described { at, name, digest }))
+    }
+
+    /// The own shape of every named aggregate the type at `offset` of
+    /// unit `index` reaches, by qualified name, as
+    /// [`Signatures::shapes`] answers it. The walk keeps its own queue,
+    /// so a deep graph costs no stack.
+    fn shapes(
+        &mut self,
+        index: usize,
+        offset: UnitOffset,
+    ) -> Result<std::collections::BTreeMap<String, String>, String> {
+        let mut shapes: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::from([(index, offset)]);
+        while let Some((index, offset)) = queue.pop_front() {
+            let Some(key) = self.key_of(index, offset) else {
+                return Err(String::from("the type's unit is missing"));
+            };
+            if !seen.insert(key) {
+                continue;
+            }
+            let Some(unit) = self.unit(index) else {
+                return Err(String::from("the type's unit is missing"));
+            };
+            let tag = unit.entry(offset).map_err(string)?.tag();
+            if matches!(
+                tag,
+                gimli::DW_TAG_structure_type
+                    | gimli::DW_TAG_union_type
+                    | gimli::DW_TAG_enumeration_type
+            ) {
+                let name = self.qualified_name(index, offset)?;
+                if name != "<unnamed>" {
+                    let shape = self.own_shape(index, unit, offset)?;
+                    shapes.entry(name).or_default().insert(shape);
+                }
+            }
+            queue.extend(self.edges_of(index, offset)?);
+        }
+        // The shapes of one name join in sorted order, so the order the
+        // walk met them in leaves the answer alone.
+        Ok(shapes
+            .into_iter()
+            .map(|(name, shapes)| (name, shapes.into_iter().collect::<Vec<_>>().join(" | ")))
+            .collect())
+    }
+
+    /// The size, the alignment and the members of one aggregate, each
+    /// member's type given by its label.
+    fn own_shape(
+        &mut self,
+        index: usize,
+        unit: &Unit<SectionReader>,
+        offset: UnitOffset,
+    ) -> Result<String, String> {
+        let die = unit.entry(offset).map_err(string)?;
+        let mut parts = Vec::new();
+        for (label, attribute) in [
+            ("size", gimli::DW_AT_byte_size),
+            ("align", gimli::DW_AT_alignment),
+        ] {
+            if let Some(value) = die
+                .attr_value(attribute)
+                .map_err(string)?
+                .as_ref()
+                .and_then(unsigned_of)
+            {
+                parts.push(format!("{label}={value}"));
+            }
+        }
+        let members = self.own_members(index, unit, offset)?;
+        if !members.is_empty() {
+            parts.push(format!("m:{}", members.join(",")));
+        }
+        Ok(parts.join(";"))
+    }
+
+    /// The members one aggregate lays out, the way the layout walk
+    /// descends into them, each member's type given by its label.
+    fn own_members(
+        &mut self,
+        index: usize,
+        unit: &Unit<SectionReader>,
+        offset: UnitOffset,
+    ) -> Result<Vec<String>, String> {
+        let mut found = Vec::new();
+        let mut children = unit.entries_at_offset(offset).map_err(string)?;
+        if children.next_dfs().map_err(string)?.is_none() {
+            return Ok(found);
+        }
+        let mut cursor = 0usize;
+        while let Some((delta, child)) = children.next_dfs().map_err(string)? {
+            let next = cursor as isize + delta;
+            if next <= 0 {
+                break;
+            }
+            cursor = next as usize;
+            // Only the direct children: a variant part's variants and a
+            // variant's members are read through their own walk.
+            if cursor != 1 {
+                continue;
+            }
+            match child.tag() {
+                gimli::DW_TAG_member => {
+                    let name = self.name_of(unit, child)?.unwrap_or_default();
+                    let location = child
+                        .attr_value(gimli::DW_AT_data_member_location)
+                        .map_err(string)?
+                        .as_ref()
+                        .and_then(unsigned_of)
+                        .map_or(String::from("?"), |value| value.to_string());
+                    let label = self.label_of(
+                        index,
+                        child.attr_value(gimli::DW_AT_type).map_err(string)?,
+                        0,
+                    )?;
+                    found.push(format!("{name}@{location}:{label}"));
+                }
+                gimli::DW_TAG_template_type_parameter => {
+                    let label = self.label_of(
+                        index,
+                        child.attr_value(gimli::DW_AT_type).map_err(string)?,
+                        0,
+                    )?;
+                    found.push(format!("T:{label}"));
+                }
+                gimli::DW_TAG_variant => {
+                    let tag = match child.attr_value(gimli::DW_AT_discr_value).map_err(string)? {
+                        Some(value) => number_of(&value).unwrap_or_else(|| String::from("?")),
+                        None => String::from("default"),
+                    };
+                    let members = self.own_members(index, unit, child.offset())?;
+                    found.push(format!("variant={tag}:{}", members.join(",")));
+                }
+                gimli::DW_TAG_variant_part => {
+                    found.extend(self.own_members(index, unit, child.offset())?);
+                }
+                gimli::DW_TAG_enumerator => {
+                    let name = self.name_of(unit, child)?.unwrap_or_default();
+                    let value = child
+                        .attr_value(gimli::DW_AT_const_value)
+                        .map_err(string)?
+                        .as_ref()
+                        .and_then(number_of);
+                    found.push(format!(
+                        "{name}={}",
+                        value.unwrap_or_else(|| String::from("?"))
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(found)
+    }
+
+    /// The name a member's type goes by in a shape: its qualified name,
+    /// the name its die records, or for an unnamed pointer, array or
+    /// modifier the label of what it carries.
+    fn label_of(
+        &mut self,
+        index: usize,
+        attribute: Option<AttributeValue<SectionReader>>,
+        depth: usize,
+    ) -> Result<String, String> {
+        let Some(value) = attribute else {
+            return Ok(String::from("()"));
+        };
+        let Some((index, offset)) = self.type_ref(index, value) else {
+            return Ok(String::from("<unresolved>"));
+        };
+        let name = self.qualified_name(index, offset)?;
+        if name != "<unnamed>" {
+            return Ok(name);
+        }
+        let Some(unit) = self.unit(index) else {
+            return Err(String::from("the type's unit is missing"));
+        };
+        let die = unit.entry(offset).map_err(string)?;
+        if let Some(name) = self.name_of(unit, &die)? {
+            return Ok(name);
+        }
+        if depth >= LABEL_DEPTH_LIMIT {
+            return Ok(String::from("<deep>"));
+        }
+        let carried = die.attr_value(gimli::DW_AT_type).map_err(string)?;
+        let prefix = match die.tag() {
+            gimli::DW_TAG_array_type => {
+                let element = self.label_of(index, carried, depth + 1)?;
+                let count =
+                    array_count(unit, offset)?.map_or(String::from("?"), |count| count.to_string());
+                return Ok(format!("[{element}; {count}]"));
+            }
+            gimli::DW_TAG_pointer_type => "*",
+            gimli::DW_TAG_reference_type => "&",
+            gimli::DW_TAG_rvalue_reference_type => "&&",
+            gimli::DW_TAG_const_type => "const ",
+            gimli::DW_TAG_volatile_type => "volatile ",
+            gimli::DW_TAG_restrict_type => "restrict ",
+            gimli::DW_TAG_typedef => "alias ",
+            _ => return Ok(String::from("<unnamed>")),
+        };
+        Ok(format!(
+            "{prefix}{}",
+            self.label_of(index, carried, depth + 1)?
+        ))
     }
 
     /// The type attributes of a die's formal parameters and of its template
@@ -1523,6 +1858,35 @@ fn walk_unit(dwarf: &Sections, unit: &Unit<SectionReader>) -> Result<Walked, Str
         }
     }
     Ok(walked)
+}
+
+/// The crate root a unit was compiled from: its compilation directory
+/// joined with the part of its name before `/@/`, which is the source of
+/// the crate root in the names the compiler gives its units.
+fn crate_root(dwarf: &Sections, unit: &Unit<SectionReader>) -> Result<Option<String>, String> {
+    let mut entries = unit.entries();
+    let Some((_, die)) = entries.next_dfs().map_err(string)? else {
+        return Ok(None);
+    };
+    let Some(name) = die_name(dwarf, unit, die)? else {
+        return Ok(None);
+    };
+    let source = name.split("/@/").next().unwrap_or(&name);
+    let directory = match die.attr_value(gimli::DW_AT_comp_dir).map_err(string)? {
+        Some(value) => dwarf
+            .attr_string(unit, value)
+            .map_err(string)?
+            .to_string_lossy()
+            .map_err(string)?
+            .into_owned(),
+        None => String::new(),
+    };
+    Ok(Some(
+        std::path::Path::new(&directory)
+            .join(source)
+            .to_string_lossy()
+            .into_owned(),
+    ))
 }
 
 /// The plain name a die carries itself, if any.

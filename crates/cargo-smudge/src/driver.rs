@@ -179,6 +179,8 @@ struct Session {
     runtime_main: u64,
     /// The linked address of the view, when the hello carried it.
     view: Option<u64>,
+    /// The linked address of the state probe, when the hello carried it.
+    state_probe: Option<u64>,
     /// Whether a patch was already refused over a signature change, which
     /// the later patches omit the changed functions for instead of
     /// refusing again.
@@ -235,10 +237,18 @@ struct Session {
     /// because every patch must carry the library edits of the patches
     /// before it, and a restart of the app drops them.
     live: std::collections::BTreeSet<String>,
+    /// The libraries that hold the view and the state probe the app
+    /// announced, which every patch replays so it maps both together, as
+    /// the wire format asks. A library the replay cannot serve leaves the
+    /// set, and the app's own guard then keeps its view.
+    carried: std::collections::BTreeSet<String>,
     /// The app crate's statics the session has already said start fresh
     /// in the patched code, by symbol name, so each is named once per
     /// session.
     told_fresh: std::collections::BTreeSet<String>,
+    /// The closures the session has already said changed their captures,
+    /// so each is named once per session.
+    told_captures: std::collections::BTreeSet<String>,
     /// The crates whose edits a patch attempt took over without yet
     /// installing, because a failed or refused attempt must not forget
     /// them the way a forgotten scan would.
@@ -948,10 +958,16 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
             None
         }
     };
-    let (runtime_main, view) = match &stream {
-        Some((_, hand)) => (hand.runtime_main, hand.view),
-        None => (0, None),
+    let (runtime_main, view, state_probe) = match &stream {
+        Some((_, hand)) => (hand.runtime_main, hand.view, hand.probe),
+        None => (0, None, None),
     };
+    let carried = announced_owners(
+        &original,
+        &crates,
+        &tip_name,
+        view.into_iter().chain(state_probe),
+    );
     Ok(Session {
         dir,
         rustc,
@@ -962,6 +978,7 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
         stream: stream.map(|(stream, _)| stream),
         runtime_main,
         view,
+        state_probe,
         signature_refused: false,
         scripts_stale: false,
         script_dirs,
@@ -978,7 +995,9 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
         tip_root: source,
         tip_sources,
         live: std::collections::BTreeSet::new(),
+        carried,
         told_fresh: std::collections::BTreeSet::new(),
+        told_captures: std::collections::BTreeSet::new(),
         pending: std::collections::BTreeSet::new(),
         objects: patch::ObjectCache::new(),
     })
@@ -1964,6 +1983,8 @@ struct Handshake {
     runtime_main: u64,
     /// The linked address of the view, when the hello carried it.
     view: Option<u64>,
+    /// The linked address of the state probe, when the hello carried it.
+    probe: Option<u64>,
 }
 
 /// How long the app may take to answer one frame: its hello and its
@@ -2019,24 +2040,29 @@ fn handshake(
             child.id()
         ));
     }
-    let (view, announced) = match version {
-        2 => {
-            let runtime_view = u64::from_le_bytes(
-                hello
-                    .get(16..24)
-                    .and_then(|bytes| bytes.try_into().ok())
-                    .ok_or_else(|| err("version 2 carries no view address"))?,
-            );
-            // The view may sit below `main` in the binary, so the rebase
-            // goes through signed arithmetic.
-            let view = (i128::from(runtime_view)
-                .checked_sub(i128::from(runtime_main))
-                .and_then(|offset| offset.checked_add(i128::from(original.main))))
-            .and_then(|view| u64::try_from(view).ok())
-            .ok_or_else(|| err("it names addresses the session cannot rebase"))?;
-            (Some(view), hello.get(24..).unwrap_or_default())
-        }
-        1 => (None, hello.get(16..).unwrap_or_default()),
+    // The hello names a runtime address at `at`, which the session
+    // rebases to the binary as linked. It may sit below `main`, so the
+    // rebase goes through signed arithmetic.
+    let linked = |at: usize, what: &str| -> Result<u64, String> {
+        let runtime = u64::from_le_bytes(
+            hello
+                .get(at..at + 8)
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or_else(|| err(&format!("version {version} carries no {what} address")))?,
+        );
+        (i128::from(runtime)
+            .checked_sub(i128::from(runtime_main))
+            .and_then(|offset| offset.checked_add(i128::from(original.main))))
+        .and_then(|address| u64::try_from(address).ok())
+        .ok_or_else(|| err("it names addresses the session cannot rebase"))
+    };
+    let (view, probe, announced) = match version {
+        2 => (
+            Some(linked(16, "view")?),
+            Some(linked(24, "state probe")?),
+            hello.get(32..).unwrap_or_default(),
+        ),
+        1 => (None, None, hello.get(16..).unwrap_or_default()),
         other => return Err(err(&format!("it names the unknown version {other}"))),
     };
     if announced != build.as_bytes() {
@@ -2047,7 +2073,82 @@ fn handshake(
         ));
     }
     println!("app running as pid {}", child.id());
-    Ok((stream, Handshake { runtime_main, view }))
+    Ok((
+        stream,
+        Handshake {
+            runtime_main,
+            view,
+            probe,
+        },
+    ))
+}
+
+/// The libraries whose compiled code holds the functions at `addresses`,
+/// found by the crate root of the unit each one sits in, apart from the
+/// ones no patch could replay, which it names on the way.
+fn announced_owners(
+    original: &Original,
+    crates: &[CrateRecord],
+    tip_name: &str,
+    addresses: impl IntoIterator<Item = u64>,
+) -> std::collections::BTreeSet<String> {
+    let mut owners = std::collections::BTreeSet::new();
+    for address in addresses {
+        let Ok(Some(root)) = original.signatures.crate_root_of(address) else {
+            continue;
+        };
+        for record in crates {
+            // The debug information spells the root under the remappings
+            // the compile recorded, and the record spells it as the file.
+            let remaps = crate::record::unremap_of(&record.record.args);
+            let candidate: PathBuf = record.root.components().collect();
+            let matched = std::iter::once(root.clone())
+                .chain(crate::record::unremap_of_name(&root, &remaps))
+                .any(|spelled| Path::new(&spelled).components().collect::<PathBuf>() == candidate);
+            if !matched || record.proc_macro || owners.contains(&record.name) {
+                continue;
+            }
+            match refusal_of(crates, tip_name, &record.name) {
+                Some(reason) => tell_uncarried(&record.name, &reason),
+                None if record.runtime => {
+                    owners.insert(record.name.clone());
+                }
+                None => {}
+            }
+        }
+    }
+    owners
+}
+
+/// The libraries the chain of the session's edits replays, installed and
+/// pending, without the carried ones, or none when the chain cannot be
+/// built.
+fn edited_chain(session: &Session) -> Option<std::collections::BTreeSet<String>> {
+    let tip_name = session.rustc.crate_name().unwrap_or_default().to_string();
+    let names: Vec<&str> = session
+        .live
+        .iter()
+        .chain(session.pending.iter())
+        .map(String::as_str)
+        .collect();
+    let steps = chain_of(&session.crates, (&tip_name, &session.rustc), &names).ok()?;
+    Some(
+        steps
+            .iter()
+            .filter(|step| !step.tip)
+            .map(|step| step.name.clone())
+            .collect(),
+    )
+}
+
+/// Says that the library `name`, which holds the view or the state probe,
+/// cannot ride along with the patches, and why.
+fn tell_uncarried(name: &str, reason: &str) {
+    println!(
+        "note: {name} holds the view or the state probe the app announced, but a \
+         patch cannot replay it ({reason}), so patches go without it, and the app \
+         keeps its view through a patch until a restart"
+    );
 }
 
 /// Watches the sources and patches the app on every save, until the app
@@ -2144,15 +2245,38 @@ fn supervise(session: &mut Session, commands: &mpsc::Receiver<String>) -> Contro
     }
 }
 
-/// Replays and links the app crate once, before the first edit, without
-/// sending anything, so the first patch finds every cache warm.
+/// Replays and links the app crate and the libraries the session carries
+/// once, before the first edit, without sending anything, so the first
+/// patch finds every cache warm.
+///
+/// A carried library can fail where the app crate alone does not, and it is
+/// better found here than on the first save: when the app crate warms on
+/// its own, the carried libraries leave the set.
 fn warm_up(session: &mut Session) {
+    let carried: Vec<String> = session.carried.iter().cloned().collect();
+    if carried.is_empty() {
+        dry_run(session, &[]);
+        return;
+    }
+    if let Some(reason) = dry_run(session, &carried)
+        && dry_run(session, &[]).is_none()
+    {
+        for name in std::mem::take(&mut session.carried) {
+            tell_uncarried(&name, &reason);
+        }
+    }
+}
+
+/// Replays and links the chain the libraries `names` need without sending
+/// anything, and answers why it was refused or could not be built, if it
+/// was.
+fn dry_run(session: &mut Session, names: &[String]) -> Option<String> {
     let tip_name = session.rustc.crate_name().unwrap_or_default().to_string();
-    let Some(stream) = session.stream.as_mut() else {
-        return;
-    };
-    let Ok(steps) = chain_of(&session.crates, (&tip_name, &session.rustc), &[]) else {
-        return;
+    let stream = session.stream.as_mut()?;
+    let references: Vec<&str> = names.iter().map(String::as_str).collect();
+    let steps = match chain_of(&session.crates, (&tip_name, &session.rustc), &references) {
+        Ok(steps) => steps,
+        Err(error) => return Some(error.reason),
     };
     let mut plan = Plan {
         chain: &steps,
@@ -2164,13 +2288,18 @@ fn warm_up(session: &mut Session) {
         main: session.original.main,
         runtime_main: session.runtime_main,
         view: session.view,
+        state_probe: session.state_probe,
         signature_refused: &mut session.signature_refused,
         linker: &session.linker,
         tls: &session.original.tls,
         sysroot_tls: &session.original.sysroot_tls,
         stream,
     };
-    patch::warm(&mut plan);
+    match patch::warm(&mut plan) {
+        patch::Outcome::RestartNeeded { reason, .. }
+        | patch::Outcome::BuildFailed { reason, .. } => Some(reason),
+        _ => None,
+    }
 }
 
 /// Runs one patch step and reports what it ended with. `changed` names
@@ -2223,7 +2352,12 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
     // of this attempt, the ones earlier patches installed, and the ones
     // an earlier attempt took over without installing.
     let mut names: Vec<String> = changed.to_vec();
-    for name in session.live.iter().chain(session.pending.iter()) {
+    for name in session
+        .live
+        .iter()
+        .chain(session.pending.iter())
+        .chain(session.carried.iter())
+    {
         if !names.contains(name) {
             names.push(name.clone());
         }
@@ -2282,6 +2416,7 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
         main: session.original.main,
         runtime_main: session.runtime_main,
         view: session.view,
+        state_probe: session.state_probe,
         signature_refused: &mut session.signature_refused,
         linker: &session.linker,
         tls: &session.original.tls,
@@ -2296,6 +2431,8 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
             entries,
             added,
             changed_signature,
+            changed_captures,
+            recaptured,
             renumbered,
             fresh_statics,
             unverified,
@@ -2309,7 +2446,8 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
             let mut line = format!(
                 "patch {generation}: applied; compile {compile:?}, total {total:?}, \
                  {entries} entries, {added} new, {changed_signature} omitted for a \
-                 changed signature, {renumbered} omitted for renumbered closures, \
+                 changed signature, {changed_captures} omitted for changed captures, \
+                 {renumbered} omitted for renumbered closures, \
                  {unverified} unverifiable, {trampolines} \
                  trampolines, {absolutes} absolutes, {tls_copies} tls, {missing} missing"
             );
@@ -2329,7 +2467,30 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
                     untold.join(", ")
                 );
             }
-            session.live.extend(replayed);
+            let untold: Vec<String> = recaptured
+                .into_iter()
+                .filter(|closure| session.told_captures.insert(closure.clone()))
+                .map(|closure| format!("`{closure}`"))
+                .collect();
+            if !untold.is_empty() {
+                println!(
+                    "note: the captures of {} changed, so the closures of that kind the \
+                     app made before this patch keep their old code while the captures \
+                     differ from the running build's",
+                    untold.join(", ")
+                );
+            }
+            // A carried library, and what replays only because of it,
+            // replays with its own unedited code, so it counts as installed
+            // only once the edits need it, and leaves the patches with the
+            // carried set.
+            let needed = edited_chain(session);
+            session
+                .live
+                .extend(replayed.into_iter().filter(|name| match &needed {
+                    Some(needed) => needed.contains(name),
+                    None => !session.carried.contains(name) || session.pending.contains(name),
+                }));
             // What the replays learned about their sources holds for the
             // rest of the session, an app restart included: the app
             // crate's own sources answer for it, every library's for its
@@ -2363,6 +2524,30 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
             // ride along in the next patch.
             if let Some(name) = refused {
                 session.pending.remove(&name);
+                if session.carried.remove(&name) {
+                    tell_uncarried(&name, &reason);
+                } else if edited_chain(session).is_some_and(|needed| !needed.contains(&name)) {
+                    // A carried library whose own chain replays the refused
+                    // crate would bring it back into every patch, so it
+                    // leaves the set.
+                    let pulling: Vec<String> = session
+                        .carried
+                        .iter()
+                        .filter(|carried| {
+                            chain_of(
+                                &session.crates,
+                                (&tip_name, &session.rustc),
+                                &[carried.as_str()],
+                            )
+                            .is_ok_and(|steps| steps.iter().any(|step| step.name == name))
+                        })
+                        .cloned()
+                        .collect();
+                    for carried in pulling {
+                        session.carried.remove(&carried);
+                        tell_uncarried(&carried, &reason);
+                    }
+                }
             }
             println!("patch {generation}: not sent; {reason}");
             learn(session, tip_name, discovered, true);

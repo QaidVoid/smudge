@@ -50,6 +50,13 @@ fn view() -> &'static str {
     "view-1"
 }
 
+/// The state probe whose address the hello announces: its type parameter
+/// is the state type the builder checks the layout of.
+#[inline(never)]
+fn state_shape<S>() -> usize {
+    std::mem::size_of::<S>()
+}
+
 fn main() {
     let Some(socket) = std::env::var_os("SMUDGE_HOT_SOCKET") else {
         eprintln!("fixture: no patch builder socket named, exiting");
@@ -68,6 +75,7 @@ fn main() {
     hello.extend_from_slice(&std::process::id().to_le_bytes());
     hello.extend_from_slice(&(subsecond::aslr_reference() as u64).to_le_bytes());
     hello.extend_from_slice(&(view as *const () as usize as u64).to_le_bytes());
+    hello.extend_from_slice(&(state_shape::<()> as fn() -> usize as usize as u64).to_le_bytes());
     hello.extend_from_slice(build.as_bytes());
     if write_frame(&mut stream, HELLO, &hello).is_err() {
         return;

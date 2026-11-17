@@ -61,6 +61,10 @@ const MAIN: usize = 0x7f00_1000;
 /// so a builder can attribute a signature change to the view.
 const VIEW: usize = 0x7f00_2000;
 
+/// The runtime address of the state probe the tests report, which the hello
+/// announces so a builder can check the state's layout.
+const PROBE: usize = 0x7f00_3000;
+
 /// Starts a receiver on a fresh socket, as an app under a builder would,
 /// and returns the builder's end of the connection, the receiver's thread
 /// and the patches it delivers to the app's thread.
@@ -71,7 +75,7 @@ fn connected(build: &str) -> (Socket, UnixStream, JoinHandle<()>, mpsc::Receiver
         Some(OsString::from(&socket.0)),
         Some(OsString::from(build)),
         MAIN,
-        VIEW,
+        (VIEW, PROBE),
         move |patch| {
             let _ = deliver.send(patch);
         },
@@ -115,27 +119,31 @@ fn next_frame(stream: &mut UnixStream) -> (u8, Vec<u8>) {
         .expect("the app sent a frame")
 }
 
-/// Splits a hello payload into its version, process id, address of `main`
-/// and build id.
-fn hello_fields(payload: &[u8]) -> (u32, u32, u64, u64, Vec<u8>) {
+/// Splits a hello payload into its version, process id, address of `main`,
+/// address of the view, address of the state probe and build id.
+fn hello_fields(payload: &[u8]) -> (u32, u32, u64, u64, u64, Vec<u8>) {
     let (version, rest) = payload.split_first_chunk::<4>().expect("a version");
     let (pid, rest) = rest.split_first_chunk::<4>().expect("a process id");
     let (main, rest) = rest.split_first_chunk::<8>().expect("an address of main");
-    let (view, build) = rest
+    let (view, rest) = rest
         .split_first_chunk::<8>()
         .expect("an address of the view");
+    let (probe, build) = rest
+        .split_first_chunk::<8>()
+        .expect("an address of the state probe");
     (
         u32::from_le_bytes(*version),
         u32::from_le_bytes(*pid),
         u64::from_le_bytes(*main),
         u64::from_le_bytes(*view),
+        u64::from_le_bytes(*probe),
         build.to_vec(),
     )
 }
 
 #[test]
 fn without_the_socket_variable_nothing_starts() {
-    let receiver = start_from(None, Some(OsString::from("7")), MAIN, VIEW, |_| {});
+    let receiver = start_from(None, Some(OsString::from("7")), MAIN, (VIEW, PROBE), |_| {});
 
     assert!(receiver.is_none(), "no socket must start no thread");
 }
@@ -147,7 +155,7 @@ fn an_unreachable_socket_starts_nothing() {
     drop(listener);
     drop(socket);
 
-    let receiver = start_from(Some(path), None, MAIN, VIEW, |_| {});
+    let receiver = start_from(Some(path), None, MAIN, (VIEW, PROBE), |_| {});
 
     assert!(
         receiver.is_none(),
@@ -161,11 +169,12 @@ fn the_hello_reports_the_version_the_process_main_the_view_and_the_build() {
 
     let (kind, payload) = next_frame(&mut builder);
     assert_eq!(kind, HELLO, "the first frame introduces the app");
-    let (version, pid, main, view, build) = hello_fields(&payload);
+    let (version, pid, main, view, probe, build) = hello_fields(&payload);
     assert_eq!(version, 2);
     assert_eq!(pid, std::process::id());
     assert_eq!(main, MAIN as u64);
     assert_eq!(view, VIEW as u64);
+    assert_eq!(probe, PROBE as u64);
     assert_eq!(build, b"build-42");
 
     drop(builder);
@@ -541,7 +550,13 @@ fn a_binary_without_an_exported_main_does_not_connect() {
         .set_nonblocking(true)
         .expect("the listener turns non-blocking");
 
-    let receiver = start_from(Some(OsString::from(&socket.0)), None, 0, VIEW, |_| {});
+    let receiver = start_from(
+        Some(OsString::from(&socket.0)),
+        None,
+        0,
+        (VIEW, PROBE),
+        |_| {},
+    );
 
     assert!(receiver.is_none(), "no main to place patches against");
     assert!(

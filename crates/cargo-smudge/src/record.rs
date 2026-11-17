@@ -279,7 +279,7 @@ pub(crate) fn span_sources(log: &str, cwd: &Path, remaps: &[(String, String)]) -
 /// that ends in a separator, or an empty one, needs none added; a
 /// pair with an empty `from` side maps nothing at all, which rustc
 /// skips the same way.
-fn unremap_of_name(name: &str, remaps: &[(String, String)]) -> Vec<String> {
+pub(crate) fn unremap_of_name(name: &str, remaps: &[(String, String)]) -> Vec<String> {
     let mut found = Vec::new();
     for (from, to) in remaps {
         if from.is_empty() {

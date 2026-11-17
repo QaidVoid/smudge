@@ -278,6 +278,16 @@ fn entries_of(line: &str) -> usize {
         .expect("the applied line names its entries")
 }
 
+/// The count an applied patch line gives before `reason`, such as
+/// `omitted for changed captures`.
+fn omitted_for(line: &str, reason: &str) -> usize {
+    line.split(&format!(" {reason}"))
+        .next()
+        .and_then(|head| head.rsplit(' ').next())
+        .and_then(|count| count.parse().ok())
+        .expect("the applied line names the count")
+}
+
 /// Skips with a printed reason when no C linker is present, as the session
 /// cannot link without one.
 fn require_linker() {
@@ -639,9 +649,14 @@ fn omits_a_runner_whose_closure_type_changed_its_layout() {
     // closure's body, `run_erased` and the generic instances the compiler
     // makes for the closure, and `erased` names it only as its type
     // parameter, which is the seventh: a signature that left type
-    // parameters out would map it and omit six.
+    // parameters out would map it and omit six. The ones that name the
+    // closure's own environment by value or as a type parameter count as
+    // changed captures, and the ones that reach it only behind a reference
+    // or through a wrapper as changed signatures.
+    let signature = omitted_for(&line, "omitted for a changed signature");
+    let captures = omitted_for(&line, "omitted for changed captures");
     assert!(
-        line.contains("7 omitted for a changed signature"),
+        signature + captures == 7 && captures > 0,
         "the runner of the changed closure was mapped: {line}"
     );
     session.quit();
@@ -723,6 +738,355 @@ fn omits_closures_an_inserted_closure_renumbered() {
     assert!(
         !line.contains(" 0 omitted for renumbered closures"),
         "the renumbered closures were mapped: {line}"
+    );
+    session.quit();
+}
+
+#[test]
+fn omits_the_runners_of_a_closure_whose_capture_changed_type() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let app = fixture("closure-capture");
+    edit(
+        &app,
+        &[(
+            "fn main() {",
+            "/// Runs the closure behind an erased pointer.\n#[inline(never)]\nfn erased<F: Fn() -> u64>(env: *const ()) -> u64 {\n    // SAFETY: the fixture only hands its own closure of this type.\n    unsafe { (*env.cast::<F>())() }\n}\n\n/// Runs `f` through its erased runner.\nfn run_erased<F: Fn() -> u64>(f: &F) -> u64 {\n    erased::<F>(std::ptr::from_ref(f).cast())\n}\n\nfn main() {\n    let seed = 3_u32;\n    let read = move || u64::from(seed) + 1;\n    let _ = run_erased(&read);",
+        )],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    // A capture retyped at the same size keeps the closure's size, its
+    // alignment and its number, so only the member's type tells.
+    edit(
+        &app,
+        &[
+            ("let seed = 3_u32;", "let seed = 3.0_f32;"),
+            ("u64::from(seed) + 1", "seed as u64 + 1"),
+        ],
+    );
+    let out = session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 1: applied");
+    assert!(
+        !line.contains(" 0 omitted for changed captures"),
+        "the runners of the changed closure were mapped: {line}"
+    );
+    session.wait("note: the captures of", 1, STEP_TIMEOUT);
+    let out = session.output();
+    assert!(
+        line_of(&out, "note: the captures of").contains("`smudge_hotapp::main::{closure#0}`"),
+        "the note does not name the closure:\n{out}"
+    );
+    session.quit();
+}
+
+#[test]
+fn refuses_a_state_type_whose_layout_changed_until_it_is_restored() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let app = fixture("state-layout");
+    // The state probe the hello announces names the state type as its type
+    // parameter, as the probe `run_view` compiles for the app's state does.
+    edit(
+        &app,
+        &[
+            (
+                "fn main() {",
+                "/// The state the running app holds.\nstruct State {\n    count: u32,\n    total: u32,\n    inner: Inner,\n}\n\n/// A part of the state.\nstruct Inner {\n    value: u32,\n    other: u32,\n}\n\nfn main() {",
+            ),
+            ("state_shape::<()>", "state_shape::<State>"),
+        ],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    // A type the state reaches, retyped at the same size.
+    edit(&app, &[("    value: u32,\n", "    value: f32,\n")]);
+    let out = session.wait("patch 1: not sent", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 1: not sent");
+    assert!(
+        line.contains(
+            "the state type `smudge_hotapp::State` changed its layout through `smudge_hotapp::Inner`"
+        ),
+        "the refusal does not name the changed type: {line}"
+    );
+    // The running app still holds the old layout, so the next edit is
+    // refused too.
+    edit(&app, &[("\"alpha-1\"", "\"alpha-2\"")]);
+    let out = session.wait("patch 2: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        line_of(&out, "patch 2: not sent").contains("the state type"),
+        "the second patch was not refused for the state:\n{out}"
+    );
+    // Restoring the layout lets the waiting edit through.
+    edit(&app, &[("    value: f32,\n", "    value: u32,\n")]);
+    session.wait("patch 3: applied", 1, STEP_TIMEOUT);
+    session.wait("fixture alpha=alpha-2", 1, STEP_TIMEOUT);
+    // Two fields of one size swapped keep the size, the alignment and the
+    // name of the state, which only the members tell.
+    edit(
+        &app,
+        &[(
+            "    count: u32,\n    total: u32,",
+            "    total: u32,\n    count: u32,",
+        )],
+    );
+    let out = session.wait("patch 4: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        line_of(&out, "patch 4: not sent")
+            .contains("the state type `smudge_hotapp::State` changed its layout, "),
+        "the swap was not refused for the state itself:\n{out}"
+    );
+    // A renamed state type leaves the probe the app announced out of the
+    // rebuilt code, under any name the gate could look for.
+    edit(
+        &app,
+        &[
+            ("\nstruct State {", "\nstruct AppState {"),
+            ("state_shape::<State>", "state_shape::<AppState>"),
+        ],
+    );
+    let out = session.wait("patch 5: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        line_of(&out, "patch 5: not sent")
+            .contains("the state type `smudge_hotapp::State` was renamed, moved or replaced"),
+        "the renamed state type was not refused:\n{out}"
+    );
+    session.quit();
+}
+
+#[test]
+fn refuses_a_state_type_of_a_library_crate_whose_layout_changed() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-state-layout");
+    let app = ws.join("app");
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label()",
+            "/// The state the running app holds.\npub struct State {\n    /// The first number.\n    pub first: u32,\n    /// The second number.\n    pub second: u32,\n}\n\n#[inline(never)]\npub fn label()",
+        )],
+    );
+    edit(&app, &[("state_shape::<()>", "state_shape::<ui::State>")]);
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    // The edit replays the library and the app, and the app's objects
+    // describe the library's type in its new layout.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "    pub first: u32,\n    /// The second number.\n    pub second: u32,",
+            "    pub second: u32,\n    /// The second number.\n    pub first: u32,",
+        )],
+    );
+    let out = session.wait("patch 1: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        line_of(&out, "patch 1: not sent")
+            .contains("the state type `ui::State` changed its layout"),
+        "the library's state type was not refused:\n{out}"
+    );
+    session.quit();
+}
+
+#[test]
+fn carries_the_library_that_holds_the_state_probe() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-state-probe");
+    let app = ws.join("app");
+    // The library compiles the probe, as a library that calls `run_view`
+    // does, and the app only announces it.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label()",
+            "/// The state the running app holds.\npub struct State {\n    /// The first number.\n    pub first: u32,\n    /// The second number.\n    pub second: u32,\n}\n\n/// The state probe for the state.\n#[inline(never)]\nfn state_shape<S>() -> usize {\n    std::mem::size_of::<S>()\n}\n\n/// The address of the state probe the app announces.\npub fn state_probe() -> usize {\n    state_shape::<State> as fn() -> usize as usize\n}\n\n#[inline(never)]\npub fn label()",
+        )],
+    );
+    edit(
+        &app,
+        &[(
+            "(state_shape::<()> as fn() -> usize as usize as u64)",
+            "(ui::state_probe() as u64)",
+        )],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    // An edit to the app alone still replays the library that holds the
+    // probe, so the patch maps the probe with the view.
+    edit(&app, &[("\"view-1\"", "\"view-2\"")]);
+    let out = session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 1: applied");
+    assert!(
+        line.contains("replayed ui"),
+        "the library that holds the probe was not replayed: {line}"
+    );
+    session.wait("view=view-2 view_hot=true", 1, STEP_TIMEOUT);
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "    pub first: u32,\n    /// The second number.\n    pub second: u32,",
+            "    pub second: u32,\n    /// The second number.\n    pub first: u32,",
+        )],
+    );
+    let out = session.wait("patch 2: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        line_of(&out, "patch 2: not sent")
+            .contains("the state type `ui::State` changed its layout"),
+        "the library's state type was not refused:\n{out}"
+    );
+    // A refused edit in a library the carried one does not reach leaves
+    // the carried one in the patches.
+    edit_in(&ws, "tls/src/lib.rs", &[("\"tls-1\"", "\"tls-2\"")]);
+    let out = session.wait("patch 3: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        !out.contains("note: ui holds the view or the state probe"),
+        "an unrelated refusal dropped the carried library:\n{out}"
+    );
+    // Once the library can no longer be replayed, it leaves the patches,
+    // though an earlier patch replayed it.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "/// The state the running app holds.",
+            "thread_local! {\n    static CACHE: u32 = 0;\n}\n\n/// Reads the cache.\npub fn cached() -> u32 {\n    CACHE.with(|cache| *cache)\n}\n\n/// The state the running app holds.",
+        )],
+    );
+    session.wait(
+        "note: ui holds the view or the state probe",
+        1,
+        STEP_TIMEOUT,
+    );
+    edit(&app, &[("\"view-2\"", "\"view-3\"")]);
+    let out = session.wait("patch 5: applied", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 5: applied");
+    assert!(
+        !line.contains("replayed ui"),
+        "the library that left the patches rode along: {line}"
+    );
+    session.quit();
+}
+
+#[test]
+fn patches_without_a_probe_library_the_replay_cannot_serve() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-state-probe-tls");
+    let app = ws.join("app");
+    // The library that holds the probe keeps a thread-local, so no patch
+    // can replay it: the session must say so once and patch without it,
+    // not refuse every patch.
+    edit_in(
+        &ws,
+        "tls/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label()",
+            "/// The state the running app holds.\npub struct State {\n    /// A number.\n    pub value: u32,\n}\n\n/// The state probe for the state.\n#[inline(never)]\nfn state_shape<S>() -> usize {\n    std::mem::size_of::<S>()\n}\n\n/// The address of the state probe the app announces.\npub fn state_probe() -> usize {\n    state_shape::<State> as fn() -> usize as usize\n}\n\n#[inline(never)]\npub fn label()",
+        )],
+    );
+    edit(
+        &app,
+        &[(
+            "(state_shape::<()> as fn() -> usize as usize as u64)",
+            "(tls::state_probe() as u64)",
+        )],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    session.wait(
+        "note: tls holds the view or the state probe",
+        1,
+        STEP_TIMEOUT,
+    );
+    edit(&app, &[("\"view-1\"", "\"view-2\"")]);
+    let out = session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 1: applied");
+    assert!(
+        !line.contains("replayed tls"),
+        "the library the replay cannot serve rode along: {line}"
+    );
+    // Without its probe the view stays out of the table, so the app keeps
+    // the view it has instead of refusing the patch.
+    let out = session.wait("view=view-1 view_hot=false", 1, STEP_TIMEOUT);
+    assert!(
+        !out.contains("view_hot=true"),
+        "the view was mapped without its probe:\n{out}"
+    );
+    session.quit();
+}
+
+#[test]
+fn drops_a_probe_library_whose_dependent_the_replay_cannot_serve() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-state-probe-dependent");
+    let app = ws.join("app");
+    // The probe sits in the deepest library, so carrying it replays the
+    // library above it too.
+    edit_in(
+        &ws,
+        "core2/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn seed()",
+            "/// The state the running app holds.\npub struct State {\n    /// A number.\n    pub value: u32,\n}\n\n/// The state probe for the state.\n#[inline(never)]\nfn state_shape<S>() -> usize {\n    std::mem::size_of::<S>()\n}\n\n/// The address of the state probe the app announces.\npub fn state_probe() -> usize {\n    state_shape::<State> as fn() -> usize as usize\n}\n\n#[inline(never)]\npub fn seed()",
+        )],
+    );
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "#[inline(never)]\npub fn label()",
+            "/// The address of the state probe the deepest library holds.\npub fn state_probe() -> usize {\n    engine::state_probe()\n}\n\n#[inline(never)]\npub fn label()",
+        )],
+    );
+    edit(
+        &app,
+        &[(
+            "(state_shape::<()> as fn() -> usize as usize as u64)",
+            "(ui::state_probe() as u64)",
+        )],
+    );
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit(&app, &[("\"view-1\"", "\"view-2\"")]);
+    let out = session.wait("patch 1: applied", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 1: applied");
+    assert!(
+        line.contains("core2") && line.contains("ui"),
+        "the probe library and the one above it were not replayed: {line}"
+    );
+    // The library above can no longer be replayed. Only the carried one
+    // brought it into the patches, so the carried one leaves them.
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[(
+            "/// The address of the state probe the deepest library holds.",
+            "thread_local! {\n    static CACHE: u32 = 0;\n}\n\n/// Reads the cache.\npub fn cached() -> u32 {\n    CACHE.with(|cache| *cache)\n}\n\n/// The address of the state probe the deepest library holds.",
+        )],
+    );
+    session.wait(
+        "note: core2 holds the view or the state probe",
+        1,
+        STEP_TIMEOUT,
+    );
+    edit(&app, &[("\"view-2\"", "\"view-3\"")]);
+    let out = session.wait("patch 3: applied", 1, STEP_TIMEOUT);
+    let line = line_of(&out, "patch 3: applied");
+    assert!(
+        !line.contains("replayed"),
+        "a library rode along after the carried one left: {line}"
     );
     session.quit();
 }
@@ -2736,6 +3100,14 @@ fn refuses_a_chain_a_binary_only_build_script_reads() {
     session.quit();
 }
 
+/// Points the symlink `link` at `target` in one step, as a rename over
+/// it, so a watcher never sees the link missing.
+fn retarget(target: &Path, link: &Path) {
+    let staged = link.with_extension("staged");
+    std::os::unix::fs::symlink(target, &staged).expect("the new symlink could not be made");
+    fs::rename(&staged, link).expect("the symlink could not be retargeted");
+}
+
 #[test]
 fn patches_a_retargeted_symlink() {
     require_linker();
@@ -2798,13 +3170,10 @@ fn patches_a_retargeted_symlink() {
     session.wait("app running as pid", 1, FAT_TIMEOUT);
     // The new target was written before the session started, so only
     // the link's own time can tell the retarget happened.
-    fs::remove_file(ws.join("ui").join("src").join("alias.rs"))
-        .expect("the symlink could not be removed");
-    std::os::unix::fs::symlink(
-        ws.join("ui").join("data").join("new.rs"),
-        ws.join("ui").join("src").join("alias.rs"),
-    )
-    .expect("the symlink could not be retargeted");
+    retarget(
+        &ws.join("ui").join("data").join("new.rs"),
+        &ws.join("ui").join("src").join("alias.rs"),
+    );
     session.wait("patch 1: applied", 1, STEP_TIMEOUT);
     session.wait("alias=new-1 alias_hot=true", 1, STEP_TIMEOUT);
     // A target that comes into being while the session runs still
@@ -2816,13 +3185,10 @@ fn patches_a_retargeted_symlink() {
          pub fn tag() -> &'static str {\n    \"latest-1\"\n}\n",
     )
     .expect("the latest target could not be written");
-    fs::remove_file(ws.join("ui").join("src").join("alias.rs"))
-        .expect("the symlink could not be removed");
-    std::os::unix::fs::symlink(
-        ws.join("ui").join("data").join("latest.rs"),
-        ws.join("ui").join("src").join("alias.rs"),
-    )
-    .expect("the symlink could not be retargeted");
+    retarget(
+        &ws.join("ui").join("data").join("latest.rs"),
+        &ws.join("ui").join("src").join("alias.rs"),
+    );
     session.wait("patch 2: applied", 1, STEP_TIMEOUT);
     session.wait("alias=latest-1 alias_hot=true", 1, STEP_TIMEOUT);
     session.quit();

@@ -43,7 +43,7 @@ use subsecond::JumpTable;
 ///
 /// | Kind | Sent by | Payload |
 /// |---|---|---|
-/// | 1, hello | the app | the format version as a `u32`, the process id as a `u32`, the runtime address of `main` as a `u64`, the runtime address of the view as a `u64`, and then the build id, the value of [`HOT_BUILD_ENVIRONMENT`], to the end |
+/// | 1, hello | the app | the format version as a `u32`, the process id as a `u32`, the runtime address of `main` as a `u64`, the runtime address of the view as a `u64`, the runtime address of the state probe as a `u64`, and then the build id, the value of [`HOT_BUILD_ENVIRONMENT`], to the end |
 /// | 2, patch | the builder | the address of `main` in the binary as linked, as a `u64`, the address of `main` in the patch library as linked, as a `u64`, the entry count as a `u64`, that many pairs of `u64` mapping the address of a function in the binary as linked to the address of its new version in the patch library as linked, and then the path of the patch library to the end |
 /// | 3, applied | the app | empty |
 /// | 4, failed | the app | why the patch was not applied, in UTF-8 |
@@ -75,13 +75,20 @@ use subsecond::JumpTable;
 /// builder rebases against the address of `main` like every other runtime
 /// address. Against a version 1 hello a builder cannot attribute a
 /// signature change to the view or to anything else, so it must refuse
-/// every signature change and ask for a restart instead.
+/// every signature change and ask for a restart instead. Version 2 also
+/// carries the runtime address of the state probe: the instance of a
+/// function generic over the state type that `run_view` compiles for the
+/// app's state, whose debug information names the state type as its type
+/// parameter. The builder reads the state type there to keep the layout
+/// rule below.
 ///
-/// A builder must not send a patch that changes the layout of a type whose
-/// values outlive the build: the state type and every type its values reach,
-/// directly or through signals, `Rc`, `Box` or collections, and the types of
-/// values created in `main`. Those values were laid out by the old code, and
-/// the app's own guard sees only the outermost state type.
+/// A builder must not send a patch that changes the layout of the state
+/// type or of any type its values reach, directly or through signals, `Rc`,
+/// `Box` or collections. Those values were laid out by the old code, and the
+/// app's own guard sees only the outermost state type. Values created in
+/// `main` or in the `configure` step of `run_view_with` outlive the build
+/// too, but no probe names their types, so a change to them needs a
+/// restart, which `run_view_with` documents.
 ///
 /// Each patch replaces the one before it. Its library and its table hold
 /// every function changed since the app started, not only those changed
@@ -228,26 +235,29 @@ pub(crate) fn note_patch_installed() {
 /// must hand the patch to the thread that runs the event loop, which applies
 /// or refuses it. `view` is the runtime address of the view that `run_view`
 /// or `run_view_with` was given, which the hello announces so the builder
-/// can attribute a signature change to the view. The receiver waits for
+/// can attribute a signature change to the view, and `probe` is the runtime
+/// address of the state probe [`state_probe`] answers, which the hello
+/// announces so the builder can check the state's layout. The receiver waits for
 /// that answer before it reads the next frame. Returns `None` when
 /// [`HOT_SOCKET_ENVIRONMENT`] is unset, and when the socket cannot be
 /// reached, which it reports on standard error.
 pub(crate) fn start(
     deliver: impl Fn(Patch) + Send + 'static,
     view: usize,
+    probe: usize,
 ) -> Option<JoinHandle<()>> {
     start_from(
         std::env::var_os(HOT_SOCKET_ENVIRONMENT),
         std::env::var_os(HOT_BUILD_ENVIRONMENT),
         subsecond::aslr_reference(),
-        view,
+        (view, probe),
         deliver,
     )
 }
 
 /// Connects to `socket` like [`start`], with the values of the environment
-/// variables, the runtime address of `main` and the runtime address of the
-/// view passed in.
+/// variables, the runtime address of `main` and the runtime addresses of the
+/// view and of the state probe passed in.
 ///
 /// An address of `main` of 0 means the binary does not export `main` in its
 /// dynamic symbol table, so no patch could be placed against it. Hot reload
@@ -256,7 +266,7 @@ fn start_from(
     socket: Option<OsString>,
     build: Option<OsString>,
     main: usize,
-    view: usize,
+    (view, probe): (usize, usize),
     deliver: impl Fn(Patch) + Send + 'static,
 ) -> Option<JoinHandle<()>> {
     let socket = PathBuf::from(socket?);
@@ -268,7 +278,13 @@ fn start_from(
         return None;
     }
     let build = build.unwrap_or_default();
-    match connect(&socket, build.as_encoded_bytes(), main, view, deliver) {
+    match connect(
+        &socket,
+        build.as_encoded_bytes(),
+        main,
+        (view, probe),
+        deliver,
+    ) {
         Ok(receiver) => Some(receiver),
         Err(error) => {
             eprintln!(
@@ -286,15 +302,16 @@ fn connect(
     socket: &Path,
     build: &[u8],
     main: usize,
-    view: usize,
+    (view, probe): (usize, usize),
     deliver: impl Fn(Patch) + Send + 'static,
 ) -> io::Result<JoinHandle<()>> {
     let mut stream = UnixStream::connect(socket)?;
-    let mut hello = Vec::with_capacity(24 + build.len());
+    let mut hello = Vec::with_capacity(32 + build.len());
     hello.extend_from_slice(&VERSION.to_le_bytes());
     hello.extend_from_slice(&std::process::id().to_le_bytes());
     hello.extend_from_slice(&(main as u64).to_le_bytes());
     hello.extend_from_slice(&(view as u64).to_le_bytes());
+    hello.extend_from_slice(&(probe as u64).to_le_bytes());
     hello.extend_from_slice(build);
     write_frame(&mut stream, HELLO, &hello)?;
     std::thread::Builder::new()
@@ -469,6 +486,12 @@ fn state_shape<S>() -> Shape {
     )
 }
 
+/// Returns the runtime address of the state probe for `S`, the instance of
+/// [`state_shape`] that [`current`] checks, which the hello announces.
+pub(crate) fn state_probe<S>() -> usize {
+    state_shape::<S> as fn() -> Shape as usize
+}
+
 /// Returns the newest version of `view`: the version the last applied patch
 /// installed, or `view` itself when no patch replaced it.
 ///
@@ -492,15 +515,14 @@ pub(crate) fn current<S, E>(view: fn(&S) -> E) -> Result<fn(&S) -> E, String> {
     // requires. So a mapped probe keeps the probe's signature, and a mapped
     // view keeps the view's, but for the state type: the view's parameter
     // names the state type, whose definition can change without changing the
-    // symbol. The guard in `patched` refuses a view whose state type changed
-    // its size, its alignment or its name, or was replaced by another type.
-    // It sees only that outermost type: a change that keeps all three, such
-    // as reordered fields of one size, or a change to a type the state
-    // reaches through a signal or a pointer, passes the guard. Running the
-    // view after such a change, or after a patch from a builder that breaks
-    // the signature or the layout rule of the wire format, is undefined
-    // behavior, which `run_view` documents as a change that needs a
-    // restart.
+    // symbol. The wire format requires the builder to refuse a patch that
+    // changed the layout of the state type or of any type it reaches. The
+    // guard in `patched` is the second line: it refuses a view whose state
+    // type changed its size, its alignment or its name, or was replaced by
+    // another type. Running the view after a patch from a builder that
+    // breaks the signature or the layout rule of the wire format is
+    // undefined behavior, which `run_view` documents as a change that needs
+    // a restart.
     unsafe { patched(table, view, state_shape::<S>) }
 }
 

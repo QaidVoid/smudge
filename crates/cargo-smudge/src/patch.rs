@@ -26,8 +26,14 @@ pub(crate) enum Outcome {
         entries: usize,
         /// Functions the table maps that the original binary has not.
         added: usize,
-        /// Functions left out because their signature changed.
+        /// Functions left out because their signature changed, apart from
+        /// the ones `changed_captures` counts.
         changed_signature: usize,
+        /// Functions left out because they name a closure whose captures
+        /// changed.
+        changed_captures: usize,
+        /// The closures whose captures changed, by path.
+        recaptured: Vec<String>,
         /// Functions left out because they name a closure of a function
         /// whose closures the edit renumbered.
         renumbered: usize,
@@ -145,6 +151,9 @@ pub(crate) struct Plan<'a> {
     /// The linked address of the view the app announced, when the hello
     /// carried it.
     pub view: Option<u64>,
+    /// The linked address of the state probe the app announced, whose
+    /// type parameter is the state type, when the hello carried it.
+    pub state_probe: Option<u64>,
     /// Whether a patch was already refused over a signature change, which
     /// the later patches omit the changed functions for instead of
     /// refusing again.
@@ -173,12 +182,13 @@ pub(crate) fn run(plan: &mut Plan<'_>, generation: u32) -> Outcome {
     replay(plan, generation, false)
 }
 
-/// Replays and links the chain without sending anything, so the first
-/// patch of a session finds the compiler's incremental cache for the
+/// Replays and links the chain without sending anything, and answers how
+/// the step ended, a refusal included, so the first patch of a session
+/// finds the compiler's incremental cache for the
 /// replay directory, the objects' facts and the binary's signatures warm,
 /// and the linker's inputs read once.
-pub(crate) fn warm(plan: &mut Plan<'_>) {
-    let _ = replay(plan, 0, true);
+pub(crate) fn warm(plan: &mut Plan<'_>) -> Outcome {
+    replay(plan, 0, true)
 }
 
 /// Runs one patch step, or only its dry part when `dry` is set.
@@ -676,23 +686,17 @@ fn step_inner(
                 .map(|old| (name.clone(), old.address))
         })
         .collect();
-    std::thread::scope(|scope| -> Result<(), String> {
+    {
         let answers = &mut old_signatures;
         let signatures = &mut *plan.signatures;
-        std::thread::Builder::new()
-            .stack_size(64 * 1024 * 1024)
-            .spawn_scoped(scope, move || -> Result<(), String> {
-                for (name, address) in &wanted {
-                    let signature = signatures.signature(*address)?;
-                    answers.insert(name.clone(), signature);
-                }
-                Ok(())
-            })
-            .map_err(|error| format!("a signature reader could not start: {error}"))?
-            .join()
-            .map_err(|_| String::from("a signature reader stopped"))??;
-        Ok(())
-    })?;
+        on_wide_stack(move || {
+            for (name, address) in &wanted {
+                let signature = signatures.signature(*address)?;
+                answers.insert(name.clone(), signature);
+            }
+            Ok(())
+        })?;
+    }
 
     // A function whose closures changed in number renumbers the ones
     // after the change, so a closure's name can now belong to another
@@ -765,6 +769,62 @@ fn step_inner(
             _ => unverified += 1,
         }
     }
+    // Of the functions omitted for a changed signature, the ones that name
+    // a closure whose captures changed are counted apart, so the patch line
+    // can say why.
+    let mut old_envs: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut new_envs: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut new_signatures: Vec<&str> = Vec::new();
+    for (name, _) in &changed {
+        if let Some(Some(old_sig)) = old_signatures.get(name) {
+            old_envs.extend(closure_envs(old_sig));
+        }
+        if let Some((_, index)) = defined.get(name)
+            && let Some(Some(new_sig)) = objects[*index].facts.answered.get(name)
+        {
+            new_envs.extend(closure_envs(new_sig));
+            new_signatures.push(new_sig);
+        }
+    }
+    // Only the replayed crates' own closures count: an environment the
+    // standard library makes around one of them changes with it, and the
+    // closure it wraps is the one to name.
+    let recaptured: Vec<&str> = old_envs
+        .iter()
+        .filter(|(path, digest)| new_envs.get(*path).is_some_and(|new| new != *digest))
+        .filter(|(path, _)| {
+            crate::dwarf::closure_of(path).is_some_and(|(parent, _)| {
+                !renumbered_parents.contains(&parent)
+                    && parent
+                        .split("::")
+                        .next()
+                        .is_some_and(|krate| rebuilt.contains(&krate))
+            })
+        })
+        .map(|(path, _)| *path)
+        .collect();
+    let changed_captures = new_signatures
+        .iter()
+        .filter(|signature| closure_envs(signature).any(|(path, _)| recaptured.contains(&path)))
+        .count();
+    let recaptured: Vec<String> = recaptured
+        .into_iter()
+        .map(|path| path.replacen("_env#", "#", 1))
+        .collect();
+
+    // The running app holds its state in the old layout until it restarts,
+    // so a patch that changed it is refused every time, not once.
+    if !dry
+        && let Some(probe) = plan.state_probe
+        && let Some(reason) = state_change(plan, objects, &defined, probe)?
+    {
+        return Ok(Outcome::RestartNeeded {
+            reason,
+            refused: None,
+            discovered: std::mem::take(discovered),
+        });
+    }
+
     // A signature change the app announced no view for, or one that lands
     // on the view, is refused once, so the app learns it must rebuild; the
     // later patches omit those functions and keep going.
@@ -874,6 +934,14 @@ fn step_inner(
             discovered: std::mem::take(discovered),
         });
     }
+    // The app runs a patched view only beside its patched state probe, so a
+    // patch without the probe leaves the view out, and the app keeps the
+    // view it has instead of refusing the patch.
+    if let (Some(view), Some(probe)) = (plan.view, plan.state_probe)
+        && !table.contains_key(&probe)
+    {
+        table.remove(&view);
+    }
     let entries = table.len();
     let mut payload = Vec::new();
     payload.extend_from_slice(&plan.main.to_le_bytes());
@@ -896,7 +964,9 @@ fn step_inner(
             total: started.elapsed(),
             entries,
             added,
-            changed_signature: changed.len(),
+            changed_signature: changed.len() - changed_captures,
+            changed_captures,
+            recaptured,
             renumbered,
             fresh_statics: app_fresh,
             unverified,
@@ -1241,6 +1311,159 @@ fn fresh_statics<'a>(
     names.sort();
     names.dedup();
     names
+}
+
+/// Runs `work` on a thread whose stack is as wide as the signature
+/// workers' are, since the type walks recurse as deep as the types nest.
+///
+/// # Errors
+///
+/// Returns the error `work` returns, or why the thread failed.
+fn on_wide_stack<T: Send>(work: impl FnOnce() -> Result<T, String> + Send) -> Result<T, String> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(scope, work)
+            .map_err(|error| format!("a type reader could not start: {error}"))?
+            .join()
+            .map_err(|_| String::from("a type reader stopped"))?
+    })
+}
+
+/// Why the state the running app holds no longer fits the patched code, or
+/// none when the state type kept its layout.
+///
+/// The state type is the type parameter of the state probe at `probe` in
+/// the original binary, and every type it reaches counts, since the app's
+/// value holds them all in the old layout. The probe's symbol names the
+/// state type, so the patch defines it under the same name while the type
+/// keeps its name, and its type parameter there is the new layout. A patch
+/// that rebuilt the probe's crate without the probe renamed, moved or
+/// replaced the state type, and is refused too. A patch that did not
+/// rebuild the probe's crate rebuilt nothing the state type depends on. A
+/// probe or a state type the debug information does not spell is refused,
+/// since nothing could show the layout unchanged.
+///
+/// # Errors
+///
+/// Returns why a type could not be read.
+fn state_change(
+    plan: &mut Plan<'_>,
+    objects: &mut [ObjectInfo],
+    defined: &BTreeMap<String, (Sym, usize)>,
+    probe: u64,
+) -> Result<Option<String>, String> {
+    let names = plan.originals.get(&probe).cloned().unwrap_or_default();
+    let running = &mut *plan.signatures;
+    on_wide_stack(move || {
+        let restart = "and the running app holds its state in the old one; restart the app";
+        let unreadable = "patching is off, because the debug information of the crate \
+                          that calls run_view does not describe the state probe's type \
+                          parameter, so the state's layout cannot be checked; build that \
+                          crate with full debug information, `debug = true` in the dev \
+                          profile";
+        let ambiguous = |error: &str| {
+            format!(
+                "the state type reaches two types the debug information cannot tell \
+                 apart ({error}), so no patch can be checked against it, and patching \
+                 stays off until the state's types differ in name"
+            )
+        };
+        // A folding link can give the probe's address to other functions
+        // too, so the probe is the name whose description carries a type
+        // parameter, and the patch is read under that same name.
+        let mut found = None;
+        for name in &names {
+            match running.first_type_parameter_by_name(name) {
+                Ok(Some(old)) => {
+                    found = Some((Some(name), old));
+                    break;
+                }
+                Ok(None) => {}
+                Err(error) if error.starts_with(crate::dwarf::AMBIGUOUS) => {
+                    return Ok(Some(ambiguous(&error)));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if found.is_none() {
+            match running.first_type_parameter(probe) {
+                Ok(Some(old)) => found = Some((None, old)),
+                Ok(None) => return Ok(Some(String::from(unreadable))),
+                Err(error) if error.starts_with(crate::dwarf::AMBIGUOUS) => {
+                    return Ok(Some(ambiguous(&error)));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let Some((probe_name, old)) = found else {
+            return Ok(Some(String::from(unreadable)));
+        };
+        let in_patch = match probe_name {
+            Some(name) => defined.get(name).map(|(_, index)| (name, *index)),
+            None => names
+                .iter()
+                .find_map(|name| defined.get(name).map(|(_, index)| (name, *index))),
+        };
+        let Some((name, index)) = in_patch else {
+            let Some(root) = running.crate_root_of(probe)? else {
+                return Ok(Some(String::from(unreadable)));
+            };
+            for object in objects.iter() {
+                if object.facts.signatures.crate_roots()?.contains(&root) {
+                    return Ok(Some(format!(
+                        "the state type `{}` was renamed, moved or replaced, {restart}",
+                        old.name
+                    )));
+                }
+            }
+            return Ok(None);
+        };
+        let patched = &mut objects[index].facts.signatures;
+        let new = match patched.first_type_parameter_by_name(name) {
+            Ok(Some(new)) => new,
+            Ok(None) => return Ok(Some(String::from(unreadable))),
+            Err(error) if error.starts_with(crate::dwarf::AMBIGUOUS) => {
+                return Ok(Some(format!(
+                    "the layout of the state type `{}` cannot be told from the patch's \
+                     debug information ({error}), {restart}",
+                    old.name
+                )));
+            }
+            Err(error) => return Err(error),
+        };
+        if new.digest == old.digest {
+            return Ok(None);
+        }
+        let before = running.shapes(&old)?;
+        let after = patched.shapes(&new)?;
+        let through: Vec<String> = before
+            .iter()
+            .filter(|(name, shape)| {
+                **name != old.name && after.get(*name).is_some_and(|new| new != *shape)
+            })
+            .map(|(name, _)| format!("`{name}`"))
+            .collect();
+        let through = if through.is_empty() {
+            String::new()
+        } else {
+            format!(" through {}", through.join(", "))
+        };
+        Ok(Some(format!(
+            "the state type `{}` changed its layout{through}, {restart}",
+            old.name
+        )))
+    })
+}
+
+/// The closure environments `signature` names among its parts, a type
+/// parameter's included, with their digests.
+fn closure_envs(signature: &str) -> impl Iterator<Item = (&str, &str)> {
+    signature.split('|').filter_map(|part| {
+        let part = part.strip_prefix("T:").unwrap_or(part);
+        let (path, digest) = part.rsplit_once('#')?;
+        crate::dwarf::closure_of(path).map(|_| (path, digest))
+    })
 }
 
 /// Whether `signature` names a type the compiler made inside one of the

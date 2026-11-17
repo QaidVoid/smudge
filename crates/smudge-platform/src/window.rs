@@ -401,19 +401,21 @@ pub fn run_with<E: IntoElement + 'static>(
 ///
 /// A patch must leave the state type alone, because the state was built by
 /// the code before the patch, and patched code that reads it with another
-/// layout is undefined behavior. A guard narrows that down: before it runs a
-/// patched view, the window compares the size, the alignment and the name
-/// of the state type as the patch sees it with the original's, and keeps the
-/// view it has when they differ or when the patch no longer uses the type.
-/// It reports the change on standard error and to the builder, as one that
-/// needs a restart. The guard cannot see a change that keeps all three, such
-/// as two fields of one size swapped, or a field changed to another type of
-/// the same size, and it sees only the state type itself: a state that holds
-/// its data in signals or behind pointers keeps its size when the types
-/// behind them change. The rule covers every type the state's values reach,
-/// such as the item type of an `RwSignal<Vec<Todo>>`, and a change the guard
-/// misses is still undefined behavior, so restart the app after any change
-/// to such a type.
+/// layout is undefined behavior. The rule covers every type the state's
+/// values reach, such as the item type of an `RwSignal<Vec<Todo>>`.
+/// `cargo smudge dev` reads the layout of the state type and of every type
+/// it reaches from the debug information of the running binary and of the
+/// patch, and refuses a patch that changed any of them, naming the type,
+/// until the layout is restored or the app restarts. It cannot see a type
+/// the state holds only behind a trait object, such as a `Box<dyn Any>`, so
+/// a change to such a type still needs a restart. The window's guard is
+/// a second line of defense: before it runs a patched view, it compares the
+/// size, the alignment and the name of the state type as the patch sees it
+/// with the original's, and keeps the view it has when they differ or when
+/// the patch no longer uses the type. It reports the change on standard
+/// error and to the builder, as one that needs a restart. On its own, the
+/// guard cannot see a change that keeps all three, such as two fields of
+/// one size swapped, and it sees only the state type itself.
 ///
 /// A patch must also keep the view's parameters and return type. Symbol
 /// names do not record a function's signature, so neither the table nor the
@@ -484,7 +486,9 @@ pub fn run_view<S: 'static>(
 /// `smudge_core::timer::every`, or measurement that runs alongside the
 /// frames. Closures created there are never rebuilt, so a patch carries
 /// them over through the wrappers that the facade's `smudge::hot` module
-/// adds.
+/// adds. The values they capture keep the layout they were built with, and
+/// a patch builder checks only the state's types, so a change to the type
+/// of a value created in `main` or in `configure` needs a restart.
 ///
 /// With the `hot-reload` feature on Linux, a patch remounts the root
 /// through the patched `view` under the same rules as [`run_view`], and the
@@ -576,6 +580,7 @@ pub fn run_view_with<S: 'static>(
                 let _ = proxy.send_event(PlatformEvent::HotPatch(patch));
             },
             view as usize,
+            crate::hot::state_probe::<S>(),
         );
         launch(event_loop, platform)
     }
