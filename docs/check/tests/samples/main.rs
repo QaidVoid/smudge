@@ -8,6 +8,8 @@ mod accessibility;
 #[rustfmt::skip]
 mod dynamic_content;
 #[rustfmt::skip]
+mod hot_reload;
+#[rustfmt::skip]
 mod index;
 #[rustfmt::skip]
 mod layout;

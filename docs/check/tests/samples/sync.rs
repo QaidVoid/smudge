@@ -27,6 +27,11 @@ const PAGES: &[(&str, &str, &str)] = &[
         include_str!("dynamic_content.rs"),
     ),
     (
+        "docs/guide/hot-reload.md",
+        include_str!("../../../guide/hot-reload.md"),
+        include_str!("hot_reload.rs"),
+    ),
+    (
         "docs/guide/layout.md",
         include_str!("../../../guide/layout.md"),
         include_str!("layout.rs"),
