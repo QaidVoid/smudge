@@ -5235,10 +5235,11 @@ fn watches_a_source_a_failed_lex_taught() {
          pub fn tag() -> &'static str {\n    \"lex-1\"\n}\n",
     )
     .expect("the outside module could not be fixed");
-    session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    // A loaded machine can see the broken save as two events, which fail
+    // as two patches, so the fix is awaited by what the app shows rather
+    // than by its patch number.
     session.wait("ui=lex-1 ui_hot=true", 1, STEP_TIMEOUT);
     edit_in(&ws, "ui/late_lex.rs", &[("\"lex-1\"", "\"lex-2\"")]);
-    session.wait("patch 3: applied", 1, STEP_TIMEOUT);
     session.wait("ui=lex-2 ui_hot=true", 1, STEP_TIMEOUT);
     session.quit();
 }
