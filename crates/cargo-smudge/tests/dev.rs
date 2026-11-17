@@ -101,6 +101,10 @@ impl Session {
     /// Waits until the output holds `count` occurrences of `needle`, and
     /// answers the whole output. Panics with both streams when the wait
     /// times out.
+    ///
+    /// After a save that breaks the build, a test waits for the next applied
+    /// patch, not for a patch number: a loaded machine can see the broken
+    /// save as two events, which fail as two patches.
     fn wait(&self, needle: &str, count: usize, timeout: Duration) -> String {
         let started = Instant::now();
         loop {
@@ -1298,7 +1302,7 @@ fn recovers_from_a_compile_error() {
         &app,
         &[("\"alpha-2\" } fn broken() -> u32 {", "\"alpha-2\"")],
     );
-    let out = session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    let out = session.wait(": applied", 1, STEP_TIMEOUT);
     assert!(
         out.contains("fixture alpha=alpha-2"),
         "the fixed source did not patch:\n{out}"
@@ -3361,7 +3365,7 @@ fn watches_a_source_a_failed_patch_taught() {
             "pub fn tag() -> &'static str {\n    \"late-out-1\"\n}",
         )],
     );
-    session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    session.wait(": applied", 1, STEP_TIMEOUT);
     session.wait("ui=late-out-1 ui_hot=true", 1, STEP_TIMEOUT);
     // The module itself now belongs to the library, so an edit there
     // patches on its own.
@@ -5281,7 +5285,7 @@ fn watches_a_source_without_an_rs_extension() {
          pub fn tag() -> &'static str {\n    \"inc-1\"\n}\n",
     )
     .expect("the outside module could not be fixed");
-    session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    session.wait(": applied", 1, STEP_TIMEOUT);
     session.wait("ui=inc-1 ui_hot=true", 1, STEP_TIMEOUT);
     session.quit();
 }
@@ -5312,10 +5316,10 @@ fn watches_a_missing_include_content() {
     session.wait("patch 1: compile failed", 1, STEP_TIMEOUT);
     fs::write(ws.join("ui").join("content.txt"), "content-1")
         .expect("the content could not be written");
-    session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    session.wait(": applied", 1, STEP_TIMEOUT);
     session.wait("fixture ui=content-1 ui_hot=true", 1, STEP_TIMEOUT);
     edit_in(&ws, "ui/content.txt", &[("content-1", "content-2")]);
-    session.wait("patch 3: applied", 1, STEP_TIMEOUT);
+    session.wait(": applied", 2, STEP_TIMEOUT);
     session.wait("fixture ui=content-2 ui_hot=true", 1, STEP_TIMEOUT);
     session.quit();
 }
@@ -7063,7 +7067,7 @@ fn retries_a_missing_input_whose_name_carries_a_backtick() {
     fs::create_dir_all(ws.join("ui/data")).unwrap();
     fs::write(ws.join("ui/data/a`b.txt"), "ui-note-1")
         .expect("the backticked input could not be written");
-    session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    session.wait(": applied", 1, STEP_TIMEOUT);
     session.wait("fixture ui=ui-note-1", 1, STEP_TIMEOUT);
     session.quit();
 }
