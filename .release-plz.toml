@@ -1,6 +1,9 @@
 [workspace]
 allow_dirty = false
-changelog_update = true
+# Every crate shares one version, so the root changelog of the `smudge`
+# package, which gathers the others through `changelog_include`, is the
+# only one.
+changelog_update = false
 dependencies_update = false
 git_release_enable = false
 pr_labels = ["release"]
@@ -19,6 +22,7 @@ git_release_body = """
 
 [[package]]
 name = "smudge"
+changelog_update = true
 git_tag_name = "v{{ version }}"
 git_release_enable = true
 changelog_include = [
