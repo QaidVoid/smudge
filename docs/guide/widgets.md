@@ -109,6 +109,26 @@ let log = scroll(output_lines).follow_end(follow).height(px(300.0));
 
 While the signal is true, the view shows the end of the content and stays there as lines arrive, which is what an output log wants. Scrolling up writes false, so the reader can look back in peace; scrolling back to the end or setting the signal to true pins it again. A focus move that scrolls the view up to show the focused node writes false too.
 
+## Split panes
+
+`split(direction, first, second)` shows two panes along a row or a column, with a divider between them that a drag moves:
+
+```rust
+use smudge::prelude::*;
+
+let ratio = RwSignal::new(0.3);
+let editor = split(
+    Direction::Row,
+    label("Files"),
+    split(Direction::Column, label("Editor"), label("Terminal")).min_second(80.0),
+)
+.ratio(ratio)
+.min_first(160.0)
+.min_second(240.0);
+```
+
+The ratio is the first pane's share of the split's length, a number from 0 to 1. The divider writes it as it moves, so keeping the signal keeps the layout, and writing the signal moves the divider. `min_first` and `min_second` keep each pane at least that long in logical pixels, while dragging and when the window shrinks. With the keyboard focus on the divider, the arrow keys of its axis move it 16 pixels, and Home and End move it to the minimums. A double click on it goes back to the ratio the split was built with, and a screen reader announces it as a splitter named "Resize". Each pane stretches its content to fill it, over the height and growth the content sets itself, so a split nested in a pane fills it. Wrap content that keeps its own size, such as a toolbar, in a `column()`. The split clips its panes.
+
 ## Virtual list
 
 ```rust

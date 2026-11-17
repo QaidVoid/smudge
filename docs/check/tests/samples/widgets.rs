@@ -88,6 +88,21 @@ fn follow() {
 }
 
 #[test]
+fn split_panes() {
+    use smudge::prelude::*;
+    
+    let ratio = RwSignal::new(0.3);
+    let editor = split(
+        Direction::Row,
+        label("Files"),
+        split(Direction::Column, label("Editor"), label("Terminal")).min_second(80.0),
+    )
+    .ratio(ratio)
+    .min_first(160.0)
+    .min_second(240.0);
+}
+
+#[test]
 fn rows() {
     let rows = RwSignal::new(100_000_usize);
     let count = rows.clone();

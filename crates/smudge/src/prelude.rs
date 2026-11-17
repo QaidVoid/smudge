@@ -23,7 +23,8 @@ pub use smudge_text::{
     provide_text_style, rich_text, selection_scope, text_area, text_input,
 };
 pub use smudge_widgets::{
-    ButtonExt, ScrollView, button, column, image, row, scroll, spacer, stack, virtual_list,
+    ButtonExt, ScrollView, Split, SplitExt, button, column, image, row, scroll, spacer, split,
+    stack, virtual_list,
 };
 
 #[cfg(feature = "window")]

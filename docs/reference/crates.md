@@ -7,7 +7,7 @@
 | [`smudge`](https://crates.io/crates/smudge) | The facade: re-exports, the prelude, and the examples. | [docs.rs](https://docs.rs/smudge) |
 | [`smudge-core`](https://crates.io/crates/smudge-core) | The widget tree, reactive signals, style, layout, paint, damage tracking and the headless `App`. No window, GPU or rasterizer dependency. | [docs.rs](https://docs.rs/smudge-core) |
 | [`smudge-text`](https://crates.io/crates/smudge-text) | Fonts, text layout, the label, rich text, the text input and the text area. | [docs.rs](https://docs.rs/smudge-text) |
-| [`smudge-widgets`](https://crates.io/crates/smudge-widgets) | Containers, the button, the image, the scroll view and the virtual lists. | [docs.rs](https://docs.rs/smudge-widgets) |
+| [`smudge-widgets`](https://crates.io/crates/smudge-widgets) | Containers, the button, the image, the scroll view, split panes and the virtual lists. | [docs.rs](https://docs.rs/smudge-widgets) |
 | [`smudge-cpu`](https://crates.io/crates/smudge-cpu) | The CPU renderer, which repaints only damaged regions. | [docs.rs](https://docs.rs/smudge-cpu) |
 | [`smudge-gpu`](https://crates.io/crates/smudge-gpu) | The GPU renderer. | [docs.rs](https://docs.rs/smudge-gpu) |
 | [`smudge-platform`](https://crates.io/crates/smudge-platform) | Windows, input, presentation, renderer choice, and the web build. | [docs.rs](https://docs.rs/smudge-platform) |
