@@ -1253,3 +1253,143 @@ fn a_following_view_stays_at_the_end_through_a_remount_and_an_offset_write() {
     );
     assert!(following.read(|value| *value));
 }
+
+/// A view 100 pixels tall over 1,000 pixels of rows, under a parent that
+/// takes presses, at the window's top with room below it, with its offset
+/// in `offset`.
+fn draggable_view(offset: RwSignal<f32>) -> Harness {
+    let mut harness = Harness::new(200.0, 300.0, 1.0, move || {
+        let offset = offset.clone();
+        column().on_press(|| {}).child(
+            scroll(column().children((0..20).map(|_| row(50.0, Color::rgb(90, 90, 90)))))
+                .offset(offset)
+                .height(px(100.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    harness
+}
+
+#[test]
+fn a_drag_held_below_the_view_scrolls_it_until_the_pointer_returns() {
+    let offset = RwSignal::new(0.0f32);
+    let mut harness = draggable_view(offset.clone());
+
+    harness.button_down(Point { x: 50.0, y: 50.0 });
+    harness.move_to(Point { x: 50.0, y: 150.0 });
+    for _ in 0..10 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    let scrolled = offset.get();
+    assert!(
+        scrolled > 0.0,
+        "the drag past the bottom edge scrolled down"
+    );
+
+    harness.move_to(Point { x: 50.0, y: 50.0 });
+    for _ in 0..10 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    assert_eq!(
+        offset.get(),
+        scrolled,
+        "the pointer came back, so it stopped"
+    );
+    harness.button_up(Point { x: 50.0, y: 50.0 });
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn a_drag_farther_past_the_edge_scrolls_faster_and_stops_on_release() {
+    let near = RwSignal::new(0.0f32);
+    let far = RwSignal::new(0.0f32);
+    let mut near_view = draggable_view(near.clone());
+    let mut far_view = draggable_view(far.clone());
+    for (harness, below) in [(&mut near_view, 110.0), (&mut far_view, 180.0)] {
+        harness.button_down(Point { x: 50.0, y: 50.0 });
+        harness.move_to(Point { x: 50.0, y: below });
+        for _ in 0..5 {
+            harness.advance(std::time::Duration::from_millis(16));
+        }
+    }
+    assert!(
+        far.get() > near.get(),
+        "the pointer farther out scrolled faster"
+    );
+
+    far_view.button_up(Point { x: 50.0, y: 180.0 });
+    let released = far.get();
+    for _ in 0..5 {
+        far_view.advance(std::time::Duration::from_millis(16));
+    }
+    assert_eq!(far.get(), released, "the release stopped the scroll");
+}
+
+#[test]
+fn a_drag_held_above_a_following_view_lets_go_of_its_end() {
+    let offset = RwSignal::new(0.0f32);
+    let following = RwSignal::new(true);
+    let (bound_offset, bound_following) = (offset.clone(), following.clone());
+    let mut harness = Harness::new(200.0, 300.0, 1.0, move || {
+        column().padding(px(50.0)).on_press(|| {}).child(
+            scroll(column().children((0..20).map(|_| row(50.0, Color::rgb(90, 90, 90)))))
+                .offset(bound_offset.clone())
+                .follow_end(bound_following.clone())
+                .height(px(100.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    let end = offset.get();
+
+    harness.button_down(Point { x: 80.0, y: 100.0 });
+    harness.move_to(Point { x: 80.0, y: 10.0 });
+    for _ in 0..5 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    harness.button_up(Point { x: 80.0, y: 10.0 });
+
+    assert!(!following.get(), "the drag up let go of the end");
+    assert!(offset.get() < end, "and scrolled up from it");
+}
+
+#[test]
+fn a_drag_past_nested_views_scrolls_the_inner_one_until_its_end() {
+    let inner = RwSignal::new(0.0f32);
+    let outer = RwSignal::new(0.0f32);
+    let (bound_inner, bound_outer) = (inner.clone(), outer.clone());
+    let mut harness = Harness::new(200.0, 300.0, 1.0, move || {
+        column().on_press(|| {}).child(
+            scroll(
+                column()
+                    .child(
+                        scroll(
+                            column().children((0..4).map(|_| row(50.0, Color::rgb(90, 90, 90)))),
+                        )
+                        .offset(bound_inner.clone())
+                        .height(px(100.0)),
+                    )
+                    .children((0..10).map(|_| row(50.0, Color::rgb(60, 60, 60)))),
+            )
+            .offset(bound_outer.clone())
+            .height(px(150.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+
+    harness.button_down(Point { x: 50.0, y: 50.0 });
+    harness.move_to(Point { x: 50.0, y: 200.0 });
+    harness.advance(std::time::Duration::from_millis(16));
+    assert!(inner.get() > 0.0, "the inner view scrolls first");
+    assert_eq!(outer.get(), 0.0, "while the outer one waits");
+
+    for _ in 0..40 {
+        harness.move_to(Point { x: 50.0, y: 200.0 });
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    assert_eq!(inner.get(), 100.0, "the inner view reached its end");
+    assert!(outer.get() > 0.0, "and the outer one took over");
+    harness.button_up(Point { x: 50.0, y: 200.0 });
+}

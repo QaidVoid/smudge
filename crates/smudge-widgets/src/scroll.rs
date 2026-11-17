@@ -19,17 +19,19 @@
 //! pass with the heights that pass just wrote, so a frame that grows the
 //! content never shows the end out of view.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use smudge_core::element::{Element, IntoElement, Value};
 use smudge_core::geometry::Point;
-use smudge_core::input::Handled;
+use smudge_core::input::{Drag, Handled};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::{Role, Semantics};
 use smudge_core::style::{Edges, Length, Overflow, px};
 use smudge_core::theme::ColorToken;
+use smudge_core::timer::{TimerHandle, every};
 use smudge_core::tree::Dirty;
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 
@@ -44,6 +46,17 @@ const THUMB_RIGHT_INSET: f32 = 2.0;
 /// keeps a thumb that can still be seen.
 const MIN_THUMB_LENGTH: f32 = 24.0;
 
+/// How often a drag held past the view's edge scrolls it.
+const AUTO_SCROLL_PERIOD: Duration = Duration::from_millis(16);
+
+/// How far one auto-scroll step goes for each logical pixel the pointer is
+/// past the edge.
+const AUTO_SCROLL_RATE: f32 = 0.2;
+
+/// How far past the edge the pointer still speeds the auto-scroll up, in
+/// logical pixels.
+const AUTO_SCROLL_REACH: f32 = 100.0;
+
 /// How far from the end of the content a wheel step down may land, in
 /// logical pixels, and still engage following.
 const FOLLOW_SLACK: f32 = 4.0;
@@ -56,6 +69,9 @@ pub(crate) struct Viewport {
     visible: f32,
     /// The height inside the view's border, which the thumb travels along.
     track: f32,
+    /// The height of the view's whole rectangle, whose edges a drag
+    /// auto-scrolls past.
+    outer: f32,
 }
 
 /// The reactive state one scroll view shares between its widgets, its wheel
@@ -141,6 +157,7 @@ impl Widget for ScrollView {
             Viewport {
                 visible,
                 track: finite(cx.rect.height() - border.top - border.bottom).max(0.0),
+                outer: finite(cx.rect.height()),
             },
         );
         report(&self.chrome.visible_height, visible);
@@ -289,6 +306,8 @@ pub(crate) fn scroll_with_visible_height(
     let content_chrome = Rc::clone(&chrome);
     let track_chrome = Rc::clone(&chrome);
     let reveal_chrome = Rc::clone(&chrome);
+    let drag_chrome = Rc::clone(&chrome);
+    let auto = Rc::new(AutoScroll::default());
 
     Element::new(ScrollView {
         chrome: Rc::clone(&chrome),
@@ -360,6 +379,61 @@ pub(crate) fn scroll_with_visible_height(
         };
         Point { x: 0.0, y: applied }
     })
+    // A drag that began inside the view and is held past its top or bottom
+    // edge scrolls it, faster the farther out the pointer is, until the
+    // pointer comes back or the press ends. The content that scrolls under
+    // the pointer hears the drag again, so a selection follows it. The view
+    // takes the move only while it can still scroll that way, so a view
+    // around it takes over once it reaches its end.
+    .on_drag(move |step| match step {
+        Drag::Moved(at) => {
+            let Some(height) = drag_chrome
+                .viewport
+                .read(|viewport| viewport.map(|v| v.outer))
+            else {
+                return Handled::No;
+            };
+            let past = if at.y < 0.0 {
+                at.y
+            } else if at.y > height {
+                at.y - height
+            } else {
+                0.0
+            };
+            if past == 0.0 || !can_scroll(&drag_chrome, past) {
+                auto.stop();
+                return Handled::No;
+            }
+            auto.past
+                .set(past.clamp(-AUTO_SCROLL_REACH, AUTO_SCROLL_REACH));
+            if auto.timer.borrow().is_none() {
+                auto.last.set(Some(smudge_core::timer::now()));
+                let chrome = Rc::clone(&drag_chrome);
+                // The timer holds the state weakly: the state holds the
+                // timer, and a view unmounted mid-drag drops both.
+                let state = Rc::downgrade(&auto);
+                let timer = every(AUTO_SCROLL_PERIOD, move || {
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
+                    let now = smudge_core::timer::now();
+                    let elapsed = state
+                        .last
+                        .replace(Some(now))
+                        .map_or(AUTO_SCROLL_PERIOD, |last| now.duration_since(last))
+                        .min(AUTO_SCROLL_PERIOD * 6);
+                    let ticks = elapsed.as_secs_f32() / AUTO_SCROLL_PERIOD.as_secs_f32();
+                    auto_scroll(&chrome, state.past.get() * AUTO_SCROLL_RATE * ticks);
+                });
+                *auto.timer.borrow_mut() = Some(timer);
+            }
+            Handled::Yes
+        }
+        _ => {
+            auto.stop();
+            Handled::No
+        }
+    })
     // The core already moved the view to show the focused node. The signal
     // takes the offset, so the binding above applies the same one, and a
     // view pinned to its end lets go of it, because the core only moves a
@@ -384,6 +458,80 @@ pub(crate) fn scroll_with_visible_height(
         .child(content),
     )
     .child(thumb(track_chrome))
+}
+
+/// The auto-scroll of one scroll view while a drag is held past its edge.
+#[derive(Default)]
+struct AutoScroll {
+    /// How far past the edge the pointer is, negative above the top, capped
+    /// at the reach.
+    past: Cell<f32>,
+    /// When the last step scrolled, so a step covers the time since then
+    /// whatever the frame rate.
+    last: Cell<Option<web_time::Instant>>,
+    /// The timer that scrolls, while the pointer is past an edge.
+    timer: RefCell<Option<TimerHandle>>,
+}
+
+impl AutoScroll {
+    /// Stops scrolling.
+    fn stop(&self) {
+        self.timer.borrow_mut().take();
+        self.past.set(0.0);
+        self.last.set(None);
+    }
+}
+
+/// Returns whether the view of `chrome` can scroll toward `past`: up while
+/// it is below its top, and down while it is above its end and not pinned
+/// to it.
+fn can_scroll(chrome: &ScrollChrome, past: f32) -> bool {
+    let Some(max) = chrome.max_offset() else {
+        return false;
+    };
+    let pinned = chrome
+        .following()
+        .is_some_and(|signal| signal.read(|on| *on));
+    let current = if pinned {
+        max
+    } else {
+        clamp_offset(chrome.signal().read(|offset| *offset), max)
+    };
+    if past < 0.0 {
+        current > 0.0
+    } else {
+        current < max
+    }
+}
+
+/// Scrolls the view of `chrome` by `by` logical pixels, clamped to its
+/// content, and lets go of the end when the scroll goes up from it. A drag
+/// that reaches the end does not pin the view to it again, unlike a wheel
+/// step, so a selection that stops there stays where the user left it.
+fn auto_scroll(chrome: &ScrollChrome, by: f32) {
+    let Some(max) = chrome.max_offset() else {
+        return;
+    };
+    let following = chrome.following();
+    let pinned = following
+        .as_ref()
+        .is_some_and(|signal| signal.read(|on| *on));
+    if pinned && by >= 0.0 {
+        return;
+    }
+    let signal = chrome.signal();
+    let current = if pinned {
+        max
+    } else {
+        clamp_offset(signal.read(|offset| *offset), max)
+    };
+    let next = clamp_offset(current + by, max);
+    if next != current {
+        signal.set(next);
+    }
+    if pinned && let Some(following) = following {
+        following.set(false);
+    }
 }
 
 /// Controls the offset of a scroll view through a signal.
