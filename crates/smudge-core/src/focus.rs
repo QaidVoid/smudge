@@ -663,7 +663,10 @@ impl WidgetTree {
     }
 
     /// Scrolls the ancestors of the focused node that asked for it so the
-    /// node is in view, when a focus move requested it.
+    /// node is in view, when a focus move requested it, and then the
+    /// ancestors of a node that asked to show a rectangle of itself through
+    /// [`Element::reveal`](crate::element::Element::reveal) so that rectangle
+    /// is in view.
     ///
     /// The walk goes up from the focused node. Every ancestor with an
     /// `on_reveal` handler that the node flows in, rather than sits in
@@ -681,15 +684,46 @@ impl WidgetTree {
     /// the layout pass clears it, so a settle pass in the same frame can
     /// apply it again to the geometry it settled.
     pub(super) fn resolve_reveal(&mut self) {
-        if !self.reveal_focus {
-            return;
+        if self.reveal_focus
+            && let Some(focused) = self.focused.filter(|&id| self.can_hold_focus(id))
+        {
+            let target = self.nodes[focused].rect;
+            self.reveal_rect(focused, target);
         }
-        let Some(focused) = self.focused.filter(|&id| self.can_hold_focus(id)) else {
-            return;
-        };
-        let mut target = self.nodes[focused].rect;
-        let mut child = focused;
-        let mut next = self.nodes[focused].parent;
+        if let Some((id, rect)) = self.reveal_request
+            && self.can_hold_focus(id)
+        {
+            let origin = self.nodes[id].rect.origin();
+            let target = rect.translated(origin);
+            self.reveal_rect(id, target);
+        }
+    }
+
+    /// Asks the tree to show `rect`, relative to the rectangle of `id`, in
+    /// the scroll views around the node, as [`WidgetTree::resolve_reveal`]
+    /// does for the focused node. A later request replaces it.
+    pub(crate) fn request_reveal(&mut self, id: WidgetId, rect: Rect) {
+        self.reveal_request = Some((id, rect));
+    }
+
+    /// Forgets the reveal request once the frame applied it.
+    pub(super) fn clear_reveal_request(&mut self) {
+        self.reveal_request = None;
+    }
+
+    /// Returns whether a node asked to show a rectangle that no frame has
+    /// shown yet.
+    pub(super) fn has_reveal_request(&self) -> bool {
+        self.reveal_request.is_some()
+    }
+
+    /// Scrolls the ancestors of `from` that asked for it so `target`, in
+    /// window coordinates, is in view, as [`WidgetTree::resolve_reveal`]
+    /// describes.
+    fn reveal_rect(&mut self, from: WidgetId, target: Rect) {
+        let mut target = target;
+        let mut child = from;
+        let mut next = self.nodes[from].parent;
         while let Some(id) = next {
             let node = &self.nodes[id];
             next = node.parent;

@@ -267,3 +267,41 @@ fn an_autofocus_whose_handler_moves_it_is_revealed_where_it_lands() {
         "the square its own handler moved to 100..120 ends at the bottom edge"
     );
 }
+
+#[test]
+fn a_node_s_reveal_request_scrolls_a_rectangle_of_it_into_view() {
+    let offset = RwSignal::new(0.0);
+    let request = RwSignal::new(None::<Rect>);
+    let mut harness = Harness::new(100.0, 100.0, 1.0, {
+        let offset = offset.clone();
+        let request = request.clone();
+        move || {
+            let write = offset.clone();
+            let read = offset.clone();
+            let request = request.clone();
+            Element::new(Panel)
+                .column()
+                .height(px(100.0))
+                .overflow(Overflow::Scroll)
+                .scroll_offset(move || Point {
+                    x: 0.0,
+                    y: read.get(),
+                })
+                .on_reveal(move |revealed| write.set(revealed.y))
+                .child(
+                    panel()
+                        .height(px(400.0))
+                        .shrink(0.0)
+                        .reveal(move || request.get()),
+                )
+        }
+    });
+    harness.frame();
+
+    // The 20 pixels at 250 inside the tall child.
+    request.set(Some(Rect::new(0.0, 250.0, 10.0, 270.0)));
+    harness.frame();
+    harness.frame();
+
+    assert_eq!(offset.get(), 170.0, "the view moved the least to show it");
+}

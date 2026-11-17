@@ -162,6 +162,9 @@ impl WidgetTree {
         if !keep_reveal && self.focused == focus_before {
             self.reveal_focus = false;
         }
+        // The frame applied the request above, with the geometry its passes
+        // left, so it does not ask for another frame.
+        self.clear_reveal_request();
         ran || settled
     }
 

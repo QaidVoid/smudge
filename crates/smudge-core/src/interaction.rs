@@ -420,6 +420,7 @@ impl WidgetTree {
     pub(crate) fn has_pending_work(&self) -> bool {
         self.layout_dirty
             || self.reveal_focus
+            || self.has_reveal_request()
             || !self.paint_queue.is_empty()
             || !self.pending_damage.is_empty()
     }

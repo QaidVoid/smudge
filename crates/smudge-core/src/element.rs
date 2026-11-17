@@ -43,7 +43,7 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::rc::Rc;
 
-use crate::geometry::{Color, Point, Size};
+use crate::geometry::{Color, Point, Rect, Size};
 use crate::input::{Handled, KeyEvent};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RenderEffect, RwSignal};
@@ -274,6 +274,7 @@ enum Prop {
     Disabled,
     Cursor,
     Pin,
+    Reveal,
 }
 
 impl Binding {
@@ -384,6 +385,24 @@ impl Binding {
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
                         tree.set_pin(id, value);
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that asks the tree to show a rectangle of the node.
+    fn reveal(get: Rc<dyn Fn() -> Option<Rect>>) -> Binding {
+        Binding {
+            key: Some(Key::Style(Prop::Reveal)),
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let Some(rect) = get() else {
+                        return;
+                    };
+                    queue.push(Box::new(move |tree| {
+                        tree.request_reveal(id, rect);
                     }));
                 })
             }),
@@ -876,6 +895,35 @@ impl<W: Widget> Element<W> {
         self.replace_binding(Prop::Pin);
         self.bindings
             .push(Binding::pin_child(Rc::new(crate::hot::wrap(pin))));
+        self
+    }
+
+    /// Scrolls the scroll views around the node so `rect` shows, each time
+    /// `rect` returns a rectangle.
+    ///
+    /// The rectangle is in logical pixels, relative to the top left of the
+    /// node's rectangle, and can lie past the node's edges. The views move
+    /// as they do to show a node that takes the keyboard focus: each scroll
+    /// view around the node moves by the least that brings the rectangle in,
+    /// innermost first, in the frame after the request. Returning `None`
+    /// asks for nothing, and returning the same rectangle again asks again,
+    /// since the binding runs only when the signals it reads change. A
+    /// selection uses it to keep the end the keyboard moves in view.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Rect;
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let caret = RwSignal::new(None::<Rect>);
+    /// let shown = caret.clone();
+    /// let line = panel().reveal(move || shown.get());
+    /// caret.set(Some(Rect::new(0.0, 40.0, 1.0, 60.0)));
+    /// ```
+    pub fn reveal(mut self, rect: impl Fn() -> Option<Rect> + 'static) -> Self {
+        self.replace_binding(Prop::Reveal);
+        self.bindings
+            .push(Binding::reveal(Rc::new(crate::hot::wrap(rect))));
         self
     }
 

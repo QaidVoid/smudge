@@ -323,6 +323,9 @@ pub(crate) struct WidgetTree {
     /// Whether a focus move asked the next frame to scroll the focused node
     /// into view. The layout of that frame resolves it and clears it.
     reveal_focus: bool,
+    /// A rectangle a node asked to show, relative to the node's rectangle,
+    /// until the frame's passes have applied it.
+    reveal_request: Option<(WidgetId, Rect)>,
     /// The mounted focus traps, oldest first.
     ///
     /// The last mounted trap wins, and removing a node ends every trap it
@@ -375,6 +378,7 @@ impl WidgetTree {
             keyboard_nav: false,
             pending_autofocus: Vec::new(),
             reveal_focus: false,
+            reveal_request: None,
             focus_traps: Vec::new(),
             following: Vec::new(),
             pinned: Vec::new(),
