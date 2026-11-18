@@ -17,7 +17,7 @@ use smudge_core::input::{Drag, Handled, Key, KeyEvent};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::Role;
-use smudge_core::style::{Direction, Overflow, pct, px};
+use smudge_core::style::{Direction, Length, Overflow, pct, px};
 use smudge_core::theme::ColorToken;
 use smudge_core::tree::Dirty;
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
@@ -153,7 +153,9 @@ impl Widget for Split {
 /// Each pane stretches its content to fill it, overriding the height and the
 /// growth the content sets directly, so a split nested in a pane fills it.
 /// Wrap content that keeps its own size, such as a toolbar, in a
-/// [`column`](crate::column). Splits nest: either pane can be a split of its
+/// [`column`](crate::column). Content taller than its pane ends at the
+/// pane's edge, so a scroll view below a toolbar in a column scrolls instead
+/// of running past the pane. Splits nest: either pane can be a split of its
 /// own.
 ///
 /// ```
@@ -276,18 +278,27 @@ pub fn split(
 
 /// Creates an empty pane, which clips its content and makes it fill the pane:
 /// a column stretches its content across, and the content grows down it.
+///
+/// Content with no minimum height of its own gets a zero one, so it takes
+/// the pane's height rather than its content's: a column that holds a
+/// scroll view ends at the pane's bottom, and the scroll view scrolls.
 fn pane() -> Element<Panel> {
     panel()
         .column()
         .overflow(Overflow::Clip)
-        .style_children(|style| style.layout.grow = 1.0)
+        .style_children(|style| {
+            style.layout.grow = 1.0;
+            if style.layout.min_height == Length::Auto {
+                style.layout.min_height = Length::Px(0.0);
+            }
+        })
 }
 
 /// Gives `pane` its minimum length on the split's axis.
 fn along(
     direction: Direction,
     pane: Element<Panel>,
-    min: impl Fn() -> smudge_core::style::Length + 'static,
+    min: impl Fn() -> Length + 'static,
 ) -> Element<Panel> {
     match direction {
         Direction::Row => pane.min_width(min),

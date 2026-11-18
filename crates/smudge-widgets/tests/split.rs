@@ -7,7 +7,7 @@ use smudge_core::semantics::Role;
 use smudge_core::style::{Direction, px};
 use smudge_core::widget::panel;
 use smudge_test::Harness;
-use smudge_widgets::{SplitExt, split};
+use smudge_widgets::{SplitExt, column, scroll, split};
 
 /// The window the splits sit in.
 const WINDOW: Size = Size {
@@ -30,15 +30,19 @@ fn parts(harness: &Harness) -> Vec<[f32; 4]> {
     lines
         .take_while(|line| line.len() - line.trim_start().len() > depth)
         .filter(|line| line.len() - line.trim_start().len() == depth + 2)
-        .map(|line| {
-            let start = line.find('[').expect("a rectangle") + 1;
-            let values: Vec<f32> = line[start..line.len() - 1]
-                .split(", ")
-                .map(|value| value.parse().expect("numbers"))
-                .collect();
-            [values[0], values[1], values[2], values[3]]
-        })
+        .map(rect)
         .collect()
+}
+
+/// The rectangle a line of the layout dump shows, as left, top, right and
+/// bottom.
+fn rect(line: &str) -> [f32; 4] {
+    let start = line.find('[').expect("a rectangle") + 1;
+    let values: Vec<f32> = line[start..line.len() - 1]
+        .split(", ")
+        .map(|value| value.parse().expect("numbers"))
+        .collect();
+    [values[0], values[1], values[2], values[3]]
 }
 
 /// Builds a row split with `ratio` and the given minimums, filling the
@@ -365,5 +369,34 @@ fn a_reset_keeps_to_the_minimums() {
         ratio.get(),
         0.25,
         "the reset asks for no less than the minimum"
+    );
+}
+
+/// The rectangle of the first node named `name` in the layout, as left,
+/// top, right and bottom.
+fn rect_of(harness: &Harness, name: &str) -> [f32; 4] {
+    let dump = harness.layout_dump();
+    let line = dump
+        .lines()
+        .find(|line| line.trim_start().starts_with(&format!("{name} [")))
+        .unwrap_or_else(|| panic!("the layout holds a {name}"));
+    rect(line)
+}
+
+#[test]
+fn content_taller_than_its_pane_ends_at_the_pane() {
+    let mut harness = Harness::new(WINDOW.width, WINDOW.height, 1.0, || {
+        let header = panel().height(px(20.0));
+        let log = scroll(panel().height(px(1000.0))).grow(1.0);
+        split(Direction::Row, column().child(header).child(log), panel())
+    });
+    harness.frame();
+    harness.settle();
+
+    let first = parts(&harness)[0];
+    let log = rect_of(&harness, "ScrollView");
+    assert_eq!(
+        log[3], first[3],
+        "the scroll view ends at the bottom of the pane and scrolls the rest"
     );
 }
