@@ -58,7 +58,7 @@ const features = [
   <div class="home">
     <section class="hero">
       <div class="copy">
-        <p class="eyebrow"><span class="dot" />Rust GUI library <span class="ver">v0.1</span></p>
+        <p class="eyebrow"><span class="dot" />Rust GUI library</p>
         <h1 class="title">
           Repaint only<br />
           <span class="mark">what changed.</span>
@@ -177,12 +177,6 @@ const features = [
   border-radius: 2px;
   background: var(--sm-lime-deep);
   box-shadow: 0 0 0 3px var(--vp-c-brand-soft);
-}
-
-.eyebrow .ver {
-  font-family: var(--vp-font-family-mono);
-  font-size: 12px;
-  color: var(--vp-c-text-3);
 }
 
 .title {

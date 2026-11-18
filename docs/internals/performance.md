@@ -1,6 +1,6 @@
 # Performance
 
-<p class="lead">Smudge is measured with a fixed set of scenes, on a desktop and in a virtual machine without a GPU, with damage tracking on and off. These are the v0.1 numbers.</p>
+<p class="lead">Smudge is measured with a fixed set of scenes, on a desktop and in a virtual machine without a GPU, with damage tracking on and off.</p>
 
 ## The scenes
 
