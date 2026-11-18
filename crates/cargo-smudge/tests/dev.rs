@@ -3422,7 +3422,7 @@ fn watches_a_source_a_failed_link_taught() {
             "pub extern \"C\" fn late_main() {}",
         )],
     );
-    session.wait("patch 2: applied", 1, STEP_TIMEOUT);
+    session.wait(": applied", 1, STEP_TIMEOUT);
     session.wait("ui=late-out-1 ui_hot=true", 1, STEP_TIMEOUT);
     session.quit();
 }

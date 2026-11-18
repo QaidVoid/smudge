@@ -1188,6 +1188,12 @@ fn link(
     args.extend(
         [
             "-shared",
+            // The patched code was compiled for an executable, which
+            // reaches its own exported symbols directly. A shared library
+            // could have them overridden, so the linker refuses those
+            // references unless the library binds its definitions to
+            // itself, which a patch wants anyway.
+            "-Wl,-Bsymbolic",
             "-Wl,--eh-frame-hdr",
             "-Wl,-z,noexecstack",
             "-Wl,-z,relro,-z,now",
