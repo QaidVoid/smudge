@@ -113,7 +113,19 @@ step() {
 
 step fmt cargo fmt --all -- --check || failed=1
 
+# The hot reload suite builds its fixture apps offline, from lockfiles of
+# their own, so their dependencies are fetched first.
+fetch_fixtures() {
+    local fixture
+    for fixture in crates/cargo-smudge/tests/fixtures/*/Cargo.toml; do
+        cargo fetch --locked --manifest-path "$fixture" || return 1
+    done
+}
+
 run_tests() {
+    if $hot; then
+        fetch_fixtures || return 1
+    fi
     if $full; then
         cargo test --workspace --all-features || return 1
     else

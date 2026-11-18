@@ -28,7 +28,9 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test --workspace --all-features
+        run: |
+          cargo test --workspace --all-features --exclude cargo-smudge
+          cargo test -p cargo-smudge --all-features --bins --test new
       - name: Document
         run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
       - name: Check for git dependencies
@@ -40,6 +42,27 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-dejavu-core
       - name: Check feature consumers
         run: tests/consumers/check.sh
+
+  hot-reload:
+    name: Hot reload suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      # The suite builds its fixture apps offline, from lockfiles of their
+      # own.
+      - name: Fetch the fixtures' dependencies
+        run: |
+          for fixture in crates/cargo-smudge/tests/fixtures/*/Cargo.toml; do
+            cargo fetch --locked --manifest-path "$fixture"
+          done
+      - name: Test
+        run: cargo test -p cargo-smudge --all-features --test dev
 
   static-cargo-smudge:
     name: Static cargo-smudge
