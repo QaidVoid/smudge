@@ -31,6 +31,13 @@ mod wire;
 
 use std::process::ExitCode;
 
+// The static build links musl, whose own allocator takes one global lock for
+// every allocation and hands freed memory back to the system early, which
+// slows the steps that read a binary's symbols and debug information.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
