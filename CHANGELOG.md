@@ -1,4 +1,92 @@
 
+## [0.3.0](https://github.com/QaidVoid/smudge/compare/v0.2.0...v0.3.0) - 2026-11-18
+
+### ⛰️  Features
+
+- *(cargo-smudge)* Add the new and init commands - ([8bac863](https://github.com/QaidVoid/smudge/commit/8bac8637645bf9a133fed9813a138a5c6f67bb62))
+- *(cargo-smudge)* Refuse patches that change the state's layout - ([37930f2](https://github.com/QaidVoid/smudge/commit/37930f2bea60557a37e77886f45b3c590f5fba25))
+- *(cargo-smudge)* Share statics and guard renumbered closures - ([bb090f1](https://github.com/QaidVoid/smudge/commit/bb090f16fc532757417de5798ea0db43475e3dc2))
+- *(cargo-smudge)* Patch edits to workspace library crates - ([1ca11ea](https://github.com/QaidVoid/smudge/commit/1ca11ead5bebd1e78cf9011dce05a0fa164cf817))
+- *(core)* Keep the signals a build made across a hot patch - ([6e4f939](https://github.com/QaidVoid/smudge/commit/6e4f939ff34e6aba98422e463c55f4731ee32771))
+- *(core)* Add divider cursors and the splitter role - ([d2d8578](https://github.com/QaidVoid/smudge/commit/d2d85784f7a0025e3e925d889ce34d03d1247cb8))
+- *(core)* Let a node ask to show a rectangle of itself - ([467313f](https://github.com/QaidVoid/smudge/commit/467313f1ce628f96aaa3ac4afd9d51599503ef05))
+- *(core)* Add drag-over and drag observer events - ([248971e](https://github.com/QaidVoid/smudge/commit/248971eac3bd34892eaf8a29cf5bf9e7558964bb))
+- *(core)* Let a node respond to the pointer in a region - ([fe1de32](https://github.com/QaidVoid/smudge/commit/fe1de329e044a0375f81fd9ec96f92556bfc69ad))
+- *(core)* Add a reactive read of the window's input focus - ([177eb4d](https://github.com/QaidVoid/smudge/commit/177eb4d2d23989169ae0af53ce58648e6a977ebb))
+- *(core)* Scroll the focused node into view - ([0f8de09](https://github.com/QaidVoid/smudge/commit/0f8de09eae1390fab1675f91d5a10271bcf54062))
+- *(core)* Remount the root of an app - ([817abed](https://github.com/QaidVoid/smudge/commit/817abed3c9faeb136517df72f57185a9a98e5e8a))
+- *(core)* Clip widget content inside its own border - ([9422a8c](https://github.com/QaidVoid/smudge/commit/9422a8c980f469ff83536f43e016a9ba5c049b53))
+- *(gpu)* Load vello pipelines from a per-user cache - ([f927b96](https://github.com/QaidVoid/smudge/commit/f927b96a86af686b8384cb314f87550c429a1acf))
+- *(platform)* Add a hot view entry point with a configure step - ([d480a5f](https://github.com/QaidVoid/smudge/commit/d480a5f6f843c56164839779a40e7b0b45954abb))
+- *(platform)* Add run_view and the hot reload receiver - ([04d214d](https://github.com/QaidVoid/smudge/commit/04d214d9438a3f3b401f78c122e820fba1e2cf53))
+- *(platform)* [**breaking**] Start windows on the CPU renderer by default - ([cf430f1](https://github.com/QaidVoid/smudge/commit/cf430f13740a190d81b9ad09b830e705ff53e71d))
+- *(smudge)* [**breaking**] Add opt-out a11y and bundled-fonts features - ([2a38617](https://github.com/QaidVoid/smudge/commit/2a386170e30f2d1828b5ed52a5d38a4f5ec1f5a0))
+- *(text)* Let an app's own fonts be its only font source - ([2ae1dc3](https://github.com/QaidVoid/smudge/commit/2ae1dc3c7298dfd24c20c77412256b304cecc64e))
+- *(text)* Select and copy across text blocks - ([d43848d](https://github.com/QaidVoid/smudge/commit/d43848dbc5ea83c4a89f4b922ff09ab4a1260cfd))
+- *(text)* Add rich text spans - ([236fb6c](https://github.com/QaidVoid/smudge/commit/236fb6c93f0d1ca5ba545cb2fb0f9448c940adef))
+- *(text)* [**breaking**] Draw missing bold and italic synthesized - ([1fa6da2](https://github.com/QaidVoid/smudge/commit/1fa6da26e973f6f236c57131314f346bfeb72acc))
+- *(text)* Register an app's own fonts - ([a67815d](https://github.com/QaidVoid/smudge/commit/a67815d51ecff63268fe95610790881f8c435071))
+- *(text)* Extend a selection across blocks with the keyboard - ([cfc5669](https://github.com/QaidVoid/smudge/commit/cfc5669938248be072fd61fb30fe0c9cede3a7f9))
+- *(widgets)* Add resizable split panes - ([4e1d1d6](https://github.com/QaidVoid/smudge/commit/4e1d1d65fe050c6634ca5a310fee1624a5c61b8c))
+- *(widgets)* Auto-scroll a scroll view while a drag is held past its edge - ([f42f9e0](https://github.com/QaidVoid/smudge/commit/f42f9e0b5570159624218cdd229ee7c1f05d1389))
+- Follow the system color scheme - ([8788408](https://github.com/QaidVoid/smudge/commit/87884086989cc3b2aedda47568639e185e2f5013))
+- Add cargo smudge dev hot-patch session - ([0956073](https://github.com/QaidVoid/smudge/commit/09560734ac183700e161d1db79bfac4df1cc10ae))
+- Run every stored closure through a hot reload shim - ([390bf04](https://github.com/QaidVoid/smudge/commit/390bf044a55b3f2c20238e151b15d39349c29dc9))
+
+### 🐛 Bug Fixes
+
+- *(cargo-smudge)* Link patches with their own definitions bound - ([7703e4d](https://github.com/QaidVoid/smudge/commit/7703e4dd7be2c30a1799d20b01903a9ce3df6a38))
+- *(cargo-smudge)* Follow cargo's per-unit build directory - ([fc36478](https://github.com/QaidVoid/smudge/commit/fc36478bbbc911e1a8e4e2640ffa4d97fc760ffb))
+- *(cargo-smudge)* Compare the type parameters of a function too - ([ddc9f7a](https://github.com/QaidVoid/smudge/commit/ddc9f7a0f7e3cb7ddf4d509eee6c137d50dccd73))
+- *(core)* Let a slot's build context reach what it mounts later - ([943fc85](https://github.com/QaidVoid/smudge/commit/943fc85fb0f2f77205649206c20071b3ea085c39))
+- *(core)* Let presses pass a node that only scrolls - ([0291a2c](https://github.com/QaidVoid/smudge/commit/0291a2c6db0b82612f0504a8be9eef87a7fd87ae))
+- *(core)* Use the color scheme follower's clear colors opaque - ([7cc929f](https://github.com/QaidVoid/smudge/commit/7cc929f491595750e55bfa6473b88ab0ded1184b))
+- *(core)* Guard a hot closure shim by its closure type - ([d6f6a7f](https://github.com/QaidVoid/smudge/commit/d6f6a7fd299b9c833c51c82007d33cf68ac4ce5a))
+- *(core)* Reveal a focus that its own handler moved - ([9d36a4e](https://github.com/QaidVoid/smudge/commit/9d36a4e776d115b7b49e7118ac792bcf56025ce6))
+- *(core)* Leave the next frame's layout work after a remount - ([0204456](https://github.com/QaidVoid/smudge/commit/0204456708ebba286175a3dfcff91b4c41e292b9))
+- *(cpu)* Let nothing through a clip without area - ([c58cf25](https://github.com/QaidVoid/smudge/commit/c58cf25b02c0800c4d27cf402c691df3143de838))
+- *(examples)* Use the dark theme in the bench and fix two layouts - ([e9ef9af](https://github.com/QaidVoid/smudge/commit/e9ef9af424f23f2de97839e830334db4a786dee2))
+- *(gpu)* Keep a bad cache file from failing the start - ([6cb3f34](https://github.com/QaidVoid/smudge/commit/6cb3f34b17f760258b947e2bc92e04f184972953))
+- *(text)* Place label and paragraph text inside their padding - ([7e8964d](https://github.com/QaidVoid/smudge/commit/7e8964da568600ff4e32a768e0fa6e17d7fa1968))
+- *(text)* Show a selection only in the focused field - ([ad407c8](https://github.com/QaidVoid/smudge/commit/ad407c8a8a9ae7b8347a73875f3ff18721b9f9a2))
+- *(text)* Paint the background and border of text fields - ([91874d2](https://github.com/QaidVoid/smudge/commit/91874d272325d64851eb9b2d8d1e61460121b314))
+- *(widgets)* End split pane content at the pane's edge - ([9836f85](https://github.com/QaidVoid/smudge/commit/9836f858806f80931eed25d9057e16c58ba1ddaf))
+- *(widgets)* Stretch a list row's content to the list's width - ([07808a2](https://github.com/QaidVoid/smudge/commit/07808a25f67c51ceed335805021799a6b795d2ce))
+- *(widgets)* Keep a following keyed list's end in view - ([2d4eae5](https://github.com/QaidVoid/smudge/commit/2d4eae56d3f2e473af6679cfae8c4e3701340505))
+
+### 🚜 Refactor
+
+- *(platform)* Drop the color scheme client's owner tracking - ([663ebd4](https://github.com/QaidVoid/smudge/commit/663ebd4a945f93a3bf820888ed3ee7cfeaa621f9))
+- *(platform)* Start run_view through run_view_with - ([c637dfb](https://github.com/QaidVoid/smudge/commit/c637dfb1134484cfa16298d0668b0a092acd083c))
+
+### 📚 Documentation
+
+- *(core)* Say what a remount does before it returns - ([2fcaa9d](https://github.com/QaidVoid/smudge/commit/2fcaa9d3277a1f0b7c307ae8d2f82a48584ce321))
+- *(smudge)* Add a tour example of panes, a log and rich text - ([aaf5318](https://github.com/QaidVoid/smudge/commit/aaf53186602c79524e4136b624bdb370fc6d6371))
+- *(widgets)* Split the merged rehash doc comment - ([da04fbe](https://github.com/QaidVoid/smudge/commit/da04fbe35148cf89349c81ed1124c54483151a34))
+- Add the hot reload guide - ([ff2e0be](https://github.com/QaidVoid/smudge/commit/ff2e0befaf220cf66b37c4018cc466f31cc2aa0b))
+
+### ⚡ Performance
+
+- *(cargo-smudge)* Allocate with mimalloc in musl builds - ([62c8f4b](https://github.com/QaidVoid/smudge/commit/62c8f4bc76fa65f1019532e87b340a3de4b39cbf))
+- *(cargo-smudge)* Cut the latency of every patch - ([ee218be](https://github.com/QaidVoid/smudge/commit/ee218be206cbae0e63143601eae36c8b028906c7))
+- *(cargo-smudge)* Keep the replay's incremental cache across patches - ([5529e83](https://github.com/QaidVoid/smudge/commit/5529e83774b4fbdd82fed0b1eae0673c812bd605))
+- *(core)* Adopt child owners in constant time - ([0410a33](https://github.com/QaidVoid/smudge/commit/0410a335062937c287bca227811871f4c80e60fb))
+- *(platform)* Draw CPU frames straight into the window buffer - ([5da8e23](https://github.com/QaidVoid/smudge/commit/5da8e23a5a6e184b199500463e9dc705580fbb66))
+- *(platform)* Talk to the Wayland clipboard directly - ([dba89d5](https://github.com/QaidVoid/smudge/commit/dba89d5c62ef77a3f8fc036033747122f095338d))
+- *(text)* Drop glyph names from the bundled fonts - ([730ecc4](https://github.com/QaidVoid/smudge/commit/730ecc42d39f77d14957ae1b9113ae3946d43678))
+
+### 🧪 Testing
+
+- *(cargo-smudge)* Await the applied patch after a broken save - ([55b0d37](https://github.com/QaidVoid/smudge/commit/55b0d3716b0aefe1777c0bc1d50fc514b19856e5))
+- *(cargo-smudge)* Await a fixed lex error by what the app shows - ([faecf26](https://github.com/QaidVoid/smudge/commit/faecf26fbcd6e2dfc7dbb548af3bad8ffdd8f52c))
+- *(core)* Cover inner operations under scrolls and full borders - ([7a94f07](https://github.com/QaidVoid/smudge/commit/7a94f07c3aceaf9d37610b85d927c5a12eff86e9))
+
+### ⚙️ Miscellaneous Tasks
+
+- Keep only the root changelog - ([5663901](https://github.com/QaidVoid/smudge/commit/5663901d66c078fa0e6c55aa15c9603f0ab99c88))
+- Build on the installed stable toolchain - ([cfadc61](https://github.com/QaidVoid/smudge/commit/cfadc611a7001406f2d19671769dd2ba11c6bb47))
+
 ## [0.2.0](https://github.com/QaidVoid/smudge/compare/v0.1.0...v0.2.0) - 2026-11-13
 
 ### ⛰️  Features
