@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the release to build, such as v0.3.0
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  cargo-smudge:
+    name: cargo-smudge for x86-64 Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ inputs.tag }}
+      TARGET: x86_64-unknown-linux-musl
+      ASSET: cargo-smudge-x86_64-unknown-linux-musl.tar.xz
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check the release is a draft
+        run: test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - name: Install the musl target
+        run: rustup target add "$TARGET"
+      # mimalloc, the allocator of the musl build, compiles C for the target.
+      - name: Install the musl C compiler
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Build
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: symbols
+        run: cargo build --release --locked -p cargo-smudge --target "$TARGET"
+      - name: Check the binary is static and runs
+        run: |
+          bin="target/$TARGET/release/cargo-smudge"
+          file "$bin" | grep -q 'static-pie linked'
+          if "$bin" smudge > usage.txt 2>&1; then exit 1; fi
+          grep -q '^usage: cargo smudge new' usage.txt
+      - name: Package
+        run: |
+          tar -cJf "$ASSET" -C "target/$TARGET/release" cargo-smudge -C "$GITHUB_WORKSPACE" LICENSE-MIT LICENSE-APACHE README.md
+          sha256sum "$ASSET" > "$ASSET.sha256"
+      - name: Attest the build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ env.ASSET }}
+      - name: Attach the archive to the draft release
+        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Publish the release
+        run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"

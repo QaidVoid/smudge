@@ -21,7 +21,7 @@ Smudge is a native Rust GUI library. It has a retained widget tree, fine-grained
 
 ## Releases
 
-- Releases go through release-plz only (`.release-plz.toml` and `.github/workflows/release-plz.yml`). On every push to `main`, it opens or updates a release PR with version bumps and changelogs, and publishes to crates.io when that PR is merged.
+- Releases go through release-plz only (`.release-plz.toml` and `.github/workflows/release-plz.yml`). On every push to `main`, it opens or updates a release PR with version bumps and changelogs, and publishes to crates.io when that PR is merged. The GitHub release it creates stays a draft until `.github/workflows/release.yml` has attached the static `cargo-smudge` build and publishes it.
 - Never run `cargo publish`, never bump versions by hand, and never edit `CHANGELOG.md` files by hand. release-plz derives all of them from the semantic commit messages, so write those messages with care. `feat` and `fix` commits appear in the changelog, and a `!` or a `BREAKING CHANGE:` footer marks a breaking change.
 - `semver_check` is on. A breaking change to an API that has been released must be marked as breaking in its commit message. A change to an API that no release has shipped yet is not breaking, so do not mark it.
 - Crates that are not meant for crates.io set `publish = false`, and release-plz skips them.

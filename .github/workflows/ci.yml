@@ -43,3 +43,30 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-dejavu-core
       - name: Check feature consumers
         run: tests/consumers/check.sh
+
+  static-cargo-smudge:
+    name: Static cargo-smudge
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TARGET: x86_64-unknown-linux-musl
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - name: Install the musl target
+        run: rustup target add "$TARGET"
+      # mimalloc, the allocator of the musl build, compiles C for the target.
+      - name: Install the musl C compiler
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Build
+        run: cargo build --release --locked -p cargo-smudge --target "$TARGET"
+      - name: Check the binary is static and runs
+        run: |
+          bin="target/$TARGET/release/cargo-smudge"
+          file "$bin" | grep -q 'static-pie linked'
+          if "$bin" smudge > usage.txt 2>&1; then exit 1; fi
+          grep -q '^usage: cargo smudge new' usage.txt

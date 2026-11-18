@@ -10,6 +10,8 @@ Install the subcommand once:
 cargo install cargo-smudge
 ```
 
+A GitHub release also carries a static build for x86-64 Linux, `cargo-smudge-x86_64-unknown-linux-musl.tar.xz`, which runs on any distribution. Put the `cargo-smudge` inside it on your `PATH`, and cargo finds it as the `smudge` subcommand.
+
 ### A new app
 
 `cargo smudge new` makes a package that hot-reloads from the start, and `cargo smudge init` makes one in an existing directory. Both run cargo's own `new` or `init` and pass `--name`, `--vcs` and `--edition` through to it:
