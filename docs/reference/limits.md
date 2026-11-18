@@ -24,6 +24,7 @@
 
 - **Scripts without spaces need a feature.** Thai, Lao, Khmer and Burmese wrap only at spaces unless `complex-scripts` is on. See [Text and input](/guide/text-and-input#scripts-without-spaces).
 - **Right-to-left labels truncate without an ellipsis.** A label capped with `max_lines` cuts its last line at the visually trailing edge and ends it in an ellipsis. A layout whose dominant direction is right-to-left keeps the cap but shows its kept lines whole, with no ellipsis, since the ellipsis would have to lead the line rather than close it.
+- **Fonts of the application's own are registered by hand.** A build whose only font source is `app-fonts` draws no text until the application registers a font, and nothing reports a forgotten registration. Register fonts before the window opens. See [Shipping a small binary](/guide/small-binary#app-fonts).
 - **The ellipsis needs a font that maps it.** Truncation uses the horizontal ellipsis of the cut run's font, or three full stops when that font lacks the ellipsis but maps a full stop. When the run's font maps neither, it uses the ellipsis of the label's own font. When that font maps neither either, the label still keeps its cap and cuts its last line, but ends it without an ellipsis.
 
 ## Platforms
@@ -37,6 +38,8 @@
 
 ## Hot reload
 
+- **x86-64 Linux only.** `cargo smudge dev` patches a running app on x86-64 Linux. Elsewhere `cargo smudge new` and `cargo smudge init` work, and `dev` refuses.
+- **The build directory must be the target directory.** A cargo configuration that moves the build directory away from the target directory, through `build.build-dir` or `CARGO_BUILD_BUILD_DIR`, keeps patches from finding the workspace's libraries.
 - **Statics of the patched app crate start fresh.** The patched code reaches a static of the app crate, `pub` or not, by a short distance from itself, and the patch is loaded too far from the running app to reach the app's copy, so a writable one starts over at its initial value in the patched code. `cargo smudge dev` names such statics once per session. Keep state that must survive a patch in the state passed to `run_view`, in signals, or in a `pub static` of a library crate: a patch shares those with the running app, as long as the static's type keeps its layout. An edited immutable static, such as a table or a string, shows its new value.
 - **Some library statics ask for a restart.** An edit of a library crate whose writable statics a patch cannot share, because they are private, their type changed, or the debug information does not describe them, asks for a restart.
 - **Closures that trade places can run each other's bodies.** A closure the app keeps outside the tree, such as one a configure step, a timer or a worker holds, runs the patched body of the closure that now has its place when two closures of a function swap, or when one is removed and another added so their count stays the same. When the count of a function's closures and async blocks changes, the change is detected, and those closures keep their old bodies until a restart.
