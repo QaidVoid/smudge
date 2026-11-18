@@ -21,8 +21,9 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::rc::Rc;
 
+use icu_segmenter::GraphemeClusterSegmenter;
 use parley::editing::Selection as ParagraphSelection;
-use parley::layout::Affinity;
+use parley::layout::{Affinity, Cluster};
 use parley::{Brush, Cursor};
 use smudge_core::element::{Element, IntoElement, Value, show};
 use smudge_core::geometry::{Color, Corners, Point, Rect};
@@ -31,6 +32,7 @@ use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{
     Owner, RenderEffect, RwSignal, prelude::*, provide_context, use_context,
 };
+use smudge_core::style::px;
 use smudge_core::theme::ColorToken;
 use smudge_core::widget::{PaintCx, Panel, panel};
 use web_time::Instant;
@@ -185,6 +187,16 @@ pub(crate) fn carried<K: Clone + Eq + Hash>(
     ordered(new, &start, &end)
 }
 
+/// Returns the start of the grapheme cluster of `text` that holds
+/// `offset`, or the end of `text` from there on.
+fn grapheme_start(text: &str, offset: usize) -> usize {
+    GraphemeClusterSegmenter::new()
+        .segment_str(text)
+        .take_while(|&boundary| boundary <= offset)
+        .last()
+        .unwrap_or(0)
+}
+
 /// Returns `offset` clamped into `text` and moved back to a character
 /// boundary.
 fn floor_boundary(text: &str, offset: usize) -> usize {
@@ -274,6 +286,10 @@ pub(crate) trait Nav {
     /// Returns the length of the block's text, or `None` before it has a
     /// layout.
     fn len(&self) -> Option<usize>;
+
+    /// Returns the start of the cluster that holds `offset`, or `offset`
+    /// when no cluster does, or `None` before the block has a layout.
+    fn snap(&self, offset: usize) -> Option<usize>;
 }
 
 /// Steps from `offset` in `layout`, as [`Nav::step`] describes.
@@ -290,8 +306,11 @@ fn step_in<B: Brush>(
     offset: usize,
     step: Step,
 ) -> Stepped {
+    // The carried selection was made in an earlier layout, and the block's
+    // text may have changed since, so it is refreshed into this one.
     let from = carried
         .filter(|selection| selection.focus().index() == offset)
+        .map(|selection| selection.refresh(layout))
         .unwrap_or_else(|| {
             ParagraphSelection::from_byte_index(layout, offset, Affinity::Downstream)
         });
@@ -346,6 +365,12 @@ fn step_in<B: Brush>(
     } else {
         Stepped::Moved(moved)
     }
+}
+
+/// Returns the start of the cluster of `layout` that holds `offset`, or
+/// `offset` when no cluster does.
+fn snap_in<B: Brush>(layout: &parley::Layout<B>, offset: usize) -> usize {
+    Cluster::from_byte_index(layout, offset).map_or(offset, |cluster| cluster.text_range().start)
 }
 
 /// Returns the length of the text of `layout`.
@@ -476,10 +501,15 @@ impl<K: Clone + Eq + Hash + 'static> Scope<K> {
             let ends = self
                 .ends_in(&old)
                 .and_then(|(start, end)| carried(&old, &new, &start, &end));
+            // A caret, both ends in one place, selects nothing, and stays
+            // while its block does, so the keyboard can still extend it.
+            let caret_stays = self.anchor.borrow().as_ref().is_some_and(|anchor| {
+                self.focus.borrow().as_ref() == Some(anchor) && new.position(&anchor.key).is_some()
+            });
             let (anchor, focus) = match ends {
                 Some((start, end)) if anchor_first => (Some(start), Some(end)),
                 Some((start, end)) => (Some(end), Some(start)),
-                None if self.pressing.get() => {
+                None if self.pressing.get() || caret_stays => {
                     (self.anchor.borrow().clone(), self.focus.borrow().clone())
                 }
                 None => (None, None),
@@ -604,6 +634,9 @@ impl<K: Clone + Eq + Hash + 'static> Scope<K> {
         if !event.pressed {
             return Handled::No;
         }
+        if self.clamp_ends() {
+            self.update();
+        }
         let modifiers = event.modifiers;
         if modifiers.command() && is_letter(&event.key, "c") {
             self.copy();
@@ -700,6 +733,42 @@ impl<K: Clone + Eq + Hash + 'static> Scope<K> {
         *self.stepped.borrow_mut() = None;
         self.set_focus(at, false);
         Handled::Yes
+    }
+
+    /// Moves each end of the selection that lies past its block's text back
+    /// to the text's end, and one inside a cluster to the cluster's start,
+    /// as the highlight shows it, since a block's text can change while it
+    /// is selected. A mounted block's clusters come from its layout, and an
+    /// unmounted block's from its text's grapheme clusters. Answers whether
+    /// an end moved. An end carried to the end of a block whatever its
+    /// length stays so.
+    fn clamp_ends(&self) -> bool {
+        let mut moved = false;
+        for end in [&self.anchor, &self.focus] {
+            let Some(key) = end
+                .borrow()
+                .as_ref()
+                .filter(|end| end.offset != usize::MAX)
+                .map(|end| end.key.clone())
+            else {
+                continue;
+            };
+            let len = self.text_len(&key);
+            let nav = self.nav_of(&key);
+            let offset = end.borrow().as_ref().map_or(0, |end| end.offset);
+            let clamped = offset.min(len);
+            let snapped = nav
+                .as_ref()
+                .and_then(|nav| nav.snap(clamped))
+                .unwrap_or_else(|| grapheme_start(&(self.text_of)(&key), clamped));
+            if let Some(end) = end.borrow_mut().as_mut()
+                && snapped != end.offset
+            {
+                end.offset = snapped;
+                moved = true;
+            }
+        }
+        moved
     }
 
     /// Moves the selection's moving end by `step`, inside its block through
@@ -802,11 +871,13 @@ impl<K: Clone + Eq + Hash + 'static> Scope<K> {
     }
 
     /// Returns the selected text of every block in order, with a newline
-    /// between blocks, or `None` when nothing is selected.
+    /// between blocks, or `None` when nothing is selected. Ends that differ
+    /// but name one place, as the end of a block given by its length and by
+    /// the end carried there, select nothing.
     pub(crate) fn selected_text(&self) -> Option<String> {
         let order = Rc::clone(&self.order.borrow());
         let (start, end) = self.ends_in(&order)?;
-        Some(join(&order, &start, &end, &*self.text_of))
+        Some(join(&order, &start, &end, &*self.text_of)).filter(|text| !text.is_empty())
     }
 
     /// Writes the selected text to the clipboard.
@@ -985,9 +1056,12 @@ pub fn selection_scope<K: Clone + Eq + Hash + 'static, E: IntoElement>(
                 },
             )
             // The slot lays the content out as the scope's own column would,
-            // stretched across and growing into the scope's height.
+            // stretched across and growing into the scope's height. With no
+            // minimum height of its own, it would grow to its content's, and
+            // a scroll view inside it would never scroll.
             .column()
-            .grow(1.0),
+            .grow(1.0)
+            .min_height(px(0.0)),
         )
 }
 
@@ -1057,6 +1131,10 @@ impl Nav for LabelNav {
     fn len(&self) -> Option<usize> {
         Some(len_in(&self.0.borrow().as_ref()?.layout))
     }
+
+    fn snap(&self, offset: usize) -> Option<usize> {
+        Some(snap_in(&self.0.borrow().as_ref()?.layout, offset))
+    }
 }
 
 /// The keyboard's view of a selectable paragraph, through the layout it
@@ -1088,6 +1166,10 @@ impl Nav for RichNav {
 
     fn len(&self) -> Option<usize> {
         self.with(len_in)
+    }
+
+    fn snap(&self, offset: usize) -> Option<usize> {
+        self.with(|layout| snap_in(layout, offset))
     }
 }
 

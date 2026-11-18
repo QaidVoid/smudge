@@ -3127,6 +3127,7 @@ version = "0.3.0"
 dependencies = [
  "criterion",
  "fontique",
+ "icu_segmenter",
  "insta",
  "parley",
  "proptest",

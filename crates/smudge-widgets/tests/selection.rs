@@ -1001,3 +1001,198 @@ fn the_keyboard_reveals_the_moving_end_below_the_padding_of_a_block_out_of_view(
         );
     }
 }
+
+#[test]
+fn a_list_that_fills_a_scope_scrolls_inside_the_scope_s_height() {
+    TextSystem::bundled_only().install();
+    let mut harness = Harness::new(400.0, 300.0, 1.0, || {
+        selection_scope(
+            || (0..1_000_u32).collect(),
+            |key: &u32| text(*key),
+            || {
+                virtual_list_keyed(
+                    || (0..1_000_u32).collect(),
+                    |key| *key,
+                    ROW,
+                    |key| label(text(*key)).height(px(ROW)).selectable(*key),
+                )
+                .grow(1.0)
+            },
+        )
+        .height(px(300.0))
+    });
+    harness.frame();
+    harness.settle();
+    let mut mounted = 0;
+    harness.app().visit_nodes(|_, name, _| {
+        if name.ends_with("Label") {
+            mounted += 1;
+        }
+    });
+    assert!(
+        mounted < 100,
+        "the list grew to its content and mounted {mounted} of its 1,000 rows"
+    );
+}
+
+/// Builds a scope over one rich text block that shows `shown`, with a
+/// memory clipboard installed.
+fn shown_in_one_block(shown: RwSignal<String>) -> (Harness, MemoryClipboard) {
+    TextSystem::bundled_only().install();
+    let mut harness = Harness::new(400.0, 300.0, 1.0, move || {
+        let read = shown.clone();
+        let built = shown.clone();
+        selection_scope(
+            || Rc::from([0u32]),
+            move |_: &u32| read.get(),
+            move || {
+                let built = built.clone();
+                column().child(
+                    rich_text(move || Rc::from([Span::new(built.get(), SpanStyle::default())]))
+                        .height(px(ROW))
+                        .selectable(0u32),
+                )
+            },
+        )
+    });
+    let clipboard = MemoryClipboard::default();
+    harness.app().set_clipboard(Box::new(clipboard.clone()));
+    harness.frame();
+    (harness, clipboard)
+}
+
+#[test]
+fn a_keyboard_selection_contracts_after_its_block_s_text_shrinks() {
+    let shown = RwSignal::new(String::from("abcdef"));
+    let (mut harness, mut clipboard) = shown_in_one_block(shown.clone());
+
+    harness.click(on_row(0, 1.0));
+    harness.frame();
+    shift(&mut harness, Key::End, false);
+    assert_eq!(
+        copy(&mut harness, &mut clipboard).as_deref(),
+        Some("abcdef")
+    );
+
+    shown.set(String::from("abc"));
+    harness.frame();
+    shift(&mut harness, Key::ArrowLeft, false);
+    assert_eq!(
+        copy(&mut harness, &mut clipboard).as_deref(),
+        Some("ab"),
+        "the step left went from the end of the shorter text"
+    );
+}
+
+#[test]
+fn an_anchor_past_a_shrunk_text_moves_to_its_end() {
+    let shown = RwSignal::new(String::from("abcdefgh"));
+    let (mut harness, mut clipboard) = shown_in_one_block(shown.clone());
+
+    harness.click(on_row(0, 390.0));
+    harness.frame();
+    shift(&mut harness, Key::ArrowLeft, false);
+    assert_eq!(copy(&mut harness, &mut clipboard).as_deref(), Some("h"));
+
+    shown.set(String::from("abcdef"));
+    harness.frame();
+    shift(&mut harness, Key::ArrowLeft, false);
+    assert_eq!(copy(&mut harness, &mut clipboard).as_deref(), Some("f"));
+    shift(&mut harness, Key::ArrowRight, false);
+    assert_eq!(
+        copy(&mut harness, &mut clipboard).as_deref(),
+        Some("f"),
+        "the step back to the anchor left nothing selected, so copy kept the clipboard"
+    );
+
+    shown.set(String::from("abcdefzz"));
+    harness.frame();
+    assert_eq!(
+        copy(&mut harness, &mut clipboard).as_deref(),
+        Some("f"),
+        "text that arrives after the anchor is not selected"
+    );
+}
+
+#[test]
+fn a_whole_scope_move_after_the_text_shrinks_keeps_the_anchor_inside_it() {
+    let shown = RwSignal::new(String::from("abcdefgh"));
+    let (mut harness, mut clipboard) = shown_in_one_block(shown.clone());
+
+    harness.click(on_row(0, 390.0));
+    harness.frame();
+    shown.set(String::from("abcdef"));
+    harness.frame();
+    harness.press_key_with(
+        Key::Home,
+        Modifiers {
+            shift: true,
+            control: !cfg!(target_os = "macos"),
+            meta: cfg!(target_os = "macos"),
+            ..Modifiers::default()
+        },
+    );
+    harness.frame();
+    shown.set(String::from("abcdefZ"));
+    harness.frame();
+    assert_eq!(
+        copy(&mut harness, &mut clipboard).as_deref(),
+        Some("abcdef"),
+        "the anchor stayed at the end of the shorter text"
+    );
+}
+
+#[test]
+fn a_step_that_cannot_move_after_the_text_shrinks_clears_the_highlight() {
+    let shown = RwSignal::new(String::from("abcdefg"));
+    let (mut harness, _) = shown_in_one_block(shown.clone());
+    harness.click(on_row(0, 390.0));
+    harness.frame();
+    shift(&mut harness, Key::ArrowLeft, false);
+    shown.set(String::from("abcdef"));
+    harness.frame();
+    shift(&mut harness, Key::ArrowRight, false);
+    shown.set(String::from("abcdefZ"));
+    harness.frame();
+
+    let unselected = RwSignal::new(String::from("abcdefg"));
+    let (mut expected, _) = shown_in_one_block(unselected.clone());
+    expected.click(on_row(0, 390.0));
+    expected.frame();
+    unselected.set(String::from("abcdefZ"));
+    expected.frame();
+    harness.assert_matches(&expected);
+}
+
+#[test]
+fn copying_ends_that_meet_at_a_block_s_end_keeps_the_clipboard() {
+    TextSystem::bundled_only().install();
+    let keys: RwSignal<Rc<[u32]>> = RwSignal::new(Rc::from([0u32, 1]));
+    let read = keys.clone();
+    let mut harness = Harness::new(400.0, 300.0, 1.0, move || {
+        let read = read.clone();
+        selection_scope(
+            move || read.get(),
+            |key: &u32| text(*key),
+            move || {
+                column()
+                    .children([0u32, 1].map(|key| label(text(key)).height(px(ROW)).selectable(key)))
+            },
+        )
+    });
+    let mut clipboard = MemoryClipboard::default();
+    harness.app().set_clipboard(Box::new(clipboard.clone()));
+    harness.frame();
+
+    harness.click(on_row(0, 390.0));
+    harness.frame();
+    shift(&mut harness, Key::ArrowRight, false);
+    keys.set(Rc::from([0u32]));
+    harness.frame();
+    clipboard.set(String::from("kept"));
+    assert_eq!(
+        copy(&mut harness, &mut clipboard).as_deref(),
+        Some("kept"),
+        "the end carried to the end of the first block selects nothing there"
+    );
+}
