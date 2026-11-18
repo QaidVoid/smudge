@@ -89,6 +89,7 @@ More examples live in [`crates/smudge/examples`](crates/smudge/examples):
 cargo run --release --example counter -p smudge
 cargo run --release --example form -p smudge
 cargo run --release --example lists -p smudge
+cargo run --release --example tour -p smudge
 ```
 
 ## Status

@@ -93,8 +93,9 @@ cd smudge
 cargo run --release --example counter -p smudge
 cargo run --release --example form -p smudge
 cargo run --release --example lists -p smudge
+cargo run --release --example tour -p smudge
 ```
 
-`form` binds two text inputs to signals and shows a live preview. `lists` filters a 100,000-row virtual list as you type.
+`form` binds two text inputs to signals and shows a live preview. `lists` filters a 100,000-row virtual list as you type. `tour` puts a log that follows its end, selectable rich text and notes into resizable panes.
 
 Next, [Signals](./signals) explains how state reaches the screen in more detail.
