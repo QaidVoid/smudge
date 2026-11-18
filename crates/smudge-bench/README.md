@@ -18,6 +18,7 @@ counts, and on the window backend the present's statistics.
 | `s5` | 1,000 rows of a box and a label in a scroll view, scrolled by scripted wheel events | 1280 by 800 | Scroll without layout: the content moves and the display list rebuilds |
 | `s6` | A 100,000-row virtual list, scrolled one row height per frame | 1280 by 800 | The mounted window of a fixed-height list moving through a long list |
 | `s7` | A 100,000-row keyed list of heights between 20 and 200 pixels, started from a 110-pixel estimate, scrolled one average row height per frame for 150 frames down and 150 up, then following its end while one row is appended per frame for 150 frames | 1280 by 800 | The keyed list measuring rows and re-aiming its anchor while its mounted window moves, then taking appends while it follows. Run it with `--frames 420`, which with the default warmup covers all three phases |
+| `s8` | A markdown transcript of seeded paragraphs, lists and code fences, 300 blocks long, grown to 1,000 blocks at frame 150 and to 3,000 at frame 300, with 20 bytes streamed into its last paragraph every frame and a new paragraph every tenth | 1280 by 800 | Whether a streamed token costs the same at every transcript length: only the open block parses and lays out, and the view follows its end. Its `latency_us` runs from the push, so it covers the parse as well as the frame. Run it with `--frames 420`, which with the default warmup covers all three lengths |
 | `s9` | One text field, emptied and focused by a scripted click at the start of each repeat, given one keystroke per frame | 1280 by 800 | Input latency: the time from an event to the pixel it changes |
 
 Scene variation comes from an in-crate xorshift generator seeded per scene.
@@ -29,7 +30,7 @@ measure `latency_us` mark when they injected their event.
 ## Flags
 
 ```sh
-smudge-bench --scene s1|s2|s3|s4|s5|s6|s7|s9 [--mode damage|full] [--backend headless|window]
+smudge-bench --scene s1|s2|s3|s4|s5|s6|s7|s8|s9 [--mode damage|full] [--backend headless|window]
              [--renderer cpu|gpu]
              [--warmup 30] [--frames 300] [--repeats 3] [--scale 1.0]
              [--label <text>] [--out <path>]
@@ -74,7 +75,7 @@ Each line is one JSON object, and `type` says which:
   rather than waiting), `latency_us` (from a scripted event to the end of the
   frame that shows it, on the scenes that inject one), damage rectangle and
   pixel counts before and after merging, `raster_pixels`, `bytes_copied`,
-  `allocations`, `buffer_age`. Quantities a backend or scene does not produce
+  `allocations` (counted from the scene's step, so the work it scripts is included), `buffer_age`. Quantities a backend or scene does not produce
   are `null`.
 - `repeat_summary`: percentile objects (`median`, `p95`, `p99`, nearest-rank)
   for the total, each phase, and the latency when the scene measures it,

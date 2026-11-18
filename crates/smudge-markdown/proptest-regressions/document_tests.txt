@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c51bc4a6980bc83fbcf1cfc037ab36d31921a8aa21291c9d823a579fbb21deda # shrinks to text = "<pre>\n</pre>\n[ref]: /target\n    indented four\n", cuts = []
+cc b9a0fb6f2ca441e2378dacc526fcfb891e4ea8610ce423e77c12466b9a6c2478 # shrinks to text = "see [ref] and [other][ref2]\nline with trailing spaces  \n===\n[ref]: /target\n- item\n", cuts = [74]
+cc 5ee522141c69afb2bb173b9c77d3004c47338454de4579afea544c7236bee520 # shrinks to text = "- item\n\n[ref]: /target\n    indented four\n", cuts = []

@@ -9,7 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-smudge-core = { version = "0.1.0", path = "../crates/smudge-core" }
+pulldown-cmark = { version = "0.13.6", default-features = false }
+smudge-core = { path = "../crates/smudge-core" }
 
 [dependencies.smudge-text]
 path = "../crates/smudge-text"
@@ -17,6 +18,13 @@ path = "../crates/smudge-text"
 [[bin]]
 name = "text_input_edits"
 path = "fuzz_targets/text_input_edits.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "markdown_stream"
+path = "fuzz_targets/markdown_stream.rs"
 test = false
 doc = false
 bench = false

@@ -18,7 +18,7 @@ target="${CARGO_TARGET_DIR:-$root/target}"
 logs="$target/gates"
 mkdir -p "$logs"
 
-wasm_crates=(smudge-core smudge-cpu smudge-platform smudge-text smudge-widgets smudge)
+wasm_crates=(smudge-core smudge-cpu smudge-platform smudge-text smudge-widgets smudge-markdown smudge)
 
 # The files the change touches: the working copy's change against its parent
 # with jj, or the uncommitted and staged changes against HEAD with git.

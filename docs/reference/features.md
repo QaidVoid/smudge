@@ -1,6 +1,6 @@
 # Cargo features
 
-<p class="lead">The defaults give a desktop window with the CPU renderer, screen reader support and embedded fonts. Everything else is opt-in. [Shipping a small binary](/guide/small-binary) shows what each default costs and how to build without it.</p>
+<p class="lead">The defaults give a desktop window with the CPU renderer, screen reader support and embedded fonts. Everything else is opt-in. <a href="/guide/small-binary">Shipping a small binary</a> shows what each default costs and how to build without it.</p>
 
 ## `smudge`
 
@@ -13,6 +13,7 @@
 | `gpu` | no | The GPU renderer and its window path, with the Vulkan, Metal and DX12 backends. Implies `window`. Windows still start on the CPU renderer unless `WindowOptions::renderer` or `SMUDGE_RENDERER` asks for `Auto` or `Gpu`. New in 0.3: before, `Auto` was the default with this feature. |
 | `complex-scripts` | no | Word and line break dictionaries for Chinese, Japanese, Thai, Lao, Khmer and Burmese. About 3 MB per binary and about 5 percent slower layout of other text. |
 | `system-fonts` | no | Also finds the fonts installed on the machine, on Linux, FreeBSD, Windows, Android and Apple platforms. The same feature of `smudge-text`, forwarded, so applications can turn it on without adding `smudge-text` themselves. |
+| `markdown` | no | Markdown rendered from a source that grows while it shows, through `smudge::markdown`. See [Markdown](/guide/markdown). |
 | `hot-reload` | no | Hot reload for applications started with `run_view` or `run_view_with`, on Linux, under `cargo smudge dev` from the `cargo-smudge` crate. The application applies each patch the builder sends and remounts its root through the patched view, keeping the state passed to the entry point and the values of the signals the view created. Implies `window`, and turns on the same feature of `smudge-widgets`. Elsewhere, and without a builder, both are plain runs. Meant for development builds. With it off, no patching code is compiled in. See [Hot reload](/guide/hot-reload). |
 
 ```toml

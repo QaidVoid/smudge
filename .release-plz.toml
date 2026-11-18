@@ -32,6 +32,7 @@ changelog_include = [
   "smudge-core",
   "smudge-cpu",
   "smudge-gpu",
+  "smudge-markdown",
   "smudge-platform",
   "smudge-text",
   "smudge-widgets",

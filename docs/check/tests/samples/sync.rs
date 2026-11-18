@@ -42,6 +42,11 @@ const PAGES: &[(&str, &str, &str)] = &[
         include_str!("layout.rs"),
     ),
     (
+        "docs/guide/markdown.md",
+        include_str!("../../../guide/markdown.md"),
+        include_str!("markdown.rs"),
+    ),
+    (
         "docs/guide/quick-start.md",
         include_str!("../../../guide/quick-start.md"),
         include_str!("quick_start.rs"),

@@ -339,6 +339,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
+name = "memchr"
+version = "2.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
 name = "memmap2"
 version = "0.9.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -433,6 +439,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
+dependencies = [
+ "bitflags",
+ "memchr",
+ "unicase",
 ]
 
 [[package]]
@@ -536,7 +553,7 @@ checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 
 [[package]]
 name = "smudge-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "slotmap",
  "taffy",
@@ -548,15 +565,17 @@ name = "smudge-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "pulldown-cmark",
  "smudge-core",
  "smudge-text",
 ]
 
 [[package]]
 name = "smudge-text"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "fontique",
+ "icu_segmenter",
  "parley",
  "skrifa",
  "smudge-core",
@@ -611,6 +630,12 @@ dependencies = [
  "serde_core",
  "zerovec",
 ]
+
+[[package]]
+name = "unicase"
+version = "2.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
 
 [[package]]
 name = "unicode-ident"

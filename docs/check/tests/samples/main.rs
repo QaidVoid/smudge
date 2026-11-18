@@ -14,6 +14,8 @@ mod index;
 #[rustfmt::skip]
 mod layout;
 #[rustfmt::skip]
+mod markdown;
+#[rustfmt::skip]
 mod quick_start;
 #[rustfmt::skip]
 mod rendering;

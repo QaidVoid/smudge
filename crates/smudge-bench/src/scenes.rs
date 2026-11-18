@@ -22,6 +22,7 @@ use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::reactive::{self, RwSignal, prelude::*};
 use smudge_core::style::{Align, px};
 use smudge_core::widget::{Panel, panel};
+use smudge_markdown::{MarkdownOptions, MarkdownSource, markdown};
 use smudge_text::{TextInputExt, label, text_input};
 use smudge_widgets::{ScrollExt, column, row, scroll, virtual_list, virtual_list_keyed};
 
@@ -51,6 +52,7 @@ const S2_SEED: u64 = 0x5EED_0002;
 const S3_SEED: u64 = 0x5EED_0003;
 const S5_SEED: u64 = 0x5EED_0005;
 const S7_SEED: u64 = 0x5EED_0007;
+const S8_SEED: u64 = 0x5EED_0008;
 
 /// The viewport of the scenes added for this round, in logical pixels.
 const VIEWPORT: (f32, f32) = (1280.0, 800.0);
@@ -119,10 +121,21 @@ pub(crate) struct Driver {
     /// The write ends of the animated texts, in mount order.
     texts: Vec<SetText>,
     /// The clock time the last scripted event was injected at, for the
-    /// latency record of the input scene.
+    /// latency record of the input and transcript scenes.
     injected_at: Option<Instant>,
     /// The signals the keyed list scene writes, once it mounted.
     keyed: Option<KeyedScene>,
+    /// The document the transcript scene grows, once it mounted.
+    transcript: Option<TranscriptScene>,
+}
+
+/// The state the transcript scene's driver writes.
+struct TranscriptScene {
+    /// The document the view shows.
+    source: MarkdownSource,
+    /// The seeded blocks the transcript grows to, each ending in a blank
+    /// line.
+    blocks: Vec<String>,
 }
 
 /// The signals the keyed list scene's driver writes.
@@ -143,6 +156,7 @@ impl Driver {
             texts: Vec::new(),
             injected_at: None,
             keyed: None,
+            transcript: None,
         }
     }
 
@@ -232,9 +246,10 @@ impl Scene {
 /// thousand mixed rows, and a virtual list of a hundred thousand rows. The
 /// seventh scrolls a keyed list of a hundred thousand rows of seeded
 /// heights, then follows its end while a row is appended every frame. The
-/// last types into a focused text field, one keystroke per
-/// frame.
-static SCENES: [Scene; 8] = [
+/// eighth streams markdown into a transcript of 300, then 1,000, then 3,000
+/// blocks, 20 bytes a frame. The last types into a focused text field, one
+/// keystroke per frame.
+static SCENES: [Scene; 9] = [
     Scene {
         key: "s1",
         viewport: Size {
@@ -297,6 +312,15 @@ static SCENES: [Scene; 8] = [
         },
         mount: mount_keyed_list,
         step: step_keyed_list,
+    },
+    Scene {
+        key: "s8",
+        viewport: Size {
+            width: VIEWPORT.0,
+            height: VIEWPORT.1,
+        },
+        mount: mount_transcript,
+        step: step_transcript,
     },
     Scene {
         key: "s9",
@@ -585,6 +609,136 @@ fn start_scroll_repeat(app: &mut App, distance: f32) {
             y: -distance,
         },
     });
+}
+
+/// The transcript length, in blocks, of each phase of the transcript scene.
+const TRANSCRIPT_BLOCKS: [usize; 3] = [300, 1_000, 3_000];
+
+/// How many frames each phase of the transcript scene lasts, so that with
+/// the default warmup a run of 420 frames measures all three.
+const TRANSCRIPT_PHASE_FRAMES: u64 = 150;
+
+/// The bytes each frame of the transcript scene appends.
+const TRANSCRIPT_APPEND: usize = 20;
+
+/// How many appends a streamed paragraph takes before the next one starts.
+const TRANSCRIPT_PARAGRAPH: u64 = 10;
+
+/// The words the transcript scene writes with.
+const TRANSCRIPT_WORDS: [&str; 16] = [
+    "the", "list", "follows", "its", "end", "while", "a", "reply", "streams", "into", "blocks",
+    "that", "close", "and", "keep", "layout",
+];
+
+/// Mounts the transcript scene: a markdown view following the end of a
+/// seeded transcript of [`TRANSCRIPT_BLOCKS`]'s first length.
+fn mount_transcript(driver: &mut Driver) -> Element<Panel> {
+    let blocks = transcript_blocks();
+    let source = MarkdownSource::new();
+    source.push(&blocks[..TRANSCRIPT_BLOCKS[0]].concat());
+    let shown = source.clone();
+    driver.transcript = Some(TranscriptScene { source, blocks });
+    panel().child(
+        markdown(
+            &shown,
+            MarkdownOptions::default().follow_end(RwSignal::new(true)),
+        )
+        .width(px(VIEWPORT.0))
+        .height(px(VIEWPORT.1)),
+    )
+}
+
+/// Drives the transcript scene.
+///
+/// Each phase lasts [`TRANSCRIPT_PHASE_FRAMES`] frames. A phase opens by
+/// growing the transcript to its length of [`TRANSCRIPT_BLOCKS`] in one push,
+/// which costs that one frame, and every other frame appends
+/// [`TRANSCRIPT_APPEND`] bytes to the streamed paragraph at the end, which
+/// ends every [`TRANSCRIPT_PARAGRAPH`] appends so the next one opens. One
+/// repeat starts again from the first length. Frames past the last phase
+/// keep appending.
+fn step_transcript(driver: &Shared, _app: &mut App, frame: u64) {
+    let (source, pushes) = {
+        let driver = driver.borrow();
+        let scene = driver
+            .transcript
+            .as_ref()
+            .expect("the transcript scene mounted before its first step");
+        (scene.source.clone(), transcript_pushes(scene, frame))
+    };
+    if frame == 0 {
+        source.clear();
+    }
+    // The stamp precedes the pushes, so the latency covers the parse they
+    // run as well as the frame that shows it.
+    driver.borrow_mut().note_injection();
+    for text in &pushes {
+        source.push(text);
+    }
+}
+
+/// The text the transcript scene pushes at `frame`: the first phase's blocks
+/// at frame 0, the next phase's blocks where a phase starts, and otherwise
+/// one streamed chunk, which ends its paragraph every tenth frame.
+fn transcript_pushes(scene: &TranscriptScene, frame: u64) -> Vec<String> {
+    let phase = (frame / TRANSCRIPT_PHASE_FRAMES) as usize;
+    if frame == 0 {
+        return vec![scene.blocks[..TRANSCRIPT_BLOCKS[0]].concat()];
+    }
+    if frame.is_multiple_of(TRANSCRIPT_PHASE_FRAMES) && phase < TRANSCRIPT_BLOCKS.len() {
+        let grown = &scene.blocks[TRANSCRIPT_BLOCKS[phase - 1]..TRANSCRIPT_BLOCKS[phase]];
+        return vec![String::from("\n\n"), grown.concat()];
+    }
+    let mut rng = Xorshift::new(frame_seed(S8_SEED, frame));
+    let mut chunk = String::with_capacity(TRANSCRIPT_APPEND + 2);
+    while chunk.len() < TRANSCRIPT_APPEND {
+        chunk.push_str(TRANSCRIPT_WORDS[(rng.next() % 16) as usize]);
+        chunk.push(' ');
+    }
+    chunk.truncate(TRANSCRIPT_APPEND);
+    if frame.is_multiple_of(TRANSCRIPT_PARAGRAPH) {
+        chunk.push_str("\n\n");
+    }
+    vec![chunk]
+}
+
+/// The seeded blocks of the transcript scene: paragraphs, lists and code
+/// fences, as many as its longest phase shows.
+fn transcript_blocks() -> Vec<String> {
+    let mut rng = Xorshift::new(S8_SEED);
+    let words = |count: u64, rng: &mut Xorshift| {
+        (0..count)
+            .map(|_| TRANSCRIPT_WORDS[(rng.next() % 16) as usize])
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    (0..TRANSCRIPT_BLOCKS[TRANSCRIPT_BLOCKS.len() - 1])
+        .map(|_| match rng.next() % 4 {
+            0 => {
+                let items = 2 + rng.next() % 4;
+                let mut list = String::new();
+                for _ in 0..items {
+                    let length = 3 + rng.next() % 8;
+                    list.push_str(&format!("- {}\n", words(length, &mut rng)));
+                }
+                list.push('\n');
+                list
+            }
+            1 => {
+                let lines = 3 + rng.next() % 6;
+                let mut code = String::from("```rust\n");
+                for line in 0..lines {
+                    code.push_str(&format!("let value_{line} = {};\n", rng.next() % 1000));
+                }
+                code.push_str("```\n\n");
+                code
+            }
+            _ => {
+                let length = 12 + rng.next() % 50;
+                format!("{}.\n\n", words(length, &mut rng))
+            }
+        })
+        .collect()
 }
 
 /// Mounts the input scene: one text field with room for its caret.

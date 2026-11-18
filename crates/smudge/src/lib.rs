@@ -139,3 +139,8 @@ pub use smudge_platform as window;
 
 #[cfg(feature = "gpu")]
 pub use smudge_gpu as gpu;
+
+/// Markdown rendered from a source that grows while it shows, as a reply
+/// streamed in tokens does. With the `markdown` feature.
+#[cfg(feature = "markdown")]
+pub use smudge_markdown as markdown;

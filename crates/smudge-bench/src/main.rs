@@ -41,7 +41,7 @@ use crate::stats::Percentiles;
 const CLEAR_COLOR: Color = Color::rgb(16, 17, 21);
 
 /// The text of `--help`.
-const USAGE: &str = "usage: smudge-bench --scene s1|s2|s3|s4|s5|s6|s7|s9 [--mode damage|full] \
+const USAGE: &str = "usage: smudge-bench --scene s1|s2|s3|s4|s5|s6|s7|s8|s9 [--mode damage|full] \
                       [--backend headless|window] [--renderer cpu|gpu] \
                       [--warmup 30] [--frames 300] [--repeats 3] [--scale 1.0] \
                       [--label <text>] [--out <path>]";
@@ -367,7 +367,7 @@ impl Args {
                 "--scene" => {
                     let key = value()?;
                     scene = Some(Scene::by_key(&key).ok_or_else(|| {
-                        format!("unknown scene {key}, want s1, s2, s3, s4, s5, s6, s7 or s9")
+                        format!("unknown scene {key}, want s1, s2, s3, s4, s5, s6, s7, s8 or s9")
                     })?);
                 }
                 "--mode" => {
@@ -511,8 +511,8 @@ fn run_headless(args: &Args, repeat: u32) -> Result<(RepeatRun, Option<AdapterRe
     let start = process::sample();
     let machine_start = process::machine_sample();
     for index in 0..warmup + u64::from(args.frames) {
-        scene.step(&driver, &mut app, index);
         let allocations_before = allocations::count();
+        scene.step(&driver, &mut app, index);
         let output = app.frame();
         let raster_start = Instant::now();
         renderer.render(&output);
