@@ -125,6 +125,92 @@ impl Recorded {
     }
 }
 
+/// Where one unit's artifacts sit in cargo's build directory, which cargo
+/// lays out in one of two ways depending on its version.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UnitDir<'a> {
+    /// The layout that gives every unit a directory of its own:
+    /// `<profile>/build/<package>/<hash>/out`, for libraries, binaries and
+    /// build scripts alike.
+    Unit {
+        /// The profile's build directory, `<profile>/build`.
+        build: &'a Path,
+        /// The package the unit belongs to.
+        package: &'a str,
+        /// The unit's hash, which names its directory.
+        hash: &'a str,
+    },
+    /// A build script's directory in the layout that keeps the artifacts
+    /// of one kind together: `<profile>/build/<package>-<hash>`.
+    FlatScript {
+        /// The profile's build directory, `<profile>/build`.
+        build: &'a Path,
+        /// The package the script belongs to.
+        package: &'a str,
+    },
+    /// Any other directory of that layout, such as `<profile>/deps`,
+    /// whose profile's build directory is `<profile>/build`.
+    Flat {
+        /// The profile directory the artifacts sit in.
+        profile: &'a Path,
+    },
+}
+
+impl<'a> UnitDir<'a> {
+    /// Reads where `out_dir`, the `--out-dir` cargo gave an invocation,
+    /// sits in the build directory, or `None` for a path with no parent.
+    pub(crate) fn of(out_dir: &'a Path) -> Option<UnitDir<'a>> {
+        let parent = out_dir.parent()?;
+        let name = |path: &'a Path| path.file_name().and_then(|name| name.to_str());
+        if name(out_dir) == Some("out")
+            && let Some(hash) = name(parent).filter(|hash| is_hash(hash))
+            && let Some(package_dir) = parent.parent()
+            && let Some(package) = name(package_dir)
+            && let Some(build) = package_dir.parent()
+            && name(build) == Some("build")
+        {
+            return Some(UnitDir::Unit {
+                build,
+                package,
+                hash,
+            });
+        }
+        if name(parent) == Some("build")
+            && let Some((package, hash)) = name(out_dir).and_then(|dir| dir.rsplit_once('-'))
+            && !package.is_empty()
+            && is_hash(hash)
+        {
+            return Some(UnitDir::FlatScript {
+                build: parent,
+                package,
+            });
+        }
+        Some(UnitDir::Flat { profile: parent })
+    }
+
+    /// The profile's build directory, which holds the units of the layout
+    /// that gives each its own directory, and the build scripts of the
+    /// other.
+    pub(crate) fn build_dir(&self) -> PathBuf {
+        match self {
+            UnitDir::Unit { build, .. } | UnitDir::FlatScript { build, .. } => build.to_path_buf(),
+            UnitDir::Flat { profile } => profile.join("build"),
+        }
+    }
+
+    /// Whether the directory is one cargo can give a build script: any
+    /// unit's directory in the layout that gives each unit its own, and a
+    /// `<package>-<hash>` build directory in the other.
+    pub(crate) fn holds_a_script(&self) -> bool {
+        matches!(self, UnitDir::Unit { .. } | UnitDir::FlatScript { .. })
+    }
+}
+
+/// Whether `text` is a metadata hash cargo names a unit by.
+fn is_hash(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// The crate name an artifact path carries: the file name between the
 /// `lib` prefix and the metadata hash. A dependency renamed in a manifest
 /// keeps its real crate name in the artifact, whatever alias its
@@ -517,6 +603,36 @@ pub(crate) fn artifact_stem_of_args(args: &[String]) -> Option<String> {
         index += 1;
     }
     Some(format!("{name}{extra}"))
+}
+
+/// The stem a build script's recording is filed under: its artifact stem,
+/// with the unit's hash added where its artifacts carry none, as build
+/// scripts do in the layout that gives every unit a directory of its own,
+/// so the scripts of two packages never share a recording.
+pub(crate) fn record_stem_of_args(args: &[String]) -> Option<String> {
+    let stem = artifact_stem_of_args(args)?;
+    let hash = values_in(args, "--out-dir").find_map(|dir| match UnitDir::of(Path::new(dir)) {
+        Some(UnitDir::Unit { hash, .. }) => Some(String::from(hash)),
+        _ => None,
+    });
+    Some(match hash {
+        Some(hash) if !stem.ends_with(&format!("-{hash}")) => format!("{stem}-{hash}"),
+        _ => stem,
+    })
+}
+
+/// Whether `args` compile a build script. Cargo names a script's crate
+/// after its file, `build_script_build` for `build.rs`, compiles it as a
+/// binary into a directory a script can hold, and sets no
+/// `CARGO_BIN_NAME` for it, which it sets for every binary target, one
+/// named like a script included. `bin_name` is that variable as the
+/// compile saw it.
+pub(crate) fn compiles_a_script(args: &[String], bin_name: Option<&str>) -> bool {
+    bin_name.is_none()
+        && values_in(args, "--crate-name").any(|name| name.starts_with("build_script_"))
+        && values_in(args, "--crate-type").any(|kind| kind == "bin")
+        && values_in(args, "--out-dir")
+            .any(|dir| UnitDir::of(Path::new(dir)).is_some_and(|unit| unit.holds_a_script()))
 }
 
 /// Every value `args` gives `flag`, in both the spaced and the

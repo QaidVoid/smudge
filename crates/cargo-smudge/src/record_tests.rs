@@ -418,3 +418,149 @@ fn reads_a_backslash_space_rule_both_ways() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Arguments of a rustc invocation cargo makes for `name` with the given
+/// crate type, out directory and extra file name.
+fn invocation(name: &str, kind: &str, out_dir: &str, extra: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        String::from("--crate-name"),
+        String::from(name),
+        String::from("--crate-type"),
+        String::from(kind),
+        String::from("--out-dir"),
+        String::from(out_dir),
+    ];
+    if let Some(extra) = extra {
+        args.push(String::from("-C"));
+        args.push(format!("extra-filename={extra}"));
+    }
+    args
+}
+
+#[test]
+fn reads_a_unit_s_place_in_either_build_layout() {
+    let unit = Path::new("/t/debug/build/core/7c66c3d37d63087f/out");
+    assert_eq!(
+        UnitDir::of(unit),
+        Some(UnitDir::Unit {
+            build: Path::new("/t/debug/build"),
+            package: "core",
+            hash: "7c66c3d37d63087f",
+        })
+    );
+    let script = Path::new("/t/debug/build/probe-20d6ec51a575fc55");
+    assert_eq!(
+        UnitDir::of(script),
+        Some(UnitDir::FlatScript {
+            build: Path::new("/t/debug/build"),
+            package: "probe",
+        })
+    );
+    let deps = Path::new("/t/debug/deps");
+    assert_eq!(
+        UnitDir::of(deps),
+        Some(UnitDir::Flat {
+            profile: Path::new("/t/debug")
+        })
+    );
+    for dir in [unit, script, deps] {
+        assert_eq!(
+            UnitDir::of(dir).map(|unit| unit.build_dir()),
+            Some(PathBuf::from("/t/debug/build")),
+            "{dir:?} belongs to the profile's build directory"
+        );
+    }
+    assert!(
+        !UnitDir::of(Path::new("/t/debug/build/out")).is_some_and(|unit| unit.holds_a_script()),
+        "an `out` without a package and a hash above it is no unit's directory"
+    );
+}
+
+#[test]
+fn tells_a_build_script_from_a_binary_named_like_one() {
+    let script = invocation(
+        "build_script_build",
+        "bin",
+        "/t/debug/build/probe/e6975c4796e28a84/out",
+        None,
+    );
+    let flat_script = invocation(
+        "build_script_build",
+        "bin",
+        "/t/debug/build/probe-20d6ec51a575fc55",
+        Some("-20d6ec51a575fc55"),
+    );
+    assert!(compiles_a_script(&script, None));
+    assert!(compiles_a_script(&flat_script, None));
+
+    let bin = invocation(
+        "build_script_extra",
+        "bin",
+        "/t/debug/build/probe/b850606bdaa55b00/out",
+        None,
+    );
+    assert!(
+        !compiles_a_script(&bin, Some("build_script_extra")),
+        "cargo names a binary target in CARGO_BIN_NAME and a script never"
+    );
+    let flat_bin = invocation(
+        "build_script_extra",
+        "bin",
+        "/t/debug/deps",
+        Some("-b850606bdaa55b00"),
+    );
+    assert!(!compiles_a_script(&flat_bin, None));
+    let lib = invocation(
+        "build_script_util",
+        "lib",
+        "/t/debug/build/probe/aa11/out",
+        Some("-aa11"),
+    );
+    assert!(!compiles_a_script(&lib, None));
+}
+
+#[test]
+fn files_each_package_s_script_under_a_stem_of_its_own() {
+    let first = invocation(
+        "build_script_build",
+        "bin",
+        "/t/debug/build/core/1441384070ef7c7c/out",
+        None,
+    );
+    let second = invocation(
+        "build_script_build",
+        "bin",
+        "/t/debug/build/ui/6e819f9ce2d28dc3/out",
+        None,
+    );
+    assert_eq!(
+        record_stem_of_args(&first).as_deref(),
+        Some("build_script_build-1441384070ef7c7c")
+    );
+    assert_eq!(
+        record_stem_of_args(&second).as_deref(),
+        Some("build_script_build-6e819f9ce2d28dc3")
+    );
+
+    let lib = invocation(
+        "core",
+        "lib",
+        "/t/debug/build/core/7c66c3d37d63087f/out",
+        Some("-7c66c3d37d63087f"),
+    );
+    assert_eq!(
+        record_stem_of_args(&lib).as_deref(),
+        Some("core-7c66c3d37d63087f"),
+        "a stem that carries the unit's hash keeps it once"
+    );
+    let flat = invocation(
+        "build_script_build",
+        "bin",
+        "/t/debug/build/core-20d6ec51a575fc55",
+        Some("-20d6ec51a575fc55"),
+    );
+    assert_eq!(
+        record_stem_of_args(&flat).as_deref(),
+        Some("build_script_build-20d6ec51a575fc55")
+    );
+}

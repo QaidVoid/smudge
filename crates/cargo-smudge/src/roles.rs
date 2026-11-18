@@ -39,30 +39,11 @@ fn wrap_rustc(args: &[String]) -> ExitCode {
     };
     // Build scripts compile for the host, and nothing of them reaches the
     // running app, but their recordings carry the dependencies their
-    // expansion reads, which a patch cannot rerun. Cargo names the crate
-    // after the script's file: `build.rs` becomes `build_script_build`, a
-    // `build = "codegen.rs"` becomes `build_script_codegen`. The name
-    // alone does not decide: a package may carry an ordinary library or
-    // binary of that name, and only a bin-shaped invocation whose
-    // artifacts land in a build directory is a script, which cargo gives
-    // the script's own run directory and every other target the deps
-    // directory beside.
-    let script_name = record::values_in(rest, "--crate-name").next();
-    let compiles_a_bin = rest
-        .windows(2)
-        .any(|pair| pair[0] == "--crate-type" && pair[1] == "bin");
-    let compiles_into_a_build_tree = record::values_in(rest, "--out-dir").any(|dir| {
-        Path::new(dir)
-            .parent()
-            .is_some_and(|parent| parent.file_name().is_some_and(|name| name == "build"))
-    });
-    if script_name.is_some_and(|name| name.starts_with("build_script_"))
-        && compiles_a_bin
-        && compiles_into_a_build_tree
-    {
-        let stem = record::artifact_stem_of_args(rest)
-            .or_else(|| script_name.map(String::from))
-            .unwrap_or_else(|| String::from("build_script_build"));
+    // expansion reads, which a patch cannot rerun.
+    let bin_name = std::env::var("CARGO_BIN_NAME").ok();
+    if record::compiles_a_script(rest, bin_name.as_deref()) {
+        let stem =
+            record::record_stem_of_args(rest).unwrap_or_else(|| String::from("build_script_build"));
         return record_and_run(&dir, &format!("rustc-unit-{stem}.json"), rustc, rest);
     }
     // The tip is the app crate: a bin target, examples included, that

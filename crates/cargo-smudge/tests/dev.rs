@@ -4346,6 +4346,108 @@ fn watches_an_input_the_script_reads_at_run_time() {
 }
 
 #[test]
+fn guards_a_script_input_beside_a_recording_of_the_other_build_layout() {
+    require_linker();
+    let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
+    let ws = fixture_workspace("ws-layouts");
+    let app = ws.join("app");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared-target");
+    fs::create_dir_all(&target).expect("the shared target could not be made");
+    // A target directory that two cargo versions built in keeps the
+    // recordings of both layouts of the build directory. One of the
+    // other layout names the same package and finds no run of its own,
+    // and the inputs this build's run declared must still guard the
+    // session, whichever recording the session reads first.
+    fs::write(ws.join("ui").join("config.txt"), "script-1")
+        .expect("the content could not be written");
+    fs::write(
+        ws.join("ui").join("build.rs"),
+        "//! The emitter of the label the library reads.\n\n\
+         fn main() {\n    \
+         println!(\"cargo:rerun-if-changed=config.txt\");\n    \
+         let label = std::fs::read_to_string(\"config.txt\").expect(\"the input is readable\");\n    \
+         println!(\"cargo:rustc-env=UI_LABEL={}\", label.trim());\n}\n",
+    )
+    .expect("ui's build script could not be written");
+    edit_in(
+        &ws,
+        "ui/src/lib.rs",
+        &[("    \"ui-1\"", "    env!(\"UI_LABEL\")")],
+    );
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    session.quit();
+
+    // The newest recording of ui's script is this build's: the shared
+    // target keeps the ones earlier builds made too.
+    let package = ws
+        .join("ui")
+        .canonicalize()
+        .expect("ui's directory resolves");
+    let records = target.join("smudge-hot");
+    let (_, script) = fs::read_dir(&records)
+        .expect("the session recorded its build")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("rustc-unit-build_script_build"))
+        })
+        .filter_map(|path| {
+            let modified = fs::metadata(&path).and_then(|meta| meta.modified()).ok()?;
+            let text = fs::read_to_string(&path).ok()?;
+            let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+            let manifest = record["env"]["CARGO_MANIFEST_DIR"].as_str()?;
+            (Path::new(manifest).canonicalize().ok()? == package).then_some((modified, record))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .expect("the session recorded ui's build script");
+    let mut stale = script.clone();
+    let args = stale["args"]
+        .as_array_mut()
+        .expect("a recording carries its arguments");
+    let at = |args: &Vec<serde_json::Value>, flag: &str| {
+        args.iter()
+            .position(|arg| arg == flag)
+            .map(|index| index + 1)
+            .expect("the script's compile names the flag")
+    };
+    let out_at = at(args, "--out-dir");
+    let out_dir = PathBuf::from(args[out_at].as_str().expect("the out directory is a path"));
+    let build = target.join("debug").join("build");
+    // A directory of the other layout under a package name no run ever
+    // wrote an output for, whatever other builds left in the shared
+    // target.
+    let other = if out_dir.ends_with("out") {
+        build.join("ui_unrun-0123456789abcdef")
+    } else {
+        build.join("ui_unrun").join("0123456789abcdef").join("out")
+    };
+    fs::create_dir_all(&other).expect("the other layout's directory could not be made");
+    args[out_at] = serde_json::Value::from(other.display().to_string());
+    let name_at = at(args, "--crate-name");
+    args[name_at] = serde_json::Value::from("build_script_a");
+    fs::write(
+        records.join("rustc-unit-build_script_a.json"),
+        serde_json::to_string(&stale).expect("the recording serializes"),
+    )
+    .expect("the stale recording could not be written");
+
+    let mut session = Session::start(&app, &target);
+    session.wait("app running as pid", 1, FAT_TIMEOUT);
+    edit_in(&ws, "ui/config.txt", &[("script-1", "script-2")]);
+    edit_in(&ws, "app/src/main.rs", &[("\"view-1\"", "\"view-2\"")]);
+    let out = session.wait("patch 1: not sent", 1, STEP_TIMEOUT);
+    assert!(
+        out.contains("the build script of ui reads"),
+        "the input this build's run declared did not refuse the patch:\n{out}"
+    );
+    session.quit();
+    let _ = fs::remove_file(records.join("rustc-unit-build_script_a.json"));
+}
+
+#[test]
 fn watches_a_directory_the_script_declares() {
     require_linker();
     let _build = BUILD.lock().unwrap_or_else(|lock| lock.into_inner());
@@ -6958,10 +7060,13 @@ fn refuses_a_dylib_dependency_the_replay_cannot_serve() {
     )
     .trim()
     .to_string();
+    // Cargo copies a dynamic library the build makes into the profile's
+    // directory, in either layout of its build directory, so the loader
+    // finds this build's copy there.
     let loader = format!(
         "{}:{}:{}",
         Path::new(&sysroot).join("lib").display(),
-        target.join("debug").join("deps").display(),
+        target.join("debug").display(),
         std::env::var("LD_LIBRARY_PATH").unwrap_or_default(),
     );
     let mut session = Session::start_env(

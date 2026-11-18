@@ -497,6 +497,10 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
         .env("CARGO_TARGET_DIR", &target)
         .env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", &me)
+        // Cargo sets the variable for every binary target and never for a
+        // build script, which is how the wrapper tells them apart, and a
+        // value the session inherited would reach every compile.
+        .env_remove("CARGO_BIN_NAME")
         .env(crate::roles::DIR_ENVIRONMENT, &dir)
         .env(crate::roles::REQUEST_ENVIRONMENT, &request_stamp)
         .env(crate::roles::LINK_ENVIRONMENT, "fat")
@@ -584,8 +588,8 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
     // recorded ones.
     let active_build = rustc
         .out_dir()
-        .and_then(|out| Path::new(out).parent())
-        .map(|profile| profile.join("build"));
+        .and_then(|out| crate::record::UnitDir::of(Path::new(out)))
+        .map(|unit| unit.build_dir());
     // The files and directories the script runs declared, per package,
     // which resolver two's feature variants make several of: one build
     // can run a package's script once per unit it makes of it, and each
@@ -615,7 +619,11 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
             })
             .or_insert(bound);
     }
-    let mut declared_of: std::collections::BTreeMap<PathBuf, (Vec<PathBuf>, Vec<PathBuf>)> =
+    // Keyed by the package and by where its runs' outputs live, which the
+    // layout of the build directory decides: a target directory two cargo
+    // versions built in keeps the other layout's recordings, whose runs
+    // are not this build's.
+    let mut declared_of: std::collections::BTreeMap<(PathBuf, Option<RunsAt>), Declared> =
         Default::default();
     let mut build_scripts: Vec<ScriptGuard> = units
         .iter()
@@ -668,7 +676,7 @@ fn bootstrap(app: &Path, options: &Options) -> Result<Session, String> {
             }
             let declared = match stamp_bounds.get(&package) {
                 Some(bound) => declared_of
-                    .entry(package.clone())
+                    .entry((package.clone(), runs_of(&script.record)))
                     .or_insert_with(|| {
                         script_declared_inputs(
                             &script.record,
@@ -3046,19 +3054,11 @@ fn chain_of<'a>(
         .collect())
 }
 
-/// Whether a recorded unit is a build script's compile: the crate name
-/// cargo gives scripts, on an invocation that compiles a binary into a
-/// build directory, which cargo gives the scripts alone; an ordinary
-/// library or binary of that name compiles into the deps directory.
+/// Whether a recorded unit is a build script's compile, as
+/// [`crate::record::compiles_a_script`] tells it.
 fn is_script_unit(unit: &UnitRecord) -> bool {
-    let rest = &unit.record.args[1..];
-    unit.name.starts_with("build_script_")
-        && crate::record::values_in(rest, "--crate-type").any(|kind| kind == "bin")
-        && crate::record::values_in(rest, "--out-dir").any(|dir| {
-            Path::new(dir)
-                .parent()
-                .is_some_and(|parent| parent.file_name().is_some_and(|name| name == "build"))
-        })
+    let bin_name = unit.record.env.get("CARGO_BIN_NAME").map(String::as_str);
+    crate::record::compiles_a_script(&unit.record.args[1..], bin_name)
 }
 
 /// Reads the recorded invocation of every unit the fat build compiled,
@@ -3122,8 +3122,8 @@ fn script_input_saved(scripts: &[ScriptGuard], saved: &[(SystemTime, PathBuf)]) 
 
 /// The files and directories a build script's run declared through
 /// `cargo:rerun-if-changed` lines, resolved against the package, read
-/// from the newest `output` file the target's build directory holds for
-/// the script's package. Cargo reruns the script when any of them
+/// from the run outputs the target's build directory holds for the
+/// script's package. Cargo reruns the script when any of them
 /// moves, and the expansion it baked from them is compile-time content
 /// a patch cannot regenerate. Answers two lists, the files and the
 /// directories, since a directory's content a single watched path
@@ -3133,52 +3133,26 @@ fn script_declared_inputs(
     package: &Path,
     bound: Option<SystemTime>,
     active_build: Option<&Path>,
-) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    // The compile's out directory is one build directory's entry of its
-    // package: `<target>/<profile>/build/<pkg>-<hash>`; the runs'
-    // outputs live in the build directories of their own kind, whose
-    // hashes are their own: beside the compile for the host's units,
-    // and in the target's own tree when the build names one, which an
-    // explicit target makes for every package the app's units consume.
-    // Each run declares its own inputs, so every output in the window
-    // joins the guard, and the newest one alone answers when the window
-    // catches nothing.
-    let Some(out_dir) = record.out_dir() else {
+) -> Declared {
+    // The runs' outputs sit in the profile's build directory beside the
+    // compile, under hashes of their own, and in the target's own tree
+    // when the build names one, which an explicit target makes for every
+    // package the app's units consume. Each run declares its own inputs,
+    // so every output in the window joins the guard, and the newest one
+    // alone answers when the window catches nothing.
+    let Some(runs) = runs_of(record) else {
         return (Vec::new(), Vec::new());
     };
-    let Some(host) = Path::new(out_dir).parent() else {
-        return (Vec::new(), Vec::new());
-    };
-    let Some(named) = Path::new(out_dir)
-        .file_name()
-        .and_then(|name| name.to_str())
-    else {
-        return (Vec::new(), Vec::new());
-    };
-    let Some(package_name) = package_prefix(named) else {
-        return (Vec::new(), Vec::new());
-    };
-    let mut trees = vec![host.to_path_buf()];
+    let mut trees = vec![runs.build.clone()];
     if let Some(active) = active_build
-        && active != host
+        && active != runs.build
     {
         trees.push(active.to_path_buf());
     }
     let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
     let mut windowed: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for build in &trees {
-        let Ok(entries) = std::fs::read_dir(build) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if !one_package_directory(name, package_name) {
-                continue;
-            }
-            let output = entry.path().join("output");
+        for output in run_outputs(build, &runs.package, runs.per_unit) {
             let Ok(modified) = std::fs::metadata(&output).and_then(|meta| meta.modified()) else {
                 continue;
             };
@@ -3247,13 +3221,64 @@ fn declared_inputs_of(text: &str, package: &Path) -> (Vec<PathBuf>, Vec<PathBuf>
     (files, dirs)
 }
 
-/// The package prefix a build directory name carries: the name without
-/// its trailing metadata hash, which the compile and the run of one
-/// package hash on their own.
-fn package_prefix(name: &str) -> Option<&str> {
-    let (prefix, hash) = name.rsplit_once('-')?;
-    (!prefix.is_empty() && !hash.is_empty() && hash.chars().all(|c| c.is_ascii_hexdigit()))
-        .then_some(prefix)
+/// The files and the directories a script's runs declared.
+type Declared = (Vec<PathBuf>, Vec<PathBuf>);
+
+/// Where the runs of one package's script keep their outputs.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct RunsAt {
+    /// The profile's build directory.
+    build: PathBuf,
+    /// The package's name in the build directory.
+    package: String,
+    /// Whether the build directory gives each unit a directory of its
+    /// own, which puts a run's output in `run/stdout` of its unit.
+    per_unit: bool,
+}
+
+/// Where the runs of the script `record` compiles keep their outputs, or
+/// `None` for a compile no build directory holds.
+fn runs_of(record: &Recorded) -> Option<RunsAt> {
+    let (build, package, per_unit) = match crate::record::UnitDir::of(Path::new(record.out_dir()?))?
+    {
+        crate::record::UnitDir::Unit { build, package, .. } => (build, package, true),
+        crate::record::UnitDir::FlatScript { build, package } => (build, package, false),
+        crate::record::UnitDir::Flat { .. } => return None,
+    };
+    Some(RunsAt {
+        build: build.to_path_buf(),
+        package: String::from(package),
+        per_unit,
+    })
+}
+
+/// The files the build directory `build` keeps a run's output of the
+/// package `package`'s scripts in: `<package>/<hash>/run/stdout` in the
+/// layout that gives each unit a directory of its own, which `per_unit`
+/// names, and `<package>-<hash>/output` in the other.
+fn run_outputs(build: &Path, package: &str, per_unit: bool) -> Vec<PathBuf> {
+    if per_unit {
+        let Ok(entries) = std::fs::read_dir(build.join(package)) else {
+            return Vec::new();
+        };
+        return entries
+            .flatten()
+            .map(|entry| entry.path().join("run").join("stdout"))
+            .collect();
+    }
+    let Ok(entries) = std::fs::read_dir(build) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| one_package_directory(name, package))
+        })
+        .map(|entry| entry.path().join("output"))
+        .collect()
 }
 
 /// Whether the directory name `name` is one of the build directory's
