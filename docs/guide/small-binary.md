@@ -113,7 +113,7 @@ The first family the application registers becomes the font of the sans serif, s
 
 ## Measured sizes
 
-The numbers above are stripped release binaries of the `lists` example in the Smudge repository, drawn by the CPU renderer. They were measured on 2026-11-17 on Linux on an AMD Ryzen 7 7700, with the stable toolchain the repository pins.
+The numbers above are stripped release binaries of the `lists` example in the Smudge repository, drawn by the CPU renderer. They were measured on 2026-11-17 on Linux on an AMD Ryzen 7 7700, with Rust 1.99.0.
 
 | Feature set | Default release profile | Size profile |
 |---|---|---|

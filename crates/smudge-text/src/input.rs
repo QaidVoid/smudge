@@ -614,8 +614,7 @@ impl Editor {
             session.refresh_all();
             let mut rects = Vec::new();
             let mut y = 0.0;
-            for index in 0..session.table.paragraphs.len() {
-                let paragraph = &session.table.paragraphs[index];
+            for paragraph in &session.table.paragraphs {
                 let start = paragraph.start;
                 let len = paragraph.len;
                 let layout = paragraph
@@ -1674,8 +1673,7 @@ impl Session<'_> {
         let count = self.table.paragraphs.len();
         let meets = |rect: &Rect| rect.y1 >= visible.0 && rect.y0 <= visible.1;
         let mut y = 0.0;
-        for index in 0..count {
-            let paragraph = &self.table.paragraphs[index];
+        for (index, paragraph) in self.table.paragraphs.iter().enumerate() {
             let start = paragraph.start;
             let end = start + paragraph.len;
             let layout = paragraph
