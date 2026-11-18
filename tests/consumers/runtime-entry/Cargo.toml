@@ -12,7 +12,7 @@ publish = false
 # IR of this crate on the dev and the release profile.
 [dependencies]
 smudge-core = { path = "../../../crates/smudge-core" }
-smudge-text = { version = "0.2.0", path = "../../../crates/smudge-text" }
+smudge-text = { path = "../../../crates/smudge-text" }
 
 # The pass with this feature checks that a wrapped closure keeps the shim in
 # this crate and reaches the jump table only through the non-inlined getter
