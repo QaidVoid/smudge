@@ -3,9 +3,10 @@
 # the cargo feature unification the font and accessibility features rely on:
 # a direct smudge-widgets consumer finds a font with its defaults, a font
 # enabled by another dependency reaches the facade, a library that forwards
-# the font choice builds on native and wasm, the machine's fonts
-# alone draw text, a headless build needs no window, every configuration the
-# small-binary guide documents builds on native, the bundled-font ones build on
+# the font choice builds on native and wasm, the machine's fonts alone draw
+# text, the app's own fonts alone draw text and build on wasm, a headless
+# build needs no window, every configuration the small-binary guide
+# documents builds on native, the bundled-font and app-font ones build on
 # wasm, wasm with system fonts alone fails, and a build with no font source
 # fails instead of drawing no text. It also reads the IR of generic reactive
 # and text code compiled in an application crate, which must reach the
@@ -54,6 +55,9 @@ echo 'consumer: a font from another dependency reaches the facade'
 echo 'consumer: the machine'"'"'s fonts alone draw text'
 ( cd system-fonts-only && cargo test -q )
 
+echo 'consumer: the app'"'"'s own fonts alone draw text'
+( cd app-fonts-only && cargo test -q && cargo check -q --target wasm32-unknown-unknown )
+
 echo 'consumer: a headless build needs no window'
 ( cd headless && cargo check -q )
 
@@ -69,11 +73,14 @@ echo 'consumer: the guide configurations build'
 ( cd guide-app && cargo check -q --no-default-features --features a11y,system-fonts )
 ( cd guide-app && cargo check -q --no-default-features --features system-fonts )
 ( cd guide-app && cargo check -q --features system-fonts )
+( cd guide-app && cargo check -q --no-default-features --features a11y,app-fonts )
+( cd guide-app && cargo check -q --no-default-features --features app-fonts )
 expect_fail 'guide-app without a font' sh -c 'cd guide-app && cargo check -q --no-default-features'
 
 echo 'consumer: the wasm font rule'
 ( cd guide-app && cargo check -q --target wasm32-unknown-unknown )
 ( cd guide-app && cargo check -q --target wasm32-unknown-unknown --no-default-features --features bundled-fonts )
+( cd guide-app && cargo check -q --target wasm32-unknown-unknown --no-default-features --features app-fonts )
 ( cd headless && cargo check -q --target wasm32-unknown-unknown )
 expect_fail 'guide-app on wasm with system fonts only' sh -c 'cd guide-app && cargo check -q --target wasm32-unknown-unknown --no-default-features --features system-fonts'
 

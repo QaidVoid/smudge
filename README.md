@@ -36,7 +36,7 @@ In a virtual machine without a GPU, where a software GPU renderer takes 6 to 24 
 - **Fine-grained signals.** Bindings are per property, so a write updates exactly what reads it. Layout runs only when a size could have changed.
 - **Two renderers.** A CPU renderer that repaints only the damage, and a GPU renderer behind the `gpu` feature. Windows start on the CPU renderer, and an app that asks for `RendererChoice::Auto` gets the GPU on real hardware and never on a software rasterizer.
 - **Scrolling without repainting.** Scrolled content keeps its paint and only moves.
-- **Text and input.** Shaped text with embedded fonts or the system's, labels capped with an ellipsis, a single-line input and a multi-line text area with selection, undo and redo, input method composition, and the system clipboard.
+- **Text and input.** Shaped text with embedded fonts, the system's or the application's own, labels capped with an ellipsis, a single-line input and a multi-line text area with selection, undo and redo, input method composition, and the system clipboard.
 - **Widgets.** Rows, columns, stacks, buttons, labels, images, a scroll view that can follow its end, and virtual lists for very long lists, including keyed rows of varying height that stay in place while rows above them change. All are styled with theme tokens and interaction states.
 - **Application plumbing.** Messages from other threads, timers, autofocus, focus traps and app-wide key handlers, and window commands and cursors for a custom title bar.
 - **Accessibility.** The widget tree is exposed to screen readers on the desktop, with keyboard focus and activation.

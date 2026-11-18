@@ -22,7 +22,10 @@
 //! `bundled-fonts` feature, the default, on `smudge`, `smudge-widgets` or
 //! this crate, or the `system-fonts` feature on `smudge` or this crate. The
 //! system fonts count only where they can be found: on Linux, FreeBSD,
-//! Windows, Android and Apple platforms, and not on the web.
+//! Windows, Android and Apple platforms, and not on the web. An app that
+//! registers fonts of its own with [`TextSystem::register_font`] can enable
+//! the `app-fonts` feature on `smudge`, `smudge-widgets` or this crate
+//! instead, which makes those fonts its source.
 //!
 //! ```
 //! use smudge_text::{TextLayout, TextSystem, TextStyle};
@@ -36,11 +39,10 @@
 
 mod chrome;
 
-// The build fails when no font source reaches this crate, because text
-// would draw nothing: every glyph would lay out as missing. The system fonts
-// count only on the targets where the font collection can discover them.
-// Elsewhere, the web included, it finds none.
-#[cfg(not(any(
+/// Whether the build carries a font source of its own: the bundled faces,
+/// or the system fonts on a target where the font collection can discover
+/// them. Elsewhere, the web included, it finds none.
+const BUILT_IN_FONTS: bool = cfg!(any(
     feature = "bundled-fonts",
     all(
         feature = "system-fonts",
@@ -52,12 +54,20 @@ mod chrome;
             target_vendor = "apple",
         ),
     ),
-)))]
-compile_error!(
+));
+
+// The build fails when no font source reaches this crate, because text
+// would draw nothing: every glyph would lay out as missing. The app's own
+// fonts count when it says it registers them, because the build cannot see
+// a registration.
+const _: () = assert!(
+    BUILT_IN_FONTS || cfg!(feature = "app-fonts"),
     "smudge-text has no font source: enable the `bundled-fonts` feature \
      (the embedded fonts, on by default) on smudge, smudge-widgets or \
-     smudge-text, or the `system-fonts` feature on smudge or smudge-text \
-     on Linux, FreeBSD, Windows, Android or an Apple platform"
+     smudge-text, the `system-fonts` feature on smudge or smudge-text \
+     on Linux, FreeBSD, Windows, Android or an Apple platform, or the \
+     `app-fonts` feature on smudge, smudge-widgets or smudge-text when the \
+     app registers fonts of its own"
 );
 
 mod fonts;

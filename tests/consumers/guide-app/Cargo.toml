@@ -17,6 +17,7 @@ default = ["a11y", "bundled-fonts"]
 a11y = ["smudge/a11y"]
 bundled-fonts = ["smudge/bundled-fonts"]
 system-fonts = ["smudge/system-fonts"]
+app-fonts = ["smudge/app-fonts"]
 
 # Standalone, so this build's feature unification is the one an ordinary
 # consumer sees.

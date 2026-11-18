@@ -326,3 +326,126 @@ fn a_registered_face_joins_its_family_behind_the_earlier_faces() {
         "the bundled face still comes first for the text it covers"
     );
 }
+
+#[cfg(feature = "bundled-fonts")]
+/// A style that names the generic family `generic`.
+fn generic(generic: GenericFamily) -> TextStyle {
+    TextStyle {
+        family: FontFamily::from(generic),
+        ..TextStyle::default()
+    }
+}
+
+#[cfg(feature = "bundled-fonts")]
+/// The font the first glyph of "Smudge" in `style` draws with.
+fn first_pick(style: &TextStyle) -> Option<FontBlob> {
+    first_font(&TextLayout::new("Smudge", style, None))
+}
+
+#[cfg(feature = "bundled-fonts")]
+#[test]
+fn the_first_registered_font_serves_text_no_other_font_serves() {
+    let _owner = setup_empty();
+    assert_eq!(
+        first_pick(&TextStyle::default()),
+        None,
+        "the empty system has no face for text in the default style"
+    );
+
+    TextSystem::with(|system| system.register_font(crate::fonts::MONO_REGULAR.to_vec()))
+        .expect("the bundled mono is a font");
+
+    let mono = first_pick(&named("Noto Sans Mono"));
+    assert!(mono.is_some(), "the registered face lays the text out");
+    let generics = [
+        ("sans serif", generic(GenericFamily::SansSerif)),
+        ("system UI", generic(GenericFamily::SystemUi)),
+        ("monospace", generic(GenericFamily::Monospace)),
+    ];
+    let app_fonts_default = TextStyle {
+        family: crate::style::default_family(false),
+        ..TextStyle::default()
+    };
+    for (name, style) in [(
+        "the default family of an app-fonts build",
+        app_fonts_default,
+    )]
+    .into_iter()
+    .chain(generics.clone())
+    {
+        assert_eq!(
+            first_pick(&style),
+            mono,
+            "text in {name} draws in the registered family"
+        );
+    }
+
+    TextSystem::with(|system| system.register_font(crate::fonts::SANS_REGULAR.to_vec()))
+        .expect("the bundled sans is a font");
+    for (name, style) in generics {
+        assert_eq!(
+            first_pick(&style),
+            mono,
+            "text in {name} keeps the first registered family"
+        );
+    }
+}
+
+#[cfg(feature = "bundled-fonts")]
+#[test]
+fn a_generic_family_with_a_font_keeps_it_after_a_registration() {
+    let _owner = setup();
+    let sans = first_pick(&generic(GenericFamily::SansSerif));
+    let mono = first_pick(&generic(GenericFamily::Monospace));
+    assert_ne!(sans, mono, "the bundled sans and mono are different faces");
+
+    TextSystem::with(|system| system.register_font(crate::fonts::MONO_REGULAR.to_vec()))
+        .expect("the bundled mono is a font");
+
+    assert_eq!(
+        first_pick(&generic(GenericFamily::SansSerif)),
+        sans,
+        "sans serif keeps the bundled sans"
+    );
+    assert_eq!(
+        first_pick(&generic(GenericFamily::SystemUi)),
+        sans,
+        "system UI keeps the bundled sans"
+    );
+}
+
+#[cfg(feature = "bundled-fonts")]
+#[test]
+fn spans_keep_their_weight_in_the_default_family_of_an_app_fonts_build() {
+    use crate::layout::{RichLayout, SpanFont};
+
+    let _owner = setup_empty();
+    TextSystem::with(|system| system.register_font(crate::fonts::MONO_REGULAR.to_vec()))
+        .expect("the bundled mono is a font");
+
+    let text = "plain bold";
+    let plain = SpanFont {
+        weight: None,
+        italic: false,
+        monospace: false,
+        underline: false,
+    };
+    let bold = SpanFont {
+        weight: Some(FontWeight::BOLD),
+        ..plain
+    };
+    let style = TextStyle {
+        family: crate::style::default_family(false),
+        ..TextStyle::default()
+    };
+    let layout = RichLayout::new(text, &style, &[(0..6, plain), (6..text.len(), bold)], None);
+    let (runs, _) = crate::glyphs::rich_glyph_runs(&layout, Point { x: 0.0, y: 0.0 }, &[]);
+
+    let first = runs.first().expect("the plain span draws");
+    let last = runs.last().expect("the bold span draws");
+    assert_eq!(first.embolden, 0.0, "the plain span draws the regular face");
+    assert!(
+        last.embolden > 0.0,
+        "the bold span draws emboldened, since the registered font has no bold face"
+    );
+}

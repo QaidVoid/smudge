@@ -25,10 +25,33 @@ pub struct TextStyle {
     pub color: ColorValue,
 }
 
+/// The families text in the default style resolves through when the app's
+/// own fonts are the build's only source: the bundled sans by name, as in
+/// every build, then whatever serves sans serif, which is the first family
+/// the app registered.
+const APP_FONT_FAMILIES: &[parley::FontFamilyName<'static>] = &[
+    parley::FontFamilyName::named(crate::fonts::SANS_FAMILY),
+    parley::FontFamilyName::Generic(parley::GenericFamily::SansSerif),
+];
+
+/// The family of the default style. A build with fonts of its own names
+/// the bundled sans alone, so the characters it lacks go to the host's
+/// fallbacks for their script and to its emoji font. A build whose only
+/// fonts are the app's has neither, so its default reaches the app's font
+/// through sans serif, by the ordinary query that matches each span's
+/// weight and style and covers characters across the family's files.
+pub(crate) fn default_family(built_in_fonts: bool) -> parley::FontFamily<'static> {
+    if built_in_fonts {
+        parley::FontFamily::named(crate::fonts::SANS_FAMILY)
+    } else {
+        parley::FontFamily::List(std::borrow::Cow::Borrowed(APP_FONT_FAMILIES))
+    }
+}
+
 impl Default for TextStyle {
     fn default() -> Self {
         TextStyle {
-            family: parley::FontFamily::named(crate::fonts::SANS_FAMILY),
+            family: default_family(crate::BUILT_IN_FONTS),
             size: 14.0,
             weight: FontWeight::NORMAL,
             line_height: 1.3,

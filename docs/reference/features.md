@@ -8,7 +8,8 @@
 |---|---|---|
 | `window` | yes | Windows, input and presentation through `smudge-platform`, and `run`. A headless build that only uses `App` leaves it out and keeps a font feature: `default-features = false, features = ["bundled-fonts"]`. |
 | `a11y` | yes | The accessibility projection that screen readers read, forwarded to the `a11y` feature of `smudge-platform`. Implies `window`. It has no effect on the web. Building without it drops the whole accessibility stack. New in 0.3: before, `window` alone brought it in, so a build that lists features after `default-features = false` must now name `a11y` to keep screen reader support. |
-| `bundled-fonts` | yes | Embeds Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, so text never depends on the machine. Forwarded to the same feature of `smudge-text` and `smudge-widgets`. On wasm this is the only font source. |
+| `bundled-fonts` | yes | Embeds Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, so text never depends on the machine. Forwarded to the same feature of `smudge-text` and `smudge-widgets`. On wasm this and `app-fonts` are the font sources. |
+| `app-fonts` | no | Counts the fonts the application registers with `TextSystem::register_font` as its font source, so it can leave out `bundled-fonts` and `system-fonts`. Adds no code. Text draws nothing until a font is registered. Forwarded to the same feature of `smudge-text`. |
 | `gpu` | no | The GPU renderer and its window path, with the Vulkan, Metal and DX12 backends. Implies `window`. Windows still start on the CPU renderer unless `WindowOptions::renderer` or `SMUDGE_RENDERER` asks for `Auto` or `Gpu`. New in 0.3: before, `Auto` was the default with this feature. |
 | `complex-scripts` | no | Word and line break dictionaries for Chinese, Japanese, Thai, Lao, Khmer and Burmese. About 3 MB per binary and about 5 percent slower layout of other text. |
 | `system-fonts` | no | Also finds the fonts installed on the machine, on Linux, FreeBSD, Windows, Android and Apple platforms. The same feature of `smudge-text`, forwarded, so applications can turn it on without adding `smudge-text` themselves. |
@@ -24,6 +25,7 @@ smudge = { version = "0.2", features = ["gpu"] }
 | Feature | Default | What it adds |
 |---|---|---|
 | `bundled-fonts` | yes | Embeds the fonts, as the same feature of `smudge-text` does, so widgets that lay out text find a font even when no other dependency provides one. |
+| `app-fonts` | no | Counts the fonts the application registers as its font source, as the same feature of `smudge-text` does. |
 | `hot-reload` | no | Turns on hot reload in the core crate, which carries the values of the signals a build created across a hot patch, a keyed list's measured heights among them. The `smudge` feature of the same name turns this on. See [Hot reload](/guide/hot-reload). |
 
 ## `smudge-text`
@@ -32,6 +34,7 @@ smudge = { version = "0.2", features = ["gpu"] }
 |---|---|---|
 | `bundled-fonts` | yes | Embeds Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, so text never depends on the machine. |
 | `system-fonts` | no | Also finds the fonts installed on the machine, on Linux, FreeBSD, Windows, Android and Apple platforms. On Linux, fontconfig is loaded at run time, so building needs no fontconfig development files. Elsewhere, the web included, it finds nothing, so it does not count as a font source there. |
+| `app-fonts` | no | Counts the fonts the application registers with `TextSystem::register_font` as its font source. The first family registered becomes the font of the sans serif, system UI and monospace families wherever nothing else serves them. Text draws nothing until a font is registered. |
 | `complex-scripts` | no | The break dictionaries, as above. |
 
 An application that depends on `smudge` turns these on through the `smudge` features of the same name. It can also turn the bundled fonts off and rely on the system's faces:
@@ -41,7 +44,7 @@ An application that depends on `smudge` turns these on through the `smudge` feat
 smudge = { version = "0.3", default-features = false, features = ["window", "a11y", "system-fonts"] }
 ```
 
-One font source must reach `smudge-text`, through whichever dependency carries the feature. Only `bundled-fonts` and `system-fonts` count as sources, so system font discovery is turned on through `system-fonts`, not through the font crates underneath. A build in which none does fails to compile, because nothing could draw text. The check sees cargo's unified features, so a `smudge` with its defaults off builds when another dependency in the graph enables a font feature on `smudge-text`.
+One font source must reach `smudge-text`, through whichever dependency carries the feature. Only `bundled-fonts`, `system-fonts` and `app-fonts` count as sources, so system font discovery is turned on through `system-fonts`, not through the font crates underneath. A build in which none does fails to compile, because nothing could draw text. The check sees cargo's unified features, so a `smudge` with its defaults off builds when another dependency in the graph enables a font feature on `smudge-text`.
 
 A library built on Smudge leaves the font choice to the application the way `smudge-widgets` does: it depends on Smudge with `default-features = false` and has its own default `bundled-fonts` feature that forwards to Smudge's, which an application turns off when it brings its own font source:
 

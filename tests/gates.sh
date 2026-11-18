@@ -83,7 +83,7 @@ if ! $full; then
         hot=true
     fi
     consumers=false
-    if grep -qE '(^|/)Cargo\.(toml|lock)$|^tests/consumers/|^crates/smudge-text/src/(fonts|system)\.rs|^crates/smudge-text/assets/' <<<"$files"; then
+    if grep -qE '(^|/)Cargo\.(toml|lock)$|^tests/consumers/|^crates/smudge-text/src/(fonts|system|lib)\.rs|^crates/smudge-text/assets/' <<<"$files"; then
         consumers=true
     fi
     wasm=false

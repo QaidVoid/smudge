@@ -60,6 +60,13 @@ smudge = { version = "0.3", default-features = false, features = ["window", "a11
 smudge = { version = "0.3", default-features = false, features = ["window", "system-fonts"] }
 ```
 
+An application that ships its own fonts can use them as its only source, with `app-fonts` in place of `system-fonts` in either of the last two, as [`app-fonts`](#app-fonts) describes:
+
+```toml
+# bundled-fonts off, the application's own fonts on.
+smudge = { version = "0.3", default-features = false, features = ["window", "a11y", "app-fonts"] }
+```
+
 A headless application, one that drives `App` without a window, leaves out `window` and keeps a font feature:
 
 ```toml
@@ -77,9 +84,10 @@ default = ["a11y", "bundled-fonts"]
 a11y = ["smudge/a11y"]
 bundled-fonts = ["smudge/bundled-fonts"]
 system-fonts = ["smudge/system-fonts"]
+app-fonts = ["smudge/app-fonts"]
 ```
 
-With this manifest, `cargo build --release` builds the defaults, `--no-default-features --features bundled-fonts` turns only `a11y` off, and `--no-default-features --features system-fonts` turns both off and finds the machine's fonts instead. A plain `--no-default-features` leaves no font source, so it fails to build on purpose: nothing could draw text.
+With this manifest, `cargo build --release` builds the defaults, `--no-default-features --features bundled-fonts` turns only `a11y` off, `--no-default-features --features system-fonts` turns both off and finds the machine's fonts instead, and `--no-default-features --features app-fonts` turns both off and draws with the fonts the application registers. A plain `--no-default-features` leaves no font source, so it fails to build on purpose: nothing could draw text.
 
 ### `a11y`
 
@@ -87,15 +95,21 @@ The accessibility projection that screen readers read. Without it, the build dro
 
 ### `bundled-fonts`
 
-The five embedded font faces, Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, that make text layout produce the same result on every machine. With the feature off, the application needs another font source, which today means the `system-fonts` feature. Fonts an application registers itself, as [Text and input](./text-and-input#your-own-fonts) describes, add to the bundled or system faces but do not replace the need for one of them.
+The five embedded font faces, Noto Sans in regular, bold, italic and bold italic, and Noto Sans Mono, that make text layout produce the same result on every machine. With the feature off, the application needs another font source: the machine's fonts through `system-fonts`, or its own through `app-fonts`.
 
 Replacing the embedded faces with system font discovery saves 1,827,728 bytes on the default release profile and 1,848,720 on the size profile. What is lost: determinism. Layout wraps and breaks lines for whichever faces the host has, so text settles differently on machines with different fonts, and a machine without a face that covers the application's text draws missing glyphs.
 
-System fonts are found on Linux, FreeBSD, Windows, Android and Apple platforms. Elsewhere, the web included, `system-fonts` finds nothing, so an application there keeps `bundled-fonts` on, and a build that relies on system fonts alone fails.
+System fonts are found on Linux, FreeBSD, Windows, Android and Apple platforms. Elsewhere, the web included, `system-fonts` finds nothing, so an application there keeps `bundled-fonts` or `app-fonts` on, and a build that relies on system fonts alone fails.
 
 ### `system-fonts`
 
 Discovery for the fonts installed on the machine. Adding it on top of the bundled faces costs 126,704 bytes on the default release profile and 88,688 on the size profile, about a fifteenth of what the five embedded faces cost on the default release profile and a twenty-second on the size profile. Turn it on together with `bundled-fonts` when the application should use the fonts the user has installed, with the bundled faces as the fallback. Discovery only makes the installed fonts available: text keeps the bundled sans by default, and uses the host's interface font where its style names the `SystemUi` family, as [Text and input](./text-and-input#fonts) describes. Turn it on instead of `bundled-fonts` only when the host is known to carry suitable faces.
+
+### `app-fonts`
+
+Makes the fonts the application registers itself, as [Text and input](./text-and-input#your-own-fonts) describes, its font source, so the build needs neither the bundled faces nor the machine's. The feature adds no code: the binary carries the font files the application embeds instead of the five bundled faces, which suits the web best, where it is the only alternative to them.
+
+The first family the application registers becomes the font of the sans serif, system UI and monospace families, so text in the default style and monospace text draw in it without naming it. Text draws nothing until a font is registered, so register the fonts before the window opens. What is lost: the bundled faces' coverage. Characters the application's fonts have no glyph for draw as missing.
 
 ## Measured sizes
 

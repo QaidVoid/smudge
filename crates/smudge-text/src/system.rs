@@ -31,8 +31,9 @@ pub struct TextSystem {
 impl TextSystem {
     /// Creates a system that sees only the bundled fonts.
     ///
-    /// Without the `bundled-fonts` feature the system starts empty and every
-    /// glyph lays out as missing.
+    /// Without the `bundled-fonts` feature the system starts empty, and text
+    /// draws nothing until the app registers a font with
+    /// [`TextSystem::register_font`].
     pub fn bundled_only() -> TextSystem {
         let mut system = TextSystem::empty();
         system.register_bundled_fonts();
@@ -65,7 +66,7 @@ impl TextSystem {
     /// enabled, and only on Linux, FreeBSD, Windows, Android and Apple
     /// platforms. Without it this behaves like [`TextSystem::bundled_only`].
     /// Without `bundled-fonts`, text depends entirely on the faces the host
-    /// has.
+    /// has and the fonts the app registers.
     pub fn with_system_fonts() -> TextSystem {
         let mut system = TextSystem {
             fonts: parley::FontContext::default(),
@@ -136,6 +137,13 @@ impl TextSystem {
     /// names it lays out the same on every machine. Register every face of
     /// it the app uses.
     ///
+    /// When the build has no font source besides the app, through the
+    /// `app-fonts` feature, the sans serif, system UI and monospace families
+    /// resolve to nothing until a registration. The first family registered
+    /// then becomes what each of them resolves to, so text in the default
+    /// style and monospace text draw in it. A generic family that already
+    /// resolves to a font, a bundled or an installed one, keeps it.
+    ///
     /// Each thread has a system of its own, so register fonts on the thread
     /// that runs the window, before it shows. Text laid out before a
     /// registration keeps the faces it found until its style or its text
@@ -175,6 +183,12 @@ impl TextSystem {
             return Err(FontError::NoFace);
         }
         registered.sort_by_key(|(_, faces)| faces.iter().map(|face| face.index()).min());
+        let first = registered[0].0;
+        for generic in DEFAULT_GENERICS {
+            if collection.generic_families(generic).next().is_none() {
+                collection.set_generic_families(generic, std::iter::once(first));
+            }
+        }
         Ok(registered
             .into_iter()
             .filter_map(|(family, _)| collection.family_name(family).map(str::to_owned))
@@ -281,6 +295,14 @@ impl TextSystem {
     #[cfg(not(feature = "bundled-fonts"))]
     fn register_bundled_fonts(&mut self) {}
 }
+
+/// The generic families the bundled faces serve, and which the first font
+/// an app registers serves when nothing else does.
+const DEFAULT_GENERICS: [fontique::GenericFamily; 3] = [
+    fontique::GenericFamily::SansSerif,
+    fontique::GenericFamily::SystemUi,
+    fontique::GenericFamily::Monospace,
+];
 
 thread_local! {
     /// The system this thread owns, if it has one already.

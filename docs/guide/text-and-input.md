@@ -166,7 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 A registered face joins the family of the same name registered before it, a bundled one included, behind that family's faces. For each character, text uses the first face of the right weight and style that has a glyph for it, so a font split into one file per script works by registering every file. A registered family takes the place of an installed family of the same name, so text that names it lays out the same on every machine, which means registering every face of it the application uses. Register fonts on the thread that runs the window, before it shows, as above: text laid out before a registration keeps the faces it found until its style or its text changes.
 
-The bundled faces stay compiled in. A build needs `bundled-fonts` or `system-fonts` on, so an application that registers its own fonts keeps one of them as the fallback for text its fonts do not cover.
+With the default features, the bundled faces stay compiled in as the fallback for text the registered fonts do not cover. An application whose fonts cover all its text can leave them out with the `app-fonts` feature, as [Shipping a small binary](./small-binary#app-fonts) describes. The first family it registers then serves text in the default style and monospace text too.
 
 ### Scripts without spaces
 

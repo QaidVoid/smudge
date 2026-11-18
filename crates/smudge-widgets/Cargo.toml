@@ -19,8 +19,12 @@ workspace = true
 default = ["bundled-fonts"]
 # Embeds the fonts in the text crate's assets, so widgets that lay out text
 # find a font even when no other dependency provides one. An application
-# that turns it off must enable a font feature on the text crate itself.
+# that turns it off must enable another font source, such as `app-fonts`
+# here or a font feature on the text crate.
 bundled-fonts = ["smudge-text/bundled-fonts"]
+# Counts the fonts the app registers itself as its font source, as the
+# feature of the same name in the text crate describes.
+app-fonts = ["smudge-text/app-fonts"]
 # Hot reload, as the feature of the same name in the core crate describes.
 # Turned on by the facade's feature of the same name.
 hot-reload = ["smudge-core/hot-reload"]

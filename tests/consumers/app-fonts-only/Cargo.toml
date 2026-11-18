@@ -1,0 +1,17 @@
+[package]
+name = "consumer-app-fonts-only"
+description = "Asserts that the facade with the app's own fonts as its only source draws real glyphs"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+# The facade with every default off and the app's registered fonts as the
+# only source, as the small-binary guide documents. The test registers a
+# font, draws a frame through the ordinary text system and checks for real
+# glyphs. `../check.sh` also builds it for wasm.
+[dependencies]
+smudge = { path = "../../../crates/smudge", default-features = false, features = ["app-fonts"] }
+
+# Standalone, so this build's feature unification is the one an ordinary
+# consumer sees.
+[workspace]
