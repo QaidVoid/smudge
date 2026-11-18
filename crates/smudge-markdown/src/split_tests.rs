@@ -69,3 +69,9 @@ fn definitions_join_the_block_after_them() {
     let text = "intro\n\n[a]: /x\n\nbody [a]\n";
     assert_eq!(blocks(text), ["intro\n", "\n[a]: /x\n\nbody [a]\n"]);
 }
+
+#[test]
+fn a_definition_after_a_list_starts_the_block_it_belongs_to() {
+    assert_eq!(split("- a\n\n[x]: /u\npara\n"), [0, 5]);
+    assert_eq!(split("-\n\n[x]: /u\npara\n"), [0, 3]);
+}

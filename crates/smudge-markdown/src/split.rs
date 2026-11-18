@@ -20,7 +20,25 @@ pub(crate) struct Splitter {
     open: usize,
     /// How far the complete lines the splitter has read reach.
     read: usize,
+    /// How long the open region was after the splitter last looked for
+    /// cuts, past any cut that look made.
+    checked: usize,
 }
+
+/// The open region length up to which the splitter looks for cuts after
+/// every complete line. The tests and the fuzz target use a short one, so
+/// their short inputs reach the looks that skip lines too.
+const ALWAYS_CHECKED: usize = if cfg!(any(test, fuzzing)) {
+    64
+} else {
+    8 * 1024
+};
+
+/// Past [`ALWAYS_CHECKED`], the splitter looks for cuts again once the
+/// open region has grown by this fraction of its length at the last look,
+/// so the parses of one long block add up to a few times its length rather
+/// than one parse per line.
+const GROWTH_DIVISOR: usize = 8;
 
 impl Splitter {
     /// Where the open block, the one the next text can still change,
@@ -37,7 +55,11 @@ impl Splitter {
     /// Only complete lines count, since a line whose end has not arrived
     /// can still turn into a setext underline or a list item. The splitter
     /// reads them one at a time, whatever the pieces the text arrived in,
-    /// so every way of streaming a text divides it alike.
+    /// so every way of streaming a text divides it alike. It looks for cuts
+    /// after every line while the open region is short, and after a long
+    /// one has grown by an eighth, so a long block can stay open for up to
+    /// an eighth of its length after the next block starts, and is never
+    /// closed wrongly, since every cut is checked.
     pub(crate) fn advance(&mut self, text: &str, starts: &mut Vec<usize>) {
         let Some(complete) = complete_lines(text) else {
             return;
@@ -47,7 +69,11 @@ impl Splitter {
                 .find('\n')
                 .map_or(complete, |at| self.read + at + 1);
             self.read = line_end;
-            self.decide(&text[..line_end], starts);
+            let region = line_end - self.open;
+            if region <= ALWAYS_CHECKED || region >= self.checked + self.checked / GROWTH_DIVISOR {
+                self.decide(&text[..line_end], starts);
+                self.checked = line_end - self.open;
+            }
         }
     }
 
@@ -58,17 +84,29 @@ impl Splitter {
         let region = &text[base..];
         let mut depth = 0usize;
         let mut tops = Vec::new();
+        // Where the content of each top-level block ends, which can come
+        // before the block's own end: a list closes only where the
+        // paragraph after a definition that follows it starts.
+        let mut contents: Vec<usize> = Vec::new();
         for (event, range) in Parser::new_ext(region, options()).into_offset_iter() {
-            match event {
+            let inside = match event {
                 Event::Start(_) => {
-                    if depth == 0 {
-                        tops.push(range);
-                    }
                     depth += 1;
+                    depth > 1
                 }
-                Event::End(_) => depth = depth.saturating_sub(1),
-                _ if depth == 0 => tops.push(range),
-                _ => {}
+                Event::End(_) => {
+                    depth = depth.saturating_sub(1);
+                    depth > 0
+                }
+                _ => depth > 0,
+            };
+            if inside {
+                if let Some(end) = contents.last_mut() {
+                    *end = (*end).max(range.end);
+                }
+            } else if !matches!(event, Event::End(_)) {
+                contents.push(range.start);
+                tops.push(range);
             }
         }
         // The parser's ranges are close to a block's edges but not always
@@ -79,8 +117,9 @@ impl Splitter {
         // the other's definitions, must add up to the parse of both
         // together. The candidates come in a fixed order, the line after
         // the previous block, then the line the next block's content
-        // starts on, then each line before that, back to the previous
-        // block. When none holds, the two blocks stay one.
+        // starts on, then each line before that, back to the line after
+        // the previous block's content, since a cut inside that content
+        // never holds. When none holds, the two blocks stay one.
         //
         // A line that opens a bracket can start a link label that a later
         // line closes, which turns every line between into one definition.
@@ -91,10 +130,11 @@ impl Splitter {
         for (index, pair) in tops.windows(2).enumerate() {
             let after = line_start(region, pair[0].end);
             let own = line_begin(region, pair[1].start);
-            let first = line_begin(region, pair[0].start).max(from);
+            let content = line_start(region, contents[index]);
+            let lowest = content.min(after).min(own).max(from);
             let mut candidates = vec![after, own];
             let mut line = own;
-            while line > first {
+            while line > lowest {
                 line = line_begin(region, line - 1);
                 candidates.push(line);
             }
