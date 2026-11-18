@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use insta::assert_binary_snapshot;
 use smudge_core::element::Element;
-use smudge_core::geometry::{Color, Point};
+use smudge_core::geometry::{Color, Point, Size};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::style::{Align, px};
 use smudge_core::theme::Theme;
@@ -489,4 +489,34 @@ fn monospace_draws_its_missing_bold_and_italic_synthesized() {
         assert!(!report.full, "the change repaints only what it damaged");
         harness.assert_matches_full_repaint();
     }
+}
+
+#[test]
+fn a_padded_paragraph_draws_and_takes_link_clicks_inside_its_padding() {
+    let clicks = Rc::new(Cell::new(0));
+    let shared = Rc::clone(&clicks);
+    let mut harness = shaped_harness(
+        move || Rc::from([link("guide", &shared)]),
+        |paragraph| {
+            paragraph.padding_xy(Size {
+                width: 40.0,
+                height: 20.0,
+            })
+        },
+    );
+    harness.frame();
+
+    let (left, top, _, _) = paragraph_rect(&harness);
+    let ink = harness.ink_bounds().expect("the paragraph draws its link");
+    assert!(
+        ink.x0 >= left + 40.0 && ink.y0 >= top + 20.0,
+        "the text starts inside the padding, at {ink:?}"
+    );
+
+    harness.click(Point {
+        x: (ink.x0 + ink.x1) / 2.0,
+        y: (ink.y0 + ink.y1) / 2.0,
+    });
+    harness.frame();
+    assert_eq!(clicks.get(), 1, "a click on the drawn link ran its handler");
 }

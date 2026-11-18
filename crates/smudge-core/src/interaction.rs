@@ -779,6 +779,21 @@ impl WidgetTree {
         }
     }
 
+    /// Returns `position` relative to the top left of the content box of
+    /// `id`, inside its border and padding, which is where its drag-over
+    /// handler measures from. A stale id leaves it as it is.
+    fn content_position(&self, id: WidgetId, position: Point) -> Point {
+        let origin = self
+            .nodes
+            .get(id)
+            .map(|node| node.content.origin())
+            .unwrap_or_default();
+        Point {
+            x: position.x - origin.x,
+            y: position.y - origin.y,
+        }
+    }
+
     /// Starts the drag of a primary press that began at `position`: records
     /// the visible area of the node under it and the nodes that observe a
     /// drag that begins inside them.
@@ -889,7 +904,7 @@ impl WidgetTree {
         let Some((id, position)) = found else {
             return;
         };
-        let local = self.local_position(id, position);
+        let local = self.content_position(id, position);
         if let Some(drag) = self.drag.as_mut() {
             if drag.last_over == Some((id, local)) {
                 return;

@@ -292,16 +292,18 @@ fn a_node_s_reveal_request_scrolls_a_rectangle_of_it_into_view() {
                     panel()
                         .height(px(400.0))
                         .shrink(0.0)
+                        .padding(px(30.0))
                         .reveal(move || request.get()),
                 )
         }
     });
     harness.frame();
 
-    // The 20 pixels at 250 inside the tall child.
+    // The 20 pixels at 250 inside the tall child's content box, which starts
+    // 30 pixels into the child: from 280 to 300 in the view's content.
     request.set(Some(Rect::new(0.0, 250.0, 10.0, 270.0)));
     harness.frame();
     harness.frame();
 
-    assert_eq!(offset.get(), 170.0, "the view moved the least to show it");
+    assert_eq!(offset.get(), 200.0, "the view moved the least to show it");
 }

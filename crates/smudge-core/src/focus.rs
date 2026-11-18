@@ -693,13 +693,13 @@ impl WidgetTree {
         if let Some((id, rect)) = self.reveal_request
             && self.can_hold_focus(id)
         {
-            let origin = self.nodes[id].rect.origin();
+            let origin = self.nodes[id].content.origin();
             let target = rect.translated(origin);
             self.reveal_rect(id, target);
         }
     }
 
-    /// Asks the tree to show `rect`, relative to the rectangle of `id`, in
+    /// Asks the tree to show `rect`, relative to the content box of `id`, in
     /// the scroll views around the node, as [`WidgetTree::resolve_reveal`]
     /// does for the focused node. A later request replaces it.
     pub(crate) fn request_reveal(&mut self, id: WidgetId, rect: Rect) {

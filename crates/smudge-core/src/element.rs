@@ -902,13 +902,14 @@ impl<W: Widget> Element<W> {
     /// `rect` returns a rectangle.
     ///
     /// The rectangle is in logical pixels, relative to the top left of the
-    /// node's rectangle, and can lie past the node's edges. The views move
-    /// as they do to show a node that takes the keyboard focus: each scroll
-    /// view around the node moves by the least that brings the rectangle in,
-    /// innermost first, in the frame after the request. Returning `None`
-    /// asks for nothing, and returning the same rectangle again asks again,
-    /// since the binding runs only when the signals it reads change. A
-    /// selection uses it to keep the end the keyboard moves in view.
+    /// node's content box, inside its border and padding, and can lie past
+    /// the node's edges. The views move as they do to show a node that takes
+    /// the keyboard focus: each scroll view around the node moves by the
+    /// least that brings the rectangle in, innermost first, in the frame
+    /// after the request. Returning `None` asks for nothing, and returning
+    /// the same rectangle again asks again, since the binding runs only when
+    /// the signals it reads change. A selection uses it to keep the end the
+    /// keyboard moves in view.
     ///
     /// ```
     /// use smudge_core::geometry::Rect;
@@ -1157,9 +1158,10 @@ impl<W: Widget> Element<W> {
         self
     }
 
-    /// Runs `handler` with the pointer's position relative to the node while a
-    /// primary press that a node took is held, and the node is the deepest one
-    /// under the pointer that sets this handler.
+    /// Runs `handler` with the pointer's position relative to the top left of
+    /// the node's content box, inside its border and padding, while a primary
+    /// press that a node took is held, and the node is the deepest one under
+    /// the pointer that sets this handler.
     ///
     /// It runs when the press begins, before the pressed node's
     /// [`on_pointer_down`](Self::on_pointer_down), on every move while the

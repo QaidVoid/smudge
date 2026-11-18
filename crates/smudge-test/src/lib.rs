@@ -17,7 +17,7 @@ use web_time::Instant;
 
 use smudge_core::app::{App, AppConfig, FrameOutput, RepaintMode};
 use smudge_core::element::IntoElement;
-use smudge_core::geometry::{Color, PixelRect, Point, Size};
+use smudge_core::geometry::{Color, PixelRect, Point, Rect, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::paint::DisplayList;
 use smudge_core::timer::VirtualClock;
@@ -163,7 +163,7 @@ impl Harness {
             list: DisplayList::new(),
             damage: Vec::new(),
             scale,
-            clear_color: CLEAR_COLOR,
+            clear_color: clear,
             woken,
             clock,
         }
@@ -392,6 +392,40 @@ impl Harness {
         let at = (y as usize * self.renderer.width() as usize + x as usize) * 4;
         let bytes = self.renderer.pixels().get(at..at + 4)?;
         Some([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+
+    /// Returns the smallest rectangle, in physical pixels of the current
+    /// surface, around every pixel that differs from the clear color of the
+    /// last frame, or `None` when every pixel equals it.
+    ///
+    /// A test reads where something drew, such as the ink of a text, without
+    /// depending on the exact pixels a snapshot would pin.
+    pub fn ink_bounds(&self) -> Option<Rect> {
+        // The surface holds premultiplied pixels, rounded as the renderer
+        // rounds them.
+        let clear = self.clear_color;
+        let alpha = u32::from(clear.a);
+        let premultiply = |channel: u8| ((u32::from(channel) * alpha + 127) / 255) as u8;
+        let clear = [
+            premultiply(clear.r),
+            premultiply(clear.g),
+            premultiply(clear.b),
+            clear.a,
+        ];
+        let (width, height) = (self.renderer.width(), self.renderer.height());
+        let mut bounds: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..height {
+            for x in 0..width {
+                if self.pixel(x, y) == Some(clear) {
+                    continue;
+                }
+                let (x0, y0, x1, y1) = bounds.unwrap_or((x, y, x, y));
+                bounds = Some((x0.min(x), y0.min(y), x1.max(x), y1.max(y)));
+            }
+        }
+        bounds.map(|(x0, y0, x1, y1)| {
+            Rect::new(x0 as f32, y0 as f32, (x1 + 1) as f32, (y1 + 1) as f32)
+        })
     }
 
     /// Encodes the current surface as a PNG image.

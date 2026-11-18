@@ -264,7 +264,7 @@ pub(crate) trait Nav {
     fn step(&self, from: Option<ParagraphSelection>, offset: usize, step: Step) -> Stepped;
 
     /// Returns the caret at `offset`, at the end of the line before it when
-    /// `upstream` is set, relative to the block's rectangle.
+    /// `upstream` is set, relative to the block's content box.
     fn caret(&self, offset: usize, upstream: bool) -> Option<Rect>;
 
     /// Returns whether the block's text runs right to left, or `None` before
@@ -818,10 +818,16 @@ impl<K: Clone + Eq + Hash + 'static> Scope<K> {
 }
 
 /// Paints the rectangles of `range` in `layout`, placed at the node's
-/// origin, in the selection color the text inputs use.
+/// content box, in the selection color the text inputs use.
+///
+/// A truncated text keeps its hidden lines in the layout, so the rectangles
+/// are cut below `shown`, the height of the lines it shows, when it is
+/// given. Nothing else cuts them, because the glyphs they lie under are not
+/// cut either.
 pub(crate) fn paint_selected<B: Brush>(
     layout: &parley::Layout<B>,
     range: Range<usize>,
+    shown: Option<f32>,
     cx: &PaintCx<'_>,
     out: &mut Vec<PaintOp>,
 ) {
@@ -829,7 +835,8 @@ pub(crate) fn paint_selected<B: Brush>(
         a: SELECTION_ALPHA,
         ..cx.theme.color(ColorToken::ACCENT)
     };
-    let origin = cx.rect.origin();
+    let origin = cx.content.origin();
+    let bottom = shown.map_or(f32::INFINITY, |shown| origin.y + shown);
     let selection = ParagraphSelection::new(
         Cursor::from_byte_index(layout, range.start, Affinity::Downstream),
         Cursor::from_byte_index(layout, range.end, Affinity::Downstream),
@@ -839,11 +846,8 @@ pub(crate) fn paint_selected<B: Brush>(
             origin.x + area.x0 as f32,
             origin.y + area.y0 as f32,
             origin.x + area.x1 as f32,
-            origin.y + area.y1 as f32,
+            (origin.y + area.y1 as f32).min(bottom),
         );
-        // A truncated text keeps its hidden lines in the layout, so the
-        // selection is cut to the node, where the text shows.
-        let rect = rect.intersect(cx.rect);
         if rect.width() > 0.0 && rect.height() > 0.0 {
             out.push(PaintOp::FillRect {
                 rect,
@@ -854,7 +858,8 @@ pub(crate) fn paint_selected<B: Brush>(
     });
 }
 
-/// Returns what lies under `at` in `layout`, for the block of `key`.
+/// Returns what lies under `at`, relative to the top left of the block's
+/// content box, in `layout`, for the block of `key`.
 fn hit<K, B: Brush>(key: K, layout: &parley::Layout<B>, at: Point) -> Hit<K> {
     let offset = Cursor::from_point(layout, at.x, at.y).index();
     let word = ParagraphSelection::word_from_point(layout, at.x, at.y).text_range();

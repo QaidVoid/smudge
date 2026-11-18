@@ -998,6 +998,39 @@ fn drag_over_reaches_the_node_under_the_pointer_while_another_holds_the_press() 
 }
 
 #[test]
+fn drag_over_positions_are_relative_to_the_content_box() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let (_, on_press) = press_counter();
+    let padded = drag_over_log(&log, "padded");
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_press(on_press)
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(60.0))
+                        .padding(px(10.0))
+                        .border(2.0)
+                        .on_drag_over(padded),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 20.0, y: 15.0 });
+    harness.button_up(Point { x: 20.0, y: 15.0 });
+
+    assert_eq!(
+        log.borrow().as_slice(),
+        [("padded", Point { x: 8.0, y: 3.0 })],
+        "the position is measured from inside the border and the padding"
+    );
+}
+
+#[test]
 fn a_drag_past_a_clipped_area_reaches_the_content_at_its_edge() {
     let log: DragLog = Rc::new(RefCell::new(Vec::new()));
     let top = drag_over_log(&log, "top");

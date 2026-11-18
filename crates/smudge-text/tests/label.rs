@@ -4,7 +4,7 @@
 //! Every test installs a bundled-only text system first, so the layout never
 //! depends on the fonts installed on the machine running the tests.
 
-use smudge_core::geometry::{Color, Rect};
+use smudge_core::geometry::{Color, Rect, Size};
 use smudge_core::reactive::{prelude::*, signal_local};
 use smudge_core::style::{Align, px};
 use smudge_core::theme::{ColorToken, Theme};
@@ -350,5 +350,23 @@ fn a_fixed_text_size_after_a_bound_one_wins() {
         node_rects(&mut replaced)[1].height(),
         node_rects(&mut fixed)[1].height(),
         "the later fixed size replaced the earlier binding"
+    );
+}
+
+#[test]
+fn padding_places_the_text_inside_the_label() {
+    TextSystem::bundled_only().install();
+    let mut harness = Harness::new(240.0, 100.0, 1.0, || {
+        panel().child(label("Padded").padding_xy(Size {
+            width: 40.0,
+            height: 20.0,
+        }))
+    });
+    harness.frame();
+
+    let ink = harness.ink_bounds().expect("the label draws its text");
+    assert!(
+        ink.x0 >= 40.0 && ink.y0 >= 20.0,
+        "the text starts inside the padding, at {ink:?}"
     );
 }

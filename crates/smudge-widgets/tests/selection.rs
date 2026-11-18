@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use smudge_core::clipboard::{Clipboard, MemoryClipboard};
-use smudge_core::element::show;
-use smudge_core::geometry::Point;
+use smudge_core::element::{AnyElement, IntoElement, show};
+use smudge_core::geometry::{Point, Size};
 use smudge_core::input::{InputEvent, Key, Modifiers};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::style::px;
@@ -868,4 +868,136 @@ fn a_word_step_back_from_a_block_s_end_stops_at_a_one_letter_word() {
     shift(&mut harness, Key::ArrowLeft, true);
 
     assert_eq!(copy(&mut harness, &mut clipboard).as_deref(), Some("b\n"));
+}
+
+/// A selectable block of `text(key)` with `padding` around its text: a
+/// rich text paragraph when `rich` is set, a label otherwise.
+fn padded_block(key: u32, rich: bool, padding: Size) -> AnyElement {
+    if rich {
+        rich_text(Rc::from([Span::new(text(key), SpanStyle::default())]))
+            .padding_xy(padding)
+            .selectable(key)
+            .into_any()
+    } else {
+        label(text(key))
+            .padding_xy(padding)
+            .selectable(key)
+            .into_any()
+    }
+}
+
+#[test]
+fn a_drag_over_a_padded_block_selects_the_text_drawn_under_it() {
+    for rich in [false, true] {
+        TextSystem::bundled_only().install();
+        let mut harness = Harness::new(400.0, 120.0, 1.0, move || {
+            selection_scope(
+                || Rc::from([0_u32]),
+                |key: &u32| text(*key),
+                move || {
+                    column().child(padded_block(
+                        0,
+                        rich,
+                        Size {
+                            width: 40.0,
+                            height: 20.0,
+                        },
+                    ))
+                },
+            )
+        });
+        let mut clipboard = MemoryClipboard::default();
+        harness.app().set_clipboard(Box::new(clipboard.clone()));
+        harness.frame();
+
+        let ink = harness.ink_bounds().expect("the block draws its text");
+        let middle = (ink.y0 + ink.y1) / 2.0;
+        // Just above the last glyph's ink, inside the line, where only the
+        // selection paints.
+        let above_end = (ink.x1 as u32 - 2, ink.y0 as u32 - 1);
+        let clear = harness.pixel(above_end.0, above_end.1);
+        harness.button_down(Point {
+            x: ink.x0,
+            y: middle,
+        });
+        harness.move_to(Point {
+            x: ink.x1,
+            y: middle,
+        });
+        harness.button_up(Point {
+            x: ink.x1,
+            y: middle,
+        });
+        harness.frame();
+
+        assert_eq!(
+            copy(&mut harness, &mut clipboard),
+            Some(text(0)),
+            "a drag from the first drawn glyph to the last selects the whole \
+             text of the {} block",
+            if rich { "rich" } else { "label" }
+        );
+        let highlighted = harness.ink_bounds().expect("the selection is drawn");
+        // A pixel of slack for the antialiased edge of the highlight.
+        assert!(
+            highlighted.x0 >= 39.0 && highlighted.y0 >= 19.0,
+            "the selection is drawn inside the padding, at {highlighted:?}"
+        );
+        assert_ne!(
+            harness.pixel(above_end.0, above_end.1),
+            clear,
+            "the selection is drawn under the text it selected"
+        );
+    }
+}
+
+#[test]
+fn the_keyboard_reveals_the_moving_end_below_the_padding_of_a_block_out_of_view() {
+    for rich in [false, true] {
+        TextSystem::bundled_only().install();
+        let offset = RwSignal::new(0.0_f32);
+        let read = offset.clone();
+        let mut harness = Harness::new(400.0, 100.0, 1.0, move || {
+            let offset = offset.clone();
+            selection_scope(
+                || Rc::from([0_u32, 1]),
+                |key: &u32| text(*key),
+                move || {
+                    scroll(
+                        column()
+                            .child(label(text(0)).height(px(120.0)).selectable(0_u32))
+                            .child(padded_block(
+                                1,
+                                rich,
+                                Size {
+                                    width: 0.0,
+                                    height: 150.0,
+                                },
+                            )),
+                    )
+                    .offset(offset.clone())
+                    .height(px(100.0))
+                },
+            )
+        });
+        harness.frame();
+
+        // The second block starts below the view, so it has never painted.
+        harness.click(Point { x: 390.0, y: 9.0 });
+        harness.frame();
+        shift(&mut harness, Key::ArrowRight, false);
+        harness.frame();
+        harness.frame();
+
+        // The end moved to the start of the second block's text, 150 pixels
+        // into the block, which starts at 120: from 270 to about 288 in the
+        // content, past the bottom of the 100 pixel view.
+        assert!(
+            read.get() >= 180.0,
+            "the view scrolled to the caret below the padding of the {} \
+             block, to {}",
+            if rich { "rich" } else { "label" },
+            read.get()
+        );
+    }
 }

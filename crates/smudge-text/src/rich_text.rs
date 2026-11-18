@@ -128,8 +128,8 @@ type Links = Rc<RefCell<Vec<Option<Rc<dyn Fn()>>>>>;
 /// Build one with [`rich_text`]. Like a label, it keeps the layout of its
 /// spans and rebuilds it only when their text or font style, its block
 /// style, or the offered width changes, and keeps the glyph runs of that
-/// layout until the layout, the node's position or a resolved color
-/// changes.
+/// layout until the layout, the position of its content box or a resolved
+/// color changes.
 pub struct RichText {
     /// The spans the paragraph shows.
     spans: Rc<[Span]>,
@@ -161,6 +161,11 @@ pub struct RichText {
     /// The byte range of the joined text a selection scope selected, painted
     /// under the glyphs, or `None`.
     selected: Option<Range<usize>>,
+    /// The offset of the content box from the top left of the node, as the
+    /// paragraph last painted it, shared with the pointer handlers that look
+    /// up the link under the pointer, whose positions are relative to the
+    /// node.
+    inset: Rc<Cell<Point>>,
 }
 
 /// The paint operations of one layout, with the origin and the resolved
@@ -219,7 +224,11 @@ fn span_font(style: &SpanStyle) -> SpanFont {
 impl RichText {
     /// Creates an empty paragraph that shares `layout` and `links` with its
     /// pointer handlers.
-    fn new(layout: Rc<RefCell<Option<RichLayout>>>, links: Links) -> RichText {
+    fn new(
+        layout: Rc<RefCell<Option<RichLayout>>>,
+        links: Links,
+        inset: Rc<Cell<Point>>,
+    ) -> RichText {
         RichText {
             spans: Rc::from([]),
             text: String::new(),
@@ -232,6 +241,7 @@ impl RichText {
             links,
             painted: RefCell::new(None),
             selected: None,
+            inset,
         }
     }
 
@@ -317,9 +327,10 @@ impl Widget for RichText {
     /// Appends the glyph runs of every span, each in its span's color, and
     /// the underline of every link.
     ///
-    /// The operations are rebuilt when they were invalidated, when the node
-    /// paints at another position, or when a resolved span color changed.
-    /// Resolving a token marks the node to repaint on a theme switch.
+    /// The operations are rebuilt when they were invalidated, when the
+    /// content box paints at another position, or when a resolved span
+    /// color changed. Resolving a token marks the node to repaint on a theme
+    /// switch.
     ///
     /// # Panics
     ///
@@ -336,9 +347,13 @@ impl Widget for RichText {
             Some(color) => color.resolve(cx.theme),
             None => self.style.color.resolve(cx.theme),
         };
-        let origin = cx.rect.origin();
+        let origin = cx.content.origin();
+        self.inset.set(Point {
+            x: origin.x - cx.rect.x0,
+            y: origin.y - cx.rect.y0,
+        });
         if let Some(range) = &self.selected {
-            crate::selection::paint_selected(&layout.layout, range.clone(), cx, out);
+            crate::selection::paint_selected(&layout.layout, range.clone(), None, cx, out);
         }
         let mut painted = self.painted.borrow_mut();
         let current = painted.as_ref().is_some_and(|painted| {
@@ -422,11 +437,17 @@ pub fn rich_text(spans: impl Into<Value<Rc<[Span]>>>) -> Element<RichText> {
     let layout: Rc<RefCell<Option<RichLayout>>> = Rc::new(RefCell::new(None));
     let links: Links = Rc::new(RefCell::new(Vec::new()));
     let pressed: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let inset = Rc::new(Cell::new(Point { x: 0.0, y: 0.0 }));
     let link_at: Rc<dyn Fn(Point) -> Option<usize>> = {
         let layout = Rc::clone(&layout);
         let links = Rc::clone(&links);
+        let inset = Rc::clone(&inset);
         Rc::new(move |point: Point| {
-            let span = layout.borrow().as_ref()?.span_at(point.x, point.y)?;
+            let inset = inset.get();
+            let span = layout
+                .borrow()
+                .as_ref()?
+                .span_at(point.x - inset.x, point.y - inset.y)?;
             links.borrow().get(span)?.as_ref()?;
             Some(span)
         })
@@ -439,7 +460,7 @@ pub fn rich_text(spans: impl Into<Value<Rc<[Span]>>>) -> Element<RichText> {
     // The ambient style binding is installed first, so its update runs before
     // the updates of the builder methods and an explicit field wins over it.
     // The cursor shows only where the paragraph responds, over its links.
-    Element::new(RichText::new(Rc::clone(&layout), Rc::clone(&links)))
+    Element::new(RichText::new(Rc::clone(&layout), Rc::clone(&links), inset))
         .bind(AmbientStyleKey, current_text_style, apply_ambient_style)
         .bind(SpansKey, spans, set_spans)
         .cursor(Cursor::Pointer)

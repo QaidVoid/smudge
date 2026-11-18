@@ -45,7 +45,8 @@ use crate::style::current_text_style;
 /// Build one with [`label`]. The label keeps the layout of its current text
 /// and rebuilds it only when the text, the style or the offered width
 /// changes, and keeps the glyph runs of that layout and rebuilds them only
-/// when the layout, the node's position or the resolved text color changes.
+/// when the layout, the position of its content box or the resolved text
+/// color changes.
 pub struct Label {
     /// The text the label shows.
     text: String,
@@ -252,12 +253,13 @@ impl Widget for Label {
 
     /// Appends one [`PaintOp::Glyphs`] per run of the current layout.
     ///
-    /// The runs are rebuilt when they were invalidated, when the node paints
-    /// at another position, or when the resolved text color changed, because
-    /// glyph positions and colors are baked into them. Each run carries the
-    /// color the node's text color or the label's style resolves to under the
-    /// current theme. When that color is a token, resolving it marks the node
-    /// to repaint on a theme switch, and a literal color does not.
+    /// The runs are rebuilt when they were invalidated, when the content box
+    /// paints at another position, or when the resolved text color changed,
+    /// because glyph positions and colors are baked into them. Each run
+    /// carries the color the node's text color or the label's style resolves
+    /// to under the current theme. When that color is a token, resolving it
+    /// marks the node to repaint on a theme switch, and a literal color does
+    /// not.
     ///
     /// # Panics
     ///
@@ -278,10 +280,16 @@ impl Label {
             return;
         };
         if let Some(range) = self.layout.selected() {
-            crate::selection::paint_selected(&layout.layout, range.clone(), cx, out);
+            crate::selection::paint_selected(
+                &layout.layout,
+                range.clone(),
+                Some(layout.size().height),
+                cx,
+                out,
+            );
         }
         let color = self.text_color(cx);
-        let origin = cx.rect.origin();
+        let origin = cx.content.origin();
         let mut cache = self.runs.borrow_mut();
         let rebuild = match &*cache {
             Some(cached) => cached.origin != origin || cached.color != color,
