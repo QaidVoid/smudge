@@ -54,12 +54,11 @@ jobs:
       - name: Package
         run: |
           tar -cJf "$ASSET" -C "target/$TARGET/release" cargo-smudge -C "$GITHUB_WORKSPACE" LICENSE-MIT LICENSE-APACHE README.md
-          sha256sum "$ASSET" > "$ASSET.sha256"
       - name: Attest the build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: ${{ env.ASSET }}
       - name: Attach the archive to the draft release
-        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG" "$ASSET" --clobber --repo "$GITHUB_REPOSITORY"
       - name: Publish the release
         run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
