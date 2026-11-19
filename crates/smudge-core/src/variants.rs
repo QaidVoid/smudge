@@ -277,6 +277,12 @@ impl PatchBuilder {
         self.push(move |style| style.paint.corner_radius = radius)
     }
 
+    /// Sets how opaque the node and everything under it draw, from 0.0 to
+    /// 1.0.
+    pub fn opacity(self, opacity: f32) -> Self {
+        self.push(move |style| style.paint.opacity = opacity)
+    }
+
     /// Consumes the builder into the patch it recorded.
     pub(crate) fn patch(self) -> StylePatch {
         StylePatch {

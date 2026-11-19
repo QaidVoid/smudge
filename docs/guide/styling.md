@@ -91,9 +91,23 @@ Patches hold fixed values. For a value that changes with your own state, bind th
 
 `disabled(true)`, or a closure, takes the node out of hit testing, so its pointer handlers do not run, and applies its `disabled_style` patch.
 
+## Opacity
+
+`opacity` draws a node and everything under it as one group, blended at a value from 0.0 to 1.0:
+
+```rust
+let ghost = panel()
+    .padding(px(8.0))
+    .background(ColorToken::SURFACE)
+    .opacity(0.5)
+    .child(label("Archived"));
+```
+
+The children cover each other as usual, and only the result shows through, so overlapping children never show through each other. A node at 0.0 draws nothing, while it still takes part in layout and hit testing. Changing the opacity repaints no child: the group is blended again over the pixels it covers.
+
 ## Transitions
 
-`transition` moves a node's background, border color, text color and corner radius under a spring whenever their values change, instead of switching them at once. The change can come from a state patch, a bound closure or a theme switch.
+`transition` moves a node's background, border color, text color, corner radius and opacity under a spring whenever their values change, instead of switching them at once. The change can come from a state patch, a bound closure or a theme switch.
 
 ```rust
 let row_item = panel()

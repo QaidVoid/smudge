@@ -271,6 +271,7 @@ enum Prop {
     BorderColor,
     TextColor,
     Radius,
+    Opacity,
     ScrollOffset,
     Disabled,
     Cursor,
@@ -983,6 +984,27 @@ impl<W: Widget> Element<W> {
         })
     }
 
+    /// Sets how opaque the node and everything under it draw, from 0.0 to
+    /// 1.0, the default. The subtree is drawn as one group and blended at
+    /// this opacity, so overlapping children do not show through each
+    /// other. A node at 0.0 draws nothing but still takes part in layout
+    /// and hit testing. A value outside the range draws at its nearest end,
+    /// and one that is not a number draws as usual. This repaints the node
+    /// without laying it out again, and a
+    /// [`transition`](Element::transition) moves it like a color.
+    ///
+    /// ```
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let faded = panel().width(px(80.0)).height(px(24.0)).opacity(0.5);
+    /// ```
+    pub fn opacity(self, opacity: impl Into<Value<f32>>) -> Self {
+        self.paint_value(Prop::Opacity, opacity, |paint, opacity| {
+            paint.opacity = opacity;
+        })
+    }
+
     /// Records a patch built by `build` into one slot of the element's
     /// variants.
     fn variant(
@@ -1390,8 +1412,8 @@ impl<W: Widget> Element<W> {
         self
     }
 
-    /// Moves the node's background, border color, text color and corner
-    /// radius under `spring` whenever their values change, from a hover or
+    /// Moves the node's background, border color, text color, corner radius
+    /// and opacity under `spring` whenever their values change, from a hover or
     /// another state, a binding or a theme switch, instead of switching at
     /// once.
     ///

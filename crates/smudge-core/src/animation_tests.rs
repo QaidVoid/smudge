@@ -298,3 +298,18 @@ fn a_radius_that_is_not_a_number_does_not_keep_moving() {
     );
     assert!(!moving);
 }
+
+#[test]
+fn an_opacity_beyond_one_moves_from_where_it_shows() {
+    let theme = Theme::light();
+    let start = Instant::now();
+    let mut transition = Transition::new(Spring::SMOOTH);
+    let mut style = painted(None, None, 0.0);
+    style.paint.opacity = 3.0;
+    transition.update(&style, &theme, start, false);
+    style.paint.opacity = 0.0;
+    transition.update(&style, &theme, start, false);
+    transition.update(&style, &theme, at(start, 100), false);
+    let shown = transition.animated().paint.opacity;
+    assert!(shown < 0.8, "100 ms in, the opacity is still {shown}");
+}

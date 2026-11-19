@@ -278,3 +278,118 @@ fn text_at_scale_one() {
 fn text_at_scale_two() {
     assert_binary_snapshot!(".png", render_text(96, 64, 2.0));
 }
+
+/// A colored backdrop with two overlapping squares drawn as one group at
+/// half opacity, so the overlap shows only the upper square.
+fn group_scene() -> DisplayList {
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::FillRect {
+        rect: SCENE,
+        radius: Corners::all(0.0),
+        color: Color::rgb(40, 120, 200),
+    });
+    list.push_group(0.5);
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(6.0, 6.0, 28.0, 26.0),
+        radius: Corners::all(4.0),
+        color: Color::rgb(230, 60, 60),
+    });
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(18.0, 10.0, 42.0, 28.0),
+        radius: Corners::all(4.0),
+        color: Color::rgb(250, 220, 60),
+    });
+    list.pop_group();
+    list.finish();
+    list
+}
+
+#[test]
+fn a_group_at_half_opacity_over_a_colored_backdrop() {
+    assert_binary_snapshot!(".png", render_list(&group_scene(), 48, 32, 1.0));
+}
+
+#[test]
+fn nested_groups_multiply_their_opacities() {
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::FillRect {
+        rect: SCENE,
+        radius: Corners::all(0.0),
+        color: Color::rgb(245, 245, 245),
+    });
+    list.push_group(0.8);
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(4.0, 4.0, 44.0, 28.0),
+        radius: Corners::all(6.0),
+        color: Color::rgb(40, 40, 40),
+    });
+    list.push_group(0.5);
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(12.0, 8.0, 36.0, 24.0),
+        radius: Corners::all(4.0),
+        color: Color::rgb(60, 200, 120),
+    });
+    list.pop_group();
+    list.pop_group();
+    list.finish();
+    assert_binary_snapshot!(".png", render_list(&list, 48, 32, 1.0));
+}
+
+#[test]
+fn a_group_repainted_through_part_of_it_matches_a_full_repaint() {
+    let list = group_scene();
+    let full = {
+        let mut renderer = CpuRenderer::new(48, 32);
+        let damage = [PixelRect {
+            x: 0,
+            y: 0,
+            width: 48,
+            height: 32,
+        }];
+        renderer.render(&FrameOutput {
+            list: &list,
+            damage: &damage,
+            full: true,
+            clear_color: Color::WHITE,
+            scale: 1.0,
+        });
+        renderer.pixels().to_vec()
+    };
+    let mut renderer = CpuRenderer::new(48, 32);
+    let mut blank = DisplayList::new();
+    blank.finish();
+    let everything = [PixelRect {
+        x: 0,
+        y: 0,
+        width: 48,
+        height: 32,
+    }];
+    renderer.render(&FrameOutput {
+        list: &blank,
+        damage: &everything,
+        full: true,
+        clear_color: Color::WHITE,
+        scale: 1.0,
+    });
+    // The damage cuts through both squares of the group, so the group draws
+    // into a layer that covers only part of it.
+    let part = PixelRect {
+        x: 15,
+        y: 12,
+        width: 20,
+        height: 9,
+    };
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &[part],
+        full: false,
+        clear_color: Color::WHITE,
+        scale: 1.0,
+    });
+    let damaged = renderer.pixels();
+    for y in part.y..part.y + part.height {
+        let start = ((y * 48 + part.x) * 4) as usize;
+        let end = start + part.width as usize * 4;
+        assert_eq!(&damaged[start..end], &full[start..end], "row {y}");
+    }
+}

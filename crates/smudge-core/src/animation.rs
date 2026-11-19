@@ -299,7 +299,8 @@ fn narrow(value: f64) -> f32 {
 }
 
 /// The paint props of one node that move under a spring when their
-/// resolved values change, and the style the node paints with meanwhile.
+/// resolved values change, its opacity among them, and the style the node
+/// paints with meanwhile.
 ///
 /// A node whose element called
 /// [`Element::transition`](crate::element::Element::transition) owns one.
@@ -318,6 +319,8 @@ pub(crate) struct Transition {
     text: ColorTrack,
     /// The radius of the node's corners, once the node has painted.
     radius: Option<Motion<1>>,
+    /// The opacity of the node's subtree, once the node has painted.
+    opacity: Option<Motion<1>>,
     /// The style the node paints with, its resolved style with the moving
     /// props in place.
     animated: Style,
@@ -335,6 +338,7 @@ impl Transition {
                 ..ColorTrack::default()
             },
             radius: None,
+            opacity: None,
             animated: Style::default(),
         }
     }
@@ -368,6 +372,11 @@ impl Transition {
             .radius
             .get_or_insert_with(|| Motion::rest(spring, radius_target, now, VALUE));
         let ([corner], _, radius_settled) = radius.step(radius_target, now, jump);
+        let opacity_target = [f64::from(crate::style::shown_opacity(paint.opacity))];
+        let opacity = self
+            .opacity
+            .get_or_insert_with(|| Motion::rest(spring, opacity_target, now, VALUE));
+        let ([shown_opacity], _, opacity_settled) = opacity.step(opacity_target, now, jump);
 
         self.animated.clone_from(resolved);
         let animated = &mut self.animated.paint;
@@ -375,7 +384,8 @@ impl Transition {
         animated.border_color = border.map(ColorValue::Literal);
         animated.text_color = text.map(ColorValue::Literal);
         animated.corner_radius = RadiusValue::Literal(corner.max(0.0) as f32);
-        moving_background || moving_border || moving_text || !radius_settled
+        animated.opacity = shown_opacity as f32;
+        moving_background || moving_border || moving_text || !radius_settled || !opacity_settled
     }
 
     /// The style the node paints with, as the last update left it.

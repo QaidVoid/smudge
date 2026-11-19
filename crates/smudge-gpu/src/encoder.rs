@@ -11,7 +11,8 @@ use vello::kurbo::{
     Affine, BezPath, Diagonal2, Rect as KurboRect, RoundedRect, RoundedRectRadii, Shape,
 };
 use vello::peniko::{
-    Blob, Color as PenikoColor, Fill, FontData, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
+    BlendMode, Blob, Color as PenikoColor, Fill, FontData, ImageAlphaType, ImageBrush, ImageData,
+    ImageFormat,
 };
 use vello::{FontEmbolden, Glyph, Scene};
 
@@ -74,10 +75,11 @@ impl Encoder {
             .retain(|_, (_, stamp)| generation - *stamp <= 2);
         let transform = Affine::scale(f64::from(frame.scale));
         // The display list is balanced by construction, but a stray `PopClip`
-        // in a release build would pop a vello layer that was never pushed,
-        // so the depth is tracked here and leftover clips are closed before
-        // rendering.
+        // or `PopGroup` in a release build would pop a vello layer that was
+        // never pushed, so the depths are tracked here and leftover layers
+        // are closed before rendering.
         let mut depth = 0usize;
+        let mut groups = 0usize;
         // The translation the offset scopes around an item apply to it, which
         // composes with the scale instead of costing a layer per scope.
         let mut offset = Affine::IDENTITY;
@@ -120,9 +122,30 @@ impl Encoder {
                     // as with clips.
                     offset = self.offsets.pop().unwrap_or(offset);
                 }
+                DisplayItem::PushGroup(opacity) => {
+                    groups += 1;
+                    let opacity = if opacity.is_nan() {
+                        1.0
+                    } else {
+                        opacity.clamp(0.0, 1.0)
+                    };
+                    self.scene.push_layer(
+                        Fill::NonZero,
+                        BlendMode::default(),
+                        opacity,
+                        Affine::IDENTITY,
+                        &visible,
+                    );
+                }
+                DisplayItem::PopGroup if groups > 0 => {
+                    groups -= 1;
+                    self.scene.pop_layer();
+                }
+                // An item added after this renderer draws nothing here.
+                _ => {}
             }
         }
-        for _ in 0..depth {
+        for _ in 0..depth + groups {
             self.scene.pop_layer();
         }
     }

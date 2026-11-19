@@ -20,9 +20,10 @@
 use crate::damage::DamageAccumulator;
 use crate::geometry::Rect;
 use crate::paint::PaintOp;
+use crate::style::shown_opacity;
 use crate::widget::PaintCx;
 
-use super::{Dirty, PaintedBounds, WidgetTree};
+use super::{Dirty, PaintedBounds, WidgetId, WidgetTree};
 
 impl WidgetTree {
     /// Paints every queued node and adds the pixels each one may have changed
@@ -48,6 +49,9 @@ impl WidgetTree {
     /// A node with a transition paints with the values its springs have
     /// reached at the frame's time, and one whose springs are still moving
     /// is kept for the next frame to paint again.
+    ///
+    /// A node drawn at a new opacity damages the painted bounds of its whole
+    /// subtree, since the group the subtree is blended in changed.
     ///
     /// Before a widget paints, the pass clears the theme's consultation flag,
     /// and after it paints, the node's `uses_tokens` flag records whether the
@@ -105,6 +109,11 @@ impl WidgetTree {
                     }
                     None => &node.resolved,
                 };
+                let opacity = shown_opacity(style.paint.opacity);
+                if opacity != node.opacity {
+                    node.opacity = opacity;
+                    self.opacity_changed.push(id);
+                }
                 let cx = PaintCx {
                     rect: node.paint_rect,
                     content: node.paint_content,
@@ -147,11 +156,41 @@ impl WidgetTree {
         queue.clear();
         self.paint_queue = queue;
 
+        // A node drawn at a new opacity changes the pixels of its whole
+        // subtree, whose operations stay as they are, so every descendant's
+        // painted bounds are damage.
+        let mut changed = std::mem::take(&mut self.opacity_changed);
+        for root in changed.drain(..) {
+            self.damage_descendants(root, damage);
+        }
+        self.opacity_changed = changed;
+
         for bounds in self.pending_damage.drain(..) {
             bounds.damage(damage);
         }
 
         painted
+    }
+}
+
+impl WidgetTree {
+    /// Adds the painted bounds of every descendant of `root` to `damage`.
+    fn damage_descendants(&mut self, root: WidgetId, damage: &mut DamageAccumulator) {
+        let mut walk = std::mem::take(&mut self.walk);
+        walk.clear();
+        if let Some(node) = self.nodes.get(root) {
+            walk.extend_from_slice(&node.children);
+        }
+        while let Some(id) = walk.pop() {
+            let Some(node) = self.nodes.get(id) else {
+                continue;
+            };
+            if let Some(bounds) = node.painted {
+                bounds.damage(damage);
+            }
+            walk.extend_from_slice(&node.children);
+        }
+        self.walk = walk;
     }
 }
 

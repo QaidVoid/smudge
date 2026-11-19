@@ -167,6 +167,20 @@ const TOLERANCES: &[Tolerance] = &[
         max: 75,
         over_eight: 0.00206,
     },
+    Tolerance {
+        scene: "groups",
+        scale: 1.0,
+        mean: 0.005,
+        max: 17,
+        over_eight: 0.00026,
+    },
+    Tolerance {
+        scene: "groups",
+        scale: 2.0,
+        mean: 0.0035,
+        max: 18,
+        over_eight: 0.00023,
+    },
 ];
 
 /// The mean, maximum and over-8 difference of one channel over one image.
@@ -755,6 +769,31 @@ fn rounded_rects() -> Element<Panel> {
         )
 }
 
+/// Groups at partial opacity over an opaque backdrop: one holding two
+/// overlapping boxes, which must not show through each other, and a group
+/// nested inside another, whose opacities multiply.
+fn groups() -> Element<Panel> {
+    panel()
+        .child(at(0.0, 0.0, 240.0, 180.0).background(Color::rgb(40, 120, 200)))
+        .child(
+            at(10.0, 10.0, 120.0, 90.0)
+                .opacity(0.5)
+                .child(at(0.0, 0.0, 70.0, 60.0).background(Color::rgb(230, 60, 60)))
+                .child(at(40.0, 20.0, 70.0, 60.0).background(Color::rgb(250, 220, 60))),
+        )
+        .child(
+            at(130.0, 90.0, 100.0, 80.0)
+                .opacity(0.8)
+                .background(Color::rgb(40, 40, 40))
+                .child(
+                    at(20.0, 15.0, 60.0, 50.0)
+                        .opacity(0.5)
+                        .corner_radius(8.0)
+                        .background(Color::rgb(60, 200, 120)),
+                ),
+        )
+}
+
 /// Borders of rising widths, a rounded border, a translucent border and a
 /// border thicker than its box, which fills it whole.
 fn borders() -> Element<Panel> {
@@ -951,6 +990,7 @@ fn scenes() -> &'static [Scene] {
         ("text", text_lines),
         ("box grid", box_grid),
         ("images", images),
+        ("groups", groups),
     ]
 }
 

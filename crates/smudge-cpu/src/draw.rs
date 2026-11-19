@@ -44,9 +44,29 @@ fn maybe_translated(rect: Rect, offset: Point) -> Rect {
     }
 }
 
-/// Walks `items` in paint order under `root`, calling `on_op` for every
+/// What a walk of a display list hands its caller, in paint order.
+pub(crate) enum Walked<'a> {
+    /// A drawable operation.
+    Op {
+        /// The index of the operation's item in the display list.
+        index: usize,
+        /// The operation.
+        op: &'a PaintOp,
+        /// The physical pixels the operation can change.
+        area: PixelRect,
+        /// The logical offset the operation is drawn at.
+        offset: Point,
+    },
+    /// The start of a group drawn at this opacity.
+    Open(f32),
+    /// The end of the group the last unclosed [`Walked::Open`] started.
+    Close,
+}
+
+/// Walks `items` in paint order under `root`, calling `on_item` for every
 /// drawable operation with the physical pixels it can change and the logical
-/// offset the operation is drawn at.
+/// offset the operation is drawn at, and for the start and the end of every
+/// group.
 ///
 /// `root` is the rectangle the walk repaints, usually a damage rectangle or
 /// the whole surface: every area handed over lies inside it. Each operation's
@@ -59,11 +79,11 @@ fn maybe_translated(rect: Rect, offset: Point) -> Rect {
 /// stack up. The walk visits clips, offsets and operations once, in list
 /// order, so a caller pays one bounds conversion per operation however many
 /// rectangles it repaints.
-pub(crate) fn for_each_op(
-    mut on_op: impl FnMut(usize, &PaintOp, PixelRect, Point),
+pub(crate) fn walk<'a>(
+    mut on_item: impl FnMut(Walked<'a>),
     clips: &mut Vec<Option<PixelRect>>,
     offsets: &mut Vec<Point>,
-    items: &[DisplayItem],
+    items: &'a [DisplayItem],
     surface: Surface,
     root: PixelRect,
 ) {
@@ -86,7 +106,12 @@ pub(crate) fn for_each_op(
                     )
                     .and_then(|area| area.intersect(clip))
                 {
-                    on_op(index, op, area, offset);
+                    on_item(Walked::Op {
+                        index,
+                        op,
+                        area,
+                        offset,
+                    });
                 }
             }
             DisplayItem::PushClip(rect) => {
@@ -123,6 +148,10 @@ pub(crate) fn for_each_op(
                 // An unbalanced list keeps the offset it has, as with clips.
                 offset = offsets.pop().unwrap_or(offset);
             }
+            DisplayItem::PushGroup(opacity) => on_item(Walked::Open(*opacity)),
+            DisplayItem::PopGroup => on_item(Walked::Close),
+            // An item added after this renderer draws nothing here.
+            _ => {}
         }
     }
 }
@@ -140,8 +169,26 @@ pub(crate) struct PlannedOp {
     pub(crate) offset: Point,
 }
 
+/// One step of a [`RasterPlan`].
+#[derive(Copy, Clone)]
+pub(crate) enum Step {
+    /// A drawable operation.
+    Op(PlannedOp),
+    /// The start of a group drawn at `opacity`.
+    Open {
+        /// The opacity the group blends at, as the display list gives it,
+        /// which the layer clamps to the range from 0.0 to 1.0.
+        opacity: f32,
+        /// The physical pixels the group's operations can change, or `None`
+        /// when they change none.
+        extent: Option<PixelRect>,
+    },
+    /// The end of the group the last unclosed [`Step::Open`] started.
+    Close,
+}
+
 /// A display list's drawable operations with the pixels each can change,
-/// collected in one walk.
+/// and its groups with the pixels theirs can, collected in one walk.
 ///
 /// Replaying the list once per damage rectangle costs a walk of every item
 /// and a bounds conversion of every operation per rectangle, and every clip
@@ -152,8 +199,10 @@ pub(crate) struct PlannedOp {
 /// time from about 435 to 108 microseconds per frame, below the 156 of a
 /// full repaint.
 pub(crate) struct RasterPlan {
-    /// The drawable operations, in paint order.
-    ops: Vec<PlannedOp>,
+    /// The steps, in paint order, with every group closed.
+    steps: Vec<Step>,
+    /// The index in `steps` of each group still open while the plan builds.
+    open: Vec<usize>,
     /// The clip stack scratch of the walk, reused between builds and walks.
     pub(crate) clips: Vec<Option<PixelRect>>,
     /// The offset stack scratch of the walk, reused between builds and walks.
@@ -164,26 +213,52 @@ impl RasterPlan {
     /// Creates an empty plan.
     pub(crate) fn new() -> RasterPlan {
         RasterPlan {
-            ops: Vec::new(),
+            steps: Vec::new(),
+            open: Vec::new(),
             clips: Vec::new(),
             offsets: Vec::new(),
         }
     }
 
-    /// Collects the drawable operations of `items` for a surface of `width`
-    /// by `height` physical pixels at `scale`.
+    /// Collects the steps of `items` for a surface of `width` by `height`
+    /// physical pixels at `scale`.
     ///
-    /// The caller treats a planned index as an operation item. That holds
-    /// because only [`DisplayItem::Op`] entries push to [`RasterPlan::ops`].
+    /// A group's extent is the union of the areas of the operations inside
+    /// it, nested groups included. A group the list leaves open is closed at
+    /// the end, and a close with no group open is dropped, so the steps
+    /// always balance. The caller treats the index of a planned operation
+    /// as an operation item, which holds because only [`DisplayItem::Op`]
+    /// entries become [`Step::Op`].
     pub(crate) fn build(&mut self, items: &[DisplayItem], scale: f32, width: u32, height: u32) {
-        self.ops.clear();
-        for_each_op(
-            |index, _op, area, offset| {
-                self.ops.push(PlannedOp {
+        self.steps.clear();
+        self.open.clear();
+        let steps = &mut self.steps;
+        let open = &mut self.open;
+        walk(
+            |item| match item {
+                Walked::Op {
                     index,
                     area,
                     offset,
-                })
+                    ..
+                } => {
+                    steps.push(Step::Op(PlannedOp {
+                        index,
+                        area,
+                        offset,
+                    }));
+                    if let Some(&group) = open.last() {
+                        widen(steps, group, area);
+                    }
+                }
+                Walked::Open(opacity) => {
+                    open.push(steps.len());
+                    steps.push(Step::Open {
+                        opacity,
+                        extent: None,
+                    });
+                }
+                Walked::Close => close(steps, open),
             },
             &mut self.clips,
             &mut self.offsets,
@@ -200,20 +275,188 @@ impl RasterPlan {
                 height,
             },
         );
+        while !self.open.is_empty() {
+            close(&mut self.steps, &mut self.open);
+        }
     }
 
-    /// Returns the planned operations in paint order.
-    pub(crate) fn ops(&self) -> &[PlannedOp] {
-        &self.ops
+    /// Returns the steps in paint order.
+    pub(crate) fn steps(&self) -> &[Step] {
+        &self.steps
     }
 }
 
-/// The surface pixels and the scale that logical coordinates convert with.
+/// Adds `area` to the extent of the group whose start is `steps[group]`.
+fn widen(steps: &mut [Step], group: usize, area: PixelRect) {
+    if let Step::Open { extent, .. } = &mut steps[group] {
+        *extent = Some(extent.map_or(area, |extent| extent.union(area)));
+    }
+}
+
+/// Closes the innermost group of `open`, if one is open, and adds its
+/// extent to the group around it, which draws its pixels.
+fn close(steps: &mut Vec<Step>, open: &mut Vec<usize>) {
+    let Some(group) = open.pop() else {
+        return;
+    };
+    steps.push(Step::Close);
+    if let (
+        Some(&parent),
+        Step::Open {
+            extent: Some(area), ..
+        },
+    ) = (open.last(), steps[group])
+    {
+        widen(steps, parent, area);
+    }
+}
+
+/// The layers the open groups draw into while a rectangle is repainted,
+/// with their buffers kept between frames.
+pub(crate) struct Layers {
+    /// The open layers, innermost last.
+    open: Vec<Layer>,
+    /// Buffers of closed layers, kept for the next group.
+    spare: Vec<Vec<u8>>,
+}
+
+/// One open group's pixels.
+struct Layer {
+    /// Premultiplied RGBA8 pixels of `region`, row-major with no padding.
+    pixels: Vec<u8>,
+    /// The part of the surface the layer covers, or `None` when the group
+    /// changes no pixel of the rectangle being repainted.
+    region: Option<PixelRect>,
+    /// The opacity the layer blends at, out of 255.
+    opacity: u32,
+}
+
+impl Layers {
+    /// Creates an empty stack.
+    pub(crate) fn new() -> Layers {
+        Layers {
+            open: Vec::new(),
+            spare: Vec::new(),
+        }
+    }
+
+    /// Opens a transparent layer over `region` that blends at `opacity`.
+    pub(crate) fn open(&mut self, region: Option<PixelRect>, opacity: f32) {
+        let mut pixels = self.spare.pop().unwrap_or_default();
+        pixels.clear();
+        if let Some(region) = region {
+            pixels.resize(region.area() as usize * 4, 0);
+        }
+        let opacity = if opacity.is_nan() {
+            255
+        } else {
+            (opacity.clamp(0.0, 1.0) * 255.0).round() as u32
+        };
+        self.open.push(Layer {
+            pixels,
+            region,
+            opacity,
+        });
+    }
+
+    /// Closes the innermost layer and blends it into the layer under it, or
+    /// into `base` when it was the outermost.
+    pub(crate) fn close(&mut self, base: &mut Canvas<'_>) {
+        let Some(layer) = self.open.pop() else {
+            return;
+        };
+        if let Some(region) = layer.region {
+            match self.open.last_mut() {
+                Some(parent) => {
+                    if let Some(parent_region) = parent.region {
+                        composite(&layer, region, &mut parent.pixels, parent_region);
+                    }
+                }
+                None => {
+                    let surface = PixelRect {
+                        x: 0,
+                        y: 0,
+                        width: base.width,
+                        height: (base.pixels.len() / 4 / base.width.max(1) as usize) as u32,
+                    };
+                    composite(&layer, region, base.pixels, surface);
+                }
+            }
+        }
+        self.spare.push(layer.pixels);
+    }
+
+    /// Draws `op` into `area` of the innermost open layer, or of `base` when
+    /// no layer is open. A layer that covers none of `area` takes nothing.
+    pub(crate) fn draw(
+        &mut self,
+        base: &mut Canvas<'_>,
+        op: &PaintOp,
+        area: PixelRect,
+        offset: Point,
+    ) {
+        let Some(layer) = self.open.last_mut() else {
+            base.draw(op, area, offset);
+            return;
+        };
+        let Some(region) = layer.region else {
+            return;
+        };
+        let Some(area) = area.intersect(region) else {
+            return;
+        };
+        let mut canvas = Canvas {
+            pixels: &mut layer.pixels,
+            width: region.width,
+            left: region.x,
+            top: region.y,
+            scale: base.scale,
+            glyphs: base.glyphs,
+        };
+        canvas.draw(op, area, offset);
+    }
+}
+
+/// Blends the pixels of `layer`, which cover `region`, over the pixels of
+/// `target`, which cover `target_region`, at the layer's opacity.
+fn composite(layer: &Layer, region: PixelRect, target: &mut [u8], target_region: PixelRect) {
+    let Some(region) = region.intersect(target_region) else {
+        return;
+    };
+    let layer_region = layer.region.unwrap_or(region);
+    for y in region.y..region.y + region.height {
+        let source_start = ((y - layer_region.y) as usize * layer_region.width as usize
+            + (region.x - layer_region.x) as usize)
+            * 4;
+        let target_start = ((y - target_region.y) as usize * target_region.width as usize
+            + (region.x - target_region.x) as usize)
+            * 4;
+        let length = region.width as usize * 4;
+        let source = layer.pixels[source_start..source_start + length]
+            .as_chunks::<4>()
+            .0;
+        let target = target[target_start..target_start + length]
+            .as_chunks_mut::<4>()
+            .0;
+        for (target, source) in target.iter_mut().zip(source) {
+            if source[3] != 0 {
+                blend_image(target, *source, layer.opacity);
+            }
+        }
+    }
+}
+
+/// The pixels a draw lands in and the scale that logical coordinates
+/// convert with.
 pub(crate) struct Canvas<'a> {
     /// Premultiplied RGBA8 pixels, row-major with no padding.
     pub(crate) pixels: &'a mut [u8],
-    /// The surface width in physical pixels.
+    /// The width of the pixels, in physical pixels.
     pub(crate) width: u32,
+    /// The surface column of the pixels' first column.
+    pub(crate) left: u32,
+    /// The surface row of the pixels' first row.
+    pub(crate) top: u32,
     /// Physical pixels per logical pixel.
     pub(crate) scale: f32,
     /// The cache of rasterized glyph masks, shared across frames.
@@ -386,9 +629,10 @@ impl Canvas<'_> {
         let Canvas {
             pixels,
             width,
+            left,
+            top,
             scale,
             glyphs,
-            ..
         } = self;
         let scale = *scale;
         let shift_x = offset.x * scale;
@@ -442,7 +686,9 @@ impl Canvas<'_> {
             let mut mask_offset = ((iy0 - y0) as usize) * mask_width as usize + (ix0 - x0) as usize;
             let row_bytes = (ix1 - ix0) as usize * 4;
             for y in iy0..iy1 {
-                let start = (y as usize * *width as usize + ix0 as usize) * 4;
+                let start = ((y as usize - *top as usize) * *width as usize
+                    + (ix0 as usize - *left as usize))
+                    * 4;
                 let row = &mut pixels[start..start + row_bytes];
                 let coverage = &entry.data()[mask_offset..mask_offset + (ix1 - ix0) as usize];
                 for (target, &coverage) in row.as_chunks_mut::<4>().0.iter_mut().zip(coverage) {
@@ -506,9 +752,9 @@ impl Canvas<'_> {
         }
     }
 
-    /// Returns the byte offset of pixel `(x, y)`.
+    /// Returns the byte offset of the surface pixel `(x, y)`.
     fn index(&self, x: u32, y: u32) -> usize {
-        (y as usize * self.width as usize + x as usize) * 4
+        ((y - self.top) as usize * self.width as usize + (x - self.left) as usize) * 4
     }
 }
 

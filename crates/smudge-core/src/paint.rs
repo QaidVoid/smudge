@@ -212,7 +212,11 @@ impl PaintOp {
 }
 
 /// One entry in a [`DisplayList`].
+///
+/// More kinds of items may come in later releases, so a renderer matches it
+/// with a wildcard arm.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum DisplayItem {
     /// A drawing operation.
     Op(PaintOp),
@@ -233,6 +237,16 @@ pub enum DisplayItem {
     /// Restores the offset that was active before the matching
     /// [`DisplayItem::PushOffset`].
     PopOffset,
+    /// Draws every following item, until the matching
+    /// [`DisplayItem::PopGroup`], as one group, which is then blended over
+    /// what lies below at this opacity, between 0.0 and 1.0.
+    ///
+    /// The items of a group cover each other as usual, and only the result
+    /// shows through at the group's opacity. Groups nest with clips, offsets
+    /// and each other.
+    PushGroup(f32),
+    /// Blends the group the matching [`DisplayItem::PushGroup`] opened.
+    PopGroup,
 }
 
 /// A flat list of display items in paint order, ready for a renderer to replay.
@@ -316,6 +330,21 @@ impl DisplayList {
         self.items.push(DisplayItem::PopOffset);
     }
 
+    /// Starts a group drawn at `opacity`, which blends every following item
+    /// as one until the matching [`DisplayList::pop_group`].
+    pub fn push_group(&mut self, opacity: f32) {
+        self.items.push(DisplayItem::PushGroup(opacity));
+    }
+
+    /// Ends the most recent group.
+    ///
+    /// Callers must pair every call with an earlier
+    /// [`DisplayList::push_group`]. [`DisplayList::finish`] reports an
+    /// imbalance in debug builds.
+    pub fn pop_group(&mut self) {
+        self.items.push(DisplayItem::PopGroup);
+    }
+
     /// Returns the items in paint order.
     pub fn items(&self) -> &[DisplayItem] {
         &self.items
@@ -342,18 +371,19 @@ impl DisplayList {
     ///
     /// Panics in debug builds when a [`DisplayItem::PushClip`] has no matching
     /// [`DisplayItem::PopClip`], when a `PopClip` appears with no clip open,
-    /// or when an offset scope is unbalanced the same way.
+    /// or when an offset scope or a group is unbalanced the same way.
     pub fn finish(&mut self) {
         #[cfg(debug_assertions)]
         self.debug_assert_balanced();
     }
 
-    /// Panics unless every clip and offset scope was pushed before it was
-    /// popped.
+    /// Panics unless every clip, offset scope and group was pushed before
+    /// it was popped.
     #[cfg(debug_assertions)]
     fn debug_assert_balanced(&self) {
         let mut open = 0usize;
         let mut open_offsets = 0usize;
+        let mut open_groups = 0usize;
         for item in &self.items {
             match item {
                 DisplayItem::PushClip(_) => open += 1,
@@ -366,11 +396,17 @@ impl DisplayList {
                     debug_assert!(open_offsets > 0, "PopOffset with no open offset");
                     open_offsets = open_offsets.saturating_sub(1);
                 }
+                DisplayItem::PushGroup(_) => open_groups += 1,
+                DisplayItem::PopGroup => {
+                    debug_assert!(open_groups > 0, "PopGroup with no open group");
+                    open_groups = open_groups.saturating_sub(1);
+                }
                 DisplayItem::Op(_) => {}
             }
         }
         debug_assert_eq!(open, 0, "PushClip with no matching PopClip");
         debug_assert_eq!(open_offsets, 0, "PushOffset with no matching PopOffset");
+        debug_assert_eq!(open_groups, 0, "PushGroup with no matching PopGroup");
     }
 }
 

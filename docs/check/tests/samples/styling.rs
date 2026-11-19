@@ -69,6 +69,15 @@ fn states() {
 }
 
 #[test]
+fn opacity() {
+    let ghost = panel()
+        .padding(px(8.0))
+        .background(ColorToken::SURFACE)
+        .opacity(0.5)
+        .child(label("Archived"));
+}
+
+#[test]
 fn transitions() {
     let row_item = panel()
         .padding(px(8.0))

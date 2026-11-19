@@ -357,7 +357,7 @@ impl LayoutProps {
 /// Colors and radii are [`ColorValue`]s and [`RadiusValue`]s, so a style can
 /// name a theme token. They resolve to concrete values when the node paints,
 /// against the theme that is current then.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PaintProps {
     /// Fill painted behind the node's content, or `None` for no fill.
     pub background: Option<ColorValue>,
@@ -370,6 +370,36 @@ pub struct PaintProps {
     /// Corner radius of the background and the border, the same on all four
     /// corners.
     pub corner_radius: RadiusValue,
+    /// How opaque the node and everything under it draw, from 0.0, which
+    /// draws nothing, to 1.0, the default, which draws as usual. The subtree
+    /// is drawn as one group and blended at this opacity, so overlapping
+    /// children do not show through each other. It changes neither layout
+    /// nor hit testing. A value outside that range draws at the nearest end
+    /// of it, and one that is not a number draws as usual.
+    pub opacity: f32,
+}
+
+/// The opacity a node's subtree draws at for the prop `opacity`: clamped to
+/// the range from 0.0 to 1.0, with a value that is not a number drawing as
+/// usual.
+pub(crate) fn shown_opacity(opacity: f32) -> f32 {
+    if opacity.is_nan() {
+        1.0
+    } else {
+        opacity.clamp(0.0, 1.0)
+    }
+}
+
+impl Default for PaintProps {
+    fn default() -> PaintProps {
+        PaintProps {
+            background: None,
+            border_color: None,
+            text_color: None,
+            corner_radius: RadiusValue::default(),
+            opacity: 1.0,
+        }
+    }
 }
 
 /// The complete style of one node.

@@ -858,3 +858,46 @@ fn render_panics_when_damage_reaches_outside_the_surface() {
     }];
     render(&mut renderer, &DisplayList::new(), &damage, 1.0);
 }
+
+#[test]
+fn groups_a_list_leaves_open_still_draw_their_inner_pixels() {
+    let mut list = DisplayList::new();
+    list.push_group(0.5);
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+        radius: Corners::all(0.0),
+        color: Color::rgb(200, 40, 40),
+    });
+    list.push_group(0.5);
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(20.0, 20.0, 30.0, 30.0),
+        radius: Corners::all(0.0),
+        color: Color::rgb(40, 40, 200),
+    });
+    let mut renderer = CpuRenderer::new(32, 32);
+    let damage = [PixelRect {
+        x: 0,
+        y: 0,
+        width: 32,
+        height: 32,
+    }];
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &damage,
+        full: true,
+        clear_color: Color::WHITE,
+        scale: 1.0,
+    });
+    let pixel =
+        |x: usize, y: usize| renderer.pixels()[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4].to_vec();
+    assert_ne!(
+        pixel(25, 25),
+        vec![255, 255, 255, 255],
+        "the inner square drew"
+    );
+    assert_ne!(
+        pixel(5, 5),
+        vec![255, 255, 255, 255],
+        "the outer square drew"
+    );
+}

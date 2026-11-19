@@ -7,7 +7,7 @@ use smudge_core::paint::DisplayItem;
 use smudge_core::renderer::Renderer;
 use tiny_skia::Pixmap;
 
-use crate::draw::{Canvas, PlannedOp, RasterPlan, Surface, for_each_op};
+use crate::draw::{Canvas, Layers, RasterPlan, Step, Surface, Walked, walk};
 use crate::glyph_cache::GlyphCache;
 
 /// A renderer that keeps a premultiplied RGBA surface between frames and
@@ -24,8 +24,9 @@ use crate::glyph_cache::GlyphCache;
 /// repainted.
 ///
 /// A frame allocates nothing once the surface has seen a frame like it: the
-/// per frame plan of drawable operations reuses its buffers, and a glyph seen
-/// before comes from the cache.
+/// per frame plan of drawable operations reuses its buffers, the layers that
+/// groups draw into reuse theirs, and a glyph seen before comes from the
+/// cache.
 ///
 /// # Examples
 ///
@@ -67,9 +68,11 @@ pub struct CpuRenderer {
 pub(crate) struct Painter {
     /// The glyph masks that survive between frames.
     glyphs: GlyphCache,
-    /// The display list's drawable operations of the frame being repainted,
-    /// with their buffers reused between frames.
+    /// The display list's drawable operations and groups of the frame being
+    /// repainted, with their buffers reused between frames.
     plan: RasterPlan,
+    /// The layers groups draw into, with their buffers reused between frames.
+    layers: Layers,
 }
 
 impl Painter {
@@ -78,6 +81,7 @@ impl Painter {
         Painter {
             glyphs: GlyphCache::new(),
             plan: RasterPlan::new(),
+            layers: Layers::new(),
         }
     }
 
@@ -113,11 +117,20 @@ impl Painter {
         let mut canvas = Canvas {
             pixels,
             width,
+            left: 0,
+            top: 0,
             scale: frame.scale,
             glyphs: &mut self.glyphs,
         };
+        // A group needs the pixels all its operations cover before it can
+        // draw, which only the plan collects.
+        let grouped = frame
+            .list
+            .items()
+            .iter()
+            .any(|item| matches!(item, DisplayItem::PushGroup(_)));
         match frame.damage {
-            [rect] => {
+            [rect] if !grouped => {
                 // One rectangle repaints in a single walk, without collecting
                 // the operations first.
                 paint_single(
@@ -134,7 +147,13 @@ impl Painter {
                 self.plan
                     .build(frame.list.items(), frame.scale, width, height);
                 for &rect in damage {
-                    paint_rect(&mut canvas, frame, self.plan.ops(), rect);
+                    paint_rect(
+                        &mut canvas,
+                        &mut self.layers,
+                        frame,
+                        self.plan.steps(),
+                        rect,
+                    );
                     finish(canvas.pixels, rect);
                 }
             }
@@ -235,21 +254,32 @@ fn inside_surface(rect: PixelRect, width: u32, height: u32) -> bool {
     right <= u64::from(width) && bottom <= u64::from(height)
 }
 
-/// Clears `rect` and repaints every planned operation that reaches into it.
+/// Clears `rect` and repaints every planned operation that reaches into it,
+/// drawing each group into a layer of `layers` over the part of the group
+/// inside `rect` and blending it at the group's opacity.
 fn paint_rect(
     canvas: &mut Canvas<'_>,
+    layers: &mut Layers,
     frame: &FrameOutput<'_>,
-    plan: &[PlannedOp],
+    plan: &[Step],
     rect: PixelRect,
 ) {
     canvas.clear(rect, frame.clear_color);
     let items = frame.list.items();
-    for planned in plan {
-        if let Some(part) = planned.area.intersect(rect) {
-            let DisplayItem::Op(op) = &items[planned.index] else {
-                unreachable!("a planned index is an operation item");
-            };
-            canvas.draw(op, part, planned.offset);
+    for step in plan {
+        match *step {
+            Step::Op(planned) => {
+                if let Some(part) = planned.area.intersect(rect) {
+                    let DisplayItem::Op(op) = &items[planned.index] else {
+                        unreachable!("a planned index is an operation item");
+                    };
+                    layers.draw(canvas, op, part, planned.offset);
+                }
+            }
+            Step::Open { opacity, extent } => {
+                layers.open(extent.and_then(|extent| extent.intersect(rect)), opacity);
+            }
+            Step::Close => layers.close(canvas),
         }
     }
 }
@@ -268,8 +298,15 @@ fn paint_single(
     let width = canvas.width;
     let scale = frame.scale;
     let items = frame.list.items();
-    for_each_op(
-        |_, op, area, offset| canvas.draw(op, area, offset),
+    walk(
+        |item| {
+            if let Walked::Op {
+                op, area, offset, ..
+            } = item
+            {
+                canvas.draw(op, area, offset);
+            }
+        },
         clips,
         offsets,
         items,

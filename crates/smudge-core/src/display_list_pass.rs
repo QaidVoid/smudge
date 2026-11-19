@@ -31,8 +31,12 @@ impl WidgetTree {
     /// closes it after them. The children a node's scroll offset moves are wrapped in a
     /// [`PushOffset`](crate::paint::DisplayItem::PushOffset) scope of minus
     /// the offset, so a renderer draws them moved by the scroll without the
-    /// operations being repainted. A hidden node and its subtree contribute
-    /// nothing.
+    /// operations being repainted. A node drawn below full opacity wraps
+    /// itself and its subtree in a
+    /// [`PushGroup`](crate::paint::DisplayItem::PushGroup) at that opacity
+    /// and a matching [`PopGroup`](crate::paint::DisplayItem::PopGroup). A
+    /// hidden node, and a node at no opacity, contribute nothing, and
+    /// neither does their subtree.
     ///
     /// The list is cleared first, which keeps its allocated capacity, and
     /// [`DisplayList::finish`] runs at the end to check that the clips and
@@ -55,6 +59,13 @@ impl WidgetTree {
         }
         let clips = style.layout.overflow.clips();
         let node = self.nodes.get(id).expect("the id is a live node");
+        if node.opacity <= 0.0 {
+            return;
+        }
+        let grouped = node.opacity < 1.0;
+        if grouped {
+            list.push_group(node.opacity);
+        }
 
         list.extend_ops(&node.ops);
         if clips {
@@ -98,6 +109,9 @@ impl WidgetTree {
         }
         if clips {
             list.pop_clip();
+        }
+        if grouped {
+            list.pop_group();
         }
     }
 }

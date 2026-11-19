@@ -226,6 +226,9 @@ struct Node {
     /// The springs that move the node's paint props, when its element asked
     /// for a transition.
     transition: Option<Box<Transition>>,
+    /// The opacity the node's subtree was last drawn at, which the paint
+    /// pass keeps and the display list reads.
+    opacity: f32,
 }
 
 /// Returns whether two child lists that hold the same nodes in a different
@@ -370,6 +373,11 @@ pub(crate) struct WidgetTree {
     /// The list the next frame's animating nodes are taken into, kept so
     /// its capacity is reused.
     animating_taken: Vec<WidgetId>,
+    /// The nodes the paint pass found drawn at a new opacity, kept so its
+    /// capacity is reused.
+    opacity_changed: Vec<WidgetId>,
+    /// The stack a walk of a subtree uses, kept so its capacity is reused.
+    walk: Vec<WidgetId>,
 }
 
 impl WidgetTree {
@@ -408,6 +416,8 @@ impl WidgetTree {
             transitions_mounted: false,
             animating: Vec::new(),
             animating_taken: Vec::new(),
+            opacity_changed: Vec::new(),
+            walk: Vec::new(),
         }
     }
 
@@ -500,6 +510,7 @@ impl WidgetTree {
             inner_ops: Vec::new(),
             painted: None,
             transition: None,
+            opacity: 1.0,
         };
         let id = self.nodes.insert(node);
         self.taffy

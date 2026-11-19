@@ -180,6 +180,8 @@ struct NodeSpec {
     /// Whether the background is read from a signal instead of being fixed.
     bind_background: bool,
     /// Whether the corner radius is read from a signal instead of being fixed.
+    /// The same signal sets the node's opacity, through [`opacity_of`], so an
+    /// edit of it changes the opacity of a whole subtree too.
     bind_radius: bool,
     /// Whether the node is hidden through a signal instead of being laid out.
     bind_hidden: bool,
@@ -587,6 +589,12 @@ fn gradient(seed: u8) -> Image {
 /// source, so the empty-source path of the widget reaches the oracle.
 fn any_image_seed() -> impl Strategy<Value = u8> {
     0u8..=8
+}
+
+/// The opacity a node with a bound corner radius draws its subtree at: none
+/// at no radius, full from 8 on, and the fractions between.
+fn opacity_of(radius: f32) -> f32 {
+    (radius / 8.0).min(1.0)
 }
 
 /// The background the hovered patch of the node at `index` paints.
@@ -1346,8 +1354,11 @@ fn style_node<W: Widget>(scene: &Rc<Scene>, index: usize, element: Element<W>) -
     };
     element = match &node.radius {
         Some(radius) => {
+            let fade = Rc::clone(radius);
             let radius = Rc::clone(radius);
-            element.corner_radius(move || radius().into())
+            element
+                .corner_radius(move || radius().into())
+                .opacity(move || opacity_of(fade()))
         }
         None => element.corner_radius(spec.radius),
     };
