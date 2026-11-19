@@ -52,6 +52,10 @@ pub(crate) enum PlatformEvent {
     /// and redraw, then answer the builder.
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     HotPatch(crate::hot::Patch),
+    /// The patch builder started a patch, or could not build one: show it
+    /// in the devtools.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    HotBuild(crate::hot::Build),
     /// An event from the accessibility adapter: a request for the initial
     /// tree, an action a user ran in an assistive tool, or a notice that the
     /// platform stopped reading the tree.
@@ -586,16 +590,19 @@ pub fn run_view_with<S: 'static>(
             prepare(options, move || view(&first), Box::new(configure))?;
         platform.remount = Some(Box::new(move |app| {
             let view = crate::hot::current(view)?;
-            app.remount(|| view(&state));
-            Ok(())
+            Ok(app.remount(|| view(&state)))
         }));
         let proxy = platform.proxy.clone();
         // The receiver's thread is left to run until the process ends, since
         // it waits on the builder's socket. A patch the closed loop does not
         // take is dropped, which answers it as failed.
+        let reporter = proxy.clone();
         let _receiver = crate::hot::start(
             move |patch| {
                 let _ = proxy.send_event(PlatformEvent::HotPatch(patch));
+            },
+            move |build| {
+                let _ = reporter.send_event(PlatformEvent::HotBuild(build));
             },
             view as usize,
             crate::hot::state_probe::<S>(),
@@ -702,7 +709,7 @@ type Configure = Box<dyn FnOnce(&mut App)>;
 /// What rebuilds an app's root after a hot patch, or says why the patched
 /// view must not run.
 #[cfg(all(feature = "hot-reload", target_os = "linux"))]
-type Remount = Box<dyn FnMut(&mut App) -> Result<(), String>>;
+type Remount = Box<dyn FnMut(&mut App) -> Result<smudge_core::app::Remounted, String>>;
 
 /// One live window and everything it presents.
 struct WindowState {
@@ -1187,8 +1194,9 @@ where
                 );
             }
             state.devtools.show_bounds(&state.app, paced);
-            state.devtools.inspect(&state.app, paced);
-            state.devtools.observe(&state.app, paced);
+            let refresh = app_wanted || state.devtools.view_changed();
+            state.devtools.inspect(&state.app, paced, refresh);
+            state.devtools.observe(&state.app, paced, refresh);
             state.devtools.trace(&state.app, Instant::now(), paced);
         }
         let presented = presented.map(|(stats, _)| stats);
@@ -1277,7 +1285,9 @@ where
     }
 
     /// Applies a hot patch, remounts the root through the patched view and
-    /// redraws, then answers the builder.
+    /// redraws, then answers the builder and tells the devtools how it went.
+    /// With the devtools' "keep the tree" switch on, it applies the patch
+    /// without remounting.
     ///
     /// A patch that arrives before the window opens is refused, so the first
     /// build always runs the view as the binary was built. A patch that
@@ -1293,13 +1303,46 @@ where
             patch.refuse("the app is closing");
             return;
         }
-        patch.apply(|| {
-            remount(&mut state.app)?;
+        #[cfg(feature = "_devtools")]
+        let keep = state.devtools.keeps_tree();
+        #[cfg(not(feature = "_devtools"))]
+        let keep = false;
+        let started = Instant::now();
+        let mut remounted = None;
+        let outcome = patch.apply(|| {
+            if !keep {
+                remounted = Some(remount(&mut state.app)?);
+            }
             state.app.run_hot_patch_hooks();
             state.update_ime(false);
             state.window.request_redraw();
             Ok(())
         });
+        #[cfg(feature = "_devtools")]
+        state.devtools.record_hot(match outcome {
+            Ok(()) => smudge_devtools::HotEvent::Applied {
+                took: started.elapsed(),
+                remounted,
+            },
+            Err(reason) => smudge_devtools::HotEvent::Refused(reason),
+        });
+        #[cfg(not(feature = "_devtools"))]
+        let _ = (outcome, started, remounted);
+    }
+
+    /// Shows in the devtools that the patch builder started a patch or
+    /// could not build one.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    fn hot_build(&mut self, build: crate::hot::Build) {
+        #[cfg(feature = "_devtools")]
+        if let Some(state) = self.state.as_mut() {
+            state.devtools.record_hot(match build {
+                crate::hot::Build::Started => smudge_devtools::HotEvent::Building,
+                crate::hot::Build::Failed(reason) => smudge_devtools::HotEvent::BuildFailed(reason),
+            });
+        }
+        #[cfg(not(feature = "_devtools"))]
+        let _ = build;
     }
 
     /// Answers an event the accessibility adapter posted.
@@ -1396,6 +1439,8 @@ where
             PlatformEvent::A11y(event) => self.handle_a11y_event(event),
             #[cfg(all(feature = "hot-reload", target_os = "linux"))]
             PlatformEvent::HotPatch(patch) => self.hot_patch(event_loop, patch),
+            #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+            PlatformEvent::HotBuild(build) => self.hot_build(build),
             #[cfg(all(
                 unix,
                 not(any(

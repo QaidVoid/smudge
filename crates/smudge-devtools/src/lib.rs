@@ -12,12 +12,15 @@ mod reactive;
 mod timeline;
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::rc::Rc;
+use std::time::Duration;
 
 use marks::Marks;
 pub use timeline::FrameRecord;
 use timeline::{HEIGHT, Timeline, TimelineView};
 
+use smudge_core::app::Remounted;
 use smudge_core::element::{AnyElement, Element, IntoElement, Slot, for_each, show};
 use smudge_core::geometry::{Point, Rect, Size};
 use smudge_core::input::{Drag, Handled};
@@ -35,6 +38,58 @@ use smudge_widgets::{button, column, row};
 
 /// Where the panel opens, from the window's top left, in logical pixels.
 const START: Point = Point { x: 16.0, y: 16.0 };
+
+/// How many hot reload events the frames tab shows.
+const HOT_LINES: usize = 4;
+
+/// One step of hot reload, as the window reports it.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum HotEvent {
+    /// The patch builder started building a patch.
+    Building,
+    /// The patch could not be built, for this reason, such as the
+    /// compiler's message.
+    BuildFailed(String),
+    /// A patch was applied in `took`, with `remounted` saying what the
+    /// remount kept, or `None` when the tree was kept as it was.
+    Applied {
+        /// How long applying the patch and remounting took.
+        took: Duration,
+        /// What the remount kept, or `None` when it did not remount.
+        remounted: Option<Remounted>,
+    },
+    /// The app refused the patch, for this reason.
+    Refused(String),
+}
+
+impl HotEvent {
+    /// Describes the event in a line or a few.
+    fn describe(&self) -> String {
+        match self {
+            HotEvent::Building => String::from("building a patch"),
+            HotEvent::BuildFailed(reason) => format!("build failed: {}", reason.trim()),
+            HotEvent::Refused(reason) => format!("patch refused: {reason}"),
+            HotEvent::Applied { took, remounted } => {
+                let millis = took.as_secs_f64() * 1000.0;
+                match remounted {
+                    None => format!("patch applied in {millis:.1} ms, tree kept"),
+                    Some(remounted) => {
+                        let focus = if remounted.focus_restored {
+                            "focus restored"
+                        } else {
+                            "focus not restored"
+                        };
+                        format!(
+                            "patch applied in {millis:.1} ms, {focus}, {} signals kept, {} left",
+                            remounted.signals_kept, remounted.signals_left
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// The width of the panel, in logical pixels.
 const WIDTH: f32 = 320.0;
@@ -76,6 +131,8 @@ pub struct Tools {
     reactive: RwSignal<String>,
     /// What the accessibility tab shows, as text.
     access: RwSignal<String>,
+    /// The last few hot reload events, oldest first, as text.
+    hot: RwSignal<Rc<VecDeque<String>>>,
     /// Where the app's focus is and where Tab takes it, while the focus
     /// overlay is on.
     focus: RwSignal<Option<Rc<FocusInfo>>>,
@@ -120,6 +177,11 @@ pub struct Switches {
     /// node, the trap that holds the keyboard, and every node Tab visits
     /// with its number in the tab order.
     pub focus: bool,
+    /// Whether a hot patch is applied without remounting the root, so the
+    /// tree and its state stay as they are. An edit to what the build
+    /// creates does not show until a patch remounts, and a closure created
+    /// after the first patch keeps that patch's code on the next one.
+    pub keep_tree: bool,
     /// Whether the overlay shows what the pointer reaches: the hovered node
     /// and its ancestors, the node a held press began on, and every node
     /// that takes a press.
@@ -144,6 +206,7 @@ impl Tools {
             tab: RwSignal::new(Tab::Frames),
             reactive: RwSignal::new(String::new()),
             access: RwSignal::new(String::new()),
+            hot: RwSignal::new(Rc::new(VecDeque::new())),
             focus: RwSignal::new(None),
             pointer: RwSignal::new(None),
             picking: RwSignal::new(false),
@@ -187,8 +250,9 @@ impl Tools {
     }
 
     /// Drops the rectangles the damage tint, paint flashing and layout
-    /// bounds mark, as when the panel hides and no longer hears the app's
-    /// frames.
+    /// bounds mark, the inspector's highlight and details, and the focus and
+    /// pointer marks, and ends pick mode, as when the panel hides and no
+    /// longer hears the app's frames.
     pub fn forget_marks(&self) {
         if self.damage.with(|damage| !damage.is_empty()) {
             self.show_damage([]);
@@ -211,12 +275,28 @@ impl Tools {
         if self.picking.get() {
             self.picking.set(false);
         }
+        if self.details.with(Option::is_some) {
+            self.show_details(None);
+        }
     }
 
     /// Returns whether the inspector tab shows, so the window hands it the
     /// app's tree and the selected node's details.
     pub fn is_inspecting(&self) -> bool {
         self.tab.get() == Tab::Inspector
+    }
+
+    /// Records `event`, one step of hot reload, which the frames tab shows
+    /// among the last few.
+    pub fn record_hot(&self, event: HotEvent) {
+        let line = event.describe();
+        self.hot.update(|lines| {
+            let lines = Rc::make_mut(lines);
+            if lines.len() == HOT_LINES {
+                lines.pop_front();
+            }
+            lines.push_back(line);
+        });
     }
 
     /// Returns whether the accessibility tab shows, so the window hands it
@@ -605,12 +685,18 @@ struct Frames;
 /// move them, so it always describes the bar the pointer is over.
 fn body(tools: &Tools) -> Element<Panel> {
     let tab = |name: &'static str, which: Tab| {
-        let (shown, choose) = (tools.tab.clone(), tools.tab.clone());
+        let (shown, choose, picking) =
+            (tools.tab.clone(), tools.tab.clone(), tools.picking.clone());
         button(move || {
             let mark = if shown.get() == which { "> " } else { "" };
             format!("{mark}{name}")
         })
-        .on_press(move || choose.set(which))
+        .on_press(move || {
+            choose.set(which);
+            if which != Tab::Inspector {
+                picking.set(false);
+            }
+        })
     };
     let shown = |which: Tab, build: fn(&Tools) -> Element<Panel>| {
         let (tab, tools) = (tools.tab.clone(), tools.clone());
@@ -708,8 +794,32 @@ fn frames_tab(tools: &Tools) -> Element<Panel> {
                 }))
                 .child(switch(tools, "Full repaint", |switches| {
                     &mut switches.full_repaint
+                }))
+                .child(switch(tools, "Keep tree", |switches| {
+                    &mut switches.keep_tree
                 })),
         )
+        .child({
+            let (hot, keeping) = (tools.hot.clone(), tools.switches.clone());
+            label(move || {
+                let mut text = String::new();
+                if keeping.get().keep_tree {
+                    text.push_str(
+                        "Keeping the tree: edits to what the build creates do not show, and \
+                         closures created after the first patch keep its code.",
+                    );
+                }
+                hot.with(|lines| {
+                    for line in lines.iter() {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(line);
+                    }
+                });
+                text
+            })
+        })
         .child(label(move || {
             let x = shown.get();
             described.with(|timeline| {

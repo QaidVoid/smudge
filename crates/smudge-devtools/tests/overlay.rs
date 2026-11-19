@@ -271,3 +271,40 @@ fn the_panels_buttons_turn_the_switches_on_and_off() {
     harness.frame();
     assert!(!tools.switches().damage_tint);
 }
+
+#[test]
+fn the_frames_tab_shows_a_build_failure_and_a_patch_outcome() {
+    TextSystem::bundled_only().install();
+    let tools = smudge_devtools::Tools::new();
+    let shown = tools.clone();
+    let mut harness = Harness::new(800.0, 600.0, 1.0, move || {
+        smudge_devtools::overlay(&shown, || Size {
+            width: 800.0,
+            height: 600.0,
+        })
+    });
+    harness.frame();
+    tools.record_hot(smudge_devtools::HotEvent::BuildFailed(String::from(
+        "error[E0308]: mismatched types",
+    )));
+    tools.record_hot(smudge_devtools::HotEvent::Applied {
+        took: std::time::Duration::from_millis(12),
+        remounted: Some(smudge_core::app::Remounted::default()),
+    });
+    harness.frame();
+    let text = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .filter_map(|node| node.value)
+        .find(|text| text.contains("build failed"))
+        .expect("the frames tab shows the hot reload steps");
+    assert!(
+        text.contains("build failed: error[E0308]: mismatched types"),
+        "{text}"
+    );
+    assert!(
+        text.contains("patch applied in 12.0 ms, focus not restored"),
+        "{text}"
+    );
+}

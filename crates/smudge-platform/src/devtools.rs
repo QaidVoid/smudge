@@ -96,6 +96,12 @@ pub(crate) struct Devtools {
     details: Option<NodeDetails>,
     /// The boxes last handed to the overlay to highlight.
     highlighted: Option<BoxModel>,
+    /// What the panel showed at the last refresh: the tab, the selection
+    /// and the switches its views follow.
+    view: Option<View>,
+    /// Whether a primary press that picked a node is held, so its release
+    /// reaches neither side.
+    pick_held: bool,
     /// The directory "Copy as test" writes into.
     pub(crate) copy_dir: PathBuf,
     /// The focus state last handed to the overlay.
@@ -191,6 +197,8 @@ impl Devtools {
             found_entries: Vec::new(),
             details: None,
             highlighted: None,
+            view: None,
+            pick_held: false,
             copy_dir: PathBuf::from("target").join("smudge-devtools"),
             focus_shown: None,
             pointer_shown: None,
@@ -359,7 +367,8 @@ impl Devtools {
     ///
     /// While pick mode is on and no press is held, the pointer outside the
     /// panel picks instead of reaching the app: a move highlights the node
-    /// under it, and a primary press selects that node and ends pick mode.
+    /// under it, and a primary press selects that node and ends pick mode,
+    /// and its release reaches neither side.
     /// Over the panel, the pointer goes to the panel as usual.
     fn pick(&mut self, app: &mut App, event: &InputEvent) -> bool {
         if !self.tools.is_picking() || self.captured || self.app_pressed {
@@ -393,6 +402,7 @@ impl Devtools {
             } => {
                 self.tools.select(node);
                 self.tools.stop_picking();
+                self.pick_held = true;
             }
             _ => {}
         }
@@ -404,15 +414,26 @@ impl Devtools {
     /// shows, each only when it changed.
     ///
     /// Like [`Devtools::show_bounds`], it runs after every present, and with
-    /// `paced` its writes request no redraw.
-    pub(crate) fn inspect(&mut self, app: &App, paced: bool) {
+    /// `paced` its writes request no redraw. It looks at the app only with
+    /// `refresh`, after a frame the app wanted or a change of what the panel
+    /// shows: values that hold a NaN never compare equal, so comparing on
+    /// every redraw would write, and wake the overlay, on every redraw.
+    pub(crate) fn inspect(&mut self, app: &App, paced: bool, refresh: bool) {
         if !self.tools.is_inspecting() {
             self.entries.clear();
-            self.details = None;
+            self.quiet.set(paced);
+            if self.details.take().is_some() {
+                self.tools.show_details(None);
+            }
             if self.highlighted.take().is_some() {
-                self.quiet.set(paced);
                 self.tools.show_highlight(None);
-                self.quiet.set(false);
+            }
+            self.quiet.set(false);
+            return;
+        }
+        if !refresh {
+            if self.tools.take_copy_request() {
+                self.copy(app);
             }
             return;
         }
@@ -429,11 +450,7 @@ impl Devtools {
             self.tools.show_details(details);
         }
         if self.tools.take_copy_request() {
-            let message = match self.copy_test(app) {
-                Ok((dump, png)) => format!("Wrote {} and {}", dump.display(), png.display()),
-                Err(error) => format!("Could not copy: {error}"),
-            };
-            self.tools.show_copied(message);
+            self.copy(app);
         }
         if !self.tools.is_picking() {
             let boxes = self.details.as_ref().map(|details| details.boxes);
@@ -445,14 +462,41 @@ impl Devtools {
         self.quiet.set(false);
     }
 
+    /// Runs "Copy as test" and shows what it wrote or why it failed.
+    fn copy(&self, app: &App) {
+        let message = match self.copy_test(app) {
+            Ok((dump, png)) => format!("Wrote {} and {}", dump.display(), png.display()),
+            Err(error) => format!("Could not copy: {error}"),
+        };
+        self.tools.show_copied(message);
+    }
+
+    /// Returns whether the tab, the selection or a switch the panel's views
+    /// follow changed since the last call, so they must refresh even when
+    /// the app ran no frame.
+    pub(crate) fn view_changed(&mut self) -> bool {
+        let switches = self.tools.switches();
+        let view = View {
+            inspecting: self.tools.is_inspecting(),
+            auditing: self.tools.is_auditing(),
+            picking: self.tools.is_picking(),
+            selected: self.tools.selected(),
+            focus: switches.focus,
+            hit_testing: switches.hit_testing,
+        };
+        self.view.replace(view) != Some(view)
+    }
+
     /// Writes the selected node's subtree as a test's expectations, into
     /// [`Devtools::copy_dir`], and returns the two files it wrote.
     ///
     /// The text file holds the subtree in the format of `smudge-test`'s
     /// `layout_dump`, with the rectangles measured from the node's top left
-    /// corner, and the image is the node's rectangle drawn at a scale of 1.
-    /// A harness at a scale of 1, as large as the node and built from the
-    /// same element, dumps the same text and draws the same image.
+    /// corner, and the image is the node's rectangle of the app's last frame
+    /// drawn at a scale of 1, so it also shows what ancestors paint behind
+    /// the node and what overlaps it. A harness at a scale of 1, as large as
+    /// the node and built from the same element, dumps the same text, and
+    /// draws the same image when nothing behind or over the node paints.
     ///
     /// # Errors
     ///
@@ -548,9 +592,11 @@ impl Devtools {
     /// switches are on, and the accessibility tab the app's tree and
     /// warnings while it shows, each only when it changed.
     ///
-    /// Like [`Devtools::show_bounds`], it runs after every present, and with
-    /// `paced` its writes request no redraw.
-    pub(crate) fn observe(&mut self, app: &App, paced: bool) {
+    /// Like [`Devtools::inspect`], it looks at the app only with `refresh`.
+    pub(crate) fn observe(&mut self, app: &App, paced: bool, refresh: bool) {
+        if !refresh {
+            return;
+        }
         let switches = self.tools.switches();
         self.quiet.set(paced);
         let focus = switches.focus.then(|| app.focus_info());
@@ -618,6 +664,18 @@ impl Devtools {
         self.sampled = Some((now, totals));
     }
 
+    /// Returns whether hot patches apply without remounting the root.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) fn keeps_tree(&self) -> bool {
+        self.tools.switches().keep_tree
+    }
+
+    /// Records one step of hot reload for the frames tab.
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    pub(crate) fn record_hot(&self, event: smudge_devtools::HotEvent) {
+        self.tools.record_hot(event);
+    }
+
     /// Returns whether flashes are still fading, so the window keeps
     /// drawing frames.
     pub(crate) fn is_fading(&self) -> bool {
@@ -668,6 +726,15 @@ impl Devtools {
                 _ => {}
             }
             app.handle_event(event);
+            return false;
+        }
+        if self.pick_held
+            && let InputEvent::PointerUp {
+                button: PointerButton::Primary,
+                ..
+            } = event
+        {
+            self.pick_held = false;
             return false;
         }
         if self.pick(app, &event) {
@@ -893,4 +960,21 @@ mod tests;
 fn short_name(type_name: &str) -> &str {
     let path = type_name.split('<').next().unwrap_or(type_name);
     path.rsplit("::").next().unwrap_or(path)
+}
+
+/// What the panel shows that its views follow, compared between refreshes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct View {
+    /// Whether the inspector tab shows.
+    inspecting: bool,
+    /// Whether the accessibility tab shows.
+    auditing: bool,
+    /// Whether pick mode is on.
+    picking: bool,
+    /// The node the inspector shows.
+    selected: Option<smudge_core::tree::WidgetId>,
+    /// Whether the focus overlay is on.
+    focus: bool,
+    /// Whether the hit testing overlay is on.
+    hit_testing: bool,
 }

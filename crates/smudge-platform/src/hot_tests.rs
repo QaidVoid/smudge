@@ -24,8 +24,8 @@ use smudge_core::style::px;
 use smudge_core::widget::panel;
 
 use super::{
-    APPLIED, FAILED, HELLO, MAX_PAYLOAD, PATCH, Patch, Shape, current, decode_patch, patched,
-    read_frame, start_from, write_frame,
+    APPLIED, BUILD_FAILED, BUILDING, Build, FAILED, HELLO, MAX_PAYLOAD, PATCH, Patch, Shape,
+    current, decode_patch, patched, read_frame, start_from, write_frame,
 };
 use subsecond::JumpTable;
 
@@ -66,23 +66,38 @@ const VIEW: usize = 0x7f00_2000;
 const PROBE: usize = 0x7f00_3000;
 
 /// Starts a receiver on a fresh socket, as an app under a builder would,
-/// and returns the builder's end of the connection, the receiver's thread
-/// and the patches it delivers to the app's thread.
-fn connected(build: &str) -> (Socket, UnixStream, JoinHandle<()>, mpsc::Receiver<Patch>) {
+/// and returns the builder's end of the connection, the receiver's thread,
+/// the patches it delivers to the app's thread and the build steps it
+/// reports.
+fn connected(
+    build: &str,
+) -> (
+    Socket,
+    UnixStream,
+    JoinHandle<()>,
+    mpsc::Receiver<Patch>,
+    mpsc::Receiver<Build>,
+) {
     let (socket, listener) = Socket::bind();
     let (deliver, delivered) = mpsc::channel();
+    let (report, reported) = mpsc::channel();
     let receiver = start_from(
         Some(OsString::from(&socket.0)),
         Some(OsString::from(build)),
         MAIN,
         (VIEW, PROBE),
-        move |patch| {
-            let _ = deliver.send(patch);
-        },
+        (
+            move |patch| {
+                let _ = deliver.send(patch);
+            },
+            move |build| {
+                let _ = report.send(build);
+            },
+        ),
     )
     .expect("a reachable socket starts the receiver");
     let (stream, _) = listener.accept().expect("the receiver connects");
-    (socket, stream, receiver, delivered)
+    (socket, stream, receiver, delivered, reported)
 }
 
 /// Sends a patch with a library that cannot load, and returns the patch
@@ -158,7 +173,13 @@ fn hello_fields(payload: &[u8]) -> (u32, u32, u64, u64, u64, Vec<u8>) {
 
 #[test]
 fn without_the_socket_variable_nothing_starts() {
-    let receiver = start_from(None, Some(OsString::from("7")), MAIN, (VIEW, PROBE), |_| {});
+    let receiver = start_from(
+        None,
+        Some(OsString::from("7")),
+        MAIN,
+        (VIEW, PROBE),
+        (|_| {}, |_| {}),
+    );
 
     assert!(receiver.is_none(), "no socket must start no thread");
 }
@@ -170,7 +191,7 @@ fn an_unreachable_socket_starts_nothing() {
     drop(listener);
     drop(socket);
 
-    let receiver = start_from(Some(path), None, MAIN, (VIEW, PROBE), |_| {});
+    let receiver = start_from(Some(path), None, MAIN, (VIEW, PROBE), (|_| {}, |_| {}));
 
     assert!(
         receiver.is_none(),
@@ -180,7 +201,7 @@ fn an_unreachable_socket_starts_nothing() {
 
 #[test]
 fn the_hello_reports_the_version_the_process_main_the_view_and_the_build() {
-    let (_socket, mut builder, receiver, _) = connected("build-42");
+    let (_socket, mut builder, receiver, _, _) = connected("build-42");
 
     let (kind, payload) = next_frame(&mut builder);
     assert_eq!(kind, HELLO, "the first frame introduces the app");
@@ -200,7 +221,7 @@ fn the_hello_reports_the_version_the_process_main_the_view_and_the_build() {
 
 #[test]
 fn a_patch_whose_library_cannot_load_is_refused_and_remounts_nothing() {
-    let (_socket, mut builder, receiver, delivered) = connected("1");
+    let (_socket, mut builder, receiver, delivered, _) = connected("1");
     next_frame(&mut builder);
 
     let patch = send_patch(
@@ -209,12 +230,17 @@ fn a_patch_whose_library_cannot_load_is_refused_and_remounts_nothing() {
         "/nonexistent/smudge-hot/patch-1.so",
     );
     let remounted = Cell::new(false);
-    patch.apply(|| {
+    let outcome = patch.apply(|| {
         remounted.set(true);
         Ok(())
     });
 
     let (kind, reason) = next_frame(&mut builder);
+    assert_eq!(
+        outcome,
+        Err(String::from_utf8(reason.clone()).expect("the reason is UTF-8")),
+        "the caller learns what the builder was told"
+    );
     assert_eq!(kind, FAILED, "a library that cannot load is refused");
     let reason = String::from_utf8(reason).expect("the reason is UTF-8");
     assert!(
@@ -229,7 +255,7 @@ fn a_patch_whose_library_cannot_load_is_refused_and_remounts_nothing() {
 
 #[test]
 fn a_patch_the_app_refuses_is_answered_with_the_reason() {
-    let (_socket, mut builder, receiver, delivered) = connected("1");
+    let (_socket, mut builder, receiver, delivered, _) = connected("1");
     next_frame(&mut builder);
 
     send_patch(&mut builder, &delivered, "/lib.so").refuse("the app is closing");
@@ -244,7 +270,7 @@ fn a_patch_the_app_refuses_is_answered_with_the_reason() {
 
 #[test]
 fn a_patch_the_app_drops_unanswered_is_answered_as_failed() {
-    let (_socket, mut builder, receiver, delivered) = connected("1");
+    let (_socket, mut builder, receiver, delivered, _) = connected("1");
     next_frame(&mut builder);
 
     drop(send_patch(&mut builder, &delivered, "/lib.so"));
@@ -262,7 +288,7 @@ fn a_patch_the_app_drops_unanswered_is_answered_as_failed() {
 
 #[test]
 fn a_malformed_patch_is_refused_without_reaching_the_app_and_the_next_frame_is_still_read() {
-    let (_socket, mut builder, receiver, delivered) = connected("1");
+    let (_socket, mut builder, receiver, delivered, _) = connected("1");
     next_frame(&mut builder);
 
     let mut cut = patch_payload(0x1000, 0x2000, &[(0x1100, 0x2100)], "");
@@ -288,7 +314,7 @@ fn a_malformed_patch_is_refused_without_reaching_the_app_and_the_next_frame_is_s
 
 #[test]
 fn a_frame_of_an_unknown_kind_is_skipped() {
-    let (_socket, mut builder, receiver, _) = connected("1");
+    let (_socket, mut builder, receiver, _, _) = connected("1");
     next_frame(&mut builder);
 
     write_frame(&mut builder, 9, b"from a newer builder").expect("the frame is sent");
@@ -305,7 +331,7 @@ fn a_frame_of_an_unknown_kind_is_skipped() {
 
 #[test]
 fn an_oversized_frame_ends_the_receiver_without_reading_it() {
-    let (_socket, mut builder, receiver, _) = connected("1");
+    let (_socket, mut builder, receiver, _, _) = connected("1");
     next_frame(&mut builder);
 
     let mut header = vec![PATCH];
@@ -591,7 +617,7 @@ fn a_binary_without_an_exported_main_does_not_connect() {
         None,
         0,
         (VIEW, PROBE),
-        |_| {},
+        (|_| {}, |_| {}),
     );
 
     assert!(receiver.is_none(), "no main to place patches against");
@@ -599,4 +625,33 @@ fn a_binary_without_an_exported_main_does_not_connect() {
         listener.accept().is_err(),
         "the app never connected to the builder"
     );
+}
+
+#[test]
+fn the_builders_build_steps_reach_the_app_and_need_no_answer() {
+    let (_socket, mut builder, receiver, delivered, reported) = connected("1");
+    let _hello = next_frame(&mut builder);
+
+    write_frame(&mut builder, BUILDING, &[]).expect("the step is sent");
+    write_frame(
+        &mut builder,
+        BUILD_FAILED,
+        b"error[E0308]: mismatched types",
+    )
+    .expect("the step is sent");
+    assert_eq!(reported.recv().expect("the start arrives"), Build::Started);
+    assert_eq!(
+        reported.recv().expect("the failure arrives"),
+        Build::Failed(String::from("error[E0308]: mismatched types"))
+    );
+
+    let patch = send_patch(&mut builder, &delivered, "/nonexistent/patch.so");
+    patch.refuse("checked");
+    let (kind, _) = next_frame(&mut builder);
+    assert_eq!(
+        kind, FAILED,
+        "the first answer is the patch's, so the steps took none"
+    );
+    drop(builder);
+    receiver.join().expect("the receiver ends");
 }

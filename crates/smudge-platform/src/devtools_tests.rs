@@ -1012,6 +1012,8 @@ fn picking_a_button_selects_it_and_names_where_it_was_built() {
     TextSystem::bundled_only().install();
     let pressed = Rc::new(Cell::new(0u32));
     let counted = Rc::clone(&pressed);
+    let lifted = Rc::new(Cell::new(0u32));
+    let released = Rc::clone(&lifted);
     let line = line!() + 10;
     let mut app = App::new(
         AppConfig {
@@ -1022,7 +1024,9 @@ fn picking_a_button_selects_it_and_names_where_it_was_built() {
         },
         move || {
             smudge_widgets::column().padding(px(300.0)).child(
-                smudge_widgets::button("Save").on_press(move || counted.set(counted.get() + 1)),
+                smudge_widgets::button("Save")
+                    .on_press(move || counted.set(counted.get() + 1))
+                    .on_pointer_up(move |_| released.set(released.get() + 1)),
             )
         },
     );
@@ -1048,10 +1052,11 @@ fn picking_a_button_selects_it_and_names_where_it_was_built() {
     click(&mut devtools, &mut app, center);
     app.frame();
     assert_eq!(pressed.get(), 0, "a pick does not press the button");
+    assert_eq!(lifted.get(), 0, "nor does its release reach the button");
     assert_eq!(devtools.tools.selected(), Some(save.id));
     assert!(!devtools.tools.is_picking(), "a pick ends pick mode");
 
-    devtools.inspect(&app, false);
+    devtools.inspect(&app, false, true);
     devtools.app.frame();
     let details = app.node_details(save.id).expect("the button is live");
     let padding = details.boxes.padding;
@@ -1082,7 +1087,7 @@ fn picking_a_button_selects_it_and_names_where_it_was_built() {
         .node_at(Point { x: 10.0, y: 10.0 })
         .expect("the root is there");
     devtools.tools.select(Some(root));
-    devtools.inspect(&app, false);
+    devtools.inspect(&app, false, true);
     let content = app
         .node_details(root)
         .expect("the root is live")
@@ -1147,10 +1152,10 @@ fn copy_as_test_writes_what_a_harness_of_the_node_draws() {
         .find(|node| node.role == smudge_core::semantics::Role::Button)
         .expect("the app shows its button");
     devtools.tools.select(Some(save.id));
-    devtools.inspect(&app, false);
+    devtools.inspect(&app, false, true);
     let at = overlay_text(&devtools, "Copy as test");
     click(&mut devtools, &mut app, at);
-    devtools.inspect(&app, false);
+    devtools.inspect(&app, false, true);
     devtools.app.frame();
 
     let dump = std::fs::read_to_string(devtools.copy_dir.join("panel-1.txt"))
@@ -1264,7 +1269,7 @@ fn the_focus_overlay_numbers_tab_stops_and_the_access_tab_warns() {
     let mut switches = devtools.tools.switches();
     switches.focus = true;
     devtools.tools.set_switches(switches);
-    devtools.observe(&app, false);
+    devtools.observe(&app, false, true);
     devtools.app.frame();
     let badge = |devtools: &Devtools, text: &str| {
         devtools
@@ -1295,7 +1300,7 @@ fn the_focus_overlay_numbers_tab_stops_and_the_access_tab_warns() {
     let at = overlay_text(&devtools, "Access");
     click(&mut devtools, &mut app, at);
     devtools.app.frame();
-    devtools.observe(&app, false);
+    devtools.observe(&app, false, true);
     devtools.app.frame();
     let text = devtools
         .app
@@ -1311,4 +1316,102 @@ fn the_focus_overlay_numbers_tab_stops_and_the_access_tab_warns() {
         "{text}"
     );
     assert!(text.contains("Button \"Save\""), "{text}");
+}
+
+#[test]
+fn a_selected_node_with_a_nan_size_lets_the_window_go_idle() {
+    TextSystem::bundled_only().install();
+    let mut app = App::new(
+        AppConfig {
+            viewport: VIEWPORT,
+            scale: 1.0,
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Damage,
+        },
+        || Element::new(Panel).child(Element::new(Panel).width(px(f32::NAN)).height(px(10.0))),
+    );
+    app.frame();
+    let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
+    devtools.app.frame();
+    let wakes = Rc::new(Cell::new(0u32));
+    let counted = Rc::clone(&wakes);
+    devtools.set_wake(move || counted.set(counted.get() + 1));
+    let at = overlay_text(&devtools, "Inspector");
+    click(&mut devtools, &mut app, at);
+    devtools.app.frame();
+    let mut entries = Vec::new();
+    app.visit_tree(|entry| entries.push(entry.id));
+    devtools.tools.select(entries.get(1).copied());
+    let refresh = devtools.view_changed();
+    devtools.inspect(&app, false, refresh);
+    devtools.app.frame();
+    wakes.set(0);
+
+    for _ in 0..3 {
+        let refresh = devtools.view_changed();
+        assert!(!refresh, "nothing the panel shows changed");
+        devtools.inspect(&app, false, refresh);
+        devtools.observe(&app, false, refresh);
+        devtools.app.frame();
+    }
+    assert_eq!(wakes.get(), 0, "an idle app's redraws write nothing");
+}
+
+#[test]
+fn leaving_the_inspector_tab_ends_pick_mode() {
+    let (mut app, mut devtools, heard) = apps(true);
+    let at = overlay_text(&devtools, "Inspector");
+    click(&mut devtools, &mut app, at);
+    devtools.app.frame();
+    let at = overlay_text(&devtools, "Pick");
+    click(&mut devtools, &mut app, at);
+    devtools.app.frame();
+    assert!(devtools.tools.is_picking());
+
+    let at = overlay_text(&devtools, "Frames");
+    click(&mut devtools, &mut app, at);
+    devtools.app.frame();
+    assert!(!devtools.tools.is_picking());
+    let presses = heard.presses.get();
+    click(&mut devtools, &mut app, OFF_PANEL);
+    assert_eq!(
+        heard.presses.get(),
+        presses + 1,
+        "the app hears its clicks again"
+    );
+}
+
+#[test]
+fn the_hit_testing_overlay_outlines_what_takes_a_press() {
+    let (mut app, mut devtools, _) = apps(true);
+    let mut switches = devtools.tools.switches();
+    switches.hit_testing = true;
+    devtools.tools.set_switches(switches);
+    devtools.dispatch(
+        &mut app,
+        InputEvent::PointerMoved {
+            position: OFF_PANEL,
+        },
+    );
+    devtools.observe(&app, false, true);
+    let whole = Rect::new(0.0, 0.0, VIEWPORT.width, VIEWPORT.height);
+    let strokes: Vec<(Rect, Color)> = devtools
+        .app
+        .frame()
+        .list
+        .items()
+        .iter()
+        .filter_map(|item| match item {
+            DisplayItem::Op(PaintOp::StrokeRect { rect, color, .. }) => Some((*rect, *color)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        strokes.contains(&(whole, Color::rgb(90, 200, 120))),
+        "the app's pressable root is outlined: {strokes:?}"
+    );
+    assert!(
+        strokes.contains(&(whole, Color::rgb(80, 160, 255))),
+        "and so is the hovered chain"
+    );
 }

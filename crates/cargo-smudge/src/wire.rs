@@ -15,6 +15,13 @@ pub(crate) const APPLIED: u8 = 3;
 /// The kind of the frame that reports a patch as refused.
 pub(crate) const FAILED: u8 = 4;
 
+/// The kind of the frame that tells the app a patch is being built.
+pub(crate) const BUILDING: u8 = 5;
+
+/// The kind of the frame that tells the app a patch could not be built,
+/// with the compiler's message.
+pub(crate) const BUILD_FAILED: u8 = 6;
+
 /// The largest payload the builder accepts, which mirrors the limit the
 /// receiver applies to its own reads.
 const MAX_PAYLOAD: u32 = 64 << 20;

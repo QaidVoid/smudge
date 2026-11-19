@@ -47,12 +47,16 @@ use subsecond::JumpTable;
 /// | 2, patch | the builder | the address of `main` in the binary as linked, as a `u64`, the address of `main` in the patch library as linked, as a `u64`, the entry count as a `u64`, that many pairs of `u64` mapping the address of a function in the binary as linked to the address of its new version in the patch library as linked, the count of kept type probes as a `u64`, that many addresses of type probes in the binary as linked, as `u64`, and then the path of the patch library to the end |
 /// | 3, applied | the app | empty |
 /// | 4, failed | the app | why the patch was not applied, in UTF-8 |
+/// | 5, building | the builder | empty |
+/// | 6, build failed | the builder | why the patch could not be built, such as the compiler's message, in UTF-8 |
 ///
-/// The app sends one hello right after it connects. It answers every patch,
-/// in order, with applied or failed. The app skips a frame of a kind it does
-/// not know. It stops reading when the builder closes the socket, or when a
-/// frame's header is broken or announces a payload over 64 MiB, because the
-/// stream can no longer be followed.
+/// The app sends one hello right after it connects. It answers every patch, in
+/// order, with applied or failed. The builder may send building when it starts
+/// building a patch, and then build failed when the build fails, for the app to
+/// show. Neither needs an answer. The app skips a frame of a kind it does not
+/// know. It stops reading when the builder closes the socket, or when a frame's
+/// header is broken or announces a payload over 64 MiB, because the stream can
+/// no longer be followed.
 ///
 /// Each patch frame is built against the hello of the connection it is sent
 /// on: its library was compiled from the crates of the binary that process
@@ -182,6 +186,21 @@ const APPLIED: u8 = 3;
 /// The kind of the frame that reports a patch as refused.
 const FAILED: u8 = 4;
 
+/// The kind of the frame that tells the app a patch is being built.
+const BUILDING: u8 = 5;
+
+/// The kind of the frame that tells the app a patch could not be built.
+const BUILD_FAILED: u8 = 6;
+
+/// What the builder says about a patch before it sends one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Build {
+    /// It started building a patch.
+    Started,
+    /// The patch could not be built, for this reason.
+    Failed(String),
+}
+
 /// The largest payload the receiver accepts, so a broken header cannot make
 /// it allocate without bound.
 const MAX_PAYLOAD: u32 = 64 << 20;
@@ -203,12 +222,13 @@ pub(crate) struct Patch {
 
 impl Patch {
     /// Loads the patch library, installs the table, runs `then` once the
-    /// table is installed, and answers the builder with the outcome.
+    /// table is installed, answers the builder with the outcome and returns
+    /// it, for the devtools to show.
     ///
     /// Call it only on the thread that runs the event loop, the one thread
     /// that reads the table through [`current`]. `then` rebuilds the root
     /// through the patched view, and its error is the answer when it fails.
-    pub(crate) fn apply(self, then: impl FnOnce() -> Result<(), String>) {
+    pub(crate) fn apply(self, then: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
         // The probes are linked addresses, which move by the same distance
         // as `main` did.
         let linked_main = self.table.aslr_reference;
@@ -230,7 +250,8 @@ impl Patch {
             smudge_core::hot::forget_kept_types();
             remounted
         });
-        let _ = self.answer.send(outcome);
+        let _ = self.answer.send(outcome.clone());
+        outcome
     }
 
     /// Answers the builder that the patch was not applied, for `reason`,
@@ -258,17 +279,19 @@ pub(crate) fn note_patch_installed() {
 /// receiver's thread.
 ///
 /// `deliver` runs on the receiver's thread for every patch that decodes. It
-/// must hand the patch to the thread that runs the event loop, which applies
-/// or refuses it. `view` is the runtime address of the view that `run_view`
-/// or `run_view_with` was given, which the hello announces so the builder
-/// can attribute a signature change to the view, and `probe` is the runtime
-/// address of the state probe [`state_probe`] answers, which the hello
-/// announces so the builder can check the state's layout. The receiver waits for
-/// that answer before it reads the next frame. Returns `None` when
-/// [`HOT_SOCKET_ENVIRONMENT`] is unset, and when the socket cannot be
-/// reached, which it reports on standard error.
+/// must hand the patch to the thread that runs the event loop, which applies or
+/// refuses it. `report` runs there too, for every building and build failed
+/// frame, which the window shows in the devtools. `view` is the runtime address
+/// of the view that `run_view` or `run_view_with` was given, which the hello
+/// announces so the builder can attribute a signature change to the view, and
+/// `probe` is the runtime address of the state probe [`state_probe`] answers,
+/// which the hello announces so the builder can check the state's layout. The
+/// receiver waits for that answer before it reads the next frame. Returns
+/// `None` when [`HOT_SOCKET_ENVIRONMENT`] is unset, and when the socket cannot
+/// be reached, which it reports on standard error.
 pub(crate) fn start(
     deliver: impl Fn(Patch) + Send + 'static,
+    report: impl Fn(Build) + Send + 'static,
     view: usize,
     probe: usize,
 ) -> Option<JoinHandle<()>> {
@@ -277,7 +300,7 @@ pub(crate) fn start(
         std::env::var_os(HOT_BUILD_ENVIRONMENT),
         subsecond::aslr_reference(),
         (view, probe),
-        deliver,
+        (deliver, report),
     )
 }
 
@@ -293,7 +316,10 @@ fn start_from(
     build: Option<OsString>,
     main: usize,
     (view, probe): (usize, usize),
-    deliver: impl Fn(Patch) + Send + 'static,
+    (deliver, report): (
+        impl Fn(Patch) + Send + 'static,
+        impl Fn(Build) + Send + 'static,
+    ),
 ) -> Option<JoinHandle<()>> {
     let socket = PathBuf::from(socket?);
     if main == 0 {
@@ -310,6 +336,7 @@ fn start_from(
         main,
         (view, probe),
         deliver,
+        report,
     ) {
         Ok(receiver) => Some(receiver),
         Err(error) => {
@@ -330,6 +357,7 @@ fn connect(
     main: usize,
     (view, probe): (usize, usize),
     deliver: impl Fn(Patch) + Send + 'static,
+    report: impl Fn(Build) + Send + 'static,
 ) -> io::Result<JoinHandle<()>> {
     let mut stream = UnixStream::connect(socket)?;
     let mut hello = Vec::with_capacity(32 + build.len());
@@ -342,12 +370,13 @@ fn connect(
     write_frame(&mut stream, HELLO, &hello)?;
     std::thread::Builder::new()
         .name(String::from("smudge-hot-reload"))
-        .spawn(move || receive(stream, deliver))
+        .spawn(move || receive(stream, deliver, report))
 }
 
-/// Delivers every patch that arrives on `stream` and answers each one, until
-/// the builder closes the socket or the stream breaks.
-fn receive(mut stream: UnixStream, deliver: impl Fn(Patch)) {
+/// Delivers every patch that arrives on `stream` and answers each one, and
+/// reports every building and build failed frame, until the builder closes
+/// the socket or the stream breaks.
+fn receive(mut stream: UnixStream, deliver: impl Fn(Patch), report: impl Fn(Build)) {
     loop {
         let (kind, payload) = match read_frame(&mut stream) {
             Ok(Some(frame)) => frame,
@@ -357,8 +386,19 @@ fn receive(mut stream: UnixStream, deliver: impl Fn(Patch)) {
                 return;
             }
         };
-        if kind != PATCH {
-            continue;
+        match kind {
+            BUILDING => {
+                report(Build::Started);
+                continue;
+            }
+            BUILD_FAILED => {
+                report(Build::Failed(
+                    String::from_utf8_lossy(&payload).into_owned(),
+                ));
+                continue;
+            }
+            PATCH => {}
+            _ => continue,
         }
         let outcome = decode_patch(&payload).and_then(|(table, kept)| {
             let (answer, answered) = mpsc::channel();

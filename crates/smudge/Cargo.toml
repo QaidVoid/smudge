@@ -54,6 +54,9 @@ markdown = ["dep:smudge-markdown"]
 # window, and the `devtools` module re-exports the crate. Implies `window`.
 # Never on by default, and meant for development builds only.
 devtools = ["window", "dep:smudge-devtools", "smudge-platform/_devtools"]
+# The development setup: the devtools and hot reload together, so the
+# devtools show each patch as it lands.
+dev = ["devtools", "hot-reload"]
 
 [package.metadata.docs.rs]
 all-features = true

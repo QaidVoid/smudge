@@ -2553,6 +2553,9 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
         sysroot_tls: &session.original.sysroot_tls,
         stream,
     };
+    // An app that does not know the kind skips the frame, as the format
+    // requires, so a failed write only means the app has gone.
+    let _ = wire::write_frame(plan.stream, wire::BUILDING, &[]);
     let outcome = patch::run(&mut plan, generation);
     match outcome {
         Outcome::Applied {
@@ -2634,6 +2637,7 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
         Outcome::CompileFailed { log, discovered } => {
             println!("patch {generation}: compile failed; the app keeps running");
             eprintln!("{}", tail(&log, 30));
+            tell_build_failed(session, &tail(&log, 30));
             // A compile that failed may have listed less than a full
             // dep-info, so its discoveries only ever join the membership,
             // never replace it.
@@ -2642,6 +2646,7 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
         Outcome::BuildFailed { reason, discovered } => {
             println!("patch {generation}: not built; the app keeps running");
             eprintln!("{reason}");
+            tell_build_failed(session, &reason);
             // A build that failed may have learned from only part of the
             // chain, so its discoveries only ever join the membership.
             learn(session, tip_name, discovered, false);
@@ -2651,6 +2656,10 @@ fn apply_patch(session: &mut Session, changed: &[String], saved: &[(SystemTime, 
             refused,
             discovered,
         } => {
+            tell_build_failed(
+                session,
+                &format!("not sent, the app must restart: {reason}"),
+            );
             // The refused crate can never patch this session, but the
             // other edits of the attempt stay uninstalled, so they must
             // ride along in the next patch.
@@ -3954,3 +3963,11 @@ fn fail(message: &str) -> ExitCode {
 #[cfg(test)]
 #[path = "driver_tests.rs"]
 mod tests;
+
+/// Tells the connected app that the patch it was told about could not be
+/// built, and why.
+fn tell_build_failed(session: &mut Session, reason: &str) {
+    if let Some(stream) = session.stream.as_mut() {
+        let _ = wire::write_frame(stream, wire::BUILD_FAILED, reason.as_bytes());
+    }
+}
