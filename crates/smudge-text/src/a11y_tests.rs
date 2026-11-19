@@ -16,7 +16,7 @@ use crate::system::TextSystem;
 fn runs_of(text: &str, width: Option<f32>) -> Vec<TextRun> {
     TextSystem::bundled_only().install();
     let layout = TextLayout::new(text, &TextStyle::default(), width);
-    text_runs(&layout.layout, text, Point::default(), None)
+    text_runs(&layout.layout, text, Point::default(), None, &[])
 }
 
 /// The words of `run`, as the word starts divide its text.
@@ -157,8 +157,8 @@ fn the_characters_sit_left_to_right_inside_the_run() {
 fn the_runs_move_with_the_origin() {
     TextSystem::bundled_only().install();
     let layout = TextLayout::new("abc", &TextStyle::default(), None);
-    let at_zero = text_runs(&layout.layout, "abc", Point::default(), None);
-    let moved = text_runs(&layout.layout, "abc", Point { x: 10.0, y: 20.0 }, None);
+    let at_zero = text_runs(&layout.layout, "abc", Point::default(), None, &[]);
+    let moved = text_runs(&layout.layout, "abc", Point { x: 10.0, y: 20.0 }, None, &[]);
     assert_eq!(moved[0].bounds.x0, at_zero[0].bounds.x0 + 10.0);
     assert_eq!(moved[0].bounds.y0, at_zero[0].bounds.y0 + 20.0);
     assert_eq!(moved[0].character_positions, at_zero[0].character_positions);
@@ -215,7 +215,7 @@ fn what_a_truncation_hides_sits_at_the_cut_with_no_width() {
     TextSystem::bundled_only().install();
     let text = "several words that wrap onto more than one line";
     let layout = TextLayout::new(text, &TextStyle::default(), Some(120.0));
-    let shown = text_runs(&layout.layout, text, Point::default(), None);
+    let shown = text_runs(&layout.layout, text, Point::default(), None, &[]);
     let first_line = shown[0].bounds;
     let cut = first_line.x0 + 30.0;
     let runs = text_runs(
@@ -226,6 +226,7 @@ fn what_a_truncation_hides_sits_at_the_cut_with_no_width() {
             kept_lines: 1,
             cut: Some(cut),
         }),
+        &[],
     );
     let joined: String = runs.iter().map(|run| run.text.as_str()).collect();
     assert_eq!(joined, text, "the whole text is still read");
@@ -257,7 +258,7 @@ fn the_stretches_of_a_mixed_line_read_in_logical_order() {
 fn hidden_runs(text: &str, width: Option<f32>, kept_lines: usize) -> (Vec<TextRun>, Vec<TextRun>) {
     TextSystem::bundled_only().install();
     let layout = TextLayout::new(text, &TextStyle::default(), width);
-    let shown = text_runs(&layout.layout, text, Point::default(), None);
+    let shown = text_runs(&layout.layout, text, Point::default(), None, &[]);
     let hidden = text_runs(
         &layout.layout,
         text,
@@ -266,6 +267,7 @@ fn hidden_runs(text: &str, width: Option<f32>, kept_lines: usize) -> (Vec<TextRu
             kept_lines,
             cut: None,
         }),
+        &[],
     );
     (shown, hidden)
 }
@@ -314,5 +316,21 @@ fn hidden_right_to_left_text_sits_where_its_last_kept_line_ends() {
             .iter()
             .all(|run| run.bounds.x1 <= first_line_left + 0.01),
         "the hidden text waits at the left, where a right to left line ends"
+    );
+}
+
+#[test]
+fn a_run_breaks_where_a_link_starts_and_ends() {
+    TextSystem::bundled_only().install();
+    let text = "see the guide now";
+    let layout = TextLayout::new(text, &TextStyle::default(), None);
+    let runs = text_runs(&layout.layout, text, Point::default(), None, &[8, 13]);
+    let texts: Vec<&str> = runs.iter().map(|run| run.text.as_str()).collect();
+    assert_eq!(texts, vec!["see the ", "guide", " now"]);
+    assert!(runs[1..].iter().all(|run| run.continues_line));
+    assert_eq!(
+        runs[2].word_starts,
+        vec![1],
+        "the word after the link starts after its space"
     );
 }

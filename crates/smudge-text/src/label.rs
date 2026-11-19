@@ -188,7 +188,7 @@ impl Widget for Label {
                         kept_lines: truncation.kept_lines,
                         cut: truncation.cut.as_ref().map(|cut| cut.x),
                     });
-                    text_runs(&layout.layout, &self.text, Point::default(), hidden)
+                    text_runs(&layout.layout, &self.text, Point::default(), hidden, &[])
                 })
                 .unwrap_or_default()
         });

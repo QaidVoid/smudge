@@ -803,6 +803,26 @@ impl WidgetTree {
         ran
     }
 
+    /// Runs the action of the link at `index` of the node `id`, as a screen
+    /// reader's press on it does, and returns whether one ran. A disabled or
+    /// withdrawn node runs nothing.
+    pub(crate) fn run_link(&mut self, id: WidgetId, index: usize) -> bool {
+        let Some(node) = self.nodes.get(id) else {
+            return false;
+        };
+        if node.interaction.has(Interaction::DISABLED) || node.withdrawn() {
+            return false;
+        }
+        let Some(action) = node.widget.link_action(index) else {
+            return false;
+        };
+        let Some(owner) = self.owner(id).cloned() else {
+            return false;
+        };
+        owner.with(|| action());
+        true
+    }
+
     /// Returns `position`, in window coordinates, relative to the top left of
     /// the rectangle of `id`, which is where the node's pointer handlers
     /// measure from. A stale id leaves it as it is.

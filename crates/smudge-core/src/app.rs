@@ -1371,6 +1371,15 @@ impl App {
         self.tree.run_press(id)
     }
 
+    /// Runs the link at `index` of the links `id` reports, as a screen
+    /// reader's press on the link would.
+    ///
+    /// A disabled or hidden node, or an index past its links, runs nothing
+    /// and `false` is returned. `true` means the link's action ran.
+    pub fn press_link(&mut self, id: WidgetId, index: usize) -> bool {
+        self.tree.run_link(id, index)
+    }
+
     /// Moves the keyboard focus to `id`, as an accessibility action would.
     ///
     /// A node that is not focusable, or that cannot hold the focus because

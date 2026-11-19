@@ -28,6 +28,10 @@ pub(crate) struct Inline {
     pub(crate) code: bool,
     /// The destination of the link the run belongs to, if any.
     pub(crate) link: Option<String>,
+    /// Which link of its block the run belongs to, counted from 1, or 0
+    /// outside a link, which tells the runs of one link that its styles
+    /// divide from the runs of a neighbouring link to the same place.
+    pub(crate) link_number: u32,
 }
 
 impl Inline {
@@ -38,6 +42,7 @@ impl Inline {
             && self.emphasis == other.emphasis
             && self.code == other.code
             && self.link == other.link
+            && self.link_number == other.link_number
     }
 }
 
@@ -577,6 +582,7 @@ impl<'a, I: Iterator<Item = (Event<'a>, Range<usize>)>> Reader<'a, I> {
     fn inlines(&mut self, to_end: bool) -> Vec<Inline> {
         let mut runs: Vec<Inline> = Vec::new();
         let mut open: Vec<Tag<'a>> = Vec::new();
+        let mut links = 0u32;
         while let Some(event) = self.peek() {
             match event {
                 Event::Start(tag) if is_block(tag) => break,
@@ -594,6 +600,9 @@ impl<'a, I: Iterator<Item = (Event<'a>, Range<usize>)>> Reader<'a, I> {
             };
             let (text, code) = match event {
                 Event::Start(tag) => {
+                    if matches!(tag, Tag::Link { .. }) {
+                        links += 1;
+                    }
                     open.push(tag);
                     continue;
                 }
@@ -615,15 +624,16 @@ impl<'a, I: Iterator<Item = (Event<'a>, Range<usize>)>> Reader<'a, I> {
                     (String::from(if done { "[x] " } else { "[ ] " }), false)
                 }
             };
-            push_run(&mut runs, &open, text, code);
+            push_run(&mut runs, &open, text, code, links);
         }
         runs
     }
 }
 
 /// Appends `text` in the style the `open` inline elements give it to
-/// `runs`, joining the last run when the styles match.
-fn push_run(runs: &mut Vec<Inline>, open: &[Tag<'_>], text: String, code: bool) {
+/// `runs`, joining the last run when the styles match. `links` counts the
+/// links begun so far, which numbers the one `text` sits in.
+fn push_run(runs: &mut Vec<Inline>, open: &[Tag<'_>], text: String, code: bool, links: u32) {
     if text.is_empty() {
         return;
     }
@@ -636,7 +646,10 @@ fn push_run(runs: &mut Vec<Inline>, open: &[Tag<'_>], text: String, code: bool) 
         match tag {
             Tag::Strong => run.strong = true,
             Tag::Emphasis => run.emphasis = true,
-            Tag::Link { dest_url, .. } => run.link = Some(dest_url.to_string()),
+            Tag::Link { dest_url, .. } => {
+                run.link = Some(dest_url.to_string());
+                run.link_number = links;
+            }
             _ => {}
         }
     }

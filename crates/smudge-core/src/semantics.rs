@@ -147,6 +147,11 @@ pub struct Semantics {
     /// The selection in the widget's text, or the caret when its ends
     /// meet, or `None` for a widget with no selection.
     pub text_selection: Option<TextSelection>,
+    /// The byte range of each link in the widget's text, in order and apart
+    /// from one another, which a screen reader reaches as a link of its own
+    /// and presses through [`Widget::link_action`](crate::widget::Widget::link_action)
+    /// by its index here.
+    pub links: Vec<std::ops::Range<usize>>,
 }
 
 /// A selection in a widget's text, between two places in the text its
@@ -227,6 +232,7 @@ impl Semantics {
             level: None,
             text_runs: Vec::new(),
             text_selection: None,
+            links: Vec::new(),
         }
     }
 }
@@ -266,6 +272,8 @@ pub struct SemanticsNode {
     pub text_runs: Vec<TextRun>,
     /// The selection in the node's text, or the caret when its ends meet.
     pub text_selection: Option<TextSelection>,
+    /// The byte range of each link in the node's text, in order.
+    pub links: Vec<std::ops::Range<usize>>,
     /// The node's absolute rectangle in logical pixels, as the last layout
     /// pass left it.
     pub bounds: Rect,

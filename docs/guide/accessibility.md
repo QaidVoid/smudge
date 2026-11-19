@@ -17,6 +17,8 @@ Every widget that has a meaning reports a role, and a name or a value:
 | `virtual_column_keyed` | Scroll view | None by default. The rows report only their own content, with no list around them. |
 | The window | Window | The window title |
 
+A link inside a `rich_text` paragraph, and so inside markdown, is a link of its own to a screen reader, named by its text, which the reader can move to and press to run the link's handler. Neighbouring spans that share one handler are one link.
+
 A selection made in a [selection scope](./text-and-input#selecting-text) reaches a reader block by block: each label or rich text the selection covers reports the part of its text that is selected. Blocks a virtual list has not mounted report nothing. On Linux the screen reader hears no event as such a selection changes, because the blocks never hold the focus, though it can still ask what is selected.
 
 Bounds, keyboard focus and the press action are reported too, and each frame sends only what changed since the last one.

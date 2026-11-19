@@ -1323,6 +1323,7 @@ impl Editor {
                         y: top,
                     },
                     None,
+                    &[],
                 )
                 .into_iter()
                 .map(|run| TextRun {

@@ -1564,6 +1564,7 @@ impl WidgetTree {
             level,
             mut text_runs,
             text_selection,
+            links,
             ..
         } = semantics;
         let content = node.content.origin();
@@ -1594,6 +1595,7 @@ impl WidgetTree {
             level: node.a11y_level.or(level),
             text_runs,
             text_selection,
+            links,
             bounds: node.rect,
             focusable: node.interaction.has(Interaction::FOCUSABLE),
             disabled: node.interaction.has(Interaction::DISABLED),

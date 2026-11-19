@@ -563,3 +563,35 @@ fn a_view_that_does_not_announce_speaks_nothing() {
     source.finish();
     assert!(spoken(&mut harness).is_empty());
 }
+
+#[test]
+fn a_link_with_styles_inside_it_is_one_link_to_a_reader() {
+    TextSystem::bundled_only().install();
+    let source = MarkdownSource::new();
+    source.push("See [the **bold** guide](https://x)[this](https://x) now.\n");
+    let shown = source.clone();
+    let mut harness = Harness::new(WINDOW.0, WINDOW.1, 1.0, move || {
+        markdown(&shown, MarkdownOptions::default().on_link(|_| {}))
+            .width(pct(100.0))
+            .height(px(WINDOW.1))
+    });
+    harness.frame();
+    harness.settle();
+    let paragraph = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| !node.links.is_empty())
+        .expect("the paragraph reports its links");
+    let text = paragraph.value.clone().unwrap_or_default();
+    let named: Vec<&str> = paragraph
+        .links
+        .iter()
+        .map(|range| &text[range.clone()])
+        .collect();
+    assert_eq!(
+        named,
+        vec!["the bold guide", "this"],
+        "one link however it is styled, and two links to the same place stay two"
+    );
+}

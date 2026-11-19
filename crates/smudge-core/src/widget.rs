@@ -148,6 +148,18 @@ pub trait Widget: Any + type_name::TypeName {
     fn role(&self) -> Option<Role> {
         self.semantics().map(|semantics| semantics.role)
     }
+
+    /// Returns what a press on the link at `index` of
+    /// [`Semantics::links`] runs, or [`None`] when there is no such link.
+    ///
+    /// A screen reader presses a link through [`App::press_link`], which
+    /// runs the action with no borrow of the tree held, so it can change
+    /// the interface. The default has no links.
+    ///
+    /// [`App::press_link`]: crate::app::App::press_link
+    fn link_action(&self, _index: usize) -> Option<std::rc::Rc<dyn Fn()>> {
+        None
+    }
 }
 
 /// The name of a widget's concrete type, which diagnostics print.

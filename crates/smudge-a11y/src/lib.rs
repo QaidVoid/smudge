@@ -66,6 +66,12 @@ pub struct Projection {
     /// The ids of the text runs of each node that has any, in order, kept
     /// while the node lives so a reader's place in the text stays put.
     runs: HashMap<NodeId, Vec<NodeId>>,
+    /// The ids of the links of each node that has any, by the link's index,
+    /// kept while the node lives.
+    links: HashMap<NodeId, Vec<NodeId>>,
+    /// The node and the index of the link each link node stands for, which a
+    /// press on it runs.
+    link_targets: HashMap<NodeId, (WidgetId, usize)>,
     /// The serial of the next node the projection makes up.
     serial: u32,
 }
@@ -90,6 +96,8 @@ impl Projection {
             roots: Vec::new(),
             announced: Vec::new(),
             runs: HashMap::new(),
+            links: HashMap::new(),
+            link_targets: HashMap::new(),
             serial: 0,
         }
     }
@@ -237,6 +245,13 @@ impl Projection {
             .map(|node| NodeId(node.id.as_u64()))
             .collect();
         self.runs.retain(|id, _| live.contains(id));
+        self.links.retain(|id, _| live.contains(id));
+        let links = &self.links;
+        self.link_targets.retain(|link, (owner, _)| {
+            links
+                .get(&NodeId(owner.as_u64()))
+                .is_some_and(|ids| ids.contains(link))
+        });
         for node in &projected {
             let id = NodeId(node.id.as_u64());
             let sent = Sent {
@@ -272,10 +287,20 @@ impl Projection {
             .collect();
         while let Some(id) = stack.pop() {
             self.runs.remove(&id);
+            for link in self.links.remove(&id).unwrap_or_default() {
+                self.link_targets.remove(&link);
+            }
             if let Some(sent) = self.sent.remove(&id) {
                 stack.extend(sent.children);
             }
         }
+    }
+
+    /// Returns the node and the index of the link the link node `id` stands
+    /// for, which [`App::press_link`] runs when a screen reader presses it,
+    /// or `None` when `id` names no link.
+    pub fn link_target(&self, id: NodeId) -> Option<(WidgetId, usize)> {
+        self.link_targets.get(&id).copied()
     }
 
     /// Returns the next id of a node the projection makes up.
@@ -302,6 +327,40 @@ impl Projection {
             let run = self.next_synthetic();
             ids.push(run);
         }
+        let mut link_ids = self.links.remove(&id).unwrap_or_default();
+        for gone in link_ids.iter().skip(node.links.len()) {
+            self.link_targets.remove(gone);
+        }
+        link_ids.truncate(node.links.len());
+        while link_ids.len() < node.links.len() {
+            let link = self.next_synthetic();
+            link_ids.push(link);
+        }
+        for (index, link) in link_ids.iter().enumerate() {
+            self.link_targets.insert(*link, (node.id, index));
+        }
+        // A link holds the runs that overlap its range, which a run meets
+        // whole unless the link ends inside a cluster, and takes their place
+        // among the node's children.
+        let mut members: Vec<Vec<usize>> = vec![Vec::new(); node.links.len()];
+        let mut children = Vec::with_capacity(ids.len() + node.children.len());
+        for (index, (run, run_id)) in node.text_runs.iter().zip(&ids).enumerate() {
+            let end = run.start + run.text.len();
+            let link = node
+                .links
+                .iter()
+                .position(|range| run.start < range.end && range.start < end);
+            match link {
+                Some(link) => {
+                    if members[link].is_empty() {
+                        children.push(link_ids[link]);
+                    }
+                    members[link].push(index);
+                }
+                None => children.push(*run_id),
+            }
+        }
+        children.extend(node_ids(&node.children));
         let mut out = build_node(node, scale);
         if let Some(selection) = node.text_selection
             && !ids.is_empty()
@@ -312,11 +371,19 @@ impl Projection {
             });
         }
         if !ids.is_empty() {
-            let mut children = ids.clone();
-            children.extend(node_ids(&node.children));
             out.set_children(children);
         }
         nodes.push((id, out));
+        for (link, members) in link_ids.iter().zip(&members) {
+            if members.is_empty() {
+                continue;
+            }
+            let mut out = build_link(&node.text_runs, &ids, members, scale);
+            if node.disabled {
+                out.set_disabled();
+            }
+            nodes.push((*link, out));
+        }
         let sent_runs: &[TextRun] = if send_runs { &node.text_runs } else { &[] };
         for (index, (run, run_id)) in sent_runs.iter().zip(&ids).enumerate() {
             let mut out = build_run(run, scale);
@@ -332,6 +399,9 @@ impl Projection {
         }
         if !ids.is_empty() {
             self.runs.insert(id, ids);
+        }
+        if !link_ids.is_empty() {
+            self.links.insert(id, link_ids);
         }
     }
 
@@ -366,6 +436,9 @@ fn digest(node: &SemanticsNode, scale: f32) -> u64 {
     (node.position, node.set_size, node.level).hash(&mut hasher);
     node.text_selection.hash(&mut hasher);
     node.text_runs.len().hash(&mut hasher);
+    for link in &node.links {
+        (link.start, link.end).hash(&mut hasher);
+    }
     if let Some(range) = node.range {
         for number in [range.value, range.min, range.max] {
             number.to_bits().hash(&mut hasher);
@@ -502,6 +575,28 @@ fn text_position(runs: &[TextRun], ids: &[NodeId], offset: TextOffset) -> access
         node: ids[last],
         character_index: runs[last].character_lengths.len(),
     }
+}
+
+/// Builds the link node that holds the runs of `runs` at `members`, named
+/// by their text and pressed with a click. `ids` names the runs.
+fn build_link(runs: &[TextRun], ids: &[NodeId], members: &[usize], scale: f32) -> Node {
+    let mut out = Node::new(AccessKitRole::Link);
+    let text: String = members
+        .iter()
+        .map(|index| runs[*index].text.as_str())
+        .collect();
+    out.set_label(text.trim_end_matches('\n').to_owned());
+    let mut bounds: Option<Rect> = None;
+    for index in members {
+        let run = runs[*index].bounds;
+        bounds = Some(bounds.map_or(run, |bounds| bounds.union(run)));
+    }
+    if let Some(bounds) = bounds {
+        out.set_bounds(scaled_bounds(bounds, scale));
+    }
+    out.set_children(members.iter().map(|index| ids[*index]).collect::<Vec<_>>());
+    out.add_action(accesskit::Action::Click);
+    out
 }
 
 /// Maps one text run onto an AccessKit text run node, its positions and

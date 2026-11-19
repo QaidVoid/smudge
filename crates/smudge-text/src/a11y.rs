@@ -51,6 +51,9 @@ pub(crate) struct Hidden {
 /// bytes, which a run cannot count, splits at the boundaries of its code
 /// points into pieces that fit, the first taking the cluster's width.
 ///
+/// A run also ends at each byte offset of `breaks`, sorted, which keeps the
+/// runs of a link apart from the text around it.
+///
 /// A truncated layout reports its whole text, since a screen reader reads
 /// the whole value too, but what `hidden` says it hides sits at the cut of
 /// the last kept line with no width, where the ellipsis stands for it.
@@ -64,6 +67,7 @@ pub(crate) fn text_runs<B: Brush>(
     text: &str,
     origin: Point,
     hidden: Option<Hidden>,
+    breaks: &[usize],
 ) -> Vec<TextRun> {
     let mut runs = Vec::new();
     let mut stretches: Vec<Stretch> = Vec::new();
@@ -140,7 +144,7 @@ pub(crate) fn text_runs<B: Brush>(
         // a hard break ends the line before it, which starts a paragraph.
         let mut continues_line = !shown && index > 0 && !after_hard_break;
         for stretch in &stretches {
-            for chunk in stretch.characters.chunks(TEXT_RUN_CAP) {
+            for chunk in chunks(&stretch.characters, breaks) {
                 runs.push(run_of(
                     chunk,
                     text,
@@ -176,6 +180,34 @@ pub(crate) fn scope_selection(range: &std::ops::Range<usize>, len: usize) -> Opt
             byte: end,
             ends_line: false,
         },
+    })
+}
+
+/// Divides `characters`, in reading order, into runs of at most
+/// [`TEXT_RUN_CAP`], each ending before the first character that starts at
+/// or past the next byte offset of `breaks`, so a break inside a cluster
+/// cuts after the cluster.
+fn chunks<'a>(
+    characters: &'a [Character],
+    breaks: &'a [usize],
+) -> impl Iterator<Item = &'a [Character]> {
+    let mut rest = characters;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let mut end = rest.len().min(TEXT_RUN_CAP);
+        let first = rest[0].start;
+        if let Some(next) = breaks.get(breaks.partition_point(|at| *at <= first))
+            && let Some(cut) = rest[1..end]
+                .iter()
+                .position(|character| character.start >= *next)
+        {
+            end = cut + 1;
+        }
+        let (chunk, after) = rest.split_at(end);
+        rest = after;
+        Some(chunk)
     })
 }
 

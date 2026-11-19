@@ -124,6 +124,10 @@ impl fmt::Debug for SpanStyle {
 /// with its pointer handlers.
 type Links = Rc<RefCell<Vec<Option<Rc<dyn Fn()>>>>>;
 
+/// One link of a paragraph: the byte range it covers in the joined text and
+/// what a press on it runs.
+type TextLink = (Range<usize>, Rc<dyn Fn()>);
+
 /// A wrapping paragraph of styled spans.
 ///
 /// Build one with [`rich_text`]. Like a label, it keeps the layout of its
@@ -223,6 +227,31 @@ fn span_font(style: &SpanStyle) -> SpanFont {
 }
 
 impl RichText {
+    /// Returns each link of the paragraph: the byte range it covers in
+    /// the joined text and what a press on it runs, in order. Neighbouring
+    /// spans that share a handler are one link.
+    fn text_links(&self) -> Vec<TextLink> {
+        let handlers = self.links.borrow();
+        let mut links: Vec<TextLink> = Vec::new();
+        for (range, handler) in self.ranges.iter().zip(handlers.iter()) {
+            let Some(handler) = handler else {
+                continue;
+            };
+            if range.is_empty() {
+                continue;
+            }
+            match links.last_mut() {
+                Some((last, previous))
+                    if last.end == range.start && Rc::ptr_eq(previous, handler) =>
+                {
+                    last.end = range.end;
+                }
+                _ => links.push((range.clone(), Rc::clone(handler))),
+            }
+        }
+        links
+    }
+
     /// Creates an empty paragraph that shares `layout` and `links` with its
     /// pointer handlers.
     fn new(
@@ -289,11 +318,21 @@ impl RichText {
 impl Widget for RichText {
     /// Reports the joined text as the accessible value, as a label does.
     fn semantics(&self) -> Option<Semantics> {
+        let links: Vec<Range<usize>> = self
+            .text_links()
+            .into_iter()
+            .map(|(range, _)| range)
+            .collect();
+        let mut breaks: Vec<usize> = links
+            .iter()
+            .flat_map(|range| [range.start, range.end])
+            .collect();
+        breaks.dedup();
         let text_runs = self
             .layout
             .borrow()
             .as_ref()
-            .map(|layout| text_runs(&layout.layout, &self.text, Point::default(), None))
+            .map(|layout| text_runs(&layout.layout, &self.text, Point::default(), None, &breaks))
             .unwrap_or_default();
         Some(Semantics {
             value: Some(self.text.clone()),
@@ -302,8 +341,16 @@ impl Widget for RichText {
                 .selected
                 .as_ref()
                 .and_then(|range| scope_selection(range, self.text.len())),
+            links,
             ..Semantics::new(Role::Label)
         })
+    }
+
+    fn link_action(&self, index: usize) -> Option<Rc<dyn Fn()>> {
+        self.text_links()
+            .into_iter()
+            .nth(index)
+            .map(|(_, action)| action)
     }
 
     fn role(&self) -> Option<Role> {
@@ -592,11 +639,29 @@ fn set_spans(rich: &mut RichText, spans: Rc<[Span]>) -> Dirty {
         rich.invalidate_layout();
         return Dirty::Layout;
     }
+    // Which spans join into one link decides the links a screen reader
+    // reaches, so a change there projects the paragraph again.
+    let relinked = link_joins(&rich.spans) != link_joins(&spans);
     rich.spans = spans;
     match change {
         SpanChange::Colors => Dirty::Paint,
+        _ if relinked => Dirty::Paint,
         _ => Dirty::Clean,
     }
+}
+
+/// Returns, for each pair of neighbouring spans with text, whether they
+/// are one link: both links, to the same handler. Spans with no text are
+/// left out, as [`RichText::text_links`] leaves them out.
+fn link_joins(spans: &[Span]) -> Vec<bool> {
+    let texts: Vec<&Span> = spans.iter().filter(|span| !span.text.is_empty()).collect();
+    texts
+        .windows(2)
+        .map(|pair| match (&pair[0].style.link, &pair[1].style.link) {
+            (Some(first), Some(second)) => Rc::ptr_eq(first, second),
+            _ => false,
+        })
+        .collect()
 }
 
 /// Writes `size` into the block style and lays the paragraph out again when

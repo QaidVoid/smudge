@@ -395,15 +395,22 @@ impl View {
 
 /// The spans that show `runs`, with links that call `on_link`.
 fn spans_of(runs: &[Inline], on_link: Option<&LinkHandler>) -> Rc<[Span]> {
+    // The runs of one link share one handler, so the paragraph keeps them
+    // one link where styles divide it.
+    let mut current: Option<(u32, Rc<dyn Fn()>)> = None;
     runs.iter()
         .map(|run| {
             let link = match (&run.link, on_link) {
-                (Some(dest), Some(on_link)) => {
-                    let dest = dest.clone();
-                    let on_link = Rc::clone(on_link);
-                    let open: Rc<dyn Fn()> = Rc::new(move || on_link(&dest));
-                    Some(open)
-                }
+                (Some(dest), Some(on_link)) => match &current {
+                    Some((number, open)) if *number == run.link_number => Some(Rc::clone(open)),
+                    _ => {
+                        let dest = dest.clone();
+                        let on_link = Rc::clone(on_link);
+                        let open: Rc<dyn Fn()> = Rc::new(move || on_link(&dest));
+                        current = Some((run.link_number, Rc::clone(&open)));
+                        Some(open)
+                    }
+                },
                 _ => None,
             };
             Span::new(

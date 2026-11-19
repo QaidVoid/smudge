@@ -1223,10 +1223,12 @@ where
     /// is also what turns the projection on: until the backend asks, no
     /// frame spends any work on it. A request that arrives while a frame is
     /// pending waits for that frame, so the tree it gets has been laid out
-    /// and every later change is queued after it. An action presses or focuses the widget
-    /// the request names, through the same paths a pointer press and a
-    /// keyboard focus change take. When the platform stops reading the tree,
-    /// the projection goes quiet until the backend asks again.
+    /// and every later change is queued after it. An action presses or
+    /// focuses the widget the request names, through the same paths a
+    /// pointer press and a keyboard focus change take, and a press on a link
+    /// inside text runs that link through [`App::press_link`]. When the
+    /// platform stops reading the tree, the projection goes quiet until the
+    /// backend asks again.
     #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
     fn handle_a11y_event(&mut self, event: accesskit_winit::Event) {
         let Some(state) = self.state.as_mut() else {
@@ -1248,11 +1250,15 @@ where
             }
             accesskit_winit::WindowEvent::ActionRequested(request) => {
                 let id = smudge_core::tree::WidgetId::from_u64(request.target_node.0);
-                match request.action {
-                    accesskit::Action::Click => {
+                let link = state.a11y.link_target(request.target_node);
+                match (request.action, link) {
+                    (accesskit::Action::Click, Some((owner, index))) => {
+                        state.app.press_link(owner, index);
+                    }
+                    (accesskit::Action::Click, None) => {
                         state.app.press(id);
                     }
-                    accesskit::Action::Focus => {
+                    (accesskit::Action::Focus, _) => {
                         state.app.request_focus(id);
                     }
                     _ => {}

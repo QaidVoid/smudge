@@ -520,3 +520,119 @@ fn a_padded_paragraph_draws_and_takes_link_clicks_inside_its_padding() {
     harness.frame();
     assert_eq!(clicks.get(), 1, "a click on the drawn link ran its handler");
 }
+
+/// The projected paragraph of a harness that shows `spans`.
+fn projected(spans: Vec<Span>) -> (Harness, smudge_core::semantics::SemanticsNode) {
+    TextSystem::bundled_only().install();
+    let spans: Rc<[Span]> = Rc::from(spans);
+    let mut harness = Harness::new(400.0, 100.0, 1.0, move || {
+        panel().child(rich_text(Rc::clone(&spans)))
+    });
+    harness.frame();
+    let node = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == smudge_core::semantics::Role::Label)
+        .expect("the paragraph projects");
+    (harness, node)
+}
+
+#[test]
+fn a_link_in_a_paragraph_reaches_a_reader_and_its_press() {
+    let presses = Rc::new(Cell::new(0));
+    let counted = presses.clone();
+    let (mut harness, node) = projected(vec![
+        Span::new("see ", SpanStyle::default()),
+        Span::link("guide", move || counted.set(counted.get() + 1)),
+        Span::new(".", SpanStyle::default()),
+    ]);
+    assert_eq!(node.links, vec![std::ops::Range { start: 4, end: 9 }]);
+    let texts: Vec<&str> = node.text_runs.iter().map(|run| run.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        vec!["see ", "guide", "."],
+        "no run straddles the link"
+    );
+    assert!(harness.app().press_link(node.id, 0));
+    assert_eq!(presses.get(), 1);
+}
+
+#[test]
+fn neighbouring_spans_of_one_link_are_one_link() {
+    let handler: Rc<dyn Fn()> = Rc::new(|| {});
+    let bold = SpanStyle {
+        weight: Some(FontWeight::BOLD),
+        link: Some(Rc::clone(&handler)),
+        ..SpanStyle::default()
+    };
+    let plain = SpanStyle {
+        link: Some(handler),
+        ..SpanStyle::default()
+    };
+    let (_, node) = projected(vec![
+        Span::new("the ", plain),
+        Span::new("guide", bold),
+        Span::link("other", || {}),
+    ]);
+    assert_eq!(node.links, vec![0..9, 9..14]);
+}
+
+#[test]
+fn a_link_that_ends_inside_a_cluster_keeps_the_cluster_with_it() {
+    let (_, node) = projected(vec![
+        Span::new("see ", SpanStyle::default()),
+        Span::link("guide", || {}),
+        Span::new("\u{301}.", SpanStyle::default()),
+    ]);
+    let texts: Vec<&str> = node.text_runs.iter().map(|run| run.text.as_str()).collect();
+    assert_eq!(texts, vec!["see ", "guide\u{301}", "."]);
+}
+
+#[test]
+fn a_new_handler_on_the_same_text_reaches_a_reader() {
+    TextSystem::bundled_only().install();
+    let first: Rc<dyn Fn()> = Rc::new(|| {});
+    let linked = |text: &str, handler: &Rc<dyn Fn()>| {
+        Span::new(
+            text,
+            SpanStyle {
+                link: Some(Rc::clone(handler)),
+                ..SpanStyle::default()
+            },
+        )
+    };
+    let empty = Span::new("", SpanStyle::default());
+    let spans: RwSignal<Rc<[Span]>> = RwSignal::new(Rc::from([
+        linked("the ", &first),
+        empty.clone(),
+        linked("guide", &first),
+    ]));
+    let shown = spans.clone();
+    let mut harness = Harness::new(400.0, 100.0, 1.0, move || {
+        let shown = shown.clone();
+        panel().child(rich_text(move || shown.get()))
+    });
+    harness.frame();
+    harness.app().take_a11y_changes();
+
+    let second: Rc<dyn Fn()> = Rc::new(|| {});
+    spans.set(Rc::from([
+        linked("the ", &first),
+        empty,
+        linked("guide", &second),
+    ]));
+    harness.frame();
+    let changes = harness.app().take_a11y_changes();
+    let paragraph = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == smudge_core::semantics::Role::Label)
+        .expect("the paragraph projects");
+    assert!(
+        changes.reset || changes.changed.contains(&paragraph.id),
+        "the paragraph is projected again"
+    );
+    assert_eq!(paragraph.links, vec![0..4, 4..9]);
+}

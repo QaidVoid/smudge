@@ -1877,3 +1877,102 @@ fn an_update_builds_the_focused_fields_description_once() {
         "the focus asks whether the field projects without building it"
     );
 }
+
+/// A paragraph "see guide." whose word "guide" is a link that counts its
+/// presses.
+struct Linked(std::rc::Rc<std::cell::Cell<usize>>);
+
+impl Widget for Linked {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+
+    fn semantics(&self) -> Option<Semantics> {
+        let mut link = run("guide", 0.0);
+        link.start = 4;
+        link.continues_line = true;
+        let mut after = run(".", 0.0);
+        after.start = 9;
+        after.continues_line = true;
+        Some(Semantics {
+            text_runs: vec![run("see ", 0.0), link, after],
+            links: vec![std::ops::Range { start: 4, end: 9 }],
+            ..Semantics::new(Role::Label)
+        })
+    }
+
+    fn link_action(&self, index: usize) -> Option<std::rc::Rc<dyn Fn()>> {
+        let presses = self.0.clone();
+        (index == 0).then(|| std::rc::Rc::new(move || presses.set(presses.get() + 1)) as _)
+    }
+}
+
+#[test]
+fn a_link_inside_text_is_a_node_a_reader_reaches_and_presses() {
+    let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counted = presses.clone();
+    let mut app = app_with(move || {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(Element::new(Linked(counted)).height(px(20.0)))
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+
+    let label = node_with_role(&update, AccessKitRole::Label);
+    let link_id = id_with_role(&update, AccessKitRole::Link);
+    let link = node_with_role(&update, AccessKitRole::Link);
+    assert_eq!(
+        label.children().len(),
+        3,
+        "a run, the link and a run, in order"
+    );
+    assert_eq!(label.children()[1], link_id);
+    assert_eq!(link.label(), Some("guide"));
+    assert!(link.supports_action(Action::Click));
+    assert_eq!(link.children().len(), 1, "the link holds its own run");
+
+    let (owner, index) = projection
+        .link_target(link_id)
+        .expect("the link node names its link");
+    assert!(app.press_link(owner, index));
+    assert_eq!(presses.get(), 1);
+    assert!(!app.press_link(owner, 1), "there is no second link");
+
+    let tree = Tree::new(update, true);
+    let paragraph = tree
+        .state()
+        .root()
+        .children()
+        .next()
+        .and_then(|group| group.children().next())
+        .expect("the group holds the paragraph");
+    assert_eq!(
+        paragraph.document_range().text(),
+        "see guide.",
+        "a reader reads the link's text in its place"
+    );
+}
+
+#[test]
+fn a_link_of_a_disabled_node_runs_nothing() {
+    let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counted = presses.clone();
+    let mut app = app_with(move || {
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Linked(counted))
+                .height(px(20.0))
+                .disabled(true),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    assert!(
+        node_with_role(&update, AccessKitRole::Link).is_disabled(),
+        "a reader hears the link is disabled too"
+    );
+    let link = id_with_role(&update, AccessKitRole::Link);
+    let (owner, index) = projection
+        .link_target(link)
+        .expect("the link node names its link");
+    assert!(!app.press_link(owner, index));
+    assert_eq!(presses.get(), 0);
+}
