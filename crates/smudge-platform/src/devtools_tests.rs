@@ -1113,3 +1113,63 @@ fn picking_a_button_selects_it_and_names_where_it_was_built() {
         .expect("the node is live");
     assert!(label.type_name.ends_with("Label"), "{}", label.type_name);
 }
+
+#[test]
+fn copy_as_test_writes_what_a_harness_of_the_node_draws() {
+    TextSystem::bundled_only().install();
+    let mut app = App::new(
+        AppConfig {
+            viewport: VIEWPORT,
+            scale: 1.0,
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Damage,
+        },
+        || {
+            smudge_widgets::column()
+                .padding(px(300.0))
+                .child(smudge_widgets::button("Save"))
+        },
+    );
+    app.frame();
+    let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    devtools.copy_dir =
+        std::env::temp_dir().join(format!("smudge-copy-{}-{nanos}", std::process::id()));
+    devtools.app.frame();
+    let at = overlay_text(&devtools, "Inspector");
+    click(&mut devtools, &mut app, at);
+    devtools.app.frame();
+    let save = app
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == smudge_core::semantics::Role::Button)
+        .expect("the app shows its button");
+    devtools.tools.select(Some(save.id));
+    devtools.inspect(&app, false);
+    let at = overlay_text(&devtools, "Copy as test");
+    click(&mut devtools, &mut app, at);
+    devtools.inspect(&app, false);
+    devtools.app.frame();
+
+    let dump = std::fs::read_to_string(devtools.copy_dir.join("panel-1.txt"))
+        .expect("the dump is written");
+    let png = std::fs::read(devtools.copy_dir.join("panel-1.png")).expect("the image is written");
+    let wrote = devtools
+        .app
+        .semantics_nodes()
+        .into_iter()
+        .filter_map(|node| node.value)
+        .any(|text| text.starts_with("Wrote ") && text.contains("panel-1.png"));
+    assert!(wrote, "the panel names the files");
+
+    let size = save.bounds;
+    let mut harness = smudge_test::Harness::new(size.width(), size.height(), 1.0, || {
+        smudge_widgets::button("Save")
+    });
+    harness.frame();
+    assert_eq!(harness.layout_dump(), dump);
+    assert!(harness.png() == png, "the image matches the harness's");
+    let _ = std::fs::remove_dir_all(&devtools.copy_dir);
+}

@@ -3138,6 +3138,7 @@ dependencies = [
  "smudge-cpu",
  "smudge-devtools",
  "smudge-gpu",
+ "smudge-test",
  "smudge-text",
  "smudge-widgets",
  "softbuffer",

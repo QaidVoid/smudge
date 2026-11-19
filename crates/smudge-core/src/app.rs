@@ -1317,6 +1317,19 @@ impl App {
         self.tree.node_at(position)
     }
 
+    /// Returns the display list the last frame drew, in logical pixels, for
+    /// the devtools to draw again elsewhere. See [`crate::inspect`].
+    #[cfg(feature = "devtools")]
+    pub fn display_list(&self) -> &DisplayList {
+        &self.list
+    }
+
+    /// Returns the color each frame clears the surface with.
+    #[cfg(feature = "devtools")]
+    pub fn clear_color(&self) -> Color {
+        self.config.clear_color
+    }
+
     /// Returns a copy of what the inspector shows of `id`, or `None` when
     /// the node is gone. See [`crate::inspect`].
     #[cfg(feature = "devtools")]

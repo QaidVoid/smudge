@@ -11,7 +11,7 @@ use smudge_core::style::px;
 use smudge_core::theme::{ColorToken, ColorValue};
 use smudge_core::widget::Panel;
 use smudge_text::label;
-use smudge_widgets::{button, column, scroll, virtual_list};
+use smudge_widgets::{button, column, row, scroll, virtual_list};
 
 use crate::Tools;
 
@@ -45,6 +45,10 @@ pub(crate) fn inspector(tools: &Tools) -> Element<Panel> {
     )
     .height(px(TREE));
 
+    let (copy, copied) = (tools.copy.clone(), tools.copied.clone());
+    let copy = button("Copy as test").on_press(move || copy.set(true));
+    let copied = label(move || copied.get().unwrap_or_default());
+
     let details = tools.details.clone();
     let text = label(move || {
         details.with(|details| {
@@ -59,7 +63,16 @@ pub(crate) fn inspector(tools: &Tools) -> Element<Panel> {
             width: 0.0,
             height: 6.0,
         })
-        .child(pick)
+        .child(
+            row()
+                .gap(smudge_core::geometry::Size {
+                    width: 6.0,
+                    height: 0.0,
+                })
+                .child(pick)
+                .child(copy),
+        )
+        .child(copied)
         .child(tree)
         .child(scroll(text).height(px(DETAILS)))
 }

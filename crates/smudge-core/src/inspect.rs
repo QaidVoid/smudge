@@ -40,7 +40,7 @@ use crate::tree::{Dirty, WidgetId};
 
 /// One node of the tree, as [`App::visit_tree`](crate::app::App::visit_tree)
 /// reports it.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TreeEntry {
     /// The node.
     pub id: WidgetId,
@@ -48,6 +48,9 @@ pub struct TreeEntry {
     pub depth: usize,
     /// The full name of the node's widget type.
     pub type_name: &'static str,
+    /// The node's rectangle from the last layout pass, in logical pixels in
+    /// window coordinates.
+    pub rect: Rect,
     /// Whether the node, or one of its ancestors, is hidden, so it is laid
     /// out as empty and paints nothing.
     pub hidden: bool,

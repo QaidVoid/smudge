@@ -43,6 +43,7 @@ impl WidgetTree {
             id,
             depth,
             type_name: node.widget.type_name(),
+            rect: node.rect,
             hidden,
         });
         for &child in &node.children {

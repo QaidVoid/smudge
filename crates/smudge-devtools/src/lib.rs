@@ -78,6 +78,10 @@ pub struct Tools {
     /// The boxes the overlay highlights: the node under the pointer while
     /// picking, and the selected node otherwise.
     highlight: RwSignal<Option<BoxModel>>,
+    /// Whether "Copy as test" was pressed and the window has not copied yet.
+    copy: RwSignal<bool>,
+    /// What the last copy wrote, or why it failed.
+    copied: RwSignal<Option<String>>,
 }
 
 /// The devtools' switches, which the panel's buttons turn on and off and the
@@ -121,6 +125,8 @@ impl Tools {
             selected: RwSignal::new(None),
             details: RwSignal::new(None),
             highlight: RwSignal::new(None),
+            copy: RwSignal::new(false),
+            copied: RwSignal::new(None),
         }
     }
 
@@ -209,6 +215,23 @@ impl Tools {
     /// selected or it is gone.
     pub fn show_details(&self, details: Option<NodeDetails>) {
         self.details.set(details.map(Rc::new));
+    }
+
+    /// Returns whether "Copy as test" was pressed since the last call, and
+    /// clears the request, so the window copies the selected node's subtree
+    /// once.
+    pub fn take_copy_request(&self) -> bool {
+        let requested = self.copy.get();
+        if requested {
+            self.copy.set(false);
+        }
+        requested
+    }
+
+    /// Takes `message`, which says what the last copy wrote or why it
+    /// failed, for the inspector to show.
+    pub fn show_copied(&self, message: String) {
+        self.copied.set(Some(message));
     }
 
     /// Takes the boxes the overlay highlights, or `None` for none.

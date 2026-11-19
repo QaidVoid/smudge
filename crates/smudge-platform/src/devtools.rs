@@ -12,13 +12,18 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use smudge_core::app::{App, AppConfig, RepaintMode};
+use smudge_core::app::{App, AppConfig, FrameOutput, RepaintMode};
 use smudge_core::geometry::{Color, PixelRect, Point, Rect, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::inspect::{BoxModel, NodeDetails, TreeEntry};
+use smudge_core::paint::{DisplayItem, DisplayList};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::theme::Theme;
 use smudge_core::window::Cursor;
+use smudge_cpu::CpuRenderer;
+
+use std::fmt::Write;
+use std::path::PathBuf;
 
 use web_time::Instant;
 
@@ -79,6 +84,8 @@ pub(crate) struct Devtools {
     details: Option<NodeDetails>,
     /// The boxes last handed to the overlay to highlight.
     highlighted: Option<BoxModel>,
+    /// The directory "Copy as test" writes into.
+    pub(crate) copy_dir: PathBuf,
     /// What the panel shows, which the window feeds.
     tools: smudge_devtools::Tools,
     /// Whether a wake of the overlay requests no redraw, because the window
@@ -163,6 +170,7 @@ impl Devtools {
             found_entries: Vec::new(),
             details: None,
             highlighted: None,
+            copy_dir: PathBuf::from("target").join("smudge-devtools"),
             tools,
             quiet: Rc::new(Cell::new(false)),
             open,
@@ -395,6 +403,13 @@ impl Devtools {
             self.details.clone_from(&details);
             self.tools.show_details(details);
         }
+        if self.tools.take_copy_request() {
+            let message = match self.copy_test(app) {
+                Ok((dump, png)) => format!("Wrote {} and {}", dump.display(), png.display()),
+                Err(error) => format!("Could not copy: {error}"),
+            };
+            self.tools.show_copied(message);
+        }
         if !self.tools.is_picking() {
             let boxes = self.details.as_ref().map(|details| details.boxes);
             if boxes != self.highlighted {
@@ -403,6 +418,105 @@ impl Devtools {
             }
         }
         self.quiet.set(false);
+    }
+
+    /// Writes the selected node's subtree as a test's expectations, into
+    /// [`Devtools::copy_dir`], and returns the two files it wrote.
+    ///
+    /// The text file holds the subtree in the format of `smudge-test`'s
+    /// `layout_dump`, with the rectangles measured from the node's top left
+    /// corner, and the image is the node's rectangle drawn at a scale of 1.
+    /// A harness at a scale of 1, as large as the node and built from the
+    /// same element, dumps the same text and draws the same image.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no node is selected, and when the directory or
+    /// a file cannot be written.
+    fn copy_test(&self, app: &App) -> std::io::Result<(PathBuf, PathBuf)> {
+        let details = self
+            .details
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("select a node first"))?;
+        let start = self
+            .entries
+            .iter()
+            .position(|entry| entry.id == details.id)
+            .ok_or_else(|| std::io::Error::other("the node is gone"))?;
+        let origin = details.boxes.border;
+        let depth = self.entries[start].depth;
+        let mut dump = String::new();
+        let subtree = std::iter::once(&self.entries[start]).chain(
+            self.entries[start + 1..]
+                .iter()
+                .take_while(|entry| entry.depth > depth),
+        );
+        for entry in subtree.filter(|entry| !entry.hidden) {
+            let name = short_name(entry.type_name);
+            let rect = entry.rect;
+            let _ = writeln!(
+                dump,
+                "{:indent$}{name} [{}, {}, {}, {}]",
+                "",
+                rect.x0 - origin.x0,
+                rect.y0 - origin.y0,
+                rect.x1 - origin.x0,
+                rect.y1 - origin.y0,
+                indent = (entry.depth - depth) * 2
+            );
+        }
+
+        let mut list = DisplayList::new();
+        list.push_offset(Point {
+            x: -origin.x0,
+            y: -origin.y0,
+        });
+        for item in app.display_list().items() {
+            match item {
+                DisplayItem::Op(op) => list.push_op(op.clone()),
+                DisplayItem::PushClip(rect) => list.push_clip(*rect),
+                DisplayItem::PopClip => list.pop_clip(),
+                DisplayItem::PushOffset(offset) => list.push_offset(*offset),
+                DisplayItem::PopOffset => list.pop_offset(),
+                DisplayItem::PushGroup(opacity) => list.push_group(*opacity),
+                DisplayItem::PopGroup => list.pop_group(),
+                _ => {}
+            }
+        }
+        list.pop_offset();
+        list.finish();
+        let (width, height) = (
+            (origin.width().ceil() as u32).max(1),
+            (origin.height().ceil() as u32).max(1),
+        );
+        let mut renderer = CpuRenderer::new(width, height);
+        renderer.render(&FrameOutput {
+            list: &list,
+            damage: &[PixelRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            }],
+            full: true,
+            clear_color: app.clear_color(),
+            scale: 1.0,
+        });
+
+        std::fs::create_dir_all(&self.copy_dir)?;
+        let name = short_name(details.type_name).to_lowercase();
+        let (dump_path, png_path) = (1..)
+            .map(|index| {
+                (
+                    self.copy_dir.join(format!("{name}-{index}.txt")),
+                    self.copy_dir.join(format!("{name}-{index}.png")),
+                )
+            })
+            .find(|(dump, png)| !dump.exists() && !png.exists())
+            .expect("an unused name is always found");
+        std::fs::write(&dump_path, dump)?;
+        std::fs::write(&png_path, renderer.encode_png())?;
+        Ok((dump_path, png_path))
     }
 
     /// Returns whether flashes are still fading, so the window keeps
@@ -667,3 +781,9 @@ impl Shortcut {
 #[cfg(test)]
 #[path = "devtools_tests.rs"]
 mod tests;
+
+/// Returns the name of a widget type without its path or generic arguments.
+fn short_name(type_name: &str) -> &str {
+    let path = type_name.split('<').next().unwrap_or(type_name);
+    path.rsplit("::").next().unwrap_or(path)
+}
