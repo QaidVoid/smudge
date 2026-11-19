@@ -1607,3 +1607,55 @@ fn a_range_of_right_to_left_text_is_boxed_where_it_paints() {
         "the first two letters fill the right two thirds of the run, at the app scale"
     );
 }
+
+#[test]
+fn a_scroll_sends_the_new_bounds_of_what_it_moves() {
+    use smudge_widgets::ScrollExt;
+    let offset = RwSignal::new(0.0f32);
+    let scrolled = offset.clone();
+    let mut app = app_with(move || {
+        let rows = (0..10).fold(Element::new(Panel).column(), |rows, _| {
+            rows.child(
+                Element::new(Panel)
+                    .role(Role::Button)
+                    .height(px(20.0))
+                    .shrink(0.0),
+            )
+        });
+        Element::new(Panel).role(Role::Group).child(
+            smudge_widgets::scroll(rows)
+                .height(px(60.0))
+                .offset(scrolled),
+        )
+    });
+    for _ in 0..3 {
+        app.frame();
+    }
+    let mut projection = Projection::new("Smudge");
+    let before = update_after_frame(&mut app, &mut projection, true);
+    let tops = |update: &accesskit::TreeUpdate| -> BTreeMap<NodeId, f64> {
+        update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == AccessKitRole::Button)
+            .filter_map(|(id, node)| node.bounds().map(|bounds| (*id, bounds.y0)))
+            .collect()
+    };
+    let before = tops(&before);
+
+    offset.set(30.0);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let after = tops(&update);
+    assert_eq!(
+        after.keys().collect::<Vec<_>>(),
+        before.keys().collect::<Vec<_>>(),
+        "the scroll sends every row it moved"
+    );
+    for (id, top) in &after {
+        assert_eq!(
+            before.get(id).map(|before| before - top),
+            Some(60.0),
+            "each row moves up by the scroll, at the app scale"
+        );
+    }
+}

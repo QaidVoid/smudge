@@ -576,7 +576,8 @@ impl WidgetTree {
         };
 
         let node = self.nodes.get_mut(id).expect("the id is a live node");
-        let changed = node.rect != rect || node.content != content || node.clip != clip;
+        let moved = node.rect != rect || node.content != content;
+        let changed = moved || node.clip != clip;
         let repaint = node.paint_rect != paint_rect
             || node.paint_content != paint_content
             || node.clip.is_empty() != clip.is_empty();
@@ -611,6 +612,10 @@ impl WidgetTree {
         );
         if repaint {
             self.mark(id, Dirty::Paint);
+        } else if moved && Self::effective_role(&self.nodes[id]).is_some() {
+            // A scroll moves a node without repainting it, and a screen
+            // reader still needs its bounds where it now is.
+            self.push_a11y(id);
         }
 
         let mut subtree_changed = changed;
