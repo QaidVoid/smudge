@@ -3,7 +3,9 @@
 //! pixels its last frame repainted, and the outlines of its nodes.
 
 use smudge_core::geometry::{Color, Corners, Rect};
-use smudge_core::inspect::BoxModel;
+use std::rc::Rc;
+
+use smudge_core::inspect::{BoxModel, FocusInfo, PointerInfo};
 use smudge_core::paint::PaintOp;
 use smudge_core::widget::{PaintCx, Widget};
 
@@ -34,6 +36,31 @@ const BOXES: [Color; 4] = [
     Color::rgba(111, 168, 220, 140),
 ];
 
+/// The color of the tab stops and of the focused node.
+const FOCUS: Color = Color::rgb(80, 160, 255);
+
+/// The color of the focus trap that holds the keyboard.
+const TRAP: Color = Color::rgb(190, 110, 255);
+
+/// The color of the nodes that take a press.
+const PRESSABLE: Color = Color::rgb(90, 200, 120);
+
+/// The color of the hovered node and its ancestors.
+const HOVERED: Color = Color::rgb(80, 160, 255);
+
+/// The fill of the node a held press began on.
+const PRESSED: Color = Color::rgba(255, 80, 80, 90);
+
+/// Pushes a stroke of `width` around `rect` in `color`.
+fn stroke(out: &mut Vec<PaintOp>, rect: Rect, width: f32, color: Color) {
+    out.push(PaintOp::StrokeRect {
+        rect,
+        radius: Corners::all(0.0),
+        width,
+        color,
+    });
+}
+
 /// The widget at the overlay's root, which paints the marks under the panel.
 #[derive(Default)]
 pub(crate) struct Marks {
@@ -45,6 +72,10 @@ pub(crate) struct Marks {
     pub(crate) bounds: Vec<(usize, Rect)>,
     /// The boxes of the node the inspector highlights.
     pub(crate) highlight: Option<BoxModel>,
+    /// Where the app's focus is, while the focus overlay is on.
+    pub(crate) focus: Option<Rc<FocusInfo>>,
+    /// What the app's pointer reaches, while the hit testing overlay is on.
+    pub(crate) pointer: Option<Rc<PointerInfo>>,
     /// The rectangles the app's last frame repainted, in logical pixels,
     /// while the damage tint is on.
     pub(crate) damage: Vec<Rect>,
@@ -85,6 +116,34 @@ impl Widget for Marks {
                     rect,
                     radius: Corners::all(0.0),
                     color,
+                });
+            }
+        }
+        if let Some(focus) = &self.focus {
+            for &(_, rect) in &focus.order {
+                stroke(out, rect, 1.0, FOCUS);
+            }
+            if let Some(trap) = focus.trap {
+                stroke(out, trap, 2.0, TRAP);
+            }
+            if let Some(focused) = focus.focused
+                && let Some(&(_, rect)) = focus.order.iter().find(|(id, _)| *id == focused)
+            {
+                stroke(out, rect, 3.0, FOCUS);
+            }
+        }
+        if let Some(pointer) = &self.pointer {
+            for &rect in &pointer.pressable {
+                stroke(out, rect, 1.0, PRESSABLE);
+            }
+            for &rect in &pointer.hovered {
+                stroke(out, rect, 2.0, HOVERED);
+            }
+            if let Some(rect) = pointer.pressed {
+                out.push(PaintOp::FillRect {
+                    rect,
+                    radius: Corners::all(0.0),
+                    color: PRESSED,
                 });
             }
         }

@@ -18,11 +18,12 @@ fn overlay() -> Harness {
     harness
 }
 
-/// The rectangle of the panel, the root's one child.
+/// The rectangle of the panel, the root's last child, after the tab order
+/// numbers.
 fn panel_rect(harness: &mut Harness) -> Rect {
     let mut found = None;
     harness.app().visit_nodes(|depth, _, rect| {
-        if depth == 1 && found.is_none() {
+        if depth == 1 {
             found = Some(rect);
         }
     });

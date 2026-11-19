@@ -1228,3 +1228,87 @@ fn the_reactive_tab_counts_runs_a_second_where_each_effect_was_created() {
     );
     assert!(text.contains("Owners: "), "{text}");
 }
+
+#[test]
+fn the_focus_overlay_numbers_tab_stops_and_the_access_tab_warns() {
+    TextSystem::bundled_only().install();
+    let pressed = Rc::new(Cell::new(0u32));
+    let counted = Rc::clone(&pressed);
+    let mut app = App::new(
+        AppConfig {
+            viewport: VIEWPORT,
+            scale: 1.0,
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Damage,
+        },
+        move || {
+            smudge_widgets::column()
+                .padding_xy(Size {
+                    width: 360.0,
+                    height: 100.0,
+                })
+                .child(
+                    Element::new(Panel)
+                        .width(px(40.0))
+                        .height(px(40.0))
+                        .role(smudge_core::semantics::Role::Button)
+                        .focusable()
+                        .on_press(move || counted.set(counted.get() + 1)),
+                )
+                .child(smudge_widgets::button("Save"))
+        },
+    );
+    app.frame();
+    let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
+    devtools.app.frame();
+    let mut switches = devtools.tools.switches();
+    switches.focus = true;
+    devtools.tools.set_switches(switches);
+    devtools.observe(&app, false);
+    devtools.app.frame();
+    let badge = |devtools: &Devtools, text: &str| {
+        devtools
+            .app
+            .semantics_nodes()
+            .into_iter()
+            .find(|node| node.value.as_deref() == Some(text))
+            .map(|node| node.bounds)
+    };
+    let first = badge(&devtools, "1").expect("the first tab stop is numbered");
+    assert_eq!((first.x0, first.y0), (360.0, 100.0), "at the icon button");
+    assert!(
+        badge(&devtools, "2").is_some(),
+        "the Save button is the second"
+    );
+
+    let on_badge = Point {
+        x: first.x0 + 2.0,
+        y: first.y0 + 2.0,
+    };
+    click(&mut devtools, &mut app, on_badge);
+    assert_eq!(
+        pressed.get(),
+        1,
+        "a badge lets the press through to the app"
+    );
+
+    let at = overlay_text(&devtools, "Access");
+    click(&mut devtools, &mut app, at);
+    devtools.app.frame();
+    devtools.observe(&app, false);
+    devtools.app.frame();
+    let text = devtools
+        .app
+        .semantics_nodes()
+        .into_iter()
+        .filter_map(|node| node.value)
+        .find(|text| text.starts_with("Warnings: "))
+        .expect("the access tab shows its text");
+    assert!(
+        text.starts_with(
+            "Warnings: 1\n  the node at 360, 100 40x40 takes the focus but has no name"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("Button \"Save\""), "{text}");
+}

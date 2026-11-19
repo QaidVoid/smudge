@@ -5,6 +5,7 @@
 //! shows, so the app keeps working underneath and its own frames, numbers
 //! and pixels stay its own.
 
+mod access;
 mod inspector;
 mod marks;
 mod reactive;
@@ -17,11 +18,14 @@ use marks::Marks;
 pub use timeline::FrameRecord;
 use timeline::{HEIGHT, Timeline, TimelineView};
 
-use smudge_core::element::{AnyElement, Element, IntoElement, show};
+use smudge_core::element::{AnyElement, Element, IntoElement, Slot, for_each, show};
 use smudge_core::geometry::{Point, Rect, Size};
 use smudge_core::input::{Drag, Handled};
-use smudge_core::inspect::{BoxModel, CycleInfo, NodeDetails, OwnerEntry, TreeEntry};
+use smudge_core::inspect::{
+    A11yWarning, BoxModel, CycleInfo, FocusInfo, NodeDetails, OwnerEntry, PointerInfo, TreeEntry,
+};
 use smudge_core::reactive::{RwSignal, prelude::*};
+use smudge_core::semantics::SemanticsNode;
 use smudge_core::style::{Edges, Length, Overflow, pct, px};
 use smudge_core::theme::ColorToken;
 use smudge_core::tree::{Dirty, WidgetId};
@@ -70,6 +74,13 @@ pub struct Tools {
     tab: RwSignal<Tab>,
     /// What the reactive tab shows, as text.
     reactive: RwSignal<String>,
+    /// What the accessibility tab shows, as text.
+    access: RwSignal<String>,
+    /// Where the app's focus is and where Tab takes it, while the focus
+    /// overlay is on.
+    focus: RwSignal<Option<Rc<FocusInfo>>>,
+    /// What the app's pointer reaches, while the hit testing overlay is on.
+    pointer: RwSignal<Option<Rc<PointerInfo>>>,
     /// Whether pick mode is on, so the pointer picks a node of the app.
     picking: RwSignal<bool>,
     /// Every node of the app's tree, hidden ones included.
@@ -105,6 +116,14 @@ pub struct Switches {
     /// Whether the app repaints its whole surface on every frame, instead of
     /// only what changed.
     pub full_repaint: bool,
+    /// Whether the overlay shows where the keyboard focus is: the focused
+    /// node, the trap that holds the keyboard, and every node Tab visits
+    /// with its number in the tab order.
+    pub focus: bool,
+    /// Whether the overlay shows what the pointer reaches: the hovered node
+    /// and its ancestors, the node a held press began on, and every node
+    /// that takes a press.
+    pub hit_testing: bool,
 }
 
 impl Default for Tools {
@@ -124,6 +143,9 @@ impl Tools {
             bounds: RwSignal::new(Rc::new(Vec::new())),
             tab: RwSignal::new(Tab::Frames),
             reactive: RwSignal::new(String::new()),
+            access: RwSignal::new(String::new()),
+            focus: RwSignal::new(None),
+            pointer: RwSignal::new(None),
             picking: RwSignal::new(false),
             tree: RwSignal::new(Rc::new(Vec::new())),
             selected: RwSignal::new(None),
@@ -156,6 +178,12 @@ impl Tools {
         if !switches.layout_bounds && self.bounds.with(|bounds| !bounds.is_empty()) {
             self.show_bounds([]);
         }
+        if !switches.focus && self.focus.with(Option::is_some) {
+            self.show_focus(None);
+        }
+        if !switches.hit_testing && self.pointer.with(Option::is_some) {
+            self.show_pointer(None);
+        }
     }
 
     /// Drops the rectangles the damage tint, paint flashing and layout
@@ -174,6 +202,12 @@ impl Tools {
         if self.highlight.with(Option::is_some) {
             self.show_highlight(None);
         }
+        if self.focus.with(Option::is_some) {
+            self.show_focus(None);
+        }
+        if self.pointer.with(Option::is_some) {
+            self.show_pointer(None);
+        }
         if self.picking.get() {
             self.picking.set(false);
         }
@@ -183,6 +217,31 @@ impl Tools {
     /// app's tree and the selected node's details.
     pub fn is_inspecting(&self) -> bool {
         self.tab.get() == Tab::Inspector
+    }
+
+    /// Returns whether the accessibility tab shows, so the window hands it
+    /// the app's accessibility tree and warnings.
+    pub fn is_auditing(&self) -> bool {
+        self.tab.get() == Tab::Access
+    }
+
+    /// Takes `nodes`, the app's accessibility tree in paint order, and
+    /// `warnings`, the nodes assistive technology cannot describe well, for
+    /// the accessibility tab.
+    pub fn show_access(&self, nodes: &[SemanticsNode], warnings: &[A11yWarning]) {
+        self.access.set(access::describe(nodes, warnings));
+    }
+
+    /// Takes where the app's focus is, or `None` when the focus overlay is
+    /// off.
+    pub fn show_focus(&self, focus: Option<FocusInfo>) {
+        self.focus.set(focus.map(Rc::new));
+    }
+
+    /// Takes what the app's pointer reaches, or `None` when the hit testing
+    /// overlay is off.
+    pub fn show_pointer(&self, pointer: Option<PointerInfo>) {
+        self.pointer.set(pointer.map(Rc::new));
     }
 
     /// Returns whether the reactive tab shows, so the window hands it the
@@ -387,7 +446,25 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
     let (flashing, flashes) = (tools.switches.clone(), tools.flashes.clone());
     let (outlining, bounds) = (tools.switches.clone(), tools.bounds.clone());
     let highlight = tools.highlight.clone();
+    let (focus, pointer) = (tools.focus.clone(), tools.pointer.clone());
+    let badges = tools.focus.clone();
     Element::new(Marks::default())
+        .bind(
+            Focused,
+            move || focus.get(),
+            |marks, focus| {
+                marks.focus = focus;
+                Dirty::Paint
+            },
+        )
+        .bind(
+            Pointed,
+            move || pointer.get(),
+            |marks, pointer| {
+                marks.pointer = pointer;
+                Dirty::Paint
+            },
+        )
         .bind(
             Highlighted,
             move || highlight.get(),
@@ -446,6 +523,7 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
                 Handled::No
             }
         })
+        .child(tab_order(badges))
         .child(window)
         .into_any()
 }
@@ -464,6 +542,49 @@ struct Outlined;
 /// The marker of the boxes the root highlights, which [`Element::bind`]
 /// keys on.
 struct Highlighted;
+
+/// The marker of the focus the root marks, which [`Element::bind`] keys on.
+struct Focused;
+
+/// The marker of the pointer state the root marks, which [`Element::bind`]
+/// keys on.
+struct Pointed;
+
+/// Builds the tab order numbers: a small badge at the top left corner of
+/// every node Tab visits, while the focus overlay is on. They sit under the
+/// panel and take no pointer input.
+fn tab_order(focus: RwSignal<Option<Rc<FocusInfo>>>) -> Element<Slot> {
+    let listed = focus.clone();
+    for_each(
+        move || {
+            listed.with(|focus| (0..focus.as_ref().map_or(0, |focus| focus.order.len())).collect())
+        },
+        |index: &usize| *index,
+        move |index| {
+            let place = focus.clone();
+            label(format!("{}", index + 1))
+                .absolute()
+                .inset(move || {
+                    let at = place.with(|focus| {
+                        focus
+                            .as_ref()
+                            .and_then(|focus| focus.order.get(index))
+                            .map(|(_, rect)| (rect.x0, rect.y0))
+                    });
+                    let (x, y) = at.unwrap_or_default();
+                    Edges {
+                        left: px(x),
+                        top: px(y),
+                        right: Length::Auto,
+                        bottom: Length::Auto,
+                    }
+                })
+                .padding(px(1.0))
+                .background(ColorToken::ACCENT)
+                .text_color(ColorToken::ACCENT_TEXT)
+        },
+    )
+}
 
 /// Returns `at` moved as little as it takes for a panel there to stay inside
 /// a window of `viewport`: its left and top edges in the window, its right
@@ -510,11 +631,13 @@ fn body(tools: &Tools) -> Element<Panel> {
                 })
                 .child(tab("Frames", Tab::Frames))
                 .child(tab("Inspector", Tab::Inspector))
-                .child(tab("Reactive", Tab::Reactive)),
+                .child(tab("Reactive", Tab::Reactive))
+                .child(tab("Access", Tab::Access)),
         )
         .child(shown(Tab::Frames, frames_tab))
         .child(shown(Tab::Inspector, inspector::inspector))
         .child(shown(Tab::Reactive, reactive::reactive_tab))
+        .child(shown(Tab::Access, access::access_tab))
 }
 
 /// The tabs of the panel.
@@ -526,6 +649,8 @@ enum Tab {
     Inspector,
     /// The busiest effects, the cycles and the owner tree.
     Reactive,
+    /// The accessibility tree and its warnings.
+    Access,
 }
 
 /// Builds the frames tab: the timeline, the switches, and a line that
@@ -576,6 +701,10 @@ fn frames_tab(tools: &Tools) -> Element<Panel> {
                 }))
                 .child(switch(tools, "Layout bounds", |switches| {
                     &mut switches.layout_bounds
+                }))
+                .child(switch(tools, "Focus", |switches| &mut switches.focus))
+                .child(switch(tools, "Hit testing", |switches| {
+                    &mut switches.hit_testing
                 }))
                 .child(switch(tools, "Full repaint", |switches| {
                     &mut switches.full_repaint

@@ -15,9 +15,10 @@ use std::time::Duration;
 use smudge_core::app::{App, AppConfig, FrameOutput, RepaintMode};
 use smudge_core::geometry::{Color, PixelRect, Point, Rect, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
-use smudge_core::inspect::{BoxModel, NodeDetails, TreeEntry};
+use smudge_core::inspect::{A11yWarning, BoxModel, FocusInfo, NodeDetails, PointerInfo, TreeEntry};
 use smudge_core::paint::{DisplayItem, DisplayList};
 use smudge_core::reactive::{RwSignal, prelude::*};
+use smudge_core::semantics::SemanticsNode;
 use smudge_core::theme::Theme;
 use smudge_core::window::Cursor;
 use smudge_cpu::CpuRenderer;
@@ -97,6 +98,12 @@ pub(crate) struct Devtools {
     highlighted: Option<BoxModel>,
     /// The directory "Copy as test" writes into.
     pub(crate) copy_dir: PathBuf,
+    /// The focus state last handed to the overlay.
+    focus_shown: Option<FocusInfo>,
+    /// The pointer state last handed to the overlay.
+    pointer_shown: Option<PointerInfo>,
+    /// The accessibility tree and warnings last handed to the tab.
+    access_shown: Option<(Vec<SemanticsNode>, Vec<A11yWarning>)>,
     /// When the reactive tab last sampled the app's effects, and how many
     /// times the effects created at each place had run by then.
     sampled: Option<(Instant, HashMap<Option<Site>, u64>)>,
@@ -185,6 +192,9 @@ impl Devtools {
             details: None,
             highlighted: None,
             copy_dir: PathBuf::from("target").join("smudge-devtools"),
+            focus_shown: None,
+            pointer_shown: None,
+            access_shown: None,
             sampled: None,
             tools,
             quiet: Rc::new(Cell::new(false)),
@@ -534,6 +544,37 @@ impl Devtools {
         Ok((dump_path, png_path))
     }
 
+    /// Hands the overlay the app's focus and pointer state while their
+    /// switches are on, and the accessibility tab the app's tree and
+    /// warnings while it shows, each only when it changed.
+    ///
+    /// Like [`Devtools::show_bounds`], it runs after every present, and with
+    /// `paced` its writes request no redraw.
+    pub(crate) fn observe(&mut self, app: &App, paced: bool) {
+        let switches = self.tools.switches();
+        self.quiet.set(paced);
+        let focus = switches.focus.then(|| app.focus_info());
+        if focus != self.focus_shown {
+            self.focus_shown.clone_from(&focus);
+            self.tools.show_focus(focus);
+        }
+        let pointer = switches.hit_testing.then(|| app.pointer_info());
+        if pointer != self.pointer_shown {
+            self.pointer_shown.clone_from(&pointer);
+            self.tools.show_pointer(pointer);
+        }
+        if self.tools.is_auditing() {
+            let access = (app.semantics_nodes(), app.accessibility_warnings());
+            if self.access_shown.as_ref() != Some(&access) {
+                self.tools.show_access(&access.0, &access.1);
+                self.access_shown = Some(access);
+            }
+        } else {
+            self.access_shown = None;
+        }
+        self.quiet.set(false);
+    }
+
     /// Hands the reactive tab the app's busiest effects, its cycles and its
     /// owner tree at `now`, while the tab shows, at most once a second.
     ///
@@ -712,6 +753,9 @@ impl Devtools {
             self.entries.clear();
             self.details = None;
             self.highlighted = None;
+            self.focus_shown = None;
+            self.pointer_shown = None;
+            self.access_shown = None;
         }
         self.open = open;
         self.captured = false;
@@ -769,11 +813,16 @@ impl Devtools {
     /// Returns whether `position` lies over the panel: on a node of the
     /// overlay below its root, which covers the window and takes nothing.
     fn over_panel(&self, position: Point) -> bool {
-        let mut over = false;
+        // The panel is the root's last child, and it clips what it holds, so
+        // its own rectangle is all it covers. The children before it, such
+        // as the tab order numbers, take no pointer input.
+        let mut panel = None;
         self.app.visit_nodes(|depth, _, rect| {
-            over |= depth > 0 && rect.contains(position);
+            if depth == 1 {
+                panel = Some(rect);
+            }
         });
-        over
+        panel.is_some_and(|panel| panel.contains(position))
     }
 }
 
