@@ -362,6 +362,8 @@ pub(crate) struct WidgetTree {
     now: Instant,
     /// Whether springs jump to their targets instead of moving.
     reduced_motion: bool,
+    /// Whether a node has ever mounted with a transition.
+    transitions_mounted: bool,
     /// The nodes whose springs were still moving at their last paint, which
     /// the next frame paints again.
     animating: Vec<WidgetId>,
@@ -403,6 +405,7 @@ impl WidgetTree {
             a11y_reset: false,
             now: Instant::now(),
             reduced_motion: false,
+            transitions_mounted: false,
             animating: Vec::new(),
             animating_taken: Vec::new(),
         }
@@ -793,7 +796,13 @@ impl WidgetTree {
     pub(crate) fn set_transition(&mut self, id: WidgetId, spring: Spring) {
         if let Some(node) = self.nodes.get_mut(id) {
             node.transition = Some(Box::new(Transition::new(spring)));
+            self.transitions_mounted = true;
         }
+    }
+
+    /// Whether a node has ever mounted with a transition.
+    pub(crate) fn transitions_mounted(&self) -> bool {
+        self.transitions_mounted
     }
 
     /// Sets the time the next paint pass moves springs to.

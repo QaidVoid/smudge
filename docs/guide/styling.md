@@ -106,7 +106,7 @@ let row_item = panel()
 
 `Spring::SNAPPY` suits state changes, `Spring::SMOOTH` arrives without overshooting, and `Spring::BOUNCY` swings past its value and back. A `Spring` of your own sets its stiffness, damping and mass. Colors move in linear sRGB, and a color that appears or goes away fades through its alpha. A new value that arrives mid-motion continues from where the motion is, at the speed it has, so a hover that ends halfway turns back without a jump. The node's first paint shows its values as they are.
 
-A moving node repaints alone, with no layout. The window keeps drawing frames while anything moves and goes idle once everything has arrived. `App::set_reduced_motion(true)` makes every new value show at once, for a user who asks for less motion. Layout properties never move.
+A moving node repaints alone, with no layout. The window keeps drawing frames while anything moves and goes idle once everything has arrived. When the system asks for reduced motion, every new value shows at once. The window reads that setting from the desktop's settings portal on Linux, and from the `prefers-reduced-motion` media query on the web, and follows its changes while the app runs. `App::set_reduced_motion` overrides it for your app. Layout properties never move.
 
 ## Styling children
 

@@ -70,6 +70,9 @@ pub(crate) enum PlatformEvent {
         ))
     ))]
     ColorSchemeChanged(smudge_core::theme::ColorScheme),
+    /// The system's reduced-motion setting changed, or the watcher learned
+    /// the one it holds: hand it to the app.
+    ReducedMotionChanged(bool),
 }
 
 #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
@@ -725,6 +728,8 @@ struct WindowState {
         ))
     ))]
     scheme_watcher_started: bool,
+    /// Whether the watcher of the system's reduced-motion setting runs.
+    motion_watcher_started: bool,
     /// How many frames to present before the window closes.
     frame_limit: Option<u64>,
     /// How many frames the window has presented.
@@ -887,6 +892,14 @@ where
         ))]
         let scheme_watcher_started = app.follows_color_scheme();
 
+        // Only an app with a transition reads the reduced-motion setting, so
+        // the watcher waits for one, as the scheme watcher waits for a
+        // follower.
+        let motion_watcher_started = app.has_transitions();
+        if motion_watcher_started {
+            watch_reduced_motion(&self.proxy);
+        }
+
         // The window system reports the theme itself on macOS and Windows,
         // so the scheme is read from the window whatever the app does with
         // it: an app that follows later still starts on the desktop's
@@ -963,6 +976,7 @@ where
                 ))
             ))]
             scheme_watcher_started,
+            motion_watcher_started,
             frame_limit: self.options.frame_limit,
             frames_presented: 0,
             frame_period,
@@ -1062,6 +1076,10 @@ where
             crate::color_scheme::start(move |scheme| {
                 let _ = proxy.send_event(PlatformEvent::ColorSchemeChanged(scheme));
             });
+        }
+        if !state.motion_watcher_started && state.app.has_transitions() {
+            state.motion_watcher_started = true;
+            watch_reduced_motion(&self.proxy);
         }
         if state.rendered
             && let Some(on_event) = &state.on_event
@@ -1280,6 +1298,11 @@ where
                     if state.app.needs_frame() {
                         state.window.request_redraw();
                     }
+                }
+            }
+            PlatformEvent::ReducedMotionChanged(reduced) => {
+                if let Some(state) = self.state.as_mut() {
+                    state.app.set_system_reduced_motion(reduced);
                 }
             }
         }
@@ -1801,6 +1824,71 @@ impl CpuPresenter {
             renderer: "cpu",
         }))
     }
+}
+
+/// Starts reporting the system's reduced-motion setting to the window, now
+/// and whenever it changes, through `proxy`.
+///
+/// On Linux and the other free desktops the settings portal holds it, and
+/// on the web the `prefers-reduced-motion` media query. Elsewhere nothing
+/// reports it yet, and the app keeps what it set itself.
+fn watch_reduced_motion(proxy: &winit::event_loop::EventLoopProxy<UserEvent>) {
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "redox",
+            target_family = "wasm",
+            target_os = "android",
+            target_os = "ios",
+            target_os = "macos"
+        ))
+    ))]
+    {
+        let proxy = proxy.clone();
+        crate::color_scheme::start_reduced_motion(move |reduced| {
+            let _ = proxy.send_event(PlatformEvent::ReducedMotionChanged(reduced));
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    watch_motion_query(proxy.clone());
+    #[cfg(not(any(
+        target_arch = "wasm32",
+        all(
+            unix,
+            not(any(
+                target_os = "redox",
+                target_family = "wasm",
+                target_os = "android",
+                target_os = "ios",
+                target_os = "macos"
+            ))
+        )
+    )))]
+    let _ = proxy;
+}
+
+/// Reports the page's `prefers-reduced-motion` media query through `proxy`,
+/// now and on every change.
+#[cfg(target_arch = "wasm32")]
+fn watch_motion_query(proxy: winit::event_loop::EventLoopProxy<UserEvent>) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(query)) = window.match_media("(prefers-reduced-motion: reduce)") else {
+        return;
+    };
+    let _ = proxy.send_event(PlatformEvent::ReducedMotionChanged(query.matches()));
+    let listener = Closure::<dyn Fn(web_sys::MediaQueryListEvent)>::new(
+        move |event: web_sys::MediaQueryListEvent| {
+            let _ = proxy.send_event(PlatformEvent::ReducedMotionChanged(event.matches()));
+        },
+    );
+    let _ = query.add_event_listener_with_callback("change", listener.as_ref().unchecked_ref());
+    // The listener lives as long as the page, which the window does too.
+    listener.forget();
 }
 
 /// The app's color scheme for the theme the window system reports.

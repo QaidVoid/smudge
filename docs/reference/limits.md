@@ -36,6 +36,7 @@
 - **Maximize under X11 depends on the window manager.** `toggle_maximize` and `maximized` use the standard X11 maximize request and state. A window manager that does not implement them, as some X11 bridges inside Wayland compositors do not, ignores the request, and `maximized` stays `false`. Running natively on Wayland avoids this.
 - **Wayland clipboard needs data-control or Xwayland.** On a compositor with neither, copy and paste stay inside the application.
 - **The color scheme follows the desktop on Linux, macOS and Windows.** An app that follows the system's light or dark preference reads the desktop's `color-scheme` setting through the settings portal on the session bus on Linux, and the theme the window system reports on macOS and Windows. A desktop that serves no portal, and the web, report nothing: the app keeps the light side it starts on until a report says otherwise.
+- **Reduced motion follows the system on Linux and the web.** The window reads the reduced-motion setting from the settings portal on the session bus on Linux, which xdg-desktop-portal serves from version 1.21, and from the `prefers-reduced-motion` media query on the web. macOS and Windows report nothing yet, so transitions move there unless the app calls `App::set_reduced_motion`.
 
 ## Hot reload
 

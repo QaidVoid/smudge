@@ -786,6 +786,16 @@ impl App {
             .unwrap_or(self.reduced_motion_system)
     }
 
+    /// Whether a node of the app has ever mounted with a
+    /// [`transition`](crate::element::Element::transition).
+    ///
+    /// The windowing layer watches the system's reduced-motion setting only
+    /// once it is true, so an app that never moves anything holds no
+    /// connection to the desktop for it.
+    pub fn has_transitions(&self) -> bool {
+        self.tree.transitions_mounted()
+    }
+
     /// Whether a spring is still moving, so the next frame has motion to
     /// paint.
     ///
