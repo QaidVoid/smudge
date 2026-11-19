@@ -33,3 +33,6 @@ subsecond = { version = "=0.7.10", default-features = false, optional = true }
 # Turned on by the same feature of the platform crate, which installs the
 # jump table the lookups here read. Linux only, like the receiver.
 hot-reload = ["dep:subsecond"]
+# What devtools read of the widget tree: the `inspect` module, and where
+# each element was created. Turned on by the devtools of the platform crate.
+devtools = []

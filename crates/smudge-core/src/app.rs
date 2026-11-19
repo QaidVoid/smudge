@@ -1302,6 +1302,28 @@ impl App {
         self.tree.visit_nodes(&mut visit);
     }
 
+    /// Calls `visit` with every node of the tree, hidden ones included,
+    /// parents before their children and children in paint order. See
+    /// [`crate::inspect`].
+    #[cfg(feature = "devtools")]
+    pub fn visit_tree(&self, mut visit: impl FnMut(crate::inspect::TreeEntry)) {
+        self.tree.visit_tree(&mut visit);
+    }
+
+    /// Returns the topmost node at `position`, in logical pixels, disabled
+    /// ones included, or `None` where no node is. See [`crate::inspect`].
+    #[cfg(feature = "devtools")]
+    pub fn node_at(&self, position: Point) -> Option<WidgetId> {
+        self.tree.node_at(position)
+    }
+
+    /// Returns a copy of what the inspector shows of `id`, or `None` when
+    /// the node is gone. See [`crate::inspect`].
+    #[cfg(feature = "devtools")]
+    pub fn node_details(&self, id: WidgetId) -> Option<crate::inspect::NodeDetails> {
+        self.tree.node_details(id)
+    }
+
     /// Projects every visible node that reports a role, in paint order.
     ///
     /// This is the tree an accessibility backend reads. A node is projected

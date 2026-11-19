@@ -1,0 +1,122 @@
+//! What devtools read of an app's widget tree: every node with its depth,
+//! the node under a point, and the details of one node.
+//!
+//! The module exists with the `devtools` feature only. The tree stays
+//! private: these are copies taken when asked, so reading them never changes
+//! the app.
+//!
+//! ```
+//! use smudge_core::app::{App, AppConfig, RepaintMode};
+//! use smudge_core::geometry::{Color, Point, Size};
+//! use smudge_core::style::px;
+//! use smudge_core::widget::panel;
+//!
+//! let mut app = App::new(
+//!     AppConfig {
+//!         viewport: Size {
+//!             width: 100.0,
+//!             height: 50.0,
+//!         },
+//!         scale: 1.0,
+//!         clear_color: Color::WHITE,
+//!         repaint: RepaintMode::Damage,
+//!     },
+//!     || panel().child(panel().width(px(10.0)).height(px(10.0))),
+//! );
+//! app.frame();
+//!
+//! let picked = app.node_at(Point { x: 5.0, y: 5.0 }).expect("a node is there");
+//! let details = app.node_details(picked).expect("the node is live");
+//! assert_eq!(details.boxes.border.width(), 10.0);
+//! assert!(details.created_at.is_some());
+//! ```
+
+use std::panic::Location;
+
+use crate::geometry::Rect;
+use crate::semantics::SemanticsNode;
+use crate::style::Style;
+use crate::tree::{Dirty, WidgetId};
+
+/// One node of the tree, as [`App::visit_tree`](crate::app::App::visit_tree)
+/// reports it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TreeEntry {
+    /// The node.
+    pub id: WidgetId,
+    /// How deep the node sits, with the root at zero.
+    pub depth: usize,
+    /// The full name of the node's widget type.
+    pub type_name: &'static str,
+    /// Whether the node, or one of its ancestors, is hidden, so it is laid
+    /// out as empty and paints nothing.
+    pub hidden: bool,
+}
+
+/// The interaction states a node is in, which decide the style variants
+/// that apply to it.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct States {
+    /// Whether the pointer is over the node or one of its descendants.
+    pub hovered: bool,
+    /// Whether a press that began on the node is held.
+    pub pressed: bool,
+    /// Whether the node holds the keyboard focus.
+    pub focused: bool,
+    /// Whether the node is disabled.
+    pub disabled: bool,
+}
+
+/// A node's four boxes from the last layout pass, in logical pixels in
+/// window coordinates, from the outside in.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct BoxModel {
+    /// The node's rectangle grown by its margin.
+    pub margin: Rect,
+    /// The node's rectangle, the outer edge of its border.
+    pub border: Rect,
+    /// The node's rectangle inside its border, the outer edge of its
+    /// padding.
+    pub padding: Rect,
+    /// The node's rectangle inside its border and padding, where its
+    /// content goes.
+    pub content: Rect,
+}
+
+/// What the inspector shows of one node, copied when asked.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct NodeDetails {
+    /// The node.
+    pub id: WidgetId,
+    /// The full name of the node's widget type.
+    pub type_name: &'static str,
+    /// Where the element of the node was created: the call of
+    /// [`Element::new`](crate::element::Element::new), or of the first
+    /// widget constructor on the way to it that does not pass its caller
+    /// on. `None` for a node that was not built from an element.
+    pub created_at: Option<&'static Location<'static>>,
+    /// The style the element's builders and bindings wrote.
+    pub base: Style,
+    /// The style layout and paint read: the base style with the variants of
+    /// the active states applied.
+    pub resolved: Style,
+    /// The interaction states the node is in.
+    pub states: States,
+    /// How much of the node is out of date.
+    pub dirty: Dirty,
+    /// The node's boxes from the last layout pass.
+    pub boxes: BoxModel,
+    /// The window rectangle the node's last paint covered, before clipping,
+    /// or `None` when it has not painted.
+    pub painted: Option<Rect>,
+    /// How many paint operations the node's last paint produced.
+    pub ops: usize,
+    /// The node as the accessibility projection shows it, or `None` when it
+    /// is not projected.
+    pub semantics: Option<SemanticsNode>,
+    /// Whether the node, or one of its ancestors, is hidden.
+    pub hidden: bool,
+}

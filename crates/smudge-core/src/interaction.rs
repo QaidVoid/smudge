@@ -650,7 +650,7 @@ impl WidgetTree {
     /// even when the point is outside the node's own rectangle, because a
     /// child of a node that does not clip its children reaches past them.
     /// Otherwise a disabled node is not hit, but its children still are.
-    fn hit(&self, id: WidgetId, position: Point, disabled: bool) -> Option<WidgetId> {
+    pub(super) fn hit(&self, id: WidgetId, position: Point, disabled: bool) -> Option<WidgetId> {
         let node = self.nodes.get(id)?;
         if node.withdrawn() || !node.clip.contains(position) {
             return None;

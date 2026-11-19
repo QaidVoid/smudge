@@ -37,6 +37,9 @@ pub(crate) mod interaction;
 mod layout;
 #[path = "paint_pass.rs"]
 mod paint_pass;
+#[cfg(feature = "devtools")]
+#[path = "tree_inspect.rs"]
+mod tree_inspect;
 
 use self::interaction::{Handlers, Interaction};
 
@@ -231,6 +234,9 @@ struct Node {
     /// The heading level the element's builders set, which overrides the
     /// level the widget reports.
     a11y_level: Option<usize>,
+    /// Where the node's element was created, for the devtools.
+    #[cfg(feature = "devtools")]
+    created_at: Option<&'static std::panic::Location<'static>>,
     /// The node's cached paint output, filled by the paint pass.
     ops: Vec<PaintOp>,
     /// The node's cached paint output that draws inside its border, clipped
@@ -555,6 +561,8 @@ impl WidgetTree {
             a11y_position: None,
             a11y_set_size: None,
             a11y_level: None,
+            #[cfg(feature = "devtools")]
+            created_at: None,
             ops: Vec::new(),
             inner_ops: Vec::new(),
             painted: None,

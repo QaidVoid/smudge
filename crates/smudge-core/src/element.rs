@@ -648,6 +648,9 @@ pub struct Element<W: Widget> {
     child_styling: Option<ChildStyling>,
     /// The children, in paint order.
     children: Vec<AnyElement>,
+    /// Where the element was created, for the devtools.
+    #[cfg(feature = "devtools")]
+    created_at: &'static std::panic::Location<'static>,
 }
 
 impl<W: Widget> Element<W> {
@@ -659,6 +662,11 @@ impl<W: Widget> Element<W> {
     ///
     /// let element = Element::new(Panel);
     /// ```
+    ///
+    /// With the `devtools` feature, the element records where it was
+    /// created, which is the caller of this function, or the caller of a
+    /// constructor that passes its own caller on.
+    #[cfg_attr(feature = "devtools", track_caller)]
     pub fn new(widget: W) -> Element<W> {
         Element {
             widget,
@@ -686,6 +694,8 @@ impl<W: Widget> Element<W> {
             scroll_offset: Point::default(),
             child_styling: None,
             children: Vec::new(),
+            #[cfg(feature = "devtools")]
+            created_at: std::panic::Location::caller(),
         }
     }
 
@@ -2264,6 +2274,9 @@ pub struct AnyElement {
     scroll_offset: Point,
     /// The children, in paint order.
     children: Vec<AnyElement>,
+    /// Where the element was created, for the devtools.
+    #[cfg(feature = "devtools")]
+    created_at: &'static std::panic::Location<'static>,
 }
 
 impl AnyElement {
@@ -2294,6 +2307,8 @@ impl AnyElement {
             a11y_level: element.a11y_level,
             scroll_offset: element.scroll_offset,
             children: element.children,
+            #[cfg(feature = "devtools")]
+            created_at: element.created_at,
         }
     }
 }
@@ -2391,8 +2406,12 @@ fn mount_named(
         a11y_level,
         scroll_offset,
         children,
+        #[cfg(feature = "devtools")]
+        created_at,
     } = element;
     let id = tree.insert_owned(parent, owner, widget, style);
+    #[cfg(feature = "devtools")]
+    tree.set_created_at(id, created_at);
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     if let Some(row) = &row
         && let Some(owner) = tree.owner(id)

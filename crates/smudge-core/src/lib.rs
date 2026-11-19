@@ -21,6 +21,8 @@ pub mod geometry;
 pub mod hot;
 pub mod image;
 pub mod input;
+#[cfg(feature = "devtools")]
+pub mod inspect;
 pub mod paint;
 pub mod reactive;
 pub mod renderer;

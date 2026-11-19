@@ -204,6 +204,7 @@ pub struct PaintCx<'a> {
 pub struct Panel;
 
 /// Creates a [`Panel`] with the default style.
+#[cfg_attr(feature = "devtools", track_caller)]
 pub fn panel() -> Element<Panel> {
     Element::new(Panel)
 }
