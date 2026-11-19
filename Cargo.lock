@@ -3135,6 +3135,7 @@ dependencies = [
  "smudge-a11y",
  "smudge-core",
  "smudge-cpu",
+ "smudge-devtools",
  "smudge-gpu",
  "smudge-text",
  "smudge-widgets",

@@ -173,7 +173,7 @@ check_wasm() {
         args+=(-p "$crate")
     done
     CARGO_TARGET_DIR="$target/gate-wasm" CARGO_BUILD_JOBS=4 RUSTFLAGS="-D warnings" \
-        cargo check --target wasm32-unknown-unknown "${args[@]}"
+        cargo check --target wasm32-unknown-unknown --features smudge/devtools "${args[@]}"
 }
 
 step tests run_tests &

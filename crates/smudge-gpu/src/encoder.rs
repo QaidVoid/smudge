@@ -75,6 +75,13 @@ impl Encoder {
         self.images
             .brushes
             .retain(|_, (_, stamp)| generation - *stamp <= 2);
+        self.append(frame, width, height);
+    }
+
+    /// Adds `frame`'s display list to the scene over what it already
+    /// holds, for a surface of `width` by `height` physical pixels, as a
+    /// list drawn over another one, such as the devtools overlay, needs.
+    pub(crate) fn append(&mut self, frame: &FrameOutput<'_>, width: u32, height: u32) {
         let transform = Affine::scale(f64::from(frame.scale));
         // The display list is balanced by construction, but a stray `PopClip`
         // or `PopGroup` in a release build would pop a vello layer that was
@@ -152,7 +159,8 @@ impl Encoder {
         }
     }
 
-    /// Returns the encoded scene of the last [`Encoder::encode`] call.
+    /// Returns the scene of the last [`Encoder::encode`] call, with the
+    /// lists [`Encoder::append`] added over it since.
     pub(crate) fn scene(&self) -> &Scene {
         &self.scene
     }

@@ -37,6 +37,8 @@ mod clipboard;
     ))
 ))]
 mod color_scheme;
+#[cfg(feature = "_devtools")]
+mod devtools;
 mod error;
 mod events;
 #[cfg(feature = "gpu")]

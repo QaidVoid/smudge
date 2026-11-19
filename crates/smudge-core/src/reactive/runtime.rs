@@ -1229,3 +1229,7 @@ fn fire_wakes(wakes: Wakes) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod tests;

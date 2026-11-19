@@ -780,6 +780,13 @@ struct WindowState {
     /// only when it changes, so a hover that crosses nodes which show the
     /// same look costs no call into the window system.
     cursor: CursorIcon,
+    /// The devtools overlay, its app, and where input goes.
+    #[cfg(feature = "_devtools")]
+    devtools: crate::devtools::Devtools,
+    /// Whether the overlay was shown or hidden since the last frame, which
+    /// the next frame presents even when nothing in it changed.
+    #[cfg(feature = "_devtools")]
+    toggled: bool,
     /// The bridge that maps the app's accessibility projection onto the
     /// platform's, when the platform builds with accessibility.
     #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
@@ -968,6 +975,24 @@ where
         // the input focus, so the state is seeded before the first frame.
         app.handle_event(InputEvent::WindowFocus(window.has_focus()));
 
+        #[cfg(feature = "_devtools")]
+        let mut presenter = presenter;
+        #[cfg(feature = "_devtools")]
+        let devtools = {
+            let mut devtools = crate::devtools::Devtools::new(logical_size(physical, scale), scale);
+            let weak = Arc::downgrade(&window);
+            devtools.app.set_wake_callback(move || {
+                if let Some(window) = weak.upgrade() {
+                    window.request_redraw();
+                }
+            });
+            presenter.set_overlay(devtools.is_open());
+            // The devtools learn the window's focus as the app did above,
+            // so a window that opens unfocused stays so on both sides.
+            devtools.dispatch(&mut app, InputEvent::WindowFocus(window.has_focus()));
+            devtools
+        };
+
         let frame_period = frame_period(&window);
         Ok(WindowState {
             window,
@@ -1002,6 +1027,10 @@ where
             ime_allowed: false,
             ime_held: false,
             cursor: CursorIcon::Default,
+            #[cfg(feature = "_devtools")]
+            devtools,
+            #[cfg(feature = "_devtools")]
+            toggled: false,
             #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
             adapter,
             #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
@@ -1045,6 +1074,11 @@ where
         };
         state.presenter.resize(width, height)?;
         state.app.set_viewport(logical_size(physical, scale), scale);
+        #[cfg(feature = "_devtools")]
+        state
+            .devtools
+            .app
+            .set_viewport(logical_size(physical, scale), scale);
         #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         if state.scale != scale {
             state.a11y_full = true;
@@ -1101,12 +1135,33 @@ where
             (on_event)(&mut state.app);
         }
         let paced = state.app.has_tick() || state.on_event.is_some();
-        let driven = paced || state.app.is_animating();
+        let driven = paced || state.is_animating();
+        #[cfg(feature = "_devtools")]
+        let driven = driven && !std::mem::take(&mut state.toggled);
         let started = Instant::now();
         state.next_frame = None;
         let output = state.app.frame();
         state.rendered = true;
-        let presented = state.presenter.render_and_present(&output, driven)?;
+        // Timed apart, so the app's statistics never count the overlay.
+        #[cfg(feature = "_devtools")]
+        let overlay_start = Instant::now();
+        #[cfg(feature = "_devtools")]
+        let over = state.devtools.is_open().then(|| state.devtools.app.frame());
+        #[cfg(feature = "_devtools")]
+        let overlay_frame = overlay_start.elapsed();
+        #[cfg(not(feature = "_devtools"))]
+        let over: Option<FrameOutput<'_>> = None;
+        let presented = state
+            .presenter
+            .render_and_present(&output, over.as_ref(), driven)?;
+        #[cfg(feature = "_devtools")]
+        if let Some((_, overlay_draw)) = presented {
+            state.devtools.timing = crate::devtools::OverlayTiming {
+                frame: overlay_frame,
+                draw: overlay_draw,
+            };
+        }
+        let presented = presented.map(|(stats, _)| stats);
         if let Some(stats) = presented {
             state.stats = stats;
             if let Some(handle) = &state.stats_handle {
@@ -1123,7 +1178,7 @@ where
         // A spring the frame set moving keeps the frames coming, and one
         // that arrived in it lets the window go idle. A transition the frame
         // mounted starts the watcher now, before its first motion.
-        let driven = paced || state.app.is_animating();
+        let driven = paced || state.is_animating();
         if !state.motion_watcher_started && state.app.has_transitions() {
             state.motion_watcher_started = true;
             watch_reduced_motion(&mut state.app, &self.proxy);
@@ -1157,7 +1212,7 @@ where
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        if state.app.has_tick() || state.on_event.is_some() || state.app.is_animating() {
+        if state.app.has_tick() || state.on_event.is_some() || state.is_animating() {
             if let Some(at) = state.next_frame {
                 if at <= Instant::now() {
                     state.next_frame = None;
@@ -1168,13 +1223,13 @@ where
             }
             return;
         }
-        if wait_decision(state.app.next_deadline(), Instant::now()) == WaitDecision::Now {
-            state.app.run_due_timers();
-            if state.app.needs_frame() {
+        if wait_decision(state.next_deadline(), Instant::now()) == WaitDecision::Now {
+            state.run_due_timers();
+            if state.needs_frame() {
                 state.window.request_redraw();
             }
         }
-        match wait_decision(state.app.next_deadline(), Instant::now()) {
+        match wait_decision(state.next_deadline(), Instant::now()) {
             WaitDecision::Now => state.window.request_redraw(),
             WaitDecision::Until(deadline) => {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
@@ -1426,8 +1481,8 @@ where
                 if let Some(state) = self.state.as_mut() {
                     let input = state.translator.translate(&other, state.scale);
                     if let Some(input) = input {
-                        state.app.handle_event(input);
-                        if state.app.needs_frame() {
+                        state.dispatch(input);
+                        if state.needs_frame() {
                             state.window.request_redraw();
                         }
                     }
@@ -1462,6 +1517,63 @@ where
 }
 
 impl WindowState {
+    /// Hands `input` to the app, or to the devtools overlay when the
+    /// devtools route it there, and shows or hides the overlay when the
+    /// input was its key.
+    fn dispatch(&mut self, input: InputEvent) {
+        #[cfg(feature = "_devtools")]
+        if self.devtools.dispatch(&mut self.app, input) {
+            self.presenter.set_overlay(self.devtools.is_open());
+            self.toggled = true;
+            self.window.request_redraw();
+        }
+        #[cfg(not(feature = "_devtools"))]
+        self.app.handle_event(input);
+    }
+
+    /// Returns whether the app, or the devtools overlay while it shows,
+    /// has work that needs a frame.
+    fn needs_frame(&self) -> bool {
+        #[cfg(feature = "_devtools")]
+        if self.devtools.is_open() && self.devtools.app.needs_frame() {
+            return true;
+        }
+        self.app.needs_frame()
+    }
+
+    /// Returns the soonest deadline of the app's timers, or of the devtools
+    /// overlay's while it shows.
+    fn next_deadline(&self) -> Option<Instant> {
+        #[cfg(feature = "_devtools")]
+        if self.devtools.is_open() {
+            return match (self.app.next_deadline(), self.devtools.app.next_deadline()) {
+                (Some(app), Some(overlay)) => Some(app.min(overlay)),
+                (app, overlay) => app.or(overlay),
+            };
+        }
+        self.app.next_deadline()
+    }
+
+    /// Runs the timers of the app, and of the devtools overlay while it
+    /// shows, that are due.
+    fn run_due_timers(&mut self) {
+        self.app.run_due_timers();
+        #[cfg(feature = "_devtools")]
+        if self.devtools.is_open() {
+            self.devtools.app.run_due_timers();
+        }
+    }
+
+    /// Returns whether a spring of the app, or of the devtools overlay
+    /// while it shows, is moving.
+    fn is_animating(&self) -> bool {
+        #[cfg(feature = "_devtools")]
+        if self.devtools.is_open() && self.devtools.app.is_animating() {
+            return true;
+        }
+        self.app.is_animating()
+    }
+
     /// Applies the window commands the app queued since the last event.
     ///
     /// The caller runs this during the event whose handler queued the
@@ -1530,7 +1642,11 @@ impl WindowState {
     /// The caller runs this after every event and every frame, because both
     /// can move the hover or change a bound cursor without a pixel changing.
     fn update_cursor(&mut self) {
-        let icon = cursor_icon(self.app.cursor());
+        #[cfg(feature = "_devtools")]
+        let cursor = self.devtools.cursor(&self.app);
+        #[cfg(not(feature = "_devtools"))]
+        let cursor = self.app.cursor();
+        let icon = cursor_icon(cursor);
         if icon != self.cursor {
             self.cursor = icon;
             self.window.set_cursor(icon);
@@ -1576,6 +1692,9 @@ impl WindowState {
             }
             self.ime_held = false;
         }
+        #[cfg(feature = "_devtools")]
+        let area = self.devtools.ime_area(&self.app);
+        #[cfg(not(feature = "_devtools"))]
         let area = self.app.ime_area();
         if area == self.ime_area && self.scale == self.ime_scale {
             return;
@@ -1722,15 +1841,30 @@ impl Presenter {
     /// nothing while the app draws frames on its own, or a surface without a
     /// pixel or texture to
     /// present, both of which the next redraw retries.
+    ///
+    /// `over` is a frame drawn over `frame`, the devtools overlay's, which
+    /// never reaches what the renderer keeps of `frame`. The time spent on
+    /// it comes back beside the statistics, which leave it out.
     fn render_and_present(
         &mut self,
         frame: &FrameOutput<'_>,
+        over: Option<&FrameOutput<'_>>,
         driven: bool,
-    ) -> Result<Option<PresentStats>, PlatformError> {
+    ) -> Result<Option<(PresentStats, Duration)>, PlatformError> {
         match self {
-            Presenter::Cpu(cpu) => cpu.render_and_present(frame, driven),
+            Presenter::Cpu(cpu) => cpu.render_and_present(frame, over, driven),
             #[cfg(feature = "gpu")]
-            Presenter::Gpu(gpu) => gpu.render_and_present(frame, driven),
+            Presenter::Gpu(gpu) => gpu.render_and_present(frame, over, driven),
+        }
+    }
+
+    /// Prepares for a frame drawn over every frame from now on, or for none.
+    #[cfg(feature = "_devtools")]
+    fn set_overlay(&mut self, shown: bool) {
+        match self {
+            Presenter::Cpu(cpu) => cpu.frames.set_overlay(shown),
+            #[cfg(feature = "gpu")]
+            Presenter::Gpu(_) => {}
         }
     }
 
@@ -1834,17 +1968,18 @@ impl CpuPresenter {
     fn render_and_present(
         &mut self,
         frame: &FrameOutput<'_>,
+        over: Option<&FrameOutput<'_>>,
         driven: bool,
-    ) -> Result<Option<PresentStats>, PlatformError> {
+    ) -> Result<Option<(PresentStats, Duration)>, PlatformError> {
         let (width, height) = (self.width, self.height);
-        if width == 0 || height == 0 || self.frames.skips(frame, driven) {
+        if width == 0 || height == 0 || self.frames.skips(frame, over, driven) {
             return Ok(None);
         }
         let acquire_start = Instant::now();
         let mut buffer = self.surface.buffer_mut().map_err(PlatformError::Surface)?;
         let acquire = acquire_start.elapsed();
         let age = buffer.age();
-        let drawn = self.frames.draw(frame, age, &mut buffer);
+        let drawn = self.frames.draw(frame, over, age, &mut buffer);
         let present_start = Instant::now();
         self.window.0.pre_present_notify();
         if drawn.with_damage {
@@ -1865,7 +2000,7 @@ impl CpuPresenter {
             buffer.present().map_err(PlatformError::Surface)?;
         }
         self.frames.presented(frame);
-        Ok(Some(PresentStats {
+        let stats = PresentStats {
             buffer_age: age,
             with_damage: drawn.with_damage,
             bytes_copied: drawn.bytes_copied,
@@ -1875,7 +2010,8 @@ impl CpuPresenter {
             acquire,
             present: drawn.copy + present_start.elapsed(),
             renderer: "cpu",
-        }))
+        };
+        Ok(Some((stats, drawn.overlay)))
     }
 }
 

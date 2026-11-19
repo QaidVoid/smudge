@@ -316,6 +316,36 @@ impl GpuSurface {
         frame: &FrameOutput<'_>,
         texture: SurfaceTexture,
     ) -> Result<(), GpuError> {
+        self.draw_layers(frame, None, texture)
+    }
+
+    /// Renders `frame` and then `over` on top of it onto `texture`, and
+    /// presents the result, as [`GpuSurface::draw`] does for one frame.
+    ///
+    /// `over` is drawn with no clear, so only what its list paints covers
+    /// `frame`. Its clear color is ignored. The two lists share the scene,
+    /// so a frame drawn this way costs one render, as one frame does.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`GpuSurface::draw`].
+    pub fn draw_over(
+        &mut self,
+        frame: &FrameOutput<'_>,
+        over: &FrameOutput<'_>,
+        texture: SurfaceTexture,
+    ) -> Result<(), GpuError> {
+        self.draw_layers(frame, Some(over), texture)
+    }
+
+    /// Renders `frame`, and `over` on top of it when there is one, onto
+    /// `texture`, and presents the result.
+    fn draw_layers(
+        &mut self,
+        frame: &FrameOutput<'_>,
+        over: Option<&FrameOutput<'_>>,
+        texture: SurfaceTexture,
+    ) -> Result<(), GpuError> {
         let params = RenderParams {
             base_color: peniko_color(frame.clear_color),
             width: self.config.width,
@@ -332,6 +362,9 @@ impl GpuSurface {
             ..
         } = self;
         encoder.encode(frame, params.width, params.height);
+        if let Some(over) = over {
+            encoder.append(over, params.width, params.height);
+        }
         renderer
             .render_to_texture(device, queue, encoder.scene(), &target.1, &params)
             .map_err(GpuError::Render)?;

@@ -71,6 +71,22 @@ pub(crate) struct CpuFrames {
     /// Whether the pixmap holds nothing it can keep, because it was just
     /// created or resized, so the next frame repaints all of it.
     pixmap_stale: bool,
+    /// The renderer of a list drawn over every frame, such as the devtools
+    /// overlay, while one is shown.
+    #[cfg(feature = "_devtools")]
+    overlay: Option<Overlay>,
+}
+
+/// A list drawn over every frame, rendered into a pixmap of its own and
+/// composited over the window buffer, so none of it reaches the frames the
+/// renderer keeps.
+#[cfg(feature = "_devtools")]
+struct Overlay {
+    /// The renderer that holds the overlay's pixels.
+    renderer: CpuRenderer,
+    /// Whether its pixmap holds nothing it can keep, so the next overlay
+    /// frame repaints all of it.
+    stale: bool,
 }
 
 /// What drawing one frame into a window buffer did.
@@ -85,6 +101,9 @@ pub(crate) struct Drawn {
     pub(crate) copy: Duration,
     /// How many bytes were copied from the pixmap.
     pub(crate) bytes_copied: u64,
+    /// How long drawing the overlay and compositing it took, zero with no
+    /// overlay. It is the overlay's own time and none of the frame's.
+    pub(crate) overlay: Duration,
 }
 
 impl CpuFrames {
@@ -110,7 +129,50 @@ impl CpuFrames {
             region: Vec::new(),
             unknown_ages: 0,
             pixmap_stale: true,
+            #[cfg(feature = "_devtools")]
+            overlay: None,
         }
+    }
+
+    /// Returns whether a list is shown over every frame.
+    fn overlay_shown(&self) -> bool {
+        #[cfg(feature = "_devtools")]
+        return self.overlay.is_some();
+        #[cfg(not(feature = "_devtools"))]
+        false
+    }
+
+    /// Shows a list over every frame from now on, or stops showing it.
+    ///
+    /// While one is shown, frames go through the pixmap, every present
+    /// copies all of it and composites the overlay on top in the window
+    /// buffer, so the overlay never reaches a pixel the renderer keeps.
+    /// Showing one moves frames that went straight into the window buffer to
+    /// a pixmap, which the next frame fills whole. Hiding it moves them back,
+    /// unless the buffer ages are unknown or the damage overlay is on, and
+    /// forgets the frames presented before, since their buffers hold overlay
+    /// pixels, so the next present draws the whole surface.
+    #[cfg(feature = "_devtools")]
+    pub(crate) fn set_overlay(&mut self, shown: bool) {
+        if shown == self.overlay.is_some() {
+            return;
+        }
+        if shown {
+            if matches!(self.target, CpuTarget::Direct(_)) {
+                self.target = CpuTarget::Pixmap(CpuRenderer::new(self.width, self.height));
+                self.pixmap_stale = true;
+            }
+            self.overlay = Some(Overlay {
+                renderer: CpuRenderer::new(self.width, self.height),
+                stale: true,
+            });
+        } else {
+            self.overlay = None;
+            if !self.show_damage && self.unknown_ages < UNKNOWN_AGE_PRESENTS {
+                self.target = CpuTarget::Direct(XrgbRenderer::new(self.width, self.height));
+            }
+        }
+        self.history.clear();
     }
 
     /// Takes the surface's new size.
@@ -123,6 +185,11 @@ impl CpuFrames {
             CpuTarget::Direct(renderer) => renderer.resize(width, height),
             CpuTarget::Pixmap(renderer) => renderer.resize(width, height),
         }
+        #[cfg(feature = "_devtools")]
+        if let Some(overlay) = &mut self.overlay {
+            overlay.renderer.resize(width, height);
+            overlay.stale = true;
+        }
         self.width = width;
         self.height = height;
         self.unknown_ages = 0;
@@ -130,9 +197,16 @@ impl CpuFrames {
         self.history.clear();
     }
 
-    /// Whether `frame` must skip its present. See [`present_skipped`].
-    pub(crate) fn skips(&self, frame: &FrameOutput<'_>, driven: bool) -> bool {
+    /// Whether `frame`, with `over` drawn over it, must skip its present.
+    /// See [`present_skipped`]. A change of the overlay alone presents.
+    pub(crate) fn skips(
+        &self,
+        frame: &FrameOutput<'_>,
+        over: Option<&FrameOutput<'_>>,
+        driven: bool,
+    ) -> bool {
         present_skipped(frame.damage, driven, self.show_damage)
+            && over.is_none_or(|over| over.damage.is_empty())
     }
 
     /// Returns the region the last drawn frame presents when
@@ -155,14 +229,23 @@ impl CpuFrames {
     /// to restore a window that lost its contents. While the damage overlay
     /// is on, every present copies the whole pixmap and blends the tint over
     /// the frame's damage in the window buffer, so no tint reaches the pixmap
-    /// a later frame repaints from.
+    /// a later frame repaints from. While a list is shown over the frames, as
+    /// [`CpuFrames::set_overlay`] describes, `over` is its frame, which is
+    /// drawn into its own pixmap and composited over the whole window buffer
+    /// the same way.
     ///
     /// # Panics
     ///
     /// Panics when `buffer` does not hold one entry per pixel of the surface,
     /// or when the frame's damage reaches outside it, both of which mean the
     /// frame was produced for a surface of another size.
-    pub(crate) fn draw(&mut self, frame: &FrameOutput<'_>, age: u8, buffer: &mut [u32]) -> Drawn {
+    pub(crate) fn draw(
+        &mut self,
+        frame: &FrameOutput<'_>,
+        over: Option<&FrameOutput<'_>>,
+        age: u8,
+        buffer: &mut [u32],
+    ) -> Drawn {
         let whole = PixelRect {
             x: 0,
             y: 0,
@@ -179,6 +262,7 @@ impl CpuFrames {
             self.target = CpuTarget::Pixmap(CpuRenderer::new(self.width, self.height));
             self.pixmap_stale = true;
         }
+        let overlay_shown = self.overlay_shown();
         let raster_start = Instant::now();
         match &mut self.target {
             CpuTarget::Direct(renderer) => {
@@ -195,6 +279,7 @@ impl CpuFrames {
                     raster: raster_start.elapsed(),
                     copy: Duration::ZERO,
                     bytes_copied: 0,
+                    overlay: Duration::ZERO,
                 }
             }
             CpuTarget::Pixmap(renderer) => {
@@ -215,6 +300,7 @@ impl CpuFrames {
                     "the window buffer must hold one entry per rendered pixel"
                 );
                 let with_damage = !self.show_damage
+                    && !overlay_shown
                     && damage_region(
                         age,
                         frame.damage,
@@ -234,11 +320,35 @@ impl CpuFrames {
                 if self.show_damage {
                     tint_rects(buffer, self.width, frame.damage);
                 }
+                let copy = copy_start.elapsed();
+                #[cfg(feature = "_devtools")]
+                let overlay = {
+                    let overlay_start = Instant::now();
+                    if let (Some(overlay), Some(over)) = (&mut self.overlay, over) {
+                        if overlay.stale {
+                            overlay.renderer.render(&FrameOutput {
+                                damage: &[whole],
+                                ..*over
+                            });
+                            overlay.stale = false;
+                        } else {
+                            overlay.renderer.render(over);
+                        }
+                        composite_over(overlay.renderer.pixels(), buffer);
+                    }
+                    overlay_start.elapsed()
+                };
+                #[cfg(not(feature = "_devtools"))]
+                let overlay = {
+                    let _ = over;
+                    Duration::ZERO
+                };
                 Drawn {
                     with_damage,
                     raster,
-                    copy: copy_start.elapsed(),
+                    copy,
                     bytes_copied,
+                    overlay,
                 }
             }
         }
@@ -400,6 +510,27 @@ pub(crate) fn copy_rect(
         {
             *pixel = u32::from(rgba[0]) << 16 | u32::from(rgba[1]) << 8 | u32::from(rgba[2]);
         }
+    }
+}
+
+/// Blends `source`, premultiplied RGBA pixels, over `destination`, which
+/// holds one `0x00RRGGBB` entry per pixel of the same surface, as
+/// [`copy_rect`] writes it.
+///
+/// A pixel the source leaves transparent keeps the destination's.
+#[cfg(feature = "_devtools")]
+pub(crate) fn composite_over(source: &[u8], destination: &mut [u32]) {
+    for (pixel, rgba) in destination.iter_mut().zip(source.as_chunks::<4>().0) {
+        let alpha = u32::from(rgba[3]);
+        if alpha == 0 {
+            continue;
+        }
+        let keep = 255 - alpha;
+        let blend = |source: u8, shift: u32| {
+            let under = (*pixel >> shift) & 0xff;
+            (u32::from(source) + (under * keep + 127) / 255).min(255)
+        };
+        *pixel = blend(rgba[0], 16) << 16 | blend(rgba[1], 8) << 8 | blend(rgba[2], 0);
     }
 }
 

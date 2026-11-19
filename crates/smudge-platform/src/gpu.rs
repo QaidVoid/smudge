@@ -175,9 +175,12 @@ impl GpuPath {
     pub(crate) fn render_and_present(
         &mut self,
         frame: &FrameOutput<'_>,
+        over: Option<&FrameOutput<'_>>,
         driven: bool,
-    ) -> Result<Option<PresentStats>, PlatformError> {
-        if present_skipped(frame.damage, driven, false) {
+    ) -> Result<Option<(PresentStats, Duration)>, PlatformError> {
+        if present_skipped(frame.damage, driven, false)
+            && over.is_none_or(|over| over.damage.is_empty())
+        {
             return Ok(None);
         }
         let acquire_start = Instant::now();
@@ -193,21 +196,28 @@ impl GpuPath {
         let acquire = acquire_start.elapsed();
         self.window.pre_present_notify();
         let start = Instant::now();
-        self.surface.draw(frame, texture).map_err(|error| {
+        let drawn = match over {
+            Some(over) => self.surface.draw_over(frame, over, texture),
+            None => self.surface.draw(frame, texture),
+        };
+        drawn.map_err(|error| {
             PlatformError::Renderer(format!("the GPU renderer failed: {error}"))
         })?;
         let raster = start.elapsed();
-        Ok(Some(PresentStats {
-            buffer_age: 0,
-            with_damage: false,
-            bytes_copied: 0,
-            surface_width: self.surface.width(),
-            surface_height: self.surface.height(),
-            raster,
-            acquire,
-            present: Duration::ZERO,
-            renderer: "gpu",
-        }))
+        Ok(Some((
+            PresentStats {
+                buffer_age: 0,
+                with_damage: false,
+                bytes_copied: 0,
+                surface_width: self.surface.width(),
+                surface_height: self.surface.height(),
+                raster,
+                acquire,
+                present: Duration::ZERO,
+                renderer: "gpu",
+            },
+            Duration::ZERO,
+        )))
     }
 
     /// Resizes the surface and the presenter to the window's new extent.

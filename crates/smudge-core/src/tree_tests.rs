@@ -566,3 +566,13 @@ fn a_change_builds_no_description_until_a_projection_reads_it() {
     assert!(tree.semantics_node(id).is_some());
     assert_eq!(built.get(), 1, "a projection builds the description once");
 }
+
+/// The devtools promise to cost nothing with their feature off, so a field
+/// they add for tracing must sit behind the feature. This bound catches one
+/// that lands outside it. A field the node needs anyway raises it on
+/// purpose.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn a_tree_node_keeps_its_size() {
+    assert!(std::mem::size_of::<super::Node>() <= 1360);
+}

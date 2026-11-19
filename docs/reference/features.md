@@ -14,7 +14,7 @@
 | `complex-scripts` | no | Word and line break dictionaries for Chinese, Japanese, Thai, Lao, Khmer and Burmese. About 3 MB per binary and about 5 percent slower layout of other text. |
 | `system-fonts` | no | Also finds the fonts installed on the machine, on Linux, FreeBSD, Windows, Android and Apple platforms. The same feature of `smudge-text`, forwarded, so applications can turn it on without adding `smudge-text` themselves. |
 | `markdown` | no | Markdown rendered from a source that grows while it shows, through `smudge::markdown`. See [Markdown](/guide/markdown). |
-| `devtools` | no | The devtools panel of `smudge-devtools`, through `smudge::devtools`. Meant for development builds. |
+| `devtools` | no | Devtools drawn over the running application. A key, Ctrl+Shift+D or Cmd+Shift+D on macOS, shows a panel over the window, in an application of its own, so the application keeps working underneath and its own frames, numbers and pixels stay its own. Implies `window`, and re-exports `smudge-devtools` as `smudge::devtools`. It brings no font of its own. Meant for development builds. |
 | `hot-reload` | no | Hot reload for applications started with `run_view` or `run_view_with`, on Linux, under `cargo smudge dev` from the `cargo-smudge` crate. The application applies each patch the builder sends and remounts its root through the patched view, keeping the state passed to the entry point and the values of the signals the view created. Implies `window`, and turns on the same feature of `smudge-widgets`. Elsewhere, and without a builder, both are plain runs. Meant for development builds. With it off, no patching code is compiled in. See [Hot reload](/guide/hot-reload). |
 
 ```toml
@@ -66,11 +66,14 @@ bundled-fonts = ["smudge/bundled-fonts"]
 | `a11y` | yes | The accessibility projection for screen readers on the desktop. It has no effect on the web. |
 | `gpu` | no | The GPU renderer. The `smudge` feature of the same name turns this on. |
 | `hot-reload` | no | The hot reload receiver behind `run_view` and `run_view_with`, on Linux. The `smudge` feature of the same name turns this on. See [Hot reload](/guide/hot-reload). |
+| `_devtools` | no | The devtools overlay a key shows over the window. The `smudge` feature `devtools` turns this on. |
 
 ## Runtime switches
 
 | Variable | Values | Effect |
 |---|---|---|
 | `SMUDGE_RENDERER` | `cpu`, `gpu`, `auto` | Overrides `WindowOptions::renderer` when the window opens. |
+| `SMUDGE_DEVTOOLS` | `1` | With the `devtools` feature, opens the devtools panel when the window opens. |
+| `SMUDGE_DEVTOOLS_KEY` | a key, such as `ctrl+shift+d` | With the `devtools` feature, the key that shows and hides the panel: modifiers named `ctrl`, `shift`, `alt` or `cmd`, then one character, joined by `+`. A value that names no key leaves the default. |
 | `SMUDGE_HOT_SOCKET` | a socket path | Set by a patch builder, such as `cargo smudge dev`. With the `hot-reload` feature on Linux, an application started with `run_view` or `run_view_with` connects to it and applies the patches it receives. |
 | `SMUDGE_HOT_BUILD` | any id | Set by a patch builder next to `SMUDGE_HOT_SOCKET`. The application sends it back unchanged, so the builder knows which build connected. |

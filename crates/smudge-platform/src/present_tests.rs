@@ -553,12 +553,24 @@ impl SwapChain {
         frames: &mut CpuFrames,
         frame: &FrameOutput<'_>,
     ) -> (super::Drawn, &[u32]) {
+        self.present_over(frames, frame, None)
+    }
+
+    /// Draws `frame`, with `over` drawn over it when there is one, into the
+    /// next buffer, presents it, and returns what the draw did and the
+    /// buffer's contents.
+    fn present_over(
+        &mut self,
+        frames: &mut CpuFrames,
+        frame: &FrameOutput<'_>,
+        over: Option<&FrameOutput<'_>>,
+    ) -> (super::Drawn, &[u32]) {
         let slot = self.presents % self.buffers.len();
         let age = match self.presented_at[slot] {
             Some(at) if self.reports_ages => (self.presents - at) as u8,
             _ => 0,
         };
-        let drawn = frames.draw(frame, age, &mut self.buffers[slot]);
+        let drawn = frames.draw(frame, over, age, &mut self.buffers[slot]);
         frames.presented(frame);
         self.presented_at[slot] = Some(self.presents);
         self.presents += 1;
@@ -677,4 +689,179 @@ fn a_resize_forgets_the_frames_presented_before_it() {
             "ages {reports_ages}: the frame after a resize does not match a full repaint"
         );
     }
+}
+
+#[cfg(feature = "_devtools")]
+/// Where the overlay of the overlay tests draws its opaque square.
+const OVERLAY_SQUARE: Rect = Rect {
+    x0: 40.0,
+    y0: 40.0,
+    x1: 60.0,
+    y1: 60.0,
+};
+
+#[cfg(feature = "_devtools")]
+/// Whether the pixel at `x`, `y` lies in the overlay's square.
+fn in_overlay(x: u32, y: u32) -> bool {
+    let (x, y) = (x as f32 + 0.5, y as f32 + 0.5);
+    x > OVERLAY_SQUARE.x0 && x < OVERLAY_SQUARE.x1 && y > OVERLAY_SQUARE.y0 && y < OVERLAY_SQUARE.y1
+}
+
+#[cfg(feature = "_devtools")]
+/// The overlay's list in the overlay tests: an opaque red square with sharp
+/// corners, so every pixel inside it is red.
+fn overlay_list() -> DisplayList {
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::FillRect {
+        rect: OVERLAY_SQUARE,
+        radius: Corners::all(0.0),
+        color: Color::rgb(220, 30, 30),
+    });
+    list.finish();
+    list
+}
+
+#[cfg(feature = "_devtools")]
+/// The list of the app's frame in the overlay tests: a box at `at`.
+fn app_frame(at: Rect) -> DisplayList {
+    boxes_list(&[(at, Color::rgba(30, 90, 200, 180))])
+}
+
+#[cfg(feature = "_devtools")]
+#[test]
+fn an_overlay_shows_over_the_frames_and_leaves_no_pixel_behind() {
+    for reports_ages in [true, false] {
+        overlay_over_frames(reports_ages);
+    }
+}
+
+/// Shows an overlay over moving frames and hides it again, on a surface
+/// that reports buffer ages or one that does not, whose frames stay on the
+/// pixmap after the overlay is hidden.
+#[cfg(feature = "_devtools")]
+fn overlay_over_frames(reports_ages: bool) {
+    let mut frames = CpuFrames::new(CHAIN_SIZE, CHAIN_SIZE, false);
+    let mut chain = SwapChain::new(3, CHAIN_SIZE, reports_ages);
+    run_frames(&mut frames, &mut chain, 6, |_, _| {});
+
+    let overlay = overlay_list();
+    let over = |damage: &'static [PixelRect]| FrameOutput {
+        list: &overlay,
+        damage,
+        full: false,
+        clear_color: Color::TRANSPARENT,
+        scale: 1.0,
+    };
+    frames.set_overlay(true);
+    let mut at = Rect::new(2.0, 30.0, 14.0, 40.0);
+    for index in 0..4 {
+        let next = Rect::new(at.x0 + 3.0, at.y0, at.x1 + 3.0, at.y1);
+        // The first frame changes the whole scene, as the run before it
+        // drew another one.
+        let damage = if index == 0 {
+            vec![PixelRect {
+                x: 0,
+                y: 0,
+                width: CHAIN_SIZE,
+                height: CHAIN_SIZE,
+            }]
+        } else {
+            moved(at, next)
+        };
+        at = next;
+        let list = app_frame(at);
+        let frame = FrameOutput {
+            list: &list,
+            damage: &damage,
+            full: false,
+            clear_color: Color::WHITE,
+            scale: 1.0,
+        };
+        let (drawn, shown) = chain.present_over(&mut frames, &frame, Some(&over(&[])));
+        assert!(
+            !drawn.with_damage,
+            "ages {reports_ages}, frame {index}: an open overlay presents everything"
+        );
+        let app = full_xrgb(&list, 1.0);
+        for y in 0..CHAIN_SIZE {
+            for x in 0..CHAIN_SIZE {
+                let pixel = shown[(y * CHAIN_SIZE + x) as usize];
+                if in_overlay(x, y) {
+                    assert_eq!(pixel, 0x00dc_1e1e, "frame {index}: the overlay at {x}, {y}");
+                } else if !(x as f32 + 1.0 > OVERLAY_SQUARE.x0 - 1.0
+                    && (x as f32) < OVERLAY_SQUARE.x1 + 1.0
+                    && y as f32 + 1.0 > OVERLAY_SQUARE.y0 - 1.0
+                    && (y as f32) < OVERLAY_SQUARE.y1 + 1.0)
+                {
+                    assert_eq!(
+                        pixel,
+                        app[(y * CHAIN_SIZE + x) as usize],
+                        "frame {index}: the app's pixel at {x}, {y}"
+                    );
+                }
+            }
+        }
+    }
+
+    frames.set_overlay(false);
+    for index in 0..4 {
+        let next = Rect::new(at.x0 + 3.0, at.y0, at.x1 + 3.0, at.y1);
+        let damage = moved(at, next);
+        at = next;
+        let list = app_frame(at);
+        let frame = FrameOutput {
+            list: &list,
+            damage: &damage,
+            full: false,
+            clear_color: Color::WHITE,
+            scale: 1.0,
+        };
+        let (drawn, shown) = chain.present(&mut frames, &frame);
+        assert!(
+            shown == full_xrgb(&list, 1.0).as_slice(),
+            "ages {reports_ages}, frame {index}: closing kept an overlay pixel"
+        );
+        if reports_ages {
+            assert_eq!(
+                drawn.bytes_copied, 0,
+                "frame {index}: back to drawing straight in"
+            );
+            assert_eq!(drawn.with_damage, index >= 3, "frame {index}");
+        } else {
+            assert!(
+                !drawn.with_damage,
+                "frame {index}: a surface with no ages presents everything"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "_devtools")]
+#[test]
+fn a_change_in_the_overlay_alone_presents() {
+    let mut frames = CpuFrames::new(CHAIN_SIZE, CHAIN_SIZE, false);
+    frames.set_overlay(true);
+    let list = app_frame(Rect::new(2.0, 2.0, 14.0, 12.0));
+    let still = FrameOutput {
+        list: &list,
+        damage: &[],
+        full: false,
+        clear_color: Color::WHITE,
+        scale: 1.0,
+    };
+    let overlay = overlay_list();
+    let quiet = FrameOutput {
+        list: &overlay,
+        damage: &[],
+        full: false,
+        clear_color: Color::TRANSPARENT,
+        scale: 1.0,
+    };
+    let damage = [rect(45, 45)];
+    let changed = FrameOutput {
+        damage: &damage,
+        ..quiet
+    };
+    assert!(frames.skips(&still, Some(&quiet), true));
+    assert!(!frames.skips(&still, Some(&changed), true));
 }
