@@ -20,7 +20,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use smudge_core::app::App;
 use smudge_core::geometry::Rect;
 use smudge_core::semantics::SemanticsNode;
-use smudge_core::semantics::{Checked, Politeness, Role};
+use smudge_core::semantics::{Checked, Politeness, Role, TextRun};
 use smudge_core::tree::WidgetId;
 
 use accesskit::{Live, Node, NodeId, Rect as AccessKitRect, Toggled};
@@ -33,12 +33,13 @@ use accesskit::{Role as AccessKitRole, TreeId, TreeInfo, TreeUpdate};
 /// all ones can never collide with a widget.
 const WINDOW_ROOT: NodeId = NodeId(u64::MAX);
 
-/// Returns the node id of the announcement numbered `serial`.
+/// Returns the node id numbered `serial` among the nodes the projection
+/// makes up itself: the announcements and the text runs.
 ///
 /// Its index is all ones, which no widget id has, and its version is
 /// `serial`, which stops short of all ones so it never names
 /// [`WINDOW_ROOT`].
-fn announcement_id(serial: u32) -> NodeId {
+fn synthetic_id(serial: u32) -> NodeId {
     NodeId((u64::from(serial % u32::MAX) << 32) | u64::from(u32::MAX))
 }
 
@@ -62,7 +63,10 @@ pub struct Projection {
     /// The announcement nodes the window root holds after its roots, until
     /// the next announcements replace them.
     announced: Vec<NodeId>,
-    /// The serial of the next announcement node.
+    /// The ids of the text runs of each node that has any, in order, kept
+    /// while the node lives so a reader's place in the text stays put.
+    runs: HashMap<NodeId, Vec<NodeId>>,
+    /// The serial of the next node the projection makes up.
     serial: u32,
 }
 
@@ -83,6 +87,7 @@ impl Projection {
             sent: HashMap::new(),
             roots: Vec::new(),
             announced: Vec::new(),
+            runs: HashMap::new(),
             serial: 0,
         }
     }
@@ -145,7 +150,7 @@ impl Projection {
                 if let Some(previous) = previous {
                     self.forget_dropped(&previous.children, &children);
                 }
-                nodes.push((id, build_node(&node, scale)));
+                self.push_node(&node, scale, &mut nodes);
             }
             if changes.roots_changed || surface != self.surface {
                 let roots = app.semantics_roots();
@@ -184,8 +189,7 @@ impl Projection {
                 label.push('\n');
                 label.push_str(message);
             }
-            let id = announcement_id(self.serial);
-            self.serial = self.serial.wrapping_add(1);
+            let id = self.next_synthetic();
             let mut node = Node::new(AccessKitRole::Status);
             node.set_label(label);
             node.set_live(match politeness {
@@ -221,6 +225,11 @@ impl Projection {
         self.roots = roots.clone();
         nodes.push((WINDOW_ROOT, self.window_node(roots, surface)));
         self.sent.clear();
+        let live: HashSet<NodeId> = projected
+            .iter()
+            .map(|node| NodeId(node.id.as_u64()))
+            .collect();
+        self.runs.retain(|id, _| live.contains(id));
         for node in &projected {
             let id = NodeId(node.id.as_u64());
             let sent = Sent {
@@ -228,7 +237,7 @@ impl Projection {
                 children: node_ids(&node.children),
             };
             self.sent.insert(id, sent);
-            nodes.push((id, build_node(node, scale)));
+            self.push_node(node, scale, &mut nodes);
         }
         let mut tree = TreeInfo::new(WINDOW_ROOT);
         tree.toolkit_name = Some("smudge".to_owned());
@@ -254,9 +263,51 @@ impl Projection {
             .copied()
             .collect();
         while let Some(id) = stack.pop() {
+            self.runs.remove(&id);
             if let Some(sent) = self.sent.remove(&id) {
                 stack.extend(sent.children);
             }
+        }
+    }
+
+    /// Returns the next id of a node the projection makes up.
+    fn next_synthetic(&mut self) -> NodeId {
+        let id = synthetic_id(self.serial);
+        self.serial = self.serial.wrapping_add(1);
+        id
+    }
+
+    /// Appends the AccessKit node `node` projects to `nodes`, followed by a
+    /// node for each of its text runs, which it holds ahead of its children.
+    fn push_node(&mut self, node: &SemanticsNode, scale: f32, nodes: &mut Vec<(NodeId, Node)>) {
+        let id = NodeId(node.id.as_u64());
+        let mut ids = self.runs.remove(&id).unwrap_or_default();
+        ids.truncate(node.text_runs.len());
+        while ids.len() < node.text_runs.len() {
+            let run = self.next_synthetic();
+            ids.push(run);
+        }
+        let mut out = build_node(node, scale);
+        if !ids.is_empty() {
+            let mut children = ids.clone();
+            children.extend(node_ids(&node.children));
+            out.set_children(children);
+        }
+        nodes.push((id, out));
+        for (index, (run, run_id)) in node.text_runs.iter().zip(&ids).enumerate() {
+            let mut out = build_run(run, scale);
+            if run.continues_line && index > 0 {
+                out.set_previous_on_line(ids[index - 1]);
+            }
+            if let Some(next) = node.text_runs.get(index + 1)
+                && next.continues_line
+            {
+                out.set_next_on_line(ids[index + 1]);
+            }
+            nodes.push((*run_id, out));
+        }
+        if !ids.is_empty() {
+            self.runs.insert(id, ids);
         }
     }
 
@@ -289,6 +340,25 @@ fn digest(node: &SemanticsNode, scale: f32) -> u64 {
     node.value.hash(&mut hasher);
     node.checked.hash(&mut hasher);
     (node.position, node.set_size, node.level).hash(&mut hasher);
+    for run in &node.text_runs {
+        (run.start, run.right_to_left, run.continues_line).hash(&mut hasher);
+        run.text.hash(&mut hasher);
+        run.character_lengths.hash(&mut hasher);
+        run.word_starts.hash(&mut hasher);
+        for number in run
+            .character_positions
+            .iter()
+            .chain(&run.character_widths)
+            .chain([
+                &run.bounds.x0,
+                &run.bounds.y0,
+                &run.bounds.x1,
+                &run.bounds.y1,
+            ])
+        {
+            number.to_bits().hash(&mut hasher);
+        }
+    }
     if let Some(range) = node.range {
         for number in [range.value, range.min, range.max] {
             number.to_bits().hash(&mut hasher);
@@ -361,6 +431,42 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     if node.focusable {
         out.add_action(accesskit::Action::Focus);
     }
+    out
+}
+
+/// Maps one text run onto an AccessKit text run node, its positions and
+/// widths scaled to physical pixels as its bounds are.
+fn build_run(run: &TextRun, scale: f32) -> Node {
+    let mut out = Node::new(AccessKitRole::TextRun);
+    out.set_value(run.text.clone());
+    out.set_character_lengths(run.character_lengths.clone());
+    out.set_word_starts(run.word_starts.clone());
+    let bounds = scaled_bounds(run.bounds, scale);
+    // The positions count from the scaled bounds, which round outward, so
+    // the characters land where the glyphs paint.
+    let shift = if run.right_to_left {
+        (bounds.x1 - f64::from(run.bounds.x1 * scale)) as f32
+    } else {
+        (f64::from(run.bounds.x0 * scale) - bounds.x0) as f32
+    };
+    out.set_character_positions(
+        run.character_positions
+            .iter()
+            .map(|position| position * scale + shift)
+            .collect::<Vec<f32>>(),
+    );
+    out.set_character_widths(
+        run.character_widths
+            .iter()
+            .map(|width| width * scale)
+            .collect::<Vec<f32>>(),
+    );
+    out.set_bounds(bounds);
+    out.set_text_direction(if run.right_to_left {
+        accesskit::TextDirection::RightToLeft
+    } else {
+        accesskit::TextDirection::LeftToRight
+    });
     out
 }
 

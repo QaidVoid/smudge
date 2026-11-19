@@ -36,6 +36,7 @@ use smudge_core::widget::MeasureInput;
 use smudge_core::widget::PaintCx;
 use smudge_core::widget::Widget;
 
+use crate::a11y::{Hidden, text_runs};
 use crate::layout::TextLayout;
 use crate::style::TextStyle;
 use crate::style::current_text_style;
@@ -180,10 +181,26 @@ impl Widget for Label {
     /// such a node takes its name from its value there, so the text rides in
     /// the value and the label stays empty.
     fn semantics(&self) -> Option<Semantics> {
+        let text_runs = self.layout.with(|layout| {
+            layout
+                .map(|layout| {
+                    let hidden = layout.truncation.as_ref().map(|truncation| Hidden {
+                        kept_lines: truncation.kept_lines,
+                        cut: truncation.cut.as_ref().map(|cut| cut.x),
+                    });
+                    text_runs(&layout.layout, &self.text, Point::default(), hidden)
+                })
+                .unwrap_or_default()
+        });
         Some(Semantics {
             value: Some(self.text.clone()),
+            text_runs,
             ..Semantics::new(Role::Label)
         })
+    }
+
+    fn role(&self) -> Option<Role> {
+        Some(Role::Label)
     }
 
     /// Lays the text out against the offered width and returns its size.

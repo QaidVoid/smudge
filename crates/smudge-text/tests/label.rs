@@ -370,3 +370,36 @@ fn padding_places_the_text_inside_the_label() {
         "the text starts inside the padding, at {ink:?}"
     );
 }
+
+#[test]
+fn a_label_reports_its_wrapped_lines_where_it_draws_them() {
+    TextSystem::bundled_only().install();
+    let text = "several words that wrap onto more than one line";
+    let mut harness = Harness::new(400.0, 200.0, 1.0, move || {
+        panel()
+            .padding(px(12.0))
+            .child(label(text).width(px(120.0)))
+    });
+    harness.frame();
+    let node = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == smudge_core::semantics::Role::Label)
+        .expect("the label projects");
+    assert!(node.text_runs.len() > 1, "a run per wrapped line");
+    let joined: String = node.text_runs.iter().map(|run| run.text.as_str()).collect();
+    assert_eq!(joined, text);
+    for run in &node.text_runs {
+        assert!(
+            node.bounds.x0 == 12.0
+                && run.bounds.x0 >= node.bounds.x0 - 0.01
+                && run.bounds.y0 >= node.bounds.y0 - 0.01
+                && run.bounds.x1 <= node.bounds.x1 + 0.01
+                && run.bounds.y1 <= node.bounds.y1 + 0.01,
+            "{:?} sits in the label's box {:?}",
+            run.bounds,
+            node.bounds
+        );
+    }
+}

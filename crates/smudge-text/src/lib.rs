@@ -37,6 +37,7 @@
 //! assert!(layout.size().width > 0.0);
 //! ```
 
+mod a11y;
 mod chrome;
 
 /// Whether the build carries a font source of its own: the bundled faces,

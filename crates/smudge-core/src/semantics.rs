@@ -139,6 +139,52 @@ pub struct Semantics {
     /// The level of a heading, from 1 for the top level down, or `None` for
     /// a node that is no heading.
     pub level: Option<usize>,
+    /// The widget's text, a run per stretch of a line, in reading order, so
+    /// a screen reader can read it by character, word and line. Each run's
+    /// bounds are relative to the widget's content box, where its text is
+    /// laid out. Empty for a widget that shows no text.
+    pub text_runs: Vec<TextRun>,
+}
+
+/// The most characters one [`TextRun`] holds, since a screen reader indexes
+/// the characters of a run with a byte. A longer line splits into several
+/// runs.
+pub const TEXT_RUN_CAP: usize = 255;
+
+/// One stretch of a line of a widget's text, as a screen reader reads it.
+///
+/// A line is one run, or several when it changes direction or font or is
+/// longer than [`TEXT_RUN_CAP`] characters, the later ones going on with
+/// it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextRun {
+    /// Where the run's text starts in the widget's text, in bytes.
+    pub start: usize,
+    /// The run's text. A line that ends in a hard line break ends in its
+    /// line feed, which counts as one character.
+    pub text: String,
+    /// The length in bytes of each character of `text`, where a character
+    /// is the smallest stretch a caret steps over. They add up to the
+    /// length of `text`, and there are at most [`TEXT_RUN_CAP`] of them.
+    pub character_lengths: Vec<u8>,
+    /// The index of each character that starts a word, in order. A word
+    /// takes the spaces after it, so a word starts at a character that is
+    /// no space after one that is.
+    pub word_starts: Vec<u8>,
+    /// Where each character starts, from the edge the run starts at, in
+    /// logical pixels: from the left edge, or from the right edge for a run
+    /// that reads right to left.
+    pub character_positions: Vec<f32>,
+    /// The width of each character, in logical pixels.
+    pub character_widths: Vec<f32>,
+    /// The rectangle the run covers, in logical pixels.
+    pub bounds: Rect,
+    /// Whether the run reads right to left.
+    pub right_to_left: bool,
+    /// Whether the run goes on with the line of the run before it, as the
+    /// stretches of a line that changes direction or is too long for one
+    /// run do, so a screen reader reads them as one line.
+    pub continues_line: bool,
 }
 
 impl Semantics {
@@ -153,6 +199,7 @@ impl Semantics {
             position: None,
             set_size: None,
             level: None,
+            text_runs: Vec::new(),
         }
     }
 }
@@ -187,6 +234,9 @@ pub struct SemanticsNode {
     pub set_size: Option<usize>,
     /// The level of a heading, from 1 for the top level down.
     pub level: Option<usize>,
+    /// The node's text, a run per stretch of a line, with each run's bounds
+    /// absolute, in logical pixels.
+    pub text_runs: Vec<TextRun>,
     /// The node's absolute rectangle in logical pixels, as the last layout
     /// pass left it.
     pub bounds: Rect,

@@ -100,6 +100,10 @@ impl Widget for TextInput {
         })
     }
 
+    fn role(&self) -> Option<Role> {
+        Some(Role::TextInput)
+    }
+
     /// Returns the size of one line of text.
     ///
     /// Offered space is filled on the x axis, which is what an input field

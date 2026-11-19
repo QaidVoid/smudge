@@ -21,7 +21,7 @@ use crate::damage::DamageAccumulator;
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RwSignal};
-use crate::semantics::{A11yChanges, Checked, Role, SemanticsNode, ValueRange};
+use crate::semantics::{A11yChanges, Checked, Role, Semantics, SemanticsNode, ValueRange};
 use crate::style::{LayoutProps, PaintProps, Style};
 use crate::theme::Theme;
 use crate::variants::{Variants, resolve};
@@ -1543,18 +1543,22 @@ impl WidgetTree {
         // projection, since a text widget copies its whole text into it.
         let widget: &dyn Widget = node.widget.as_ref();
         let semantics = widget.semantics();
-        let (label, value, checked, range, position, set_size, level) = match semantics {
-            Some(semantics) => (
-                semantics.label,
-                semantics.value,
-                semantics.checked,
-                semantics.range,
-                semantics.position,
-                semantics.set_size,
-                semantics.level,
-            ),
-            None => (None, None, None, None, None, None, None),
-        };
+        let semantics = semantics.unwrap_or_else(|| Semantics::new(role));
+        let Semantics {
+            label,
+            value,
+            checked,
+            range,
+            position,
+            set_size,
+            level,
+            mut text_runs,
+            ..
+        } = semantics;
+        let content = node.content.origin();
+        for run in &mut text_runs {
+            run.bounds = run.bounds.translated(content);
+        }
         let mut label = node.a11y_label.clone().or(label);
         let mut value = value;
         // A screen reader announces a heading or a link by its name, so one
@@ -1577,6 +1581,7 @@ impl WidgetTree {
             position: node.a11y_position.or(position),
             set_size: node.a11y_set_size.or(set_size),
             level: node.a11y_level.or(level),
+            text_runs,
             bounds: node.rect,
             focusable: node.interaction.has(Interaction::FOCUSABLE),
             disabled: node.interaction.has(Interaction::DISABLED),
@@ -1614,7 +1619,7 @@ impl WidgetTree {
     fn effective_role(node: &Node) -> Option<Role> {
         node.a11y_role.or_else(|| {
             let widget: &dyn Widget = node.widget.as_ref();
-            widget.semantics().map(|semantics| semantics.role)
+            widget.role()
         })
     }
 

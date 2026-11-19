@@ -9,7 +9,7 @@ use std::any::Any;
 use crate::element::Element;
 use crate::geometry::{Rect, Size};
 use crate::paint::PaintOp;
-use crate::semantics::Semantics;
+use crate::semantics::{Role, Semantics};
 use crate::style::Style;
 use crate::theme::Theme;
 
@@ -134,6 +134,19 @@ pub trait Widget: Any + type_name::TypeName {
     /// with [`Element::role`](crate::element::Element::role).
     fn semantics(&self) -> Option<Semantics> {
         None
+    }
+
+    /// Returns the role [`Widget::semantics`] reports, or [`None`] when the
+    /// widget leaves the projection.
+    ///
+    /// The tree asks for the role on every change, to find the projected
+    /// node a change belongs to, whether or not a screen reader reads the
+    /// tree, and builds the whole description only for a reader. The
+    /// default builds the description and takes its role. A widget whose
+    /// description is costly, such as one that reports its text line by
+    /// line, answers here without building it.
+    fn role(&self) -> Option<Role> {
+        self.semantics().map(|semantics| semantics.role)
     }
 }
 

@@ -9,7 +9,7 @@ Every widget that has a meaning reports a role, and a name or a value:
 | Widget | Role | Name |
 |---|---|---|
 | `button` | Button | Its label text |
-| `label` | Label | Its text, reported as the value |
+| `label`, `rich_text` | Label | Its text, reported as the value and line by line, so a reader can move through it by character, word and line |
 | `text_input` | Text input | Its placeholder, with the current text as its value |
 | `text_area` | Multi-line text input | Its placeholder, with the current text as its value |
 | `scroll` | Scroll view | None by default |

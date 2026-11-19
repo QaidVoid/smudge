@@ -9,7 +9,9 @@ use smudge_core::geometry::{Color, Size};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
-use smudge_core::semantics::{Announcer, Checked, Politeness, Role, Semantics, ValueRange};
+use smudge_core::semantics::{
+    Announcer, Checked, Politeness, Role, Semantics, TextRun, ValueRange,
+};
 use smudge_core::style::px;
 use smudge_core::theme::ColorValue;
 use smudge_core::widget::{PaintCx, Panel, Widget};
@@ -1400,5 +1402,208 @@ fn a_full_update_speaks_what_its_frame_announced() {
     assert!(
         !children.contains(&spoken[0].0),
         "a full update with nothing announced names no node it did not send"
+    );
+}
+
+/// A widget that reports the text runs its cell holds, as a label would.
+struct Runs(std::rc::Rc<std::cell::RefCell<Vec<TextRun>>>);
+
+impl Widget for Runs {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+
+    fn semantics(&self) -> Option<Semantics> {
+        Some(Semantics {
+            text_runs: self.0.borrow().clone(),
+            ..Semantics::new(Role::Label)
+        })
+    }
+}
+
+/// A run of one character per byte of `text`, each 8 wide, at `y` in the
+/// content box, with a word at every character after a space.
+fn run(text: &str, y: f32) -> TextRun {
+    let count = text.len();
+    let word_starts = (0..count)
+        .filter(|at| *at == 0 || text.as_bytes()[at - 1] == b' ')
+        .map(|at| at as u8)
+        .collect();
+    TextRun {
+        text: text.to_owned(),
+        character_lengths: vec![1; count],
+        word_starts,
+        character_positions: (0..count).map(|at| at as f32 * 8.0).collect(),
+        character_widths: vec![8.0; count],
+        bounds: smudge_core::geometry::Rect::new(0.0, y, count as f32 * 8.0, y + 10.0),
+        start: 0,
+        right_to_left: false,
+        continues_line: false,
+    }
+}
+
+/// An app holding a label of `runs`, padded by 5, which a change of `name`
+/// projects again.
+fn app_with_runs(
+    runs: std::rc::Rc<std::cell::RefCell<Vec<TextRun>>>,
+    name: RwSignal<String>,
+) -> App {
+    app_with(move || {
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Runs(runs))
+                .padding(px(5.0))
+                .width(px(100.0))
+                .height(px(40.0))
+                .accessible_label(move || name.get()),
+        )
+    })
+}
+
+/// The ids of the text runs the label of an update holds, in order.
+fn run_ids(update: &accesskit::TreeUpdate) -> Vec<NodeId> {
+    let label = node_with_role(update, AccessKitRole::Label);
+    let runs: Vec<NodeId> = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == AccessKitRole::TextRun)
+        .map(|(id, _)| *id)
+        .collect();
+    label
+        .children()
+        .iter()
+        .copied()
+        .filter(|child| runs.contains(child))
+        .collect()
+}
+
+#[test]
+fn text_runs_reach_a_reader_as_text_it_can_read_and_measure() {
+    let runs = std::rc::Rc::new(std::cell::RefCell::new(vec![
+        run("ab\n", 0.0),
+        run("cd", 10.0),
+    ]));
+    let mut app = app_with_runs(runs, RwSignal::new(String::from("Text")));
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+
+    let ids = run_ids(&update);
+    assert_eq!(ids.len(), 2, "the label holds its runs, in order");
+    let first = update
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == ids[0])
+        .map(|(_, node)| node)
+        .expect("the update carries the first run");
+    let bounds = first.bounds().expect("a run has bounds");
+    assert_eq!(
+        (bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+        (10.0, 10.0, 58.0, 30.0),
+        "the run sits in the padded content box, at the app scale"
+    );
+    assert_eq!(first.character_positions(), Some(&[0.0, 16.0, 32.0][..]));
+    assert_eq!(first.character_widths(), Some(&[16.0, 16.0, 16.0][..]));
+
+    let tree = Tree::new(update, true);
+    let group = tree
+        .state()
+        .root()
+        .children()
+        .next()
+        .expect("the window holds the group");
+    let label = group.children().next().expect("the group holds the label");
+    assert!(label.supports_text_ranges());
+    let range = label.document_range();
+    assert_eq!(range.text(), "ab\ncd");
+    assert!(
+        !range.bounding_boxes().is_empty(),
+        "a reader can measure the text"
+    );
+}
+
+#[test]
+fn a_run_keeps_its_id_while_its_node_lives() {
+    let runs = std::rc::Rc::new(std::cell::RefCell::new(vec![
+        run("ab\n", 0.0),
+        run("cd", 10.0),
+    ]));
+    let name = RwSignal::new(String::from("Text"));
+    let mut app = app_with_runs(runs.clone(), name.clone());
+    let mut projection = Projection::new("Smudge");
+    let before = run_ids(&update_after_frame(&mut app, &mut projection, true));
+
+    *runs.borrow_mut() = vec![run("xy\n", 0.0), run("zw", 10.0), run("v", 20.0)];
+    name.set(String::from("Text again"));
+    let after = run_ids(&update_after_frame(&mut app, &mut projection, false));
+    assert_eq!(after.len(), 3);
+    assert_eq!(
+        &after[..2],
+        &before[..],
+        "the runs that stay keep their ids"
+    );
+
+    *runs.borrow_mut() = vec![run("only", 0.0)];
+    name.set(String::from("Text once more"));
+    let fewer = run_ids(&update_after_frame(&mut app, &mut projection, false));
+    assert_eq!(fewer, vec![before[0]]);
+}
+
+#[test]
+fn the_stretches_of_one_line_read_as_one_line() {
+    let mut second = run("cde", 0.0);
+    second.start = 3;
+    second.continues_line = true;
+    second.bounds = smudge_core::geometry::Rect::new(24.0, 0.0, 48.0, 10.0);
+    let runs = std::rc::Rc::new(std::cell::RefCell::new(vec![run("ab ", 0.0), second]));
+    let mut app = app_with_runs(runs, RwSignal::new(String::from("Text")));
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let tree = Tree::new(update, true);
+    let label = tree
+        .state()
+        .root()
+        .children()
+        .next()
+        .and_then(|group| group.children().next())
+        .expect("the group holds the label");
+    let start = label.document_range().start();
+    let mut line = start.to_degenerate_range();
+    line.set_end(start.forward_to_line_end());
+    assert_eq!(line.text(), "ab cde");
+
+    let end = label.document_range().end();
+    let mut back = end.to_degenerate_range();
+    back.set_start(end.backward_to_line_start());
+    assert_eq!(
+        back.text(),
+        "ab cde",
+        "the line reads back to its start too"
+    );
+}
+
+#[test]
+fn a_range_of_right_to_left_text_is_boxed_where_it_paints() {
+    let mut rtl = run("abc", 0.0);
+    rtl.right_to_left = true;
+    rtl.bounds = smudge_core::geometry::Rect::new(10.0, 0.0, 34.0, 10.0);
+    let runs = std::rc::Rc::new(std::cell::RefCell::new(vec![rtl]));
+    let mut app = app_with_runs(runs, RwSignal::new(String::from("Text")));
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let tree = Tree::new(update, true);
+    let label = tree
+        .state()
+        .root()
+        .children()
+        .next()
+        .and_then(|group| group.children().next())
+        .expect("the group holds the label");
+    let start = label.document_range().start();
+    let mut first_two = start.to_degenerate_range();
+    first_two.set_end(start.forward_to_character_end().forward_to_character_end());
+    let boxes = first_two.bounding_boxes();
+    assert_eq!(boxes.len(), 1);
+    let (x0, x1) = (boxes[0].x0, boxes[0].x1);
+    assert_eq!(
+        (x0, x1),
+        (46.0, 78.0),
+        "the first two letters fill the right two thirds of the run, at the app scale"
     );
 }

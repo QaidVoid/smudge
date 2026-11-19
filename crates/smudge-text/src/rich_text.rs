@@ -27,6 +27,7 @@ use smudge_core::tree::Dirty;
 use smudge_core::widget::{AvailableSpace, MeasureInput, PaintCx, Widget};
 use smudge_core::window::Cursor;
 
+use crate::a11y::text_runs;
 use crate::glyphs::rich_glyph_runs;
 use crate::layout::{RichLayout, SpanFont};
 use crate::style::{TextStyle, current_text_style};
@@ -288,10 +289,21 @@ impl RichText {
 impl Widget for RichText {
     /// Reports the joined text as the accessible value, as a label does.
     fn semantics(&self) -> Option<Semantics> {
+        let text_runs = self
+            .layout
+            .borrow()
+            .as_ref()
+            .map(|layout| text_runs(&layout.layout, &self.text, Point::default(), None))
+            .unwrap_or_default();
         Some(Semantics {
             value: Some(self.text.clone()),
+            text_runs,
             ..Semantics::new(Role::Label)
         })
+    }
+
+    fn role(&self) -> Option<Role> {
+        Some(Role::Label)
     }
 
     /// Lays the spans out against the offered width and returns their size,

@@ -113,6 +113,10 @@ impl Widget for TextArea {
         })
     }
 
+    fn role(&self) -> Option<Role> {
+        Some(Role::MultilineTextInput)
+    }
+
     /// Paints the field's background and border, the way a panel does.
     ///
     /// The text and the selection paint in [`Widget::paint_inside`], clipped

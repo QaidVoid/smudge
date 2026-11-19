@@ -526,3 +526,43 @@ fn focus_changes_and_disabling_queue_the_nodes_they_touch() {
     let changes = tree.take_a11y_changes();
     assert_eq!(changes.changed, vec![root, child], "the old and the new");
 }
+
+/// A label that counts how often its description is built, and names its
+/// role without building it.
+struct CountedLabel(Rc<Cell<usize>>);
+
+impl Widget for CountedLabel {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+
+    fn semantics(&self) -> Option<crate::semantics::Semantics> {
+        self.0.set(self.0.get() + 1);
+        Some(crate::semantics::Semantics::new(
+            crate::semantics::Role::Label,
+        ))
+    }
+
+    fn role(&self) -> Option<crate::semantics::Role> {
+        Some(crate::semantics::Role::Label)
+    }
+}
+
+#[test]
+fn a_change_builds_no_description_until_a_projection_reads_it() {
+    let built = Rc::new(Cell::new(0));
+    let mut tree = WidgetTree::new();
+    let id = tree.insert(
+        None,
+        Box::new(CountedLabel(built.clone())),
+        Style::default(),
+    );
+    tree.mark(id, Dirty::Paint);
+    tree.mark(id, Dirty::Layout);
+    tree.take_a11y_changes();
+    assert_eq!(
+        built.get(),
+        0,
+        "finding where a change belongs asks for the role alone"
+    );
+    assert!(tree.semantics_node(id).is_some());
+    assert_eq!(built.get(), 1, "a projection builds the description once");
+}
