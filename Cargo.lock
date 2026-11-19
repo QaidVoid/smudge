@@ -3022,6 +3022,7 @@ name = "smudge"
 version = "0.3.0"
 dependencies = [
  "smudge-core",
+ "smudge-devtools",
  "smudge-gpu",
  "smudge-markdown",
  "smudge-platform",
@@ -3079,6 +3080,16 @@ dependencies = [
  "smudge-test",
  "smudge-text",
  "tiny-skia",
+]
+
+[[package]]
+name = "smudge-devtools"
+version = "0.3.0"
+dependencies = [
+ "smudge-core",
+ "smudge-test",
+ "smudge-text",
+ "smudge-widgets",
 ]
 
 [[package]]

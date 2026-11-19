@@ -31,6 +31,7 @@ changelog_include = [
   "smudge-a11y",
   "smudge-core",
   "smudge-cpu",
+  "smudge-devtools",
   "smudge-gpu",
   "smudge-markdown",
   "smudge-platform",

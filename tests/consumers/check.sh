@@ -67,6 +67,9 @@ echo 'consumer: a library that forwards the font choice builds on its own'
 echo 'consumer: the facade with no font feature fails to compile'
 expect_fail no-font-fails sh -c 'cd no-font-fails && cargo build -q'
 
+echo 'consumer: devtools bring no font of their own'
+expect_fail 'no-font-fails with devtools' sh -c 'cd no-font-fails && cargo build -q --features smudge/devtools'
+
 echo 'consumer: the guide configurations build'
 ( cd guide-app && cargo check -q )
 ( cd guide-app && cargo check -q --no-default-features --features bundled-fonts )

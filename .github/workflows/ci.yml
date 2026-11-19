@@ -37,7 +37,7 @@ jobs:
         run: |
           ! grep -q 'source = "git+' Cargo.lock
       - name: Check wasm targets
-        run: RUSTFLAGS="-D warnings" cargo check --target wasm32-unknown-unknown -p smudge-core -p smudge-cpu -p smudge-platform -p smudge-text -p smudge-widgets -p smudge-markdown -p smudge
+        run: RUSTFLAGS="-D warnings" cargo check --target wasm32-unknown-unknown -p smudge-core -p smudge-cpu -p smudge-platform -p smudge-text -p smudge-widgets -p smudge-markdown -p smudge-devtools -p smudge
       - name: Install a system font for the consumer check
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-dejavu-core
       - name: Check feature consumers

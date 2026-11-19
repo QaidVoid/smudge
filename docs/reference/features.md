@@ -14,6 +14,7 @@
 | `complex-scripts` | no | Word and line break dictionaries for Chinese, Japanese, Thai, Lao, Khmer and Burmese. About 3 MB per binary and about 5 percent slower layout of other text. |
 | `system-fonts` | no | Also finds the fonts installed on the machine, on Linux, FreeBSD, Windows, Android and Apple platforms. The same feature of `smudge-text`, forwarded, so applications can turn it on without adding `smudge-text` themselves. |
 | `markdown` | no | Markdown rendered from a source that grows while it shows, through `smudge::markdown`. See [Markdown](/guide/markdown). |
+| `devtools` | no | The devtools panel of `smudge-devtools`, through `smudge::devtools`. Meant for development builds. |
 | `hot-reload` | no | Hot reload for applications started with `run_view` or `run_view_with`, on Linux, under `cargo smudge dev` from the `cargo-smudge` crate. The application applies each patch the builder sends and remounts its root through the patched view, keeping the state passed to the entry point and the values of the signals the view created. Implies `window`, and turns on the same feature of `smudge-widgets`. Elsewhere, and without a builder, both are plain runs. Meant for development builds. With it off, no patching code is compiled in. See [Hot reload](/guide/hot-reload). |
 
 ```toml

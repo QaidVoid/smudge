@@ -8,6 +8,7 @@ members = [
   "crates/smudge-bench",
   "crates/smudge-core",
   "crates/smudge-cpu",
+  "crates/smudge-devtools",
   "crates/smudge-gpu",
   "crates/smudge-markdown",
   "crates/smudge-platform",

@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 smudge-core = { version = "0.3.0", path = "../smudge-core" }
+smudge-devtools = { version = "0.3.0", path = "../smudge-devtools", default-features = false, optional = true }
 smudge-gpu = { version = "0.3.0", path = "../smudge-gpu", optional = true }
 smudge-markdown = { version = "0.3.0", path = "../smudge-markdown", default-features = false, optional = true }
 smudge-platform = { version = "0.3.0", path = "../smudge-platform", optional = true, default-features = false }
@@ -49,6 +50,9 @@ hot-reload = ["window", "smudge-platform/hot-reload", "smudge-widgets/hot-reload
 # Markdown rendered from a source that grows while it shows, through the
 # `markdown` module.
 markdown = ["dep:smudge-markdown"]
+# Devtools drawn over the running app, through the `devtools` module. Never
+# on by default, and meant for development builds only.
+devtools = ["dep:smudge-devtools"]
 
 [package.metadata.docs.rs]
 all-features = true

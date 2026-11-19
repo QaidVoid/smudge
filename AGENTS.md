@@ -94,7 +94,7 @@ cargo test --workspace --all-features
 cargo test --release -p smudge-core --test frame
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ! grep -q 'source = "git+' Cargo.lock
-RUSTFLAGS="-D warnings" cargo check --target wasm32-unknown-unknown -p smudge-core -p smudge-cpu -p smudge-platform -p smudge-text -p smudge-widgets -p smudge-markdown -p smudge
+RUSTFLAGS="-D warnings" cargo check --target wasm32-unknown-unknown -p smudge-core -p smudge-cpu -p smudge-platform -p smudge-text -p smudge-widgets -p smudge-markdown -p smudge-devtools -p smudge
 tests/consumers/check.sh
 ```
 

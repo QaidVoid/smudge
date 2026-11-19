@@ -9,6 +9,7 @@
 | [`smudge-text`](https://crates.io/crates/smudge-text) | Fonts, text layout, the label, rich text, the text input and the text area. | [docs.rs](https://docs.rs/smudge-text) |
 | [`smudge-widgets`](https://crates.io/crates/smudge-widgets) | Containers, the button, the image, the scroll view, split panes and the virtual lists. | [docs.rs](https://docs.rs/smudge-widgets) |
 | [`smudge-markdown`](https://crates.io/crates/smudge-markdown) | Markdown rendered from a source that grows while it shows. | [docs.rs](https://docs.rs/smudge-markdown) |
+| [`smudge-devtools`](https://crates.io/crates/smudge-devtools) | Devtools drawn over a running app. | [docs.rs](https://docs.rs/smudge-devtools) |
 | [`smudge-cpu`](https://crates.io/crates/smudge-cpu) | The CPU renderer, which repaints only damaged regions. | [docs.rs](https://docs.rs/smudge-cpu) |
 | [`smudge-gpu`](https://crates.io/crates/smudge-gpu) | The GPU renderer. | [docs.rs](https://docs.rs/smudge-gpu) |
 | [`smudge-platform`](https://crates.io/crates/smudge-platform) | Windows, input, presentation, renderer choice, and the web build. | [docs.rs](https://docs.rs/smudge-platform) |
@@ -51,6 +52,7 @@ The diagram shows the main paths; most crates also depend on `smudge-core` direc
 | `smudge::window` | `smudge-platform`, with the `window` feature (on by default) |
 | `smudge::gpu` | `smudge-gpu`, with the `gpu` feature |
 | `smudge::markdown` | `smudge-markdown`, with the `markdown` feature |
+| `smudge::devtools` | `smudge-devtools`, with the `devtools` feature |
 
 `smudge-cpu` is not re-exported. Depend on it directly to render frames yourself, for example in [headless tests](/guide/testing).
 

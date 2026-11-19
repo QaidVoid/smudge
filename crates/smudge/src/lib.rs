@@ -144,3 +144,7 @@ pub use smudge_gpu as gpu;
 /// streamed in tokens does. With the `markdown` feature.
 #[cfg(feature = "markdown")]
 pub use smudge_markdown as markdown;
+
+/// Devtools drawn over a running app's window. With the `devtools` feature.
+#[cfg(feature = "devtools")]
+pub use smudge_devtools as devtools;
