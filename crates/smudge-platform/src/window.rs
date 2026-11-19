@@ -1187,6 +1187,7 @@ where
                 );
             }
             state.devtools.show_bounds(&state.app, paced);
+            state.devtools.inspect(&state.app, paced);
         }
         let presented = presented.map(|(stats, _)| stats);
         if let Some(stats) = presented {

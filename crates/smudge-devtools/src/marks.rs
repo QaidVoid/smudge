@@ -3,6 +3,7 @@
 //! pixels its last frame repainted, and the outlines of its nodes.
 
 use smudge_core::geometry::{Color, Corners, Rect};
+use smudge_core::inspect::BoxModel;
 use smudge_core::paint::PaintOp;
 use smudge_core::widget::{PaintCx, Widget};
 
@@ -24,6 +25,15 @@ const DEPTHS: [Color; 6] = [
     Color::rgb(230, 110, 230),
 ];
 
+/// The colors of the highlighted node's margin, border, padding and
+/// content boxes, which stack from the outside in.
+const BOXES: [Color; 4] = [
+    Color::rgba(246, 178, 107, 110),
+    Color::rgba(255, 229, 153, 110),
+    Color::rgba(147, 196, 125, 110),
+    Color::rgba(111, 168, 220, 140),
+];
+
 /// The widget at the overlay's root, which paints the marks under the panel.
 #[derive(Default)]
 pub(crate) struct Marks {
@@ -33,6 +43,8 @@ pub(crate) struct Marks {
     /// The rectangles of the app's nodes, in logical pixels, each with its
     /// depth, while layout bounds is on.
     pub(crate) bounds: Vec<(usize, Rect)>,
+    /// The boxes of the node the inspector highlights.
+    pub(crate) highlight: Option<BoxModel>,
     /// The rectangles the app's last frame repainted, in logical pixels,
     /// while the damage tint is on.
     pub(crate) damage: Vec<Rect>,
@@ -41,7 +53,8 @@ pub(crate) struct Marks {
 impl Widget for Marks {
     /// Fills each flashed rectangle at its opacity, then each damaged
     /// rectangle with the tint, then outlines each node's rectangle in the
-    /// color of its depth.
+    /// color of its depth, then fills the highlighted node's boxes from the
+    /// outside in.
     fn paint(&self, _cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
         for &(rect, alpha) in &self.flashes {
             out.push(PaintOp::FillRect {
@@ -64,6 +77,16 @@ impl Widget for Marks {
                 width: 1.0,
                 color: DEPTHS[depth % DEPTHS.len()],
             });
+        }
+        if let Some(boxes) = self.highlight {
+            let rects = [boxes.margin, boxes.border, boxes.padding, boxes.content];
+            for (rect, color) in rects.into_iter().zip(BOXES) {
+                out.push(PaintOp::FillRect {
+                    rect,
+                    radius: Corners::all(0.0),
+                    color,
+                });
+            }
         }
     }
 }

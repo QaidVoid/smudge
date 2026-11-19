@@ -991,3 +991,125 @@ fn a_node_with_an_unbounded_size_lets_layout_bounds_go_idle() {
         "an unchanged tree asks for no second redraw"
     );
 }
+
+/// The center of the overlay's text that reads `text`.
+fn overlay_text(devtools: &Devtools, text: &str) -> Point {
+    let bounds = devtools
+        .app
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.value.as_deref() == Some(text))
+        .unwrap_or_else(|| panic!("the overlay shows {text:?}"))
+        .bounds;
+    Point {
+        x: (bounds.x0 + bounds.x1) / 2.0,
+        y: (bounds.y0 + bounds.y1) / 2.0,
+    }
+}
+
+#[test]
+fn picking_a_button_selects_it_and_names_where_it_was_built() {
+    TextSystem::bundled_only().install();
+    let pressed = Rc::new(Cell::new(0u32));
+    let counted = Rc::clone(&pressed);
+    let line = line!() + 10;
+    let mut app = App::new(
+        AppConfig {
+            viewport: VIEWPORT,
+            scale: 1.0,
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Damage,
+        },
+        move || {
+            smudge_widgets::column().padding(px(300.0)).child(
+                smudge_widgets::button("Save").on_press(move || counted.set(counted.get() + 1)),
+            )
+        },
+    );
+    app.frame();
+    let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
+    devtools.app.frame();
+    let at = overlay_text(&devtools, "Inspector");
+    click(&mut devtools, &mut app, at);
+    devtools.app.frame();
+    let at = overlay_text(&devtools, "Pick");
+    click(&mut devtools, &mut app, at);
+    devtools.app.frame();
+
+    let save = app
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == smudge_core::semantics::Role::Button)
+        .expect("the app shows its button");
+    let center = Point {
+        x: (save.bounds.x0 + save.bounds.x1) / 2.0,
+        y: (save.bounds.y0 + save.bounds.y1) / 2.0,
+    };
+    click(&mut devtools, &mut app, center);
+    app.frame();
+    assert_eq!(pressed.get(), 0, "a pick does not press the button");
+    assert_eq!(devtools.tools.selected(), Some(save.id));
+    assert!(!devtools.tools.is_picking(), "a pick ends pick mode");
+
+    devtools.inspect(&app, false);
+    devtools.app.frame();
+    let details = app.node_details(save.id).expect("the button is live");
+    let padding = details.boxes.padding;
+    let shown = devtools
+        .app
+        .semantics_nodes()
+        .into_iter()
+        .filter_map(|node| node.value)
+        .find(|text| text.starts_with("Panel (Button"))
+        .expect("the details describe the button");
+    assert!(shown.contains(&format!("{}:{line}:", file!())), "{shown}");
+    assert!(
+        shown.contains(&format!(
+            "padding: {}, {} {}x{}",
+            padding.x0,
+            padding.y0,
+            padding.width(),
+            padding.height()
+        )),
+        "{shown}"
+    );
+    let highlighted = devtools.app.frame().list.items().iter().any(
+        |item| matches!(item, DisplayItem::Op(PaintOp::FillRect { rect, .. }) if *rect == padding),
+    );
+    assert!(highlighted, "the selected button's boxes are highlighted");
+
+    let root = app
+        .node_at(Point { x: 10.0, y: 10.0 })
+        .expect("the root is there");
+    devtools.tools.select(Some(root));
+    devtools.inspect(&app, false);
+    let content = app
+        .node_details(root)
+        .expect("the root is live")
+        .boxes
+        .content;
+    let followed = devtools.app.frame().list.items().iter().any(
+        |item| matches!(item, DisplayItem::Op(PaintOp::FillRect { rect, .. }) if *rect == content),
+    );
+    assert!(followed, "the highlight follows the selection");
+
+    let row = devtools
+        .app
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| {
+            node.value
+                .as_deref()
+                .is_some_and(|text| text.trim() == "Label")
+        })
+        .expect("the tree lists the button's label");
+    let at = Point {
+        x: (row.bounds.x0 + row.bounds.x1) / 2.0,
+        y: (row.bounds.y0 + row.bounds.y1) / 2.0,
+    };
+    click(&mut devtools, &mut app, at);
+    let label = app
+        .node_details(devtools.tools.selected().expect("a row selects its node"))
+        .expect("the node is live");
+    assert!(label.type_name.ends_with("Label"), "{}", label.type_name);
+}

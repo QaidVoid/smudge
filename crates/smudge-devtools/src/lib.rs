@@ -5,6 +5,7 @@
 //! shows, so the app keeps working underneath and its own frames, numbers
 //! and pixels stay its own.
 
+mod inspector;
 mod marks;
 mod timeline;
 
@@ -18,10 +19,11 @@ use timeline::{HEIGHT, Timeline, TimelineView};
 use smudge_core::element::{AnyElement, Element, IntoElement, show};
 use smudge_core::geometry::{Point, Rect, Size};
 use smudge_core::input::{Drag, Handled};
+use smudge_core::inspect::{BoxModel, NodeDetails, TreeEntry};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::style::{Edges, Length, Overflow, pct, px};
 use smudge_core::theme::ColorToken;
-use smudge_core::tree::Dirty;
+use smudge_core::tree::{Dirty, WidgetId};
 use smudge_core::widget::{Panel, panel};
 use smudge_text::label;
 use smudge_widgets::{button, column, row};
@@ -63,6 +65,19 @@ pub struct Tools {
     /// The rectangles of the app's nodes, in logical pixels, each with its
     /// depth in the tree.
     bounds: RwSignal<Rc<Vec<(usize, Rect)>>>,
+    /// Whether the inspector tab shows.
+    inspecting: RwSignal<bool>,
+    /// Whether pick mode is on, so the pointer picks a node of the app.
+    picking: RwSignal<bool>,
+    /// Every node of the app's tree, hidden ones included.
+    tree: RwSignal<Rc<Vec<TreeEntry>>>,
+    /// The node the inspector shows.
+    selected: RwSignal<Option<WidgetId>>,
+    /// The details of the selected node.
+    details: RwSignal<Option<Rc<NodeDetails>>>,
+    /// The boxes the overlay highlights: the node under the pointer while
+    /// picking, and the selected node otherwise.
+    highlight: RwSignal<Option<BoxModel>>,
 }
 
 /// The devtools' switches, which the panel's buttons turn on and off and the
@@ -100,6 +115,12 @@ impl Tools {
             damage: RwSignal::new(Rc::new(Vec::new())),
             flashes: RwSignal::new(Rc::new(Vec::new())),
             bounds: RwSignal::new(Rc::new(Vec::new())),
+            inspecting: RwSignal::new(false),
+            picking: RwSignal::new(false),
+            tree: RwSignal::new(Rc::new(Vec::new())),
+            selected: RwSignal::new(None),
+            details: RwSignal::new(None),
+            highlight: RwSignal::new(None),
         }
     }
 
@@ -140,6 +161,59 @@ impl Tools {
         if self.bounds.with(|bounds| !bounds.is_empty()) {
             self.show_bounds([]);
         }
+        if self.highlight.with(Option::is_some) {
+            self.show_highlight(None);
+        }
+        if self.picking.get() {
+            self.picking.set(false);
+        }
+    }
+
+    /// Returns whether the inspector tab shows, so the window hands it the
+    /// app's tree and the selected node's details.
+    pub fn is_inspecting(&self) -> bool {
+        self.inspecting.get()
+    }
+
+    /// Returns whether pick mode is on, so the window sends the pointer to
+    /// [`Tools::show_highlight`] and [`Tools::select`] instead of the app.
+    pub fn is_picking(&self) -> bool {
+        self.picking.get()
+    }
+
+    /// Turns pick mode off, as a pick does.
+    pub fn stop_picking(&self) {
+        self.picking.set(false);
+    }
+
+    /// Returns the node the inspector shows.
+    pub fn selected(&self) -> Option<WidgetId> {
+        self.selected.get()
+    }
+
+    /// Makes `id` the node the inspector shows.
+    pub fn select(&self, id: Option<WidgetId>) {
+        self.selected.set(id);
+    }
+
+    /// Takes `tree`, every node of the app's tree, which the inspector lists.
+    pub fn show_tree(&self, tree: impl IntoIterator<Item = TreeEntry>) {
+        self.tree.update(|shown| {
+            let shown = Rc::make_mut(shown);
+            shown.clear();
+            shown.extend(tree);
+        });
+    }
+
+    /// Takes the details of the selected node, or `None` when no node is
+    /// selected or it is gone.
+    pub fn show_details(&self, details: Option<NodeDetails>) {
+        self.details.set(details.map(Rc::new));
+    }
+
+    /// Takes the boxes the overlay highlights, or `None` for none.
+    pub fn show_highlight(&self, boxes: Option<BoxModel>) {
+        self.highlight.set(boxes);
     }
 
     /// Takes `bounds`, the rectangles of the app's nodes in logical pixels,
@@ -264,7 +338,16 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
     let (switches, damage) = (tools.switches.clone(), tools.damage.clone());
     let (flashing, flashes) = (tools.switches.clone(), tools.flashes.clone());
     let (outlining, bounds) = (tools.switches.clone(), tools.bounds.clone());
+    let highlight = tools.highlight.clone();
     Element::new(Marks::default())
+        .bind(
+            Highlighted,
+            move || highlight.get(),
+            |marks, boxes| {
+                marks.highlight = boxes;
+                Dirty::Paint
+            },
+        )
         .bind(
             Outlined,
             move || outlining.get().layout_bounds.then(|| bounds.get()),
@@ -330,6 +413,10 @@ struct Flashed;
 /// [`Element::bind`] keys on.
 struct Outlined;
 
+/// The marker of the boxes the root highlights, which [`Element::bind`]
+/// keys on.
+struct Highlighted;
+
 /// Returns `at` moved as little as it takes for a panel there to stay inside
 /// a window of `viewport`: its left and top edges in the window, its right
 /// edge too while the window is wide enough, and at least [`KEEP`] of it
@@ -348,6 +435,44 @@ struct Frames;
 /// the frame under the pointer. The line follows the bars as new frames
 /// move them, so it always describes the bar the pointer is over.
 fn body(tools: &Tools) -> Element<Panel> {
+    let (frames, inspecting) = (tools.inspecting.clone(), tools.inspecting.clone());
+    let tab = |name: &'static str, inspector: bool| {
+        let (shown, choose) = (tools.inspecting.clone(), tools.inspecting.clone());
+        button(move || {
+            let mark = if shown.get() == inspector { "> " } else { "" };
+            format!("{mark}{name}")
+        })
+        .on_press(move || choose.set(inspector))
+    };
+    column()
+        .width(pct(100.0))
+        .padding(px(PAD))
+        .gap(Size {
+            width: PAD,
+            height: PAD,
+        })
+        .child(
+            row()
+                .gap(Size {
+                    width: PAD,
+                    height: PAD,
+                })
+                .child(tab("Frames", false))
+                .child(tab("Inspector", true)),
+        )
+        .child(show(move || !frames.get(), {
+            let tools = tools.clone();
+            move || frames_tab(&tools)
+        }))
+        .child(show(move || inspecting.get(), {
+            let tools = tools.clone();
+            move || inspector::inspector(&tools)
+        }))
+}
+
+/// Builds the frames tab: the timeline, the switches, and a line that
+/// describes the frame under the pointer.
+fn frames_tab(tools: &Tools) -> Element<Panel> {
     let hovered: RwSignal<Option<f32>> = RwSignal::new(None);
     let frames = tools.timeline.clone();
     let described = tools.timeline.clone();
@@ -373,7 +498,10 @@ fn body(tools: &Tools) -> Element<Panel> {
         });
     column()
         .width(pct(100.0))
-        .padding(px(PAD))
+        .gap(Size {
+            width: PAD,
+            height: PAD,
+        })
         .child(timeline)
         .child(
             row()

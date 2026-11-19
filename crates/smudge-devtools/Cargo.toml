@@ -11,7 +11,7 @@ version.workspace = true
 workspace = true
 
 [dependencies]
-smudge-core = { version = "0.3.0", path = "../smudge-core" }
+smudge-core = { version = "0.3.0", path = "../smudge-core", features = ["devtools"] }
 smudge-text = { version = "0.3.0", path = "../smudge-text", default-features = false }
 smudge-widgets = { version = "0.3.0", path = "../smudge-widgets", default-features = false }
 

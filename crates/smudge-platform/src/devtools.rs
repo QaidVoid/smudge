@@ -15,6 +15,7 @@ use std::time::Duration;
 use smudge_core::app::{App, AppConfig, RepaintMode};
 use smudge_core::geometry::{Color, PixelRect, Point, Rect, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
+use smudge_core::inspect::{BoxModel, NodeDetails, TreeEntry};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::theme::Theme;
 use smudge_core::window::Cursor;
@@ -70,6 +71,14 @@ pub(crate) struct Devtools {
     bounds: Vec<(usize, Rect)>,
     /// The rectangles of the app's nodes as this redraw finds them.
     found: Vec<(usize, Rect)>,
+    /// The app's tree last handed to the inspector.
+    entries: Vec<TreeEntry>,
+    /// The app's tree as this redraw finds it.
+    found_entries: Vec<TreeEntry>,
+    /// The details of the selected node last handed to the inspector.
+    details: Option<NodeDetails>,
+    /// The boxes last handed to the overlay to highlight.
+    highlighted: Option<BoxModel>,
     /// What the panel shows, which the window feeds.
     tools: smudge_devtools::Tools,
     /// Whether a wake of the overlay requests no redraw, because the window
@@ -150,6 +159,10 @@ impl Devtools {
             flashes: Vec::new(),
             bounds: Vec::new(),
             found: Vec::new(),
+            entries: Vec::new(),
+            found_entries: Vec::new(),
+            details: None,
+            highlighted: None,
             tools,
             quiet: Rc::new(Cell::new(false)),
             open,
@@ -309,6 +322,89 @@ impl Devtools {
         self.quiet.set(false);
     }
 
+    /// Handles `event` in pick mode, and returns whether it did.
+    ///
+    /// While pick mode is on and no press is held, the pointer outside the
+    /// panel picks instead of reaching the app: a move highlights the node
+    /// under it, and a primary press selects that node and ends pick mode.
+    /// Over the panel, the pointer goes to the panel as usual.
+    fn pick(&mut self, app: &mut App, event: &InputEvent) -> bool {
+        if !self.tools.is_picking() || self.captured || self.app_pressed {
+            return false;
+        }
+        let position = match event {
+            InputEvent::PointerMoved { position }
+            | InputEvent::PointerDown { position, .. }
+            | InputEvent::PointerUp { position, .. } => *position,
+            _ => return false,
+        };
+        if self.over_panel(position) {
+            return false;
+        }
+        if self.over {
+            self.app.handle_event(InputEvent::PointerLeft);
+            self.over = false;
+        }
+        app.handle_event(InputEvent::PointerLeft);
+        let node = app.node_at(position);
+        match event {
+            InputEvent::PointerMoved { .. } => {
+                self.highlighted = node
+                    .and_then(|id| app.node_details(id))
+                    .map(|details| details.boxes);
+                self.tools.show_highlight(self.highlighted);
+            }
+            InputEvent::PointerDown {
+                button: PointerButton::Primary,
+                ..
+            } => {
+                self.tools.select(node);
+                self.tools.stop_picking();
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Hands the inspector the app's tree and the selected node's details,
+    /// and the overlay the selected node's boxes, while the inspector tab
+    /// shows, each only when it changed.
+    ///
+    /// Like [`Devtools::show_bounds`], it runs after every present, and with
+    /// `paced` its writes request no redraw.
+    pub(crate) fn inspect(&mut self, app: &App, paced: bool) {
+        if !self.tools.is_inspecting() {
+            self.entries.clear();
+            self.details = None;
+            if self.highlighted.take().is_some() {
+                self.quiet.set(paced);
+                self.tools.show_highlight(None);
+                self.quiet.set(false);
+            }
+            return;
+        }
+        self.quiet.set(paced);
+        self.found_entries.clear();
+        app.visit_tree(|entry| self.found_entries.push(entry));
+        if self.found_entries != self.entries {
+            std::mem::swap(&mut self.found_entries, &mut self.entries);
+            self.tools.show_tree(self.entries.iter().copied());
+        }
+        let details = self.tools.selected().and_then(|id| app.node_details(id));
+        if details != self.details {
+            self.details.clone_from(&details);
+            self.tools.show_details(details);
+        }
+        if !self.tools.is_picking() {
+            let boxes = self.details.as_ref().map(|details| details.boxes);
+            if boxes != self.highlighted {
+                self.highlighted = boxes;
+                self.tools.show_highlight(boxes);
+            }
+        }
+        self.quiet.set(false);
+    }
+
     /// Returns whether flashes are still fading, so the window keeps
     /// drawing frames.
     pub(crate) fn is_fading(&self) -> bool {
@@ -359,6 +455,9 @@ impl Devtools {
                 _ => {}
             }
             app.handle_event(event);
+            return false;
+        }
+        if self.pick(app, &event) {
             return false;
         }
         match event {
@@ -438,6 +537,9 @@ impl Devtools {
             self.tools.forget_marks();
             self.flashes.clear();
             self.bounds.clear();
+            self.entries.clear();
+            self.details = None;
+            self.highlighted = None;
         }
         self.open = open;
         self.captured = false;

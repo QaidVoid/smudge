@@ -47,7 +47,7 @@ hot-reload = ["dep:subsecond", "smudge-core/hot-reload"]
 # `smudge` feature `devtools` turns it on. The leading underscore keeps it
 # out of the tools that turn on every feature of this crate alone, such as
 # the release's semver check, which would find no font source.
-_devtools = ["dep:smudge-devtools"]
+_devtools = ["dep:smudge-devtools", "smudge-core/devtools"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 accesskit = { version = "0.25.2", default-features = false, optional = true }
