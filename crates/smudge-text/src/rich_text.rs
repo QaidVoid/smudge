@@ -495,6 +495,7 @@ impl Widget for RichText {
 ///     ),
 /// ]));
 /// ```
+#[track_caller]
 pub fn rich_text(spans: impl Into<Value<Rc<[Span]>>>) -> Element<RichText> {
     let layout: Rc<RefCell<Option<RichLayout>>> = Rc::new(RefCell::new(None));
     let links: Links = Rc::new(RefCell::new(Vec::new()));

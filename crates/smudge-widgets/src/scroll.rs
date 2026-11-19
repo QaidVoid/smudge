@@ -252,8 +252,9 @@ fn clamp_offset(desired: f32, max: f32) -> f32 {
 /// back to the signal, so the signal always reads the position on screen.
 /// Before that, it applies any offset that is not negative as it is, which
 /// lets a view mount at a remembered position.
+#[track_caller]
 pub fn scroll(content: impl IntoElement) -> Element<ScrollView> {
-    scroll_with_visible_height(content, RwSignal::new(None), None, RwSignal::new(None))
+    scroll_with_visible_height(content, crate::signal(None), None, crate::signal(None))
 }
 
 /// Creates a view like [`scroll`] that reports the visible height of its
@@ -272,14 +273,15 @@ pub fn scroll(content: impl IntoElement) -> Element<ScrollView> {
 /// The view writes the signal [`ScrollExt::follow_end`] installs to
 /// `following`, so a list that reads the slot learns whether the view
 /// follows its end.
+#[track_caller]
 pub(crate) fn scroll_with_visible_height(
     content: impl IntoElement,
     visible_height: RwSignal<Option<f32>>,
     content_extent: Option<RwSignal<f32>>,
     following: RwSignal<Option<RwSignal<bool>>>,
 ) -> Element<ScrollView> {
-    let content_height = RwSignal::new(None);
-    let viewport = RwSignal::new(None);
+    let content_height = crate::signal(None);
+    let viewport = crate::signal(None);
     // A remount after a hot patch can hand these the measurements of the
     // old build's layout, which say nothing of the new one, and would clamp
     // a carried offset before the new view measured itself.
@@ -298,7 +300,7 @@ pub(crate) fn scroll_with_visible_height(
         following.set(None);
     }
     let chrome = Rc::new(ScrollChrome {
-        offset: RefCell::new(RwSignal::new(0.0)),
+        offset: RefCell::new(crate::signal(0.0)),
         following,
         content_height,
         content_extent,

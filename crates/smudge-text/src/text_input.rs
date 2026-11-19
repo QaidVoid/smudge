@@ -272,6 +272,7 @@ impl Widget for TextInput {
 /// returns. While the window is in the background, the focused field keeps
 /// the focus but hides its caret and its selection and stops blinking, and
 /// both show again when the window comes back.
+#[track_caller]
 pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
     let chrome = Rc::new(InputChrome::new(value.clone(), false));
 

@@ -172,6 +172,7 @@ impl Widget for Split {
 ///     .min_first(160.0)
 ///     .min_second(240.0);
 /// ```
+#[track_caller]
 pub fn split(
     direction: Direction,
     first: impl IntoElement,
@@ -179,10 +180,10 @@ pub fn split(
 ) -> Element<Split> {
     let state = Rc::new(SplitState {
         direction,
-        ratio: RwSignal::new(RwSignal::new(DEFAULT_RATIO)),
+        ratio: crate::signal(crate::signal(DEFAULT_RATIO)),
         initial: Cell::new(DEFAULT_RATIO),
-        min_first: RwSignal::new(0.0),
-        min_second: RwSignal::new(0.0),
+        min_first: crate::signal(0.0),
+        min_second: crate::signal(0.0),
         length: Cell::new(None),
         inset: Cell::new(0.0),
         grab: Cell::new(None),

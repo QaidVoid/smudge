@@ -1001,6 +1001,7 @@ fn hit<K, B: Brush>(key: K, layout: &parley::Layout<B>, at: Point) -> Hit<K> {
 ///     },
 /// );
 /// ```
+#[track_caller]
 pub fn selection_scope<K: Clone + Eq + Hash + 'static, E: IntoElement>(
     keys: impl Fn() -> Rc<[K]> + 'static,
     text_of: impl Fn(&K) -> String + 'static,

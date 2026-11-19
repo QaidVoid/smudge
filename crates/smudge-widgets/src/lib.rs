@@ -40,3 +40,13 @@ pub use scroll::{ScrollExt, ScrollView, scroll};
 pub use split::{Split, SplitExt, split};
 pub use virtual_list::virtual_list;
 pub use virtual_list_keyed::{virtual_column_keyed, virtual_list_keyed};
+
+/// Creates a signal the library keeps for itself, such as a widget's own
+/// state.
+///
+/// It passes no caller on, unlike the public constructors that call it, so
+/// hot reload files the signal under this crate rather than under the
+/// app's code, where it would take the place of one of the app's signals.
+pub(crate) fn signal<T: 'static>(value: T) -> smudge_core::reactive::RwSignal<T> {
+    smudge_core::reactive::RwSignal::new(value)
+}

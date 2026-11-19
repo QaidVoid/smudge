@@ -179,6 +179,7 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// )
 /// .height(px(480.0));
 /// ```
+#[track_caller]
 pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     items: impl Fn() -> Rc<[T]> + 'static,
     key: impl Fn(&T) -> K + 'static,
@@ -217,6 +218,7 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
 /// )
 /// .height(px(480.0));
 /// ```
+#[track_caller]
 pub fn virtual_column_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     items: impl Fn() -> Rc<[T]> + 'static,
     key: impl Fn(&T) -> K + 'static,
@@ -228,6 +230,7 @@ pub fn virtual_column_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoE
 
 /// Builds a keyed virtual column, reported as a list with its items when
 /// `list` holds.
+#[track_caller]
 fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     items: impl Fn() -> Rc<[T]> + 'static,
     key: impl Fn(&T) -> K + 'static,
@@ -250,7 +253,7 @@ fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     // the row it showed instead of re-aiming against estimates. The owner
     // keeps the signal until it cleans up, since a remount carries only the
     // signals that still live when it takes the old build's values.
-    let carried = RwSignal::new(Rc::new(RefCell::new(KeyedList {
+    let carried = crate::signal(Rc::new(RefCell::new(KeyedList {
         items: RefCell::new(Rc::from([])),
         index: HeightIndex::new(),
         measured: HashMap::new(),
@@ -260,8 +263,8 @@ fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     })));
     let state: Rc<RefCell<KeyedList<T, K>>> = carried.read(Rc::clone);
     Owner::on_cleanup(move || drop(carried));
-    let offset = RwSignal::new(0.0);
-    let visible: RwSignal<Option<f32>> = RwSignal::new(None);
+    let offset = crate::signal(0.0);
+    let visible: RwSignal<Option<f32>> = crate::signal(None);
     // A remount after a hot patch can hand this the measurement of the old
     // build's layout, which says nothing of the new one. Dropped before the
     // list's first run, it neither clamps a carried offset nor mounts rows
@@ -269,21 +272,21 @@ fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     if visible.read(Option::is_some) {
         visible.set(None);
     }
-    let total = RwSignal::new(0.0);
-    let window: RwSignal<Vec<K>> = RwSignal::new(Vec::new());
-    let pin: RwSignal<Option<(usize, f32)>> = RwSignal::new(None);
+    let total = crate::signal(0.0);
+    let window: RwSignal<Vec<K>> = crate::signal(Vec::new());
+    let pin: RwSignal<Option<(usize, f32)>> = crate::signal(None);
     // Where the first mounted row starts while the rows flow, which they do
     // while the view follows and the last row is mounted. The content then
     // ends at the laid-out bottom of the last row, which the follow pin
     // reaches in the frame the row grows, where the index's end would lag
     // until the measurement lands.
-    let lead: RwSignal<Option<f32>> = RwSignal::new(None);
-    let following: RwSignal<Option<RwSignal<bool>>> = RwSignal::new(None);
-    let reported = RwSignal::new(0u64);
+    let lead: RwSignal<Option<f32>> = crate::signal(None);
+    let following: RwSignal<Option<RwSignal<bool>>> = crate::signal(None);
+    let reported = crate::signal(0u64);
     // Counts the edits that moved keys already in the list, which change the
     // places the mounted rows report. Appends, measurements and scrolls move
     // none.
-    let order = RwSignal::new(0u64);
+    let order = crate::signal(0u64);
     let pending: Rc<RefCell<Vec<(K, f32)>>> = Rc::new(RefCell::new(Vec::new()));
 
     // One effect reconciles the list with its inputs: it takes the items,

@@ -47,6 +47,7 @@ const FOCUS_BORDER: f32 = 2.0;
 ///     set_clicks.set(clicks.get() + 1);
 /// });
 /// ```
+#[track_caller]
 pub fn button(label_text: impl Into<Value<String>>) -> Element<Panel> {
     let label_text = label_text.into();
     panel()

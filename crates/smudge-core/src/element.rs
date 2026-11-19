@@ -2561,6 +2561,7 @@ fn unmount_child(child: WidgetId, owner: &Owner, tree: &mut WidgetTree) {
 /// let (visible, _set_visible) = reactive::signal_local(true);
 /// let root = show(move || visible.get(), panel);
 /// ```
+#[cfg_attr(feature = "devtools", track_caller)]
 pub fn show<E: IntoElement>(
     when: impl Fn() -> bool + 'static,
     build: impl Fn() -> E + 'static,
@@ -2649,6 +2650,7 @@ pub fn show<E: IntoElement>(
 ///     |item| panel().width(px(40.0)).height(px(10.0)),
 /// );
 /// ```
+#[cfg_attr(feature = "devtools", track_caller)]
 pub fn for_each<T, K, E>(
     items: impl Fn() -> Vec<T> + 'static,
     key: impl Fn(&T) -> K + 'static,

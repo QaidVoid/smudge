@@ -393,6 +393,7 @@ impl Label {
 /// let greeting = label(move || format!("Hello, {}", name.get()));
 /// set_name.set("Smudge".to_owned());
 /// ```
+#[track_caller]
 pub fn label(text: impl Into<Value<String>>) -> Element<Label> {
     // The ambient style binding is installed first, so its update runs before
     // the updates of the builder methods and an explicit field wins over it.

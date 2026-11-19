@@ -25,6 +25,7 @@ use smudge_core::widget::{Panel, panel};
 ///     .child(button("Undo"))
 ///     .child(button("Redo").padding(px(8.0)));
 /// ```
+#[track_caller]
 pub fn row() -> Element<Panel> {
     panel().row()
 }
@@ -33,6 +34,7 @@ pub fn row() -> Element<Panel> {
 ///
 /// The gap between adjacent children starts at zero; [`Element::gap`] sets
 /// it.
+#[track_caller]
 pub fn column() -> Element<Panel> {
     panel().column()
 }
@@ -59,6 +61,7 @@ pub fn column() -> Element<Panel> {
 ///     .child(smudge_core::widget::panel().background(Color::WHITE))
 ///     .child(smudge_core::widget::panel().background(Color::BLACK));
 /// ```
+#[track_caller]
 pub fn stack() -> Element<Panel> {
     panel().style_children(|style: &mut Style| {
         style.layout.position = Position::Absolute;
@@ -70,6 +73,7 @@ pub fn stack() -> Element<Panel> {
 ///
 /// Between two children of a [`row`](crate::row) it pushes them apart; inside
 /// a [`column`](crate::column) it fills the space below the content.
+#[track_caller]
 pub fn spacer() -> Element<Panel> {
     panel().grow(1.0)
 }

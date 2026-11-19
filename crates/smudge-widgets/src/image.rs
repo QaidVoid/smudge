@@ -38,6 +38,7 @@ use smudge_core::widget::{MeasureInput, PaintCx, Panel, Widget};
 /// let source = RwSignal::new(None);
 /// let picture = image(move || source.get());
 /// ```
+#[track_caller]
 pub fn image(source: impl Into<Value<Option<Image>>>) -> Element<ImageView> {
     Element::new(ImageView { source: None }).bind(SourceKey, source.into(), set_source)
 }

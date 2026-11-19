@@ -285,10 +285,11 @@ impl Widget for TextArea {
 /// returns. While the window is in the background, the focused field keeps
 /// the focus but hides its caret and its selection and stops blinking, and
 /// both show again when the window comes back.
+#[track_caller]
 pub fn text_area(value: RwSignal<String>) -> Element<TextArea> {
     let chrome = Rc::new(InputChrome::new(value.clone(), true));
     let measured = Rc::new(Cell::new(0.0));
-    let relayout = RwSignal::new(0u64);
+    let relayout = crate::signal(0u64);
     let relayout_source = relayout.clone();
 
     let key_chrome = Rc::clone(&chrome);

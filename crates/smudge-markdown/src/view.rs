@@ -104,6 +104,7 @@ const GAP: f32 = 8.0;
 /// let view = markdown(&reply, MarkdownOptions::default());
 /// reply.push("**Done.** Three tests passed.\n");
 /// ```
+#[track_caller]
 pub fn markdown(source: &MarkdownSource, options: MarkdownOptions) -> Element<Panel> {
     let keys = source.clone();
     let texts = source.clone();

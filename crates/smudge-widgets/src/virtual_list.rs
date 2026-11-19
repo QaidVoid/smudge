@@ -72,6 +72,7 @@ const OVERSCAN: usize = 4;
 /// )
 /// .height(px(480.0));
 /// ```
+#[track_caller]
 pub fn virtual_list<E: IntoElement>(
     count: impl Fn() -> usize + 'static,
     row_height: f32,
@@ -84,8 +85,8 @@ pub fn virtual_list<E: IntoElement>(
     };
     let count = Rc::new(smudge_core::hot::wrap(count));
     let row = Rc::new(smudge_core::hot::wrap1(row));
-    let visible: RwSignal<Option<f32>> = RwSignal::new(None);
-    let offset = RwSignal::new(0.0);
+    let visible: RwSignal<Option<f32>> = crate::signal(None);
+    let offset = crate::signal(0.0);
 
     let range_count = Rc::clone(&count);
     let range_offset = offset.clone();
@@ -136,5 +137,5 @@ pub fn virtual_list<E: IntoElement>(
         .accessible_set_size(move || size_count())
         .child(rows);
 
-    scroll_with_visible_height(content, visible, None, RwSignal::new(None)).offset(offset)
+    scroll_with_visible_height(content, visible, None, crate::signal(None)).offset(offset)
 }

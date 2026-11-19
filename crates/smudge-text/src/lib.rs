@@ -96,3 +96,13 @@ pub use style::{TextStyle, current_text_style, provide_text_style};
 pub use system::{FontError, TextSystem};
 pub use text_area::{TextArea, TextAreaExt, text_area};
 pub use text_input::{TextInput, TextInputExt, text_input};
+
+/// Creates a signal the library keeps for itself, such as a widget's own
+/// state.
+///
+/// It passes no caller on, unlike the public constructors that call it, so
+/// hot reload files the signal under this crate rather than under the
+/// app's code, where it would take the place of one of the app's signals.
+pub(crate) fn signal<T: 'static>(value: T) -> smudge_core::reactive::RwSignal<T> {
+    smudge_core::reactive::RwSignal::new(value)
+}
