@@ -5,9 +5,11 @@
 
 use smudge_core::geometry::{Point, Rect};
 use smudge_core::input::{InputEvent, PointerButton};
-use smudge_core::inspect::SourceKind;
+use smudge_core::inspect::{A11yWarningKind, SourceKind};
 use smudge_core::reactive::{RenderEffect, RwSignal, prelude::*};
+use smudge_core::semantics::Role;
 use smudge_core::style::px;
+use smudge_core::tree::WidgetId;
 use smudge_core::widget::panel;
 use smudge_test::Harness;
 
@@ -202,6 +204,25 @@ fn the_busiest_effects_and_the_owner_tree_count_the_apps_own() {
         signals >= 1 && effects >= 1,
         "{signals} signals, {effects} effects"
     );
+    let (mut more_signals, mut more_effects) = (0, 0);
+    harness.app().remount(|| {
+        let count = RwSignal::new(0_u32);
+        let _ = RwSignal::new(0_u32);
+        let (seen, press) = (count.clone(), count);
+        std::mem::forget(RenderEffect::new(move || {
+            seen.get();
+        }));
+        panel().on_press(move || press.update(|count| *count += 1))
+    });
+    harness.app().visit_owners(|owner| {
+        more_signals += owner.signals;
+        more_effects += owner.effects;
+    });
+    assert_eq!(
+        (more_signals, more_effects),
+        (signals + 1, effects),
+        "the same build with one more signal counts one more signal"
+    );
 }
 
 #[test]
@@ -243,4 +264,139 @@ fn updates_that_never_settle_are_reported_with_the_last_write() {
         write.file() == file!() && [first, second].contains(&write.line()),
         "{write:?}"
     );
+}
+
+#[test]
+fn the_tab_order_is_the_order_tab_moves_the_focus_in() {
+    let mut harness = Harness::new(300.0, 100.0, 1.0, || {
+        panel()
+            .child(panel().width(px(40.0)).height(px(20.0)).focusable())
+            .child(panel().hidden(true).child(panel().focusable()))
+            .child(
+                panel()
+                    .child(panel().width(px(40.0)).height(px(20.0)).focusable())
+                    .child(panel().width(px(40.0)).height(px(20.0)).focusable()),
+            )
+    });
+    harness.frame();
+    let order: Vec<WidgetId> = harness
+        .app()
+        .focus_info()
+        .order
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(order.len(), 3, "the hidden node is left out");
+    let mut visited = Vec::new();
+    for _ in 0..order.len() {
+        harness.press_key(smudge_core::input::Key::Tab);
+        harness.frame();
+        visited.extend(harness.app().focused());
+    }
+    assert_eq!(visited, order);
+    assert!(
+        harness.app().focus_info().keyboard,
+        "Tab turns keyboard navigation on"
+    );
+}
+
+#[test]
+fn an_unnamed_icon_button_and_an_unprojected_pressable_node_are_warned_about() {
+    let mut harness = Harness::new(300.0, 100.0, 1.0, || {
+        panel()
+            .child(
+                panel()
+                    .width(px(30.0))
+                    .height(px(30.0))
+                    .role(Role::Button)
+                    .focusable()
+                    .on_press(|| {}),
+            )
+            .child(panel().width(px(30.0)).height(px(30.0)).on_press(|| {}))
+            .child(
+                panel()
+                    .width(px(30.0))
+                    .height(px(30.0))
+                    .role(Role::Button)
+                    .accessible_label("Save")
+                    .focusable()
+                    .on_press(|| {}),
+            )
+    });
+    harness.frame();
+    let kinds: Vec<(A11yWarningKind, f32)> = harness
+        .app()
+        .accessibility_warnings()
+        .into_iter()
+        .map(|warning| (warning.kind, warning.rect.x0))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (A11yWarningKind::FocusableWithoutName, 0.0),
+            (A11yWarningKind::PressableWithoutRole, 30.0),
+        ],
+        "the named button is fine"
+    );
+}
+
+#[test]
+fn the_pointer_view_follows_hover_and_a_held_press() {
+    let mut harness = Harness::new(200.0, 100.0, 1.0, || {
+        panel().child(panel().width(px(60.0)).height(px(40.0)).on_press(|| {}))
+    });
+    harness.frame();
+    let inside = Point { x: 30.0, y: 20.0 };
+    harness
+        .app()
+        .handle_event(InputEvent::PointerMoved { position: inside });
+    harness.app().handle_event(InputEvent::PointerDown {
+        position: inside,
+        button: PointerButton::Primary,
+    });
+    let pointer = harness.app().pointer_info();
+    let child = Rect::new(0.0, 0.0, 60.0, 40.0);
+    assert_eq!(pointer.hovered.first(), Some(&child), "deepest first");
+    assert_eq!(pointer.hovered.len(), 2, "the child and the root");
+    assert_eq!(pointer.pressed, Some(child));
+    assert_eq!(pointer.pressable, [child]);
+}
+
+#[test]
+fn the_owner_walk_lets_its_callback_use_signals() {
+    let mut harness = Harness::new(100.0, 50.0, 1.0, || {
+        let _ = RwSignal::new(1_u8);
+        panel()
+    });
+    harness.frame();
+    let count = RwSignal::new(0_usize);
+    let mut made = Vec::new();
+    harness.app().visit_owners(|owner| {
+        count.update(|count| *count += owner.signals);
+        made.push(RwSignal::new(owner.depth));
+    });
+    assert!(count.get() >= 1, "the build's signal is counted");
+    assert!(!made.is_empty());
+}
+
+#[test]
+fn a_cycle_is_reported_by_the_app_it_happened_in() {
+    let mut quiet = Harness::new(100.0, 50.0, 1.0, panel);
+    quiet.frame();
+    let mut cycling = Harness::new(100.0, 50.0, 1.0, || {
+        let count = RwSignal::new(0_u32);
+        let feed = count.clone();
+        std::mem::forget(RenderEffect::new(move || {
+            let next = feed.get() + 1;
+            feed.set(next);
+        }));
+        panel().on_press(move || count.set(1))
+    });
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cycling.frame();
+        cycling.click(Point { x: 10.0, y: 10.0 });
+        cycling.frame();
+    }));
+    assert!(!cycling.app().cycles().is_empty());
+    assert!(quiet.app().cycles().is_empty(), "the other app had none");
 }

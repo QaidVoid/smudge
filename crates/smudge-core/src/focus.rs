@@ -402,7 +402,7 @@ impl WidgetTree {
     }
 
     /// Appends the focusable nodes of the subtree, in paint order.
-    fn collect_focusable(&self, id: WidgetId, order: &mut Vec<WidgetId>) {
+    pub(super) fn collect_focusable(&self, id: WidgetId, order: &mut Vec<WidgetId>) {
         let Some(node) = self.nodes.get(id) else {
             return;
         };

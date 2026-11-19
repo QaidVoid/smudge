@@ -1321,6 +1321,28 @@ impl App {
         self.tree.node_at(position)
     }
 
+    /// Returns where the keyboard focus is and the order Tab visits nodes
+    /// in. See [`crate::inspect`].
+    #[cfg(feature = "devtools")]
+    pub fn focus_info(&self) -> crate::inspect::FocusInfo {
+        self.tree.focus_info()
+    }
+
+    /// Returns what the pointer is over, what it holds and which nodes take
+    /// a press. See [`crate::inspect`].
+    #[cfg(feature = "devtools")]
+    pub fn pointer_info(&self) -> crate::inspect::PointerInfo {
+        self.tree.pointer_info()
+    }
+
+    /// Returns the visible nodes that assistive technology cannot describe
+    /// well: a focusable node without a name, a pressable node without a
+    /// role and a text input without a name. See [`crate::inspect`].
+    #[cfg(feature = "devtools")]
+    pub fn accessibility_warnings(&self) -> Vec<crate::inspect::A11yWarning> {
+        self.tree.accessibility_warnings()
+    }
+
     /// Returns the `limit` effects of this app that ran most, most first.
     /// See [`crate::inspect`].
     #[cfg(feature = "devtools")]

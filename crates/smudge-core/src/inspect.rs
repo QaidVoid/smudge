@@ -41,6 +41,7 @@ use crate::tree::{Dirty, WidgetId};
 /// One node of the tree, as [`App::visit_tree`](crate::app::App::visit_tree)
 /// reports it.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct TreeEntry {
     /// The node.
     pub id: WidgetId,
@@ -205,4 +206,60 @@ pub struct OwnerEntry {
     pub memos: usize,
     /// How many effects it holds.
     pub effects: usize,
+}
+
+/// Where the keyboard focus is and where Tab takes it, as
+/// [`App::focus_info`](crate::app::App::focus_info) reports it.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct FocusInfo {
+    /// The node that holds the focus.
+    pub focused: Option<WidgetId>,
+    /// Whether keyboard navigation mode is on, which shows focus rings.
+    pub keyboard: bool,
+    /// The nodes Tab visits, in order, each with its rectangle.
+    pub order: Vec<(WidgetId, Rect)>,
+    /// The rectangle of the focus trap that holds the keyboard, if one does.
+    pub trap: Option<Rect>,
+}
+
+/// What the pointer is over and what it holds, as
+/// [`App::pointer_info`](crate::app::App::pointer_info) reports it.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct PointerInfo {
+    /// The hovered node and its enabled ancestors, deepest first.
+    pub hovered: Vec<Rect>,
+    /// The node a held press began on, which takes the pointer until the
+    /// press ends.
+    pub pressed: Option<Rect>,
+    /// Every visible, enabled node that runs a handler when pressed.
+    pub pressable: Vec<Rect>,
+}
+
+/// A node that assistive technology cannot describe well.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct A11yWarning {
+    /// The node.
+    pub id: WidgetId,
+    /// Its rectangle.
+    pub rect: Rect,
+    /// What is missing.
+    pub kind: A11yWarningKind,
+}
+
+/// What an [`A11yWarning`] is about.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum A11yWarningKind {
+    /// The node takes the keyboard focus but has no name, so a screen
+    /// reader announces nothing useful when it is focused.
+    FocusableWithoutName,
+    /// The node runs a handler when pressed but reports no role, so assistive
+    /// technology does not know it can be pressed.
+    PressableWithoutRole,
+    /// A text input with no name, so a screen reader cannot say what it is
+    /// for.
+    TextInputWithoutName,
 }

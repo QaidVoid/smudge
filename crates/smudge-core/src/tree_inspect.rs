@@ -4,7 +4,11 @@
 use std::panic::Location;
 
 use crate::geometry::{Point, Rect};
-use crate::inspect::{BoxModel, NodeDetails, States, TreeEntry};
+use crate::inspect::{
+    A11yWarning, A11yWarningKind, BoxModel, FocusInfo, NodeDetails, PointerInfo, States, TreeEntry,
+};
+use crate::semantics::Role;
+use crate::style::bounded_or;
 
 use super::interaction::Interaction;
 use super::{WidgetId, WidgetTree};
@@ -72,10 +76,10 @@ impl WidgetTree {
         let (margin, padding) = match layout {
             Some(layout) if !hidden => (
                 Rect::new(
-                    border.x0 - layout.margin.left,
-                    border.y0 - layout.margin.top,
-                    border.x1 + layout.margin.right,
-                    border.y1 + layout.margin.bottom,
+                    border.x0 - bounded_or(layout.margin.left, 0.0),
+                    border.y0 - bounded_or(layout.margin.top, 0.0),
+                    border.x1 + bounded_or(layout.margin.right, 0.0),
+                    border.y1 + bounded_or(layout.margin.bottom, 0.0),
                 ),
                 Rect::new(
                     border.x0 + layout.border.left,
@@ -124,5 +128,127 @@ impl WidgetTree {
             bindings: crate::reactive::runtime::bindings_of(&node.owner),
             hidden,
         })
+    }
+
+    /// Returns where the focus is and the order Tab visits nodes in, which
+    /// is the order [`WidgetTree::next_focusable`] walks.
+    pub(crate) fn focus_info(&self) -> FocusInfo {
+        let trap = self.active_focus_trap();
+        let mut order = Vec::new();
+        if let Some(scope) = trap.or(self.root) {
+            self.collect_focusable(scope, &mut order);
+        }
+        let rect = |id: WidgetId| self.nodes.get(id).map(|node| node.rect);
+        FocusInfo {
+            focused: self.focused(),
+            keyboard: self.keyboard_nav(),
+            order: order
+                .into_iter()
+                .filter_map(|id| Some((id, rect(id)?)))
+                .collect(),
+            trap: trap.and_then(rect),
+        }
+    }
+
+    /// Returns the hovered chain, the held press and the pressable nodes.
+    pub(crate) fn pointer_info(&self) -> PointerInfo {
+        let mut info = PointerInfo::default();
+        let mut next = self.hovered;
+        while let Some(node) = next.and_then(|id| self.nodes.get(id)) {
+            if !node.interaction.has(Interaction::DISABLED) {
+                info.hovered.push(node.rect);
+            }
+            next = node.parent;
+        }
+        info.pressed = self
+            .pressed
+            .and_then(|id| self.nodes.get(id))
+            .map(|node| node.rect);
+        if let Some(root) = self.root {
+            self.collect_pressable(root, &mut info.pressable);
+        }
+        info
+    }
+
+    /// Appends the rectangles of the visible, enabled nodes of the subtree
+    /// that run a handler when pressed.
+    fn collect_pressable(&self, id: WidgetId, out: &mut Vec<Rect>) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if node.withdrawn() {
+            return;
+        }
+        if node.handlers.takes_press() && !node.interaction.has(Interaction::DISABLED) {
+            out.push(node.rect);
+        }
+        for &child in &node.children {
+            self.collect_pressable(child, out);
+        }
+    }
+
+    /// Returns the visible nodes that assistive technology cannot describe
+    /// well: the projected ones in paint order, then the pressable nodes
+    /// that are not projected, in paint order too.
+    pub(crate) fn accessibility_warnings(&self) -> Vec<A11yWarning> {
+        let mut warnings = Vec::new();
+        for node in self.semantics_nodes() {
+            let named = node
+                .label
+                .as_deref()
+                .is_some_and(|label| !label.trim().is_empty())
+                || !node.text_runs.is_empty();
+            let kind = match node.role {
+                Role::TextInput | Role::MultilineTextInput
+                    if node
+                        .label
+                        .as_deref()
+                        .is_none_or(|label| label.trim().is_empty()) =>
+                {
+                    Some(A11yWarningKind::TextInputWithoutName)
+                }
+                _ if node.focusable && !named && node.value.is_none() => {
+                    Some(A11yWarningKind::FocusableWithoutName)
+                }
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                warnings.push(A11yWarning {
+                    id: node.id,
+                    rect: node.bounds,
+                    kind,
+                });
+            }
+        }
+        let mut pressable = Vec::new();
+        if let Some(root) = self.root {
+            self.collect_unprojected_pressable(root, &mut pressable);
+        }
+        warnings.extend(pressable.into_iter().map(|(id, rect)| A11yWarning {
+            id,
+            rect,
+            kind: A11yWarningKind::PressableWithoutRole,
+        }));
+        warnings
+    }
+
+    /// Appends the visible, enabled nodes of the subtree that run a handler
+    /// when pressed but are not projected, so they report no role.
+    fn collect_unprojected_pressable(&self, id: WidgetId, out: &mut Vec<(WidgetId, Rect)>) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if node.withdrawn() {
+            return;
+        }
+        if node.handlers.takes_press()
+            && !node.interaction.has(Interaction::DISABLED)
+            && self.semantics_node(id).is_none()
+        {
+            out.push((id, node.rect));
+        }
+        for &child in &node.children {
+            self.collect_unprojected_pressable(child, out);
+        }
     }
 }
