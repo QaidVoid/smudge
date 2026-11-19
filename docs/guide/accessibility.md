@@ -14,6 +14,7 @@ Every widget that has a meaning reports a role, and a name or a value:
 | `text_area` | Multi-line text input | Its placeholder, with the current text as its value |
 | `scroll` | Scroll view | None by default |
 | `virtual_list`, `virtual_list_keyed` | Scroll view holding a list, with how many rows the list has | None by default. Each mounted row is a list item with its place among all the rows. |
+| `virtual_column_keyed` | Scroll view | None by default. The rows report only their own content, with no list around them. |
 | The window | Window | The window title |
 
 Bounds, keyboard focus and the press action are reported too, and each frame sends only what changed since the last one.

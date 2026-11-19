@@ -1,5 +1,6 @@
 //! The keyed virtual list: a scroll view over keyed items of different
-//! heights, with an anchor that keeps the view steady under edits.
+//! heights, with an anchor that keeps the view steady under edits. It also
+//! backs the keyed virtual column, the same view without list semantics.
 //!
 //! The list mounts only the rows near the viewport, like the fixed-height
 //! [`virtual_list`](crate::virtual_list) does, and it measures each mounted
@@ -84,7 +85,8 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// The scroll view holds a list for the accessibility tree, which reports
 /// how many items there are as its size, and each mounted row is a list
 /// item with its item's place, which follows edits before it. Only the
-/// mounted rows have nodes.
+/// mounted rows have nodes. For content that is not a list, such as the
+/// blocks of a document, use [`virtual_column_keyed`], which reports no list.
 ///
 /// `items` runs inside a memo of its own, so an edit to the signals it reads
 /// remeasures the list and a scroll never runs it. Every update calls `key`
@@ -156,6 +158,10 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// and the list only grows at the end, because it measures nothing and its
 /// rows never move but by the scroll.
 ///
+/// # Panics
+///
+/// In a debug build, panics when two items share a key.
+///
 /// ```
 /// use std::rc::Rc;
 ///
@@ -178,6 +184,56 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
     key: impl Fn(&T) -> K + 'static,
     estimate: f32,
     row: impl Fn(&T) -> E + 'static,
+) -> Element<ScrollView> {
+    keyed(items, key, estimate, row, true)
+}
+
+/// A scroll view that mounts only the rows near its viewport, as
+/// [`virtual_list_keyed`] does, for content that is not a list.
+///
+/// It behaves as [`virtual_list_keyed`] does in every way but one: the
+/// accessibility tree sees no list and no list items, only the rows' own
+/// content, so a screen reader reads a document built from it as a document
+/// rather than announcing how many items it holds.
+///
+/// # Panics
+///
+/// In a debug build, panics when two items share a key.
+///
+/// ```
+/// use std::rc::Rc;
+///
+/// use smudge_core::reactive::{RwSignal, prelude::*};
+/// use smudge_core::style::px;
+/// use smudge_text::label;
+/// use smudge_widgets::virtual_column_keyed;
+///
+/// let blocks: RwSignal<Rc<[u32]>> = RwSignal::new(Rc::from([1, 2, 3]));
+/// let document = virtual_column_keyed(
+///     move || blocks.get(),
+///     |block| *block,
+///     48.0,
+///     |block| label(format!("Paragraph {block}")),
+/// )
+/// .height(px(480.0));
+/// ```
+pub fn virtual_column_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
+    items: impl Fn() -> Rc<[T]> + 'static,
+    key: impl Fn(&T) -> K + 'static,
+    estimate: f32,
+    row: impl Fn(&T) -> E + 'static,
+) -> Element<ScrollView> {
+    keyed(items, key, estimate, row, false)
+}
+
+/// Builds a keyed virtual column, reported as a list with its items when
+/// `list` holds.
+fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
+    items: impl Fn() -> Rc<[T]> + 'static,
+    key: impl Fn(&T) -> K + 'static,
+    estimate: f32,
+    row: impl Fn(&T) -> E + 'static,
+    list: bool,
 ) -> Element<ScrollView> {
     let estimate = if estimate.is_finite() && estimate > 0.0 {
         estimate
@@ -498,6 +554,16 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                         report_signal.update(|count| *count += 1);
                     }
                 };
+                // A column stretches the row's content to the list's width,
+                // as any column does with its children.
+                let measured = Element::new(MeasureRow {
+                    report: Rc::new(report),
+                })
+                .column()
+                .shrink(0.0);
+                if !list {
+                    return measured.child(content);
+                }
                 // A row's place moves only when an edit moves the keys before
                 // it, which the order counter reports.
                 let position = {
@@ -509,16 +575,10 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                         state.borrow().index.position(&item_key).unwrap_or(0)
                     }
                 };
-                // A column stretches the row's content to the list's width,
-                // as any column does with its children.
-                Element::new(MeasureRow {
-                    report: Rc::new(report),
-                })
-                .column()
-                .shrink(0.0)
-                .role(Role::ListItem)
-                .accessible_position(position)
-                .child(content)
+                measured
+                    .role(Role::ListItem)
+                    .accessible_position(position)
+                    .child(content)
             },
         )
         .column()
@@ -526,10 +586,15 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
         .pin_child(move || pin.get())
     };
 
-    let content = panel()
-        .column()
-        .role(Role::List)
-        .accessible_set_size(move || current_items.with(|snapshot| snapshot.0.len()))
+    let content = panel().column();
+    let content = if list {
+        content
+            .role(Role::List)
+            .accessible_set_size(move || current_items.with(|snapshot| snapshot.0.len()))
+    } else {
+        content
+    };
+    let content = content
         .height({
             let total = total.clone();
             let lead = lead.clone();

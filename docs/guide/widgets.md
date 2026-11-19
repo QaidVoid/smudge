@@ -172,6 +172,8 @@ let list = virtual_list_keyed(
 
 Pick the fixed `virtual_list` when every row is the same height and the items are indexed positions; pick `virtual_list_keyed` when heights differ or the items have identities that survive reordering.
 
+Both tell a screen reader that they hold a list, with how many items it has. Content that is not a list, such as the blocks of a long document, wants `virtual_column_keyed`, which takes the same arguments and behaves the same way but reports no list, so a reader reads the content as it is.
+
 ## Writing your own
 
 The button, the containers, the scroll view and the virtual list are composed from `panel`, `label` and the public element builders. A component of your own is the same thing, a function that returns an element:

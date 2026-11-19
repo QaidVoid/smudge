@@ -461,3 +461,22 @@ fn headings_reach_the_accessibility_tree_with_their_levels() {
         "each heading is named by its text and reports its level"
     );
 }
+
+#[test]
+fn a_document_reaches_the_accessibility_tree_as_no_list() {
+    use smudge_core::semantics::Role;
+    let source = MarkdownSource::new();
+    source.push("# Title\n\nSome text.\n\nMore text.\n");
+    let (mut harness, _) = view_of(&source);
+    let nodes = harness.app().semantics_nodes();
+    assert!(
+        nodes
+            .iter()
+            .all(|node| node.role != Role::List && node.role != Role::ListItem),
+        "the blocks of a document are no list items"
+    );
+    assert!(
+        nodes.iter().any(|node| node.role == Role::Heading),
+        "the blocks' own semantics still reach the tree"
+    );
+}

@@ -13,7 +13,7 @@ use smudge_text::{
     FontWeight, RichText, RichTextExt, SelectableExt, Span, SpanStyle, current_text_style, label,
     rich_text, selection_scope,
 };
-use smudge_widgets::{ScrollExt, row, virtual_list_keyed};
+use smudge_widgets::{ScrollExt, row, virtual_column_keyed};
 
 use crate::model::{Inline, Node};
 use crate::source::{
@@ -68,10 +68,11 @@ const GAP: f32 = 8.0;
 
 /// Shows `source`, growing as it grows.
 ///
-/// The blocks render through a keyed virtual list, which mounts only the
-/// blocks near the viewport, and sit in a selection scope, so the whole
-/// document selects and copies across blocks. A closed block keeps its
-/// widgets, and the open one updates its text in place.
+/// The blocks render through a keyed virtual column, which mounts only the
+/// blocks near the viewport and reports no list to the accessibility tree,
+/// and sit in a selection scope, so the whole document selects and copies
+/// across blocks. A closed block keeps its widgets, and the open one updates
+/// its text in place.
 ///
 /// Headings, paragraphs, emphasis, strong text, inline code, links,
 /// lists, block quotes, code blocks, thematic breaks and tables render.
@@ -96,7 +97,7 @@ pub fn markdown(source: &MarkdownSource, options: MarkdownOptions) -> Element<Pa
             let keys = rows.clone();
             let blocks = rows.clone();
             let built = Rc::clone(&options);
-            let list = virtual_list_keyed(
+            let column = virtual_column_keyed(
                 move || keys.keys(),
                 |key| *key,
                 ESTIMATE,
@@ -105,8 +106,8 @@ pub fn markdown(source: &MarkdownSource, options: MarkdownOptions) -> Element<Pa
             .width(pct(100.0))
             .grow(1.0);
             match &options.follow {
-                Some(follow) => list.follow_end(follow.clone()),
-                None => list,
+                Some(follow) => column.follow_end(follow.clone()),
+                None => column,
             }
         },
     )

@@ -39,4 +39,4 @@ pub use image::{ImageView, image};
 pub use scroll::{ScrollExt, ScrollView, scroll};
 pub use split::{Split, SplitExt, split};
 pub use virtual_list::virtual_list;
-pub use virtual_list_keyed::virtual_list_keyed;
+pub use virtual_list_keyed::{virtual_column_keyed, virtual_list_keyed};

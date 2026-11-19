@@ -1008,6 +1008,41 @@ fn a_row_inserted_above_moves_the_places_of_the_keyed_rows_below() {
 }
 
 #[test]
+fn a_keyed_virtual_column_reports_its_rows_content_and_no_list() {
+    let items: RwSignal<std::rc::Rc<[u32]>> = RwSignal::new((0..100).collect());
+    let mut app = app_with(|| {
+        let items = items.clone();
+        Element::new(Panel).role(Role::Group).column().child(
+            smudge_widgets::virtual_column_keyed(
+                move || items.get(),
+                |item| *item,
+                20.0,
+                |_| Element::new(Panel).height(px(20.0)).role(Role::Button),
+            )
+            .height(px(100.0)),
+        )
+    });
+    for _ in 0..4 {
+        app.frame();
+    }
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    assert!(
+        update.nodes.iter().all(|(_, node)| {
+            node.role() != AccessKitRole::List && node.role() != AccessKitRole::ListItem
+        }),
+        "no list and no list items"
+    );
+    assert!(
+        update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.role() == AccessKitRole::Button),
+        "the rows' own content is reported"
+    );
+}
+
+#[test]
 fn a_set_that_grows_updates_its_size_and_leaves_its_items_alone() {
     let count = RwSignal::new(10usize);
     let mut app = app_with(|| {
