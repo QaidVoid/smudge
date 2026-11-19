@@ -148,6 +148,8 @@ A software rasterizer pretending to be a GPU redraws the whole window on the CPU
 
 `show_damage: true` blends a translucent red over the pixels each frame repainted. The overlay lives only in the window's buffer, never in the renderer's pixels, so the next frame starts clean. Turn it on when a change repaints more than you expected.
 
+With the `devtools` feature, the devtools panel has a run-time form of the same tint: its **Damage tint** switch draws the same red over the pixels the last frame repainted, matching `show_damage` pixel for pixel on the CPU renderer, and it works on the GPU renderer too, because the devtools draw it over the frame. Its **Full repaint** switch makes the application repaint the whole window on every frame, as `RepaintMode::Full` does, so you can compare the two while the application runs.
+
 ## Reading present statistics
 
 ```rust

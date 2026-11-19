@@ -13,11 +13,13 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use smudge_core::app::{App, AppConfig, RepaintMode};
-use smudge_core::geometry::{Color, Point, Rect, Size};
+use smudge_core::geometry::{Color, PixelRect, Point, Rect, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::theme::Theme;
 use smudge_core::window::Cursor;
+
+use crate::cover::Cover;
 
 /// The environment variable that opens the panel when the app starts, when
 /// it is `1`.
@@ -34,6 +36,13 @@ pub(crate) struct Devtools {
     pub(crate) app: App,
     /// The window's size in logical pixels, which the panel stays inside.
     viewport: RwSignal<Size>,
+    /// The window's physical pixels per logical pixel.
+    scale: f32,
+    /// Whether the app repaints its whole surface on every frame, as the
+    /// devtools last set it.
+    full_repaint: bool,
+    /// The damage the tint covers, each pixel once.
+    cover: Cover,
     /// What the panel shows, which the window feeds.
     tools: smudge_devtools::Tools,
     /// Whether a wake of the overlay requests no redraw, because the window
@@ -108,6 +117,9 @@ impl Devtools {
         Devtools {
             app,
             viewport: size,
+            scale,
+            full_repaint: false,
+            cover: Cover::default(),
             tools,
             quiet: Rc::new(Cell::new(false)),
             open,
@@ -149,6 +161,52 @@ impl Devtools {
     pub(crate) fn set_viewport(&mut self, viewport: Size, scale: f32) {
         self.app.set_viewport(viewport, scale);
         self.viewport.set(viewport);
+        self.scale = scale;
+    }
+
+    /// Takes `mode`, how much of its surface the app was created to repaint,
+    /// as where the full repaint switch starts.
+    pub(crate) fn start_repaint(&mut self, mode: RepaintMode) {
+        self.full_repaint = mode == RepaintMode::Full;
+        let mut switches = self.tools.switches();
+        switches.full_repaint = self.full_repaint;
+        self.tools.set_switches(switches);
+    }
+
+    /// Makes `app` repaint as the full repaint switch says, once it changed.
+    pub(crate) fn apply_switches(&mut self, app: &mut App) {
+        let full = self.tools.switches().full_repaint;
+        if full != self.full_repaint {
+            self.full_repaint = full;
+            app.set_repaint_mode(if full {
+                RepaintMode::Full
+            } else {
+                RepaintMode::Damage
+            });
+        }
+    }
+
+    /// Takes `damage`, the rectangles in physical pixels that the app's
+    /// frame just repainted, which the damage tint covers while it is on.
+    ///
+    /// The overlay's frame runs next in the same redraw, so the tint shows
+    /// in the present of the frame it marks, and this requests no redraw.
+    pub(crate) fn show_damage(&mut self, damage: &[PixelRect]) {
+        if !self.tools.switches().damage_tint {
+            return;
+        }
+        let scale = self.scale;
+        self.quiet.set(true);
+        self.tools
+            .show_damage(self.cover.of(damage).iter().map(|rect| {
+                Rect::new(
+                    rect.x as f32 / scale,
+                    rect.y as f32 / scale,
+                    (rect.x + rect.width) as f32 / scale,
+                    (rect.y + rect.height) as f32 / scale,
+                )
+            }));
+        self.quiet.set(false);
     }
 
     /// Returns whether the panel shows.
@@ -256,7 +314,8 @@ impl Devtools {
     }
 
     /// Shows or hides the panel. A press held on the panel ends there, the
-    /// pointer leaves it, and the keys go back to `app`.
+    /// pointer leaves it, the keys go back to `app`, and the damage tint
+    /// forgets the frames the hidden panel no longer hears.
     fn show(&mut self, app: &mut App, open: bool) {
         if !open {
             if self.captured {
@@ -270,6 +329,7 @@ impl Devtools {
                 self.app.handle_event(InputEvent::PointerLeft);
             }
             self.focus_keys(app, false);
+            self.tools.forget_damage();
         }
         self.open = open;
         self.captured = false;

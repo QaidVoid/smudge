@@ -3131,6 +3131,7 @@ dependencies = [
  "arboard",
  "futures-executor",
  "objc2-app-kit 0.3.2",
+ "proptest",
  "rustix 1.1.5",
  "smudge-a11y",
  "smudge-core",

@@ -144,7 +144,9 @@ pub struct WindowOptions {
     ///
     /// The overlay exists on the CPU renderer only, so it makes
     /// [`RendererChoice::Auto`] pick the CPU renderer, and it cannot be
-    /// combined with [`RendererChoice::Gpu`].
+    /// combined with [`RendererChoice::Gpu`]. With the `devtools` feature of
+    /// the `smudge` crate, the devtools panel's damage tint is its run-time
+    /// form, which works on either renderer.
     pub show_damage: bool,
     /// Which renderer presents the frames.
     ///
@@ -980,6 +982,7 @@ where
         #[cfg(feature = "_devtools")]
         let devtools = {
             let mut devtools = crate::devtools::Devtools::new(logical_size(physical, scale), scale);
+            devtools.start_repaint(self.options.repaint);
             let weak = Arc::downgrade(&window);
             devtools.set_wake(move || {
                 if let Some(window) = weak.upgrade() {
@@ -1141,10 +1144,16 @@ where
         let app_wanted = state.app.needs_frame() || paced || state.app.is_animating();
         #[cfg(feature = "_devtools")]
         let driven = driven && !std::mem::take(&mut state.toggled);
+        #[cfg(feature = "_devtools")]
+        state.devtools.apply_switches(&mut state.app);
         let started = Instant::now();
         state.next_frame = None;
         let output = state.app.frame();
         state.rendered = true;
+        #[cfg(feature = "_devtools")]
+        if app_wanted && state.devtools.is_open() {
+            state.devtools.show_damage(output.damage);
+        }
         // Timed apart, so the app's statistics never count the overlay.
         #[cfg(feature = "_devtools")]
         let overlay_start = Instant::now();

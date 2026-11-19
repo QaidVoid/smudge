@@ -220,3 +220,46 @@ fn hovering_a_bar_describes_its_frame() {
         .any(|text| text.contains("11 painted"));
     assert!(followed, "a new frame under the still pointer is described");
 }
+
+/// The center of the text node that reads `text`.
+fn text_at(harness: &mut Harness, text: &str) -> Option<Point> {
+    harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.value.as_deref() == Some(text))
+        .map(|node| Point {
+            x: (node.bounds.x0 + node.bounds.x1) / 2.0,
+            y: (node.bounds.y0 + node.bounds.y1) / 2.0,
+        })
+}
+
+#[test]
+fn the_panels_buttons_turn_the_switches_on_and_off() {
+    TextSystem::bundled_only().install();
+    let tools = smudge_devtools::Tools::new();
+    let shown = tools.clone();
+    let mut harness = Harness::new(800.0, 600.0, 1.0, move || {
+        smudge_devtools::overlay(&shown, || Size {
+            width: 800.0,
+            height: 600.0,
+        })
+    });
+    harness.frame();
+    for (off, on) in [
+        ("Damage tint: off", "Damage tint: on"),
+        ("Full repaint: off", "Full repaint: on"),
+    ] {
+        let button = text_at(&mut harness, off).expect("the switch shows off");
+        harness.click(button);
+        harness.frame();
+        assert!(text_at(&mut harness, on).is_some(), "{on}");
+    }
+    let switches = tools.switches();
+    assert!(switches.damage_tint && switches.full_repaint);
+
+    let button = text_at(&mut harness, "Damage tint: on").expect("still shown");
+    harness.click(button);
+    harness.frame();
+    assert!(!tools.switches().damage_tint);
+}

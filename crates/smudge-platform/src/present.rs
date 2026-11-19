@@ -10,6 +10,8 @@ use smudge_core::geometry::PixelRect;
 use smudge_cpu::{CpuRenderer, XrgbRenderer};
 use web_time::Instant;
 
+use crate::cover::Cover;
+
 /// How many past frames the damage ring keeps.
 ///
 /// Softbuffer reports ages of at most 3 for the double and triple buffered
@@ -61,6 +63,8 @@ pub(crate) struct CpuFrames {
     height: u32,
     /// Whether every present tints the frame's damage in the window buffer.
     show_damage: bool,
+    /// The damage the overlay tints, each pixel once.
+    cover: Cover,
     /// The damage of the frames the window presented, most recent first.
     history: DamageHistory,
     /// The region the last drawn frame presents with damage.
@@ -125,6 +129,7 @@ impl CpuFrames {
             width,
             height,
             show_damage,
+            cover: Cover::default(),
             history: DamageHistory::default(),
             region: Vec::new(),
             unknown_ages: 0,
@@ -318,7 +323,7 @@ impl CpuFrames {
                     copy_rect(renderer.pixels(), self.width, buffer, rect);
                 }
                 if self.show_damage {
-                    tint_rects(buffer, self.width, frame.damage);
+                    tint_rects(buffer, self.width, self.cover.of(frame.damage));
                 }
                 let copy = copy_start.elapsed();
                 #[cfg(feature = "_devtools")]
@@ -521,17 +526,21 @@ pub(crate) fn copy_rect(
 #[cfg(feature = "_devtools")]
 pub(crate) fn composite_over(source: &[u8], destination: &mut [u32]) {
     for (pixel, rgba) in destination.iter_mut().zip(source.as_chunks::<4>().0) {
-        let alpha = u32::from(rgba[3]);
-        if alpha == 0 {
-            continue;
+        if rgba[3] != 0 {
+            *pixel = over(*pixel, *rgba);
         }
-        let keep = 255 - alpha;
-        let blend = |source: u8, shift: u32| {
-            let under = (*pixel >> shift) & 0xff;
-            (u32::from(source) + (under * keep + 127) / 255).min(255)
-        };
-        *pixel = blend(rgba[0], 16) << 16 | blend(rgba[1], 8) << 8 | blend(rgba[2], 0);
     }
+}
+
+/// Returns `rgba`, a premultiplied RGBA pixel, blended over `pixel`, a
+/// `0x00RRGGBB` entry.
+fn over(pixel: u32, rgba: [u8; 4]) -> u32 {
+    let keep = 255 - u32::from(rgba[3]);
+    let blend = |source: u8, shift: u32| {
+        let under = (pixel >> shift) & 0xff;
+        (u32::from(source) + (under * keep + 127) / 255).min(255)
+    };
+    blend(rgba[0], 16) << 16 | blend(rgba[1], 8) << 8 | blend(rgba[2], 0)
 }
 
 /// Draws everything a window buffer of `age` is missing for `frame` straight
@@ -596,25 +605,17 @@ pub(crate) fn tint_rects(buffer: &mut [u32], surface_width: u32, rects: &[PixelR
             let row =
                 &mut buffer[y as usize * surface_width as usize + rect.x as usize..][..row_width];
             for pixel in row {
-                let red = tinted(*pixel >> 16 & 0xff, TINT_RGB[0]);
-                let green = tinted(*pixel >> 8 & 0xff, TINT_RGB[1]);
-                let blue = tinted(*pixel & 0xff, TINT_RGB[2]);
-                *pixel = red << 16 | green << 8 | blue;
+                *pixel = over(*pixel, TINT);
             }
         }
     }
 }
 
-/// The color the damage overlay tints with, as 8-bit sRGB channels.
-const TINT_RGB: [u8; 3] = [255, 64, 64];
-
-/// How strongly the damage overlay tints, out of 255.
-const TINT_ALPHA: u32 = 96;
-
-/// Blends one color channel toward the tint by the tint's opacity.
-fn tinted(channel: u32, tint: u8) -> u32 {
-    (channel * (255 - TINT_ALPHA) + u32::from(tint) * TINT_ALPHA + 127) / 255
-}
+/// The tint of the damage overlay, the color `[255, 64, 64]` at an opacity
+/// of 96 out of 255, as the premultiplied pixel the CPU renderer draws for
+/// it over nothing. Blending that pixel the way the devtools overlay is
+/// composited makes the overlay's run-time damage tint match this one.
+const TINT: [u8; 4] = [96, 24, 24, 96];
 
 /// The damage of the last few frames.
 ///

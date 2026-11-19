@@ -5,16 +5,18 @@
 //! shows, so the app keeps working underneath and its own frames, numbers
 //! and pixels stay its own.
 
+mod marks;
 mod timeline;
 
 use std::cell::Cell;
 use std::rc::Rc;
 
+use marks::Marks;
 pub use timeline::FrameRecord;
 use timeline::{HEIGHT, Timeline, TimelineView};
 
-use smudge_core::element::{Element, show};
-use smudge_core::geometry::{Point, Size};
+use smudge_core::element::{AnyElement, Element, IntoElement, show};
+use smudge_core::geometry::{Point, Rect, Size};
 use smudge_core::input::{Drag, Handled};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::style::{Edges, Length, Overflow, pct, px};
@@ -51,6 +53,23 @@ const KEEP: f32 = 32.0;
 pub struct Tools {
     /// The app's last frames.
     timeline: RwSignal<Rc<Timeline>>,
+    /// Which switches are on.
+    switches: RwSignal<Switches>,
+    /// The rectangles the app's last frame repainted, in logical pixels.
+    damage: RwSignal<Rc<Vec<Rect>>>,
+}
+
+/// The devtools' switches, which the panel's buttons turn on and off and the
+/// window that runs the devtools follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Switches {
+    /// Whether the overlay tints the pixels the app's last frame repainted,
+    /// with the color and opacity of the window's fixed damage overlay.
+    pub damage_tint: bool,
+    /// Whether the app repaints its whole surface on every frame, instead of
+    /// only what changed.
+    pub full_repaint: bool,
 }
 
 impl Default for Tools {
@@ -64,7 +83,44 @@ impl Tools {
     pub fn new() -> Tools {
         Tools {
             timeline: RwSignal::new(Rc::new(Timeline::default())),
+            switches: RwSignal::new(Switches::default()),
+            damage: RwSignal::new(Rc::new(Vec::new())),
         }
+    }
+
+    /// Returns which switches are on.
+    pub fn switches(&self) -> Switches {
+        self.switches.get()
+    }
+
+    /// Turns the switches on and off as `switches` says, as the panel's
+    /// buttons do.
+    ///
+    /// With the damage tint off, the rectangles it would cover are dropped,
+    /// so turning it on again tints nothing until the app's next frame.
+    pub fn set_switches(&self, switches: Switches) {
+        self.switches.set(switches);
+        if !switches.damage_tint {
+            self.forget_damage();
+        }
+    }
+
+    /// Drops the rectangles the damage tint covers, as when the panel hides
+    /// and no longer hears the app's frames.
+    pub fn forget_damage(&self) {
+        if self.damage.with(|damage| !damage.is_empty()) {
+            self.show_damage([]);
+        }
+    }
+
+    /// Takes `rects`, the rectangles the app's last frame repainted in
+    /// logical pixels, which the damage tint covers while it is on.
+    pub fn show_damage(&self, rects: impl IntoIterator<Item = Rect>) {
+        self.damage.update(|damage| {
+            let damage = Rc::make_mut(damage);
+            damage.clear();
+            damage.extend(rects);
+        });
     }
 
     /// Records one frame of the app, which the timeline shows as its newest
@@ -87,7 +143,9 @@ impl Tools {
 ///
 /// The panel shows the app's last frames as a timeline of stacked bars, one
 /// per frame and one color per stage, with a line at the budget of a frame
-/// at 60 frames a second. Hovering a bar describes its frame below.
+/// at 60 frames a second. Hovering a bar describes its frame below. Under
+/// the timeline, buttons turn the [`Switches`] on and off, and the root
+/// draws what they show over the app, under the panel.
 ///
 /// ```
 /// use smudge_core::geometry::Size;
@@ -99,7 +157,7 @@ impl Tools {
 ///     height: 600.0,
 /// });
 /// ```
-pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> Element<Panel> {
+pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyElement {
     let viewport: Rc<dyn Fn() -> Size> = Rc::new(viewport);
     let at = RwSignal::new(START);
     let open = RwSignal::new(true);
@@ -151,7 +209,19 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> Element<
     // The root hears the drags that begin on the title bar, in its own
     // coordinates, which stay put while the panel moves. The title bar sits
     // inside the border.
-    panel()
+    let (switches, damage) = (tools.switches.clone(), tools.damage.clone());
+    Element::new(Marks::default())
+        .bind(
+            Tinted,
+            move || switches.get().damage_tint.then(|| damage.get()),
+            |marks, damage| {
+                marks.damage.clear();
+                if let Some(damage) = damage {
+                    marks.damage.extend_from_slice(&damage);
+                }
+                Dirty::Paint
+            },
+        )
         .width(pct(100.0))
         .height(pct(100.0))
         .on_drag(move |step| match (step, grab.get()) {
@@ -170,7 +240,11 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> Element<
             }
         })
         .child(window)
+        .into_any()
 }
+
+/// The marker of the damage the root tints, which [`Element::bind`] keys on.
+struct Tinted;
 
 /// Returns `at` moved as little as it takes for a panel there to stay inside
 /// a window of `viewport`: its left and top edges in the window, its right
@@ -217,6 +291,19 @@ fn body(tools: &Tools) -> Element<Panel> {
         .width(pct(100.0))
         .padding(px(PAD))
         .child(timeline)
+        .child(
+            row()
+                .gap(Size {
+                    width: PAD,
+                    height: PAD,
+                })
+                .child(switch(tools, "Damage tint", |switches| {
+                    &mut switches.damage_tint
+                }))
+                .child(switch(tools, "Full repaint", |switches| {
+                    &mut switches.full_repaint
+                })),
+        )
         .child(label(move || {
             let x = shown.get();
             described.with(|timeline| {
@@ -226,4 +313,26 @@ fn body(tools: &Tools) -> Element<Panel> {
                 )
             })
         }))
+}
+
+/// Builds the button that turns the switch `field` picks on and off, named
+/// `name` and showing its state.
+fn switch(
+    tools: &Tools,
+    name: &'static str,
+    field: fn(&mut Switches) -> &mut bool,
+) -> Element<Panel> {
+    let read = tools.switches.clone();
+    let write = tools.clone();
+    button(move || {
+        let mut switches = read.get();
+        let state = if *field(&mut switches) { "on" } else { "off" };
+        format!("{name}: {state}")
+    })
+    .on_press(move || {
+        let mut switches = write.switches();
+        let on = field(&mut switches);
+        *on = !*on;
+        write.set_switches(switches);
+    })
 }

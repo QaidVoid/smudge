@@ -37,6 +37,7 @@ mod clipboard;
     ))
 ))]
 mod color_scheme;
+mod cover;
 #[cfg(feature = "_devtools")]
 mod devtools;
 mod error;

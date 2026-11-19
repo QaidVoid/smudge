@@ -1,16 +1,18 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use smudge_core::app::{App, AppConfig, RepaintMode};
+use smudge_core::app::{App, AppConfig, FrameOutput, RepaintMode};
 use smudge_core::element::Element;
-use smudge_core::geometry::{Color, Point, Size};
+use smudge_core::geometry::{Color, Corners, PixelRect, Point, Rect, Size};
 use smudge_core::input::{Handled, InputEvent, Key, KeyEvent, Modifiers, PointerButton};
+use smudge_core::paint::{DisplayItem, DisplayList, PaintOp};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::style::pct;
 use smudge_core::widget::Panel;
 use smudge_text::TextSystem;
 
 use super::{Devtools, Shortcut};
+use crate::present::CpuFrames;
 
 /// The window both apps fill, in logical pixels.
 const VIEWPORT: Size = Size {
@@ -567,4 +569,173 @@ fn a_frame_recorded_while_the_window_paces_itself_requests_no_redraw() {
         1,
         "an idle window draws once more to show the bar"
     );
+}
+
+/// A white surface with one blue box at `at`, in logical pixels.
+fn boxed(at: Rect) -> DisplayList {
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::FillRect {
+        rect: at,
+        radius: Corners::all(0.0),
+        color: Color::rgb(30, 90, 200),
+    });
+    list
+}
+
+#[test]
+fn the_damage_tint_matches_the_fixed_damage_overlay_pixel_for_pixel() {
+    TextSystem::bundled_only().install();
+    for scale in [1.0, 2.0] {
+        let (width, height) = (
+            (VIEWPORT.width * scale) as u32,
+            (VIEWPORT.height * scale) as u32,
+        );
+        let mut fixed = CpuFrames::new(width, height, true);
+        let mut overlaid = CpuFrames::new(width, height, false);
+        overlaid.set_overlay(true);
+        let mut devtools = Devtools::with(VIEWPORT, scale, true, Shortcut::default());
+        let mut switches = devtools.tools.switches();
+        switches.damage_tint = true;
+        devtools.tools.set_switches(switches);
+        devtools.app.frame();
+        let mut panel = None;
+        devtools.app.visit_nodes(|depth, _, rect| {
+            if depth == 1 {
+                panel = Some(rect);
+            }
+        });
+        let panel = panel.expect("the panel shows");
+
+        let (mut tinted, mut overlay_tinted) = (
+            vec![0; (width * height) as usize],
+            vec![0; (width * height) as usize],
+        );
+        let (from, to) = (
+            Rect::new(500.0, 300.0, 580.0, 360.0),
+            Rect::new(530.5, 320.25, 610.5, 380.25),
+        );
+        let whole = [PixelRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }];
+        let moved: Vec<PixelRect> = [from, to]
+            .into_iter()
+            .filter_map(|rect| PixelRect::from_logical(rect, scale, width, height))
+            .collect();
+        for (list, damage) in [(boxed(from), &whole[..]), (boxed(to), &moved[..])] {
+            let frame = FrameOutput {
+                list: &list,
+                damage,
+                full: false,
+                clear_color: Color::WHITE,
+                scale,
+            };
+            fixed.draw(&frame, None, 0, &mut tinted);
+            fixed.presented(&frame);
+            devtools.show_damage(damage);
+            let over = devtools.app.frame();
+            overlaid.draw(&frame, Some(&over), 0, &mut overlay_tinted);
+            overlaid.presented(&frame);
+
+            let mut compared = 0;
+            for y in 0..height {
+                for x in 0..width {
+                    let at = Point {
+                        x: (x as f32 + 0.5) / scale,
+                        y: (y as f32 + 0.5) / scale,
+                    };
+                    if panel.contains(at) {
+                        continue;
+                    }
+                    let index = (y * width + x) as usize;
+                    assert_eq!(
+                        overlay_tinted[index], tinted[index],
+                        "scale {scale}: the pixel at {x}, {y}"
+                    );
+                    compared += 1;
+                }
+            }
+            assert!(compared > 0);
+        }
+        let inside = |x: f32, y: f32| ((y * scale) as u32 * width + (x * scale) as u32) as usize;
+        assert_ne!(
+            tinted[inside(600.0, 370.0)],
+            0x001e_5ac8,
+            "scale {scale}: the moved box is tinted, so the comparison covers a tint"
+        );
+    }
+}
+
+#[test]
+fn the_full_repaint_switch_makes_the_app_repaint_everything() {
+    let (mut app, mut devtools, _) = apps(true);
+    devtools.start_repaint(RepaintMode::Damage);
+    let whole = PixelRect {
+        x: 0,
+        y: 0,
+        width: VIEWPORT.width as u32,
+        height: VIEWPORT.height as u32,
+    };
+    let mut switches = devtools.tools.switches();
+    switches.full_repaint = true;
+    devtools.tools.set_switches(switches);
+    devtools.apply_switches(&mut app);
+    app.frame();
+    assert_eq!(
+        app.frame().damage,
+        [whole],
+        "an unchanged frame repaints everything"
+    );
+
+    switches.full_repaint = false;
+    devtools.tools.set_switches(switches);
+    devtools.apply_switches(&mut app);
+    app.frame();
+    assert!(
+        app.frame().damage.is_empty(),
+        "an unchanged frame repaints nothing"
+    );
+}
+
+/// Whether the overlay's last frame painted the damage tint.
+fn tints(devtools: &mut Devtools) -> bool {
+    let output = devtools.app.frame();
+    output.list.items().iter().any(|item| {
+        matches!(
+            item,
+            DisplayItem::Op(PaintOp::FillRect { color, .. }) if *color == Color::rgba(255, 64, 64, 96)
+        )
+    })
+}
+
+#[test]
+fn the_tint_forgets_old_damage_when_it_comes_back() {
+    let (mut app, mut devtools, _) = apps(true);
+    let damage = [PixelRect {
+        x: 600,
+        y: 400,
+        width: 40,
+        height: 20,
+    }];
+    let mut switches = devtools.tools.switches();
+    switches.damage_tint = true;
+    devtools.tools.set_switches(switches);
+    devtools.show_damage(&damage);
+    assert!(tints(&mut devtools));
+
+    switches.damage_tint = false;
+    devtools.tools.set_switches(switches);
+    switches.damage_tint = true;
+    devtools.tools.set_switches(switches);
+    assert!(
+        !tints(&mut devtools),
+        "turned on again, it waits for a new frame"
+    );
+
+    devtools.show_damage(&damage);
+    devtools.show(&mut app, false);
+    devtools.show(&mut app, true);
+    assert!(!tints(&mut devtools), "reopened, it waits for a new frame");
 }
