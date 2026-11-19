@@ -10,6 +10,7 @@
     forbid(unsafe_code)
 )]
 
+pub mod animation;
 pub mod app;
 pub mod channel;
 pub mod clipboard;
