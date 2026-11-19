@@ -99,6 +99,15 @@ pub struct GlyphRun {
     /// toward the right, shearing it about its baseline origin, within the
     /// limits [`GlyphRun::synthesis`] sets.
     pub skew: f32,
+    /// The instance of a variable font the run draws at: one normalized
+    /// coordinate per variation axis of the face, in the face's axis order,
+    /// as the bits of a 2.14 fixed-point number from -1.0 to 1.0. Empty, or
+    /// all zero, draws the face's default instance, as does a face with no
+    /// variation axes.
+    ///
+    /// Text fills it in when it asks for a weight or an italic that a
+    /// variable face reaches through its axes.
+    pub coords: Vec<i16>,
     /// The rectangle in the run's paint coordinates that covers the ink of
     /// every glyph, emboldened and slanted, plus one logical pixel on every
     /// side for anti-aliasing.

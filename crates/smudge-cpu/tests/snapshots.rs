@@ -13,7 +13,7 @@ use smudge_core::app::FrameOutput;
 use smudge_core::geometry::{Color, Corners, PixelRect, Point, Rect};
 use smudge_core::paint::{DisplayItem, DisplayList, PaintOp};
 use smudge_cpu::CpuRenderer;
-use smudge_text::{TextLayout, TextStyle, TextSystem};
+use smudge_text::{FontFamily, FontWeight, TextLayout, TextStyle, TextSystem};
 
 /// The scene size in logical pixels.
 const SCENE: Rect = Rect {
@@ -392,4 +392,93 @@ fn a_group_repainted_through_part_of_it_matches_a_full_repaint() {
         let end = start + part.width as usize * 4;
         assert_eq!(&damaged[start..end], &full[start..end], "row {y}");
     }
+}
+
+/// The weights the variable font scene draws its three lines at.
+const VARIABLE_WEIGHTS: [f32; 3] = [300.0, 500.0, 800.0];
+
+/// The height of each line of the variable font scene, in pixels at scale
+/// one.
+const VARIABLE_LINE: f32 = 24.0;
+
+/// Renders one line of the test variable font at each of
+/// [`VARIABLE_WEIGHTS`], black on white, and returns the variation
+/// coordinates of each line's runs with the PNG encoding of the surface and
+/// how many dark pixels each line left.
+fn render_variable_weights() -> (Vec<Vec<i16>>, Vec<u8>, Vec<u32>) {
+    TextSystem::bundled_only().install();
+    TextSystem::with(|system| system.register_font(smudge_test::VARIABLE_FONT))
+        .expect("the test font is a font");
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::FillRect {
+        rect: Rect::new(0.0, 0.0, 64.0, 72.0),
+        radius: Corners::ZERO,
+        color: Color::WHITE,
+    });
+    let mut coords = Vec::new();
+    for (line, weight) in VARIABLE_WEIGHTS.into_iter().enumerate() {
+        let style = TextStyle {
+            family: FontFamily::named(smudge_test::VARIABLE_FAMILY),
+            weight: FontWeight::new(weight),
+            ..TextStyle::default()
+        };
+        let layout = TextLayout::new("Wgx", &style, None);
+        let origin = Point {
+            x: 4.0,
+            y: 2.0 + line as f32 * VARIABLE_LINE,
+        };
+        for run in layout.glyph_runs_at(origin, Color::BLACK) {
+            assert_eq!(run.embolden, 0.0, "the weight axis draws the weight");
+            coords.push(run.coords.clone());
+            list.push_op(PaintOp::Glyphs(Rc::new(run)));
+        }
+    }
+    list.finish();
+
+    let (width, height) = (64, 72);
+    let mut renderer = CpuRenderer::new(width, height);
+    let damage = [PixelRect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    }];
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &damage,
+        full: true,
+        clear_color: Color::WHITE,
+        scale: 1.0,
+    });
+    let (pixels, _) = renderer.pixels().as_chunks::<4>();
+    let mut dark = vec![0u32; VARIABLE_WEIGHTS.len()];
+    for (index, &[red, green, blue, _]) in pixels.iter().enumerate() {
+        let luminance = (u32::from(red) + u32::from(green) + u32::from(blue)) / 3;
+        let line = (index as u32 / width) as usize / VARIABLE_LINE as usize;
+        if luminance <= 63
+            && let Some(count) = dark.get_mut(line)
+        {
+            *count += 1;
+        }
+    }
+    (coords, renderer.encode_png(), dark)
+}
+
+#[test]
+fn a_variable_font_draws_at_the_weight_the_text_asks_for() {
+    let (coords, png, dark) = render_variable_weights();
+    assert_eq!(coords.len(), VARIABLE_WEIGHTS.len());
+    assert!(
+        coords.iter().all(|coords| !coords.is_empty()),
+        "every line names an instance off the default: {coords:?}"
+    );
+    assert!(
+        coords[0] != coords[1] && coords[1] != coords[2],
+        "each weight is its own instance: {coords:?}"
+    );
+    assert!(
+        dark[0] < dark[1] && dark[1] < dark[2],
+        "a heavier weight leaves more dark ink, found {dark:?}"
+    );
+    assert_binary_snapshot!(".png", png);
 }

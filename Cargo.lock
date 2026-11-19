@@ -3075,6 +3075,7 @@ dependencies = [
  "insta",
  "skrifa",
  "smudge-core",
+ "smudge-test",
  "smudge-text",
  "tiny-skia",
 ]
@@ -3089,6 +3090,7 @@ dependencies = [
  "skrifa",
  "smudge-core",
  "smudge-cpu",
+ "smudge-test",
  "smudge-text",
  "smudge-widgets",
  "tiny-skia",

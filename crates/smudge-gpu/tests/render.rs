@@ -348,6 +348,7 @@ fn a_run_in_a_font_that_does_not_parse_draws_nothing() {
         color: Color::BLACK,
         embolden: 0.0,
         skew: 0.0,
+        coords: Vec::new(),
         glyphs: vec![PositionedGlyph {
             id: 1,
             x: 8.0,

@@ -2,9 +2,10 @@
 //!
 //! Outlining a glyph and filling its path is the expensive part of drawing
 //! text, so each glyph is rasterized once into an 8-bit alpha mask and blitted
-//! from the cache afterwards. A mask depends on the glyph, its quantized size,
-//! embolden and slant, and its subpixel x phase only, never on the area being
-//! drawn, so a damaged repaint blits the same bytes a full repaint would.
+//! from the cache afterwards. A mask depends on the glyph, its variable
+//! instance, its quantized size, embolden and slant, and its subpixel x phase
+//! only, never on the area being drawn, so a damaged repaint blits the same
+//! bytes a full repaint would.
 //!
 //! Rasterization is unhinted, at the exact quantized size, with grayscale
 //! anti-aliasing only. y is snapped to whole physical pixels and x keeps a
@@ -15,7 +16,7 @@ use std::collections::HashMap;
 
 use skrifa::GlyphId;
 use skrifa::MetadataProvider;
-use skrifa::instance::{LocationRef, Size};
+use skrifa::instance::{LocationRef, NormalizedCoord, Size};
 use skrifa::outline::pen::PathElement;
 use skrifa::outline::{DrawSettings, OutlinePen};
 use smudge_core::paint::{EMBOLDEN_MITER_LIMIT, FontBlob};
@@ -41,6 +42,13 @@ const MAX_MASK_DIMENSION: u32 = 4096;
 /// twice this budget.
 const DEFAULT_BUDGET: usize = 16 * 1024 * 1024;
 
+/// The most variable instances the cache numbers before it starts over.
+///
+/// Text whose weight moves takes a new instance every frame, so the numbers
+/// would grow without end. Starting over drops the mask of every instance
+/// but the default, since a mask is keyed by its instance's number.
+pub(crate) const MAX_INSTANCES: usize = 256;
+
 /// The key a glyph mask is cached under.
 ///
 /// The subpixel bin is the quarter-pixel phase of the glyph's x origin, so a
@@ -54,6 +62,9 @@ pub(crate) struct MaskKey {
     pub(crate) font_index: u32,
     /// The glyph inside the face.
     pub(crate) glyph_id: u32,
+    /// The variable instance the glyph is drawn at, as
+    /// [`GlyphCache::instance`] numbered it, or 0 for the face's default.
+    pub(crate) instance: u32,
     /// The font size in 1/64 physical pixels.
     pub(crate) size: i32,
     /// How far the outline is pushed outward, in 1/64 physical pixels.
@@ -136,6 +147,9 @@ impl GlyphMask {
 pub(crate) struct GlyphCache {
     current: HashMap<MaskKey, GlyphMask>,
     previous: HashMap<MaskKey, GlyphMask>,
+    /// The number of each variable instance a mask was drawn at, by its
+    /// coordinates. The default instance is 0 and is not listed.
+    instances: HashMap<Box<[i16]>, u32>,
     /// The bytes of mask the current generation holds.
     bytes: usize,
     budget: usize,
@@ -158,6 +172,7 @@ impl GlyphCache {
         GlyphCache {
             current: HashMap::new(),
             previous: HashMap::new(),
+            instances: HashMap::new(),
             bytes: 0,
             budget,
             hits: 0,
@@ -165,12 +180,48 @@ impl GlyphCache {
         }
     }
 
-    /// Returns the mask for `key`, rasterizing it from `font` on a miss.
+    /// Returns the number [`MaskKey::instance`] takes for the variable
+    /// instance `coords` name, as [`GlyphRun::coords`] carries them: 0 for
+    /// the default instance, and the same number for the same coordinates
+    /// until the cache starts over.
+    ///
+    /// The cache starts over, dropping every number and the mask of every
+    /// instance but the default, when a new instance would pass
+    /// [`MAX_INSTANCES`]. A number taken before is then stale, so a caller
+    /// takes the number again for every run rather than keeping it.
+    ///
+    /// [`GlyphRun::coords`]: smudge_core::paint::GlyphRun::coords
+    pub(crate) fn instance(&mut self, coords: &[i16]) -> u32 {
+        if coords.iter().all(|&coord| coord == 0) {
+            return 0;
+        }
+        if let Some(&number) = self.instances.get(coords) {
+            return number;
+        }
+        if self.instances.len() >= MAX_INSTANCES {
+            self.instances.clear();
+            self.current.retain(|key, _| key.instance == 0);
+            self.previous.retain(|key, _| key.instance == 0);
+            self.bytes = self.current.values().map(GlyphMask::size_in_bytes).sum();
+        }
+        let number = self.instances.len() as u32 + 1;
+        self.instances.insert(coords.into(), number);
+        number
+    }
+
+    /// Returns the mask for `key`, rasterizing it from `font` at the
+    /// variable instance `coords` name on a miss. `coords` are the ones
+    /// [`GlyphCache::instance`] numbered as the key's instance.
     ///
     /// Returns `None` when the glyph has no mask because its font cannot be
     /// read or its size is out of range. A glyph with an empty outline yields
     /// an empty mask, so repeated draws of a space hit the cache too.
-    pub(crate) fn entry(&mut self, key: MaskKey, font: &FontBlob) -> Option<&GlyphMask> {
+    pub(crate) fn entry(
+        &mut self,
+        key: MaskKey,
+        font: &FontBlob,
+        coords: &[i16],
+    ) -> Option<&GlyphMask> {
         if !self.current.contains_key(&key) {
             if let Some(mask) = self.previous.remove(&key) {
                 self.bytes += mask.size_in_bytes();
@@ -178,7 +229,7 @@ impl GlyphCache {
                 self.hits += 1;
             } else {
                 self.misses += 1;
-                let mask = rasterize(key, font)?;
+                let mask = rasterize(key, font, coords)?;
                 if self.bytes + mask.size_in_bytes() > self.budget {
                     self.previous = std::mem::take(&mut self.current);
                     self.bytes = 0;
@@ -213,14 +264,14 @@ impl GlyphCache {
 
 /// Rasterizes one glyph into an alpha mask.
 ///
-/// The outline is drawn unhinted at the key's quantized size, flipped for a
-/// coordinate system whose y grows down, widened by the key's embolden,
-/// sheared by its slant about the baseline origin, and shifted by its
-/// subpixel phase. The mask spans the result's bounds with one pixel of slack
-/// on every side, so every anti-aliased edge pixel it can shade is inside the
-/// mask, and the bearings report where that rectangle sits relative to the
-/// glyph's baseline origin.
-fn rasterize(key: MaskKey, font: &FontBlob) -> Option<GlyphMask> {
+/// The outline is drawn unhinted at the variable instance `coords` name and
+/// the key's quantized size, flipped for a coordinate system whose y grows
+/// down, widened by the key's embolden, sheared by its slant about the
+/// baseline origin, and shifted by its subpixel phase. The mask spans the
+/// result's bounds with one pixel of slack on every side, so every
+/// anti-aliased edge pixel it can shade is inside the mask, and the bearings
+/// report where that rectangle sits relative to the glyph's baseline origin.
+fn rasterize(key: MaskKey, font: &FontBlob, coords: &[i16]) -> Option<GlyphMask> {
     if key.size <= 0 || key.size as f32 / 64.0 > MAX_GLYPH_SIZE {
         return None;
     }
@@ -229,8 +280,14 @@ fn rasterize(key: MaskKey, font: &FontBlob) -> Option<GlyphMask> {
     let outline = font.outline_glyphs().get(GlyphId::new(key.glyph_id))?;
 
     let mut collector = OutlineCollector::default();
-    let settings =
-        DrawSettings::unhinted(Size::new(key.size as f32 / 64.0), LocationRef::default());
+    let location: Vec<NormalizedCoord> = coords
+        .iter()
+        .map(|&coord| NormalizedCoord::from_bits(coord))
+        .collect();
+    let settings = DrawSettings::unhinted(
+        Size::new(key.size as f32 / 64.0),
+        LocationRef::new(&location),
+    );
     outline.draw(settings, &mut collector).ok()?;
 
     let Some((x_min, y_min, x_max, y_max)) = collector.bounds() else {

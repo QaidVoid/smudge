@@ -14,7 +14,7 @@ use parley::FontData;
 use parley::PositionedLayoutItem;
 use skrifa::GlyphId;
 use skrifa::MetadataProvider;
-use skrifa::instance::{LocationRef, Size};
+use skrifa::instance::{LocationRef, NormalizedCoord, Size};
 use smudge_core::geometry::{Color, Point, Rect};
 use smudge_core::paint::{EMBOLDEN_MITER_LIMIT, FontBlob, GlyphRun, PositionedGlyph};
 
@@ -112,6 +112,7 @@ pub(crate) fn glyph_runs_with<B: parley::Brush>(
                 run.run().font(),
                 run.run().font_size(),
                 run.run().synthesis(),
+                coords_of(run.run()),
                 glyphs,
                 color,
             ));
@@ -132,6 +133,7 @@ pub(crate) fn glyph_runs_with<B: parley::Brush>(
                 &ellipsis.font,
                 ellipsis.size,
                 ellipsis.synthesis,
+                ellipsis.coords.clone(),
                 dots,
                 color,
             ));
@@ -172,6 +174,7 @@ pub(crate) fn rich_glyph_runs(
                 run.run().font(),
                 run.run().font_size(),
                 run.run().synthesis(),
+                coords_of(run.run()),
                 glyphs,
                 color,
             ));
@@ -204,17 +207,38 @@ pub(crate) fn rich_glyph_runs(
 /// each side, which brings a regular face close to its bold.
 const EMBOLDEN_SHARE: f32 = 1.0 / 48.0;
 
+/// Returns the variation coordinates `run` was shaped at, as
+/// [`GlyphRun::coords`] carries them, empty for the default instance.
+pub(crate) fn coords_of<B: parley::Brush>(run: &parley::Run<'_, B>) -> Vec<i16> {
+    let coords = run.normalized_coords();
+    if coords.iter().all(|coord| coord.to_bits() == 0) {
+        return Vec::new();
+    }
+    coords.iter().map(|coord| coord.to_bits()).collect()
+}
+
+/// The location in a variable face that `coords`, as
+/// [`GlyphRun::coords`] carries them, name.
+fn location(coords: &[i16]) -> Vec<NormalizedCoord> {
+    coords
+        .iter()
+        .map(|&coord| NormalizedCoord::from_bits(coord))
+        .collect()
+}
+
 /// Builds one [`GlyphRun`] out of the glyph identifiers and absolute pen
-/// positions `glyphs` yields, painted with `font` at `size`, emboldened and
-/// slanted as `synthesis` asks.
+/// positions `glyphs` yields, painted with `font` at `size` and at the
+/// variable instance `coords` name, emboldened and slanted as `synthesis`
+/// asks.
 ///
-/// Every glyph's ink is measured with skrifa against that font and size,
-/// then grown by the farthest a mitered corner of the embolden reaches and
-/// sheared by the slant.
+/// Every glyph's ink is measured with skrifa against that font, size and
+/// instance, then grown by the farthest a mitered corner of the embolden
+/// reaches and sheared by the slant.
 fn paint_run(
     font: &FontData,
     size: f32,
     synthesis: parley::fontique::Synthesis,
+    coords: Vec<i16>,
     glyphs: impl Iterator<Item = (u32, f32, f32)>,
     color: Color,
 ) -> GlyphRun {
@@ -227,9 +251,10 @@ fn paint_run(
     let slope = skew.to_radians().tan();
     let reach = embolden * EMBOLDEN_MITER_LIMIT;
     // skrifa reads the font once per run, not once per glyph.
+    let location = location(&coords);
     let metrics = skrifa::FontRef::from_index(font.data.as_ref(), font.index)
         .ok()
-        .map(|font| font.glyph_metrics(Size::new(size), LocationRef::default()));
+        .map(|font| font.glyph_metrics(Size::new(size), LocationRef::new(&location)));
     let mut painted = Vec::new();
     let mut ink = Rect::default();
     for (id, x, y) in glyphs {
@@ -259,6 +284,7 @@ fn paint_run(
         glyphs: painted,
         embolden,
         skew,
+        coords,
         ink_bounds: expand(ink, 1.0),
     }
 }
@@ -269,23 +295,24 @@ fn paint_run(
 /// The horizontal ellipsis stands in for the cut text, or three full stops
 /// when the font maps no ellipsis. Returns `None` when the font maps
 /// neither, so truncation looks for the ellipsis elsewhere.
-pub(crate) fn ellipsis_glyph(
-    font: &FontData,
-    font_size: f32,
-    synthesis: parley::fontique::Synthesis,
-) -> Option<Ellipsis> {
+pub(crate) fn ellipsis_glyph(run: &parley::Run<'_, ()>) -> Option<Ellipsis> {
+    let font = run.font();
+    let font_size = run.font_size();
+    let coords = coords_of(run);
     let face = skrifa::FontRef::from_index(font.data.as_ref(), font.index).ok()?;
     let charmap = face.charmap();
     let (glyph, dots) = match charmap.map('\u{2026}') {
         Some(id) => (id.to_u32(), 1),
         None => (charmap.map('.')?.to_u32(), 3),
     };
-    let metrics = face.glyph_metrics(Size::new(font_size), LocationRef::default());
+    let location = location(&coords);
+    let metrics = face.glyph_metrics(Size::new(font_size), LocationRef::new(&location));
     let advance = metrics.advance_width(GlyphId::new(glyph)).unwrap_or(0.0);
     Some(Ellipsis {
         font: font.clone(),
         size: font_size,
-        synthesis,
+        synthesis: run.synthesis(),
+        coords,
         glyph,
         dots,
         advance,

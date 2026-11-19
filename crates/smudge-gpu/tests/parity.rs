@@ -181,6 +181,20 @@ const TOLERANCES: &[Tolerance] = &[
         max: 18,
         over_eight: 0.00023,
     },
+    Tolerance {
+        scene: "variable text",
+        scale: 1.0,
+        mean: 3.8,
+        max: 195,
+        over_eight: 0.0939,
+    },
+    Tolerance {
+        scene: "variable text",
+        scale: 2.0,
+        mean: 2.52,
+        max: 212,
+        over_eight: 0.0527,
+    },
 ];
 
 /// The mean, maximum and over-8 difference of one channel over one image.
@@ -205,6 +219,8 @@ fn both_renderers_draw_the_feature_subset_within_the_calibrated_tolerances() {
     };
     eprintln!("parity adapter: {adapter}");
     TextSystem::bundled_only().install();
+    TextSystem::with(|system| system.register_font(smudge_test::VARIABLE_FONT))
+        .expect("the test font is a font");
 
     let mut gpu_renderers: HashMap<(u32, u32), GpuRenderer> = HashMap::new();
     let mut violations = Vec::new();
@@ -888,6 +904,28 @@ fn text_lines() -> Element<Panel> {
         )
 }
 
+/// The test variable font at its lightest, middle and heaviest weights,
+/// which only a renderer that draws its variation coordinates tells apart.
+fn variable_text() -> Element<Panel> {
+    let line = |weight: f32| {
+        label("Variable weight")
+            .text_size(18.0)
+            .family(FontFamily::named(smudge_test::VARIABLE_FAMILY))
+            .weight(FontWeight::new(weight))
+            .text_color(Color::rgb(20, 20, 20))
+    };
+    panel()
+        .column()
+        .padding(px(14.0))
+        .gap(Size {
+            width: 0.0,
+            height: 8.0,
+        })
+        .child(line(100.0))
+        .child(line(500.0))
+        .child(line(900.0))
+}
+
 /// The box grid of the benchmark's first scene at the test viewport: rounded,
 /// bordered boxes wrapping over the width, each an opaque color from a fixed
 /// seed.
@@ -991,6 +1029,7 @@ fn scenes() -> &'static [Scene] {
         ("box grid", box_grid),
         ("images", images),
         ("groups", groups),
+        ("variable text", variable_text),
     ]
 }
 

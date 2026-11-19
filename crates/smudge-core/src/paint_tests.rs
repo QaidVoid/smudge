@@ -55,6 +55,7 @@ fn synthetic(embolden: f32, skew: f32) -> crate::paint::GlyphRun {
         glyphs: Vec::new(),
         embolden,
         skew,
+        coords: Vec::new(),
         ink_bounds: Rect::default(),
     }
 }

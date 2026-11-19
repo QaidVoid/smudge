@@ -23,6 +23,17 @@ use smudge_core::paint::DisplayList;
 use smudge_core::timer::VirtualClock;
 use smudge_cpu::{CpuRenderer, XrgbRenderer};
 
+/// A variable font for tests: the basic Latin letters of Noto Sans, with
+/// its weight axis from 100 to 900 and nothing else variable.
+///
+/// Its family is [`VARIABLE_FAMILY`], so registering it never adds a face
+/// to the bundled Noto Sans. It is licensed under the SIL Open Font License,
+/// in `assets/fonts/OFL.txt` beside it.
+pub const VARIABLE_FONT: &[u8] = include_bytes!("../assets/fonts/SmudgeVariableTest.ttf");
+
+/// The family name of [`VARIABLE_FONT`].
+pub const VARIABLE_FAMILY: &str = "Smudge Variable Test";
+
 /// The color the harness clears the surface with before it replays a frame.
 const CLEAR_COLOR: Color = Color::WHITE;
 

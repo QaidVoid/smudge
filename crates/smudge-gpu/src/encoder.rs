@@ -216,6 +216,7 @@ fn encode_op(
                 .draw_glyphs(font)
                 .transform(transform)
                 .font_size(run.size)
+                .normalized_coords(&run.coords)
                 .font_embolden(
                     FontEmbolden::new(Diagonal2::new(embolden, embolden))
                         .with_miter_limit(f64::from(EMBOLDEN_MITER_LIMIT)),

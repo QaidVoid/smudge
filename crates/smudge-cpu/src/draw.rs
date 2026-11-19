@@ -595,12 +595,12 @@ impl Canvas<'_> {
     /// logical `offset`.
     ///
     /// Each glyph is drawn from its cached alpha mask at its own physical
-    /// position. A glyph's mask depends on the glyph, its quantized size,
-    /// embolden and slant, and its subpixel x phase only, so the same text
-    /// blits the same bytes whichever part of the surface is drawn. Glyphs
-    /// whose ink bounds claim no pixels draw nothing, which keeps a run inside
-    /// the damage its bounds produced even when a font's metrics disagree
-    /// with its outlines.
+    /// position. A glyph's mask depends on the glyph, its variable instance,
+    /// its quantized size, embolden and slant, and its subpixel x phase only,
+    /// so the same text blits the same bytes whichever part of the surface is
+    /// drawn. Glyphs whose ink bounds claim no pixels draw nothing, which keeps
+    /// a run inside the damage its bounds produced even when a font's metrics
+    /// disagree with its outlines.
     ///
     /// A glyph whose size or position is not finite, whose size exceeds
     /// [`MAX_GLYPH_SIZE`] physical pixels, or whose origin lies more than
@@ -626,6 +626,7 @@ impl Canvas<'_> {
         let (embolden, skew) = run.synthesis();
         let embolden = (embolden * self.scale * 64.0).round() as i32;
         let skew = (skew * 64.0).round() as i32;
+        let instance = self.glyphs.instance(&run.coords);
         let Canvas {
             pixels,
             width,
@@ -655,12 +656,13 @@ impl Canvas<'_> {
                 font_id: run.font.id,
                 font_index: run.font.index,
                 glyph_id: glyph.id,
+                instance,
                 size,
                 embolden,
                 skew,
                 subpixel,
             };
-            let Some(entry) = glyphs.entry(key, &run.font) else {
+            let Some(entry) = glyphs.entry(key, &run.font, &run.coords) else {
                 continue;
             };
             let (mask_width, mask_height) = (entry.width(), entry.height());

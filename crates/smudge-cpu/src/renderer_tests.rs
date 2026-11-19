@@ -760,6 +760,7 @@ fn text_under_an_offset_draws_the_same_bytes_as_translated_text() {
             glyphs,
             embolden: run.embolden,
             skew: run.skew,
+            coords: run.coords.clone(),
             ink_bounds: run.ink_bounds.translated(Point { x: 10.0, y: 12.0 }),
         }
     };

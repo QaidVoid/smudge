@@ -104,6 +104,25 @@ fn glyphs_draw_nothing_outside_their_claimed_ink_bounds() {
     assert_eq!(synthesized, 1, "the bold mono draws emboldened");
 }
 
+#[test]
+fn a_variable_font_claims_the_ink_of_the_instance_it_draws() {
+    TextSystem::bundled_only().install();
+    TextSystem::with(|system| system.register_font(smudge_test::VARIABLE_FONT))
+        .expect("the test font is a font");
+    for weight in [100.0, 900.0] {
+        let style = TextStyle {
+            family: FontFamily::named(smudge_test::VARIABLE_FAMILY),
+            weight: FontWeight::new(weight),
+            size: 30.0,
+            ..TextStyle::default()
+        };
+        // Large and short, so the heaviest strokes reach past the slack the
+        // bounds keep and the line still fits the surface.
+        let layout = TextLayout::new("WMl", &style, None);
+        assert_ink_is_claimed(|origin| layout.glyph_runs_at(origin, Color::BLACK));
+    }
+}
+
 /// The glyph runs a rich text paragraph of `TEXT` paints in the bundled
 /// mono, which has a regular face only, slanted, and emboldened too when
 /// `weight` is bold.
