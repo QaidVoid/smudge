@@ -43,6 +43,7 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::rc::Rc;
 
+use crate::animation::Spring;
 use crate::geometry::{Color, Point, Rect, Size};
 use crate::input::{Handled, KeyEvent};
 use crate::paint::PaintOp;
@@ -494,6 +495,9 @@ pub struct Element<W: Widget> {
     /// The signal that pins the node's scroll offset to the end of its
     /// content while it reads `true`.
     follow_end: Option<RwSignal<bool>>,
+    /// The spring the node's paint props move under, when the element asked
+    /// for a transition.
+    transition: Option<Spring>,
     /// The role the accessibility projection reports, when an element set
     /// one.
     a11y_role: Option<Role>,
@@ -529,6 +533,7 @@ impl<W: Widget> Element<W> {
             autofocus: false,
             trap_focus: false,
             follow_end: None,
+            transition: None,
             a11y_role: None,
             a11y_label: None,
             scroll_offset: Point::default(),
@@ -1385,6 +1390,35 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Moves the node's background, border color, text color and corner
+    /// radius under `spring` whenever their values change, from a hover or
+    /// another state, a binding or a theme switch, instead of switching at
+    /// once.
+    ///
+    /// Colors move in linear sRGB. A new value mid-motion continues from
+    /// where the motion is, at the speed it has. A color that appears or
+    /// goes away fades through its alpha. The node's first paint shows its
+    /// values as they are. The window keeps drawing frames while anything
+    /// moves and stops once everything has arrived, and an app with reduced
+    /// motion shows every new value at once, as
+    /// [`App::set_reduced_motion`](crate::app::App::set_reduced_motion)
+    /// describes. Layout props never move.
+    ///
+    /// ```
+    /// use smudge_core::animation::Spring;
+    /// use smudge_core::theme::ColorToken;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let card = panel()
+    ///     .background(ColorToken::SURFACE)
+    ///     .hover(|style| style.background(ColorToken::SURFACE_HOVER))
+    ///     .transition(Spring::SNAPPY);
+    /// ```
+    pub fn transition(mut self, spring: Spring) -> Self {
+        self.transition = Some(spring);
+        self
+    }
+
     /// Sets the role the accessibility projection reports for the node.
     ///
     /// A widget that reports no role of its own stays out of the projection
@@ -1814,6 +1848,9 @@ pub struct AnyElement {
     /// The signal that pins the node's scroll offset to the end of its
     /// content while it reads `true`.
     follow_end: Option<RwSignal<bool>>,
+    /// The spring the node's paint props move under, when the element asked
+    /// for a transition.
+    transition: Option<Spring>,
     /// The role the accessibility projection reports, when an element set
     /// one.
     a11y_role: Option<Role>,
@@ -1840,6 +1877,7 @@ impl AnyElement {
             autofocus: element.autofocus,
             trap_focus: element.trap_focus,
             follow_end: element.follow_end,
+            transition: element.transition,
             a11y_role: element.a11y_role,
             a11y_label: element.a11y_label,
             scroll_offset: element.scroll_offset,
@@ -1928,6 +1966,7 @@ fn mount_named(
         autofocus,
         trap_focus,
         follow_end,
+        transition,
         a11y_role,
         a11y_label,
         scroll_offset,
@@ -1954,6 +1993,9 @@ fn mount_named(
     }
     if let Some(signal) = follow_end {
         tree.set_follow(id, signal);
+    }
+    if let Some(spring) = transition {
+        tree.set_transition(id, spring);
     }
     tree.set_a11y_role(id, a11y_role);
     tree.set_handlers(id, handlers);

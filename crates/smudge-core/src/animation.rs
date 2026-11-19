@@ -25,6 +25,10 @@
 
 use web_time::Instant;
 
+use crate::geometry::Color;
+use crate::style::Style;
+use crate::theme::{ColorValue, RadiusValue, Theme};
+
 /// How far from its target a value may be and still count as arrived.
 const SETTLED_DISTANCE: f64 = 1e-3;
 
@@ -163,6 +167,11 @@ impl<const N: usize> Motion<N> {
         }
     }
 
+    /// Where the values are going.
+    fn target(&self) -> [f64; N] {
+        self.target
+    }
+
     /// The values and their velocities at `now`.
     fn at(&self, now: Instant) -> ([f64; N], [f64; N]) {
         if self.settled || !self.spring.moves() {
@@ -261,6 +270,178 @@ impl SpringState {
 /// and light spring can move faster than an `f32` counts.
 fn narrow(value: f64) -> f32 {
     (value as f32).clamp(-f32::MAX, f32::MAX)
+}
+
+/// The paint props of one node that move under a spring when their
+/// resolved values change, and the style the node paints with meanwhile.
+///
+/// A node whose element called
+/// [`Element::transition`](crate::element::Element::transition) owns one.
+/// Each paint resolves the node's props against the theme, so tokens and a
+/// theme switch move too, and the props it hands the widget hold the
+/// values the springs have reached.
+#[derive(Debug)]
+pub(crate) struct Transition {
+    /// The spring every prop moves under.
+    spring: Spring,
+    /// The fill behind the node.
+    background: ColorTrack,
+    /// The color of the node's border.
+    border: ColorTrack,
+    /// The color the node's text paints with.
+    text: ColorTrack,
+    /// The radius of the node's corners, once the node has painted.
+    radius: Option<Motion<1>>,
+    /// The style the node paints with, its resolved style with the moving
+    /// props in place.
+    animated: Style,
+}
+
+impl Transition {
+    /// A transition under `spring` for a node that has not painted yet.
+    pub(crate) fn new(spring: Spring) -> Transition {
+        Transition {
+            spring,
+            background: ColorTrack::default(),
+            border: ColorTrack::default(),
+            text: ColorTrack::default(),
+            radius: None,
+            animated: Style::default(),
+        }
+    }
+
+    /// Moves every prop toward its value in `resolved` against `theme`, at
+    /// `now`, and answers whether any of them is still moving. With `jump`
+    /// set, every prop is at its value at once.
+    ///
+    /// A node's first paint shows its values without motion.
+    pub(crate) fn update(
+        &mut self,
+        resolved: &Style,
+        theme: &Theme,
+        now: Instant,
+        jump: bool,
+    ) -> bool {
+        let paint = &resolved.paint;
+        let target = |value: &Option<ColorValue>| value.as_ref().map(|value| value.resolve(theme));
+        let spring = self.spring;
+        let (background, moving_background) =
+            self.background
+                .update(target(&paint.background), spring, now, jump);
+        let (border, moving_border) =
+            self.border
+                .update(target(&paint.border_color), spring, now, jump);
+        let (text, moving_text) = self
+            .text
+            .update(target(&paint.text_color), spring, now, jump);
+        let radius_target = [f64::from(paint.corner_radius.resolve(theme))];
+        let radius = self
+            .radius
+            .get_or_insert_with(|| Motion::rest(spring, radius_target, now));
+        let ([corner], _, radius_settled) = radius.step(radius_target, now, jump);
+
+        self.animated.clone_from(resolved);
+        let animated = &mut self.animated.paint;
+        animated.background = background.map(ColorValue::Literal);
+        animated.border_color = border.map(ColorValue::Literal);
+        animated.text_color = text.map(ColorValue::Literal);
+        animated.corner_radius = RadiusValue::Literal(corner.max(0.0) as f32);
+        moving_background || moving_border || moving_text || !radius_settled
+    }
+
+    /// The style the node paints with, as the last update left it.
+    pub(crate) fn animated(&self) -> &Style {
+        &self.animated
+    }
+}
+
+/// One color prop under a spring, in linear sRGB with straight alpha.
+#[derive(Debug, Default)]
+struct ColorTrack {
+    /// Whether the node has painted, so a color that appears later fades in
+    /// rather than the first paint fading up from nothing.
+    seen: bool,
+    /// The motion of the four channels, once the prop has held a color.
+    motion: Option<Motion<4>>,
+}
+
+impl ColorTrack {
+    /// Moves the color toward `target` and returns the color to paint and
+    /// whether it is still moving.
+    ///
+    /// A color that goes away fades out through its alpha and paints
+    /// nothing once it arrives, and one that appears fades in from its own
+    /// color at no alpha.
+    fn update(
+        &mut self,
+        target: Option<Color>,
+        spring: Spring,
+        now: Instant,
+        jump: bool,
+    ) -> (Option<Color>, bool) {
+        let first = !self.seen;
+        self.seen = true;
+        let goal = match (target, &self.motion) {
+            (Some(color), _) => linear(color),
+            (None, Some(motion)) => {
+                let [r, g, b, _] = motion.target();
+                [r, g, b, 0.0]
+            }
+            (None, None) => return (None, false),
+        };
+        let motion = self.motion.get_or_insert_with(|| {
+            let start = if first {
+                goal
+            } else {
+                [goal[0], goal[1], goal[2], 0.0]
+            };
+            Motion::rest(spring, start, now)
+        });
+        let (value, _, settled) = motion.step(goal, now, jump);
+        let shown = match target {
+            None if settled => None,
+            _ => Some(srgb(value)),
+        };
+        (shown, !settled)
+    }
+}
+
+/// `color` as linear red, green and blue, with its alpha, each from 0 to 1.
+fn linear(color: Color) -> [f64; 4] {
+    let channel = |value: u8| {
+        let value = f64::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    [
+        channel(color.r),
+        channel(color.g),
+        channel(color.b),
+        f64::from(color.a) / 255.0,
+    ]
+}
+
+/// The sRGB color of linear red, green, blue and alpha, each clamped to the
+/// range a color holds, since a spring can overshoot it.
+fn srgb([r, g, b, a]: [f64; 4]) -> Color {
+    let channel = |value: f64| {
+        let value = value.clamp(0.0, 1.0);
+        let encoded = if value <= 0.003_130_8 {
+            value * 12.92
+        } else {
+            1.055 * value.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round() as u8
+    };
+    Color::rgba(
+        channel(r),
+        channel(g),
+        channel(b),
+        (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+    )
 }
 
 #[cfg(test)]

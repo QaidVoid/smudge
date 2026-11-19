@@ -14,7 +14,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use slotmap::{Key, SlotMap, new_key_type};
+use web_time::Instant;
 
+use crate::animation::{Spring, Transition};
 use crate::damage::DamageAccumulator;
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
@@ -221,6 +223,9 @@ struct Node {
     inner_ops: Vec<PaintOp>,
     /// The bounds the node painted last frame and the clip it painted under.
     painted: Option<PaintedBounds>,
+    /// The springs that move the node's paint props, when its element asked
+    /// for a transition.
+    transition: Option<Box<Transition>>,
 }
 
 /// Returns whether two child lists that hold the same nodes in a different
@@ -352,6 +357,17 @@ pub(crate) struct WidgetTree {
     a11y_dirty: Vec<WidgetId>,
     /// Whether the next projection must be rebuilt from scratch.
     a11y_reset: bool,
+    /// The time the paint pass moves springs to, the frame's time on the
+    /// app's clock.
+    now: Instant,
+    /// Whether springs jump to their targets instead of moving.
+    reduced_motion: bool,
+    /// The nodes whose springs were still moving at their last paint, which
+    /// the next frame paints again.
+    animating: Vec<WidgetId>,
+    /// The list the next frame's animating nodes are taken into, kept so
+    /// its capacity is reused.
+    animating_taken: Vec<WidgetId>,
 }
 
 impl WidgetTree {
@@ -385,6 +401,10 @@ impl WidgetTree {
             theme: Theme::light(),
             a11y_dirty: Vec::new(),
             a11y_reset: false,
+            now: Instant::now(),
+            reduced_motion: false,
+            animating: Vec::new(),
+            animating_taken: Vec::new(),
         }
     }
 
@@ -476,6 +496,7 @@ impl WidgetTree {
             ops: Vec::new(),
             inner_ops: Vec::new(),
             painted: None,
+            transition: None,
         };
         let id = self.nodes.insert(node);
         self.taffy
@@ -764,6 +785,49 @@ impl WidgetTree {
                 self.pending_damage.push(painted);
             }
             stack.extend_from_slice(&node.children);
+        }
+    }
+
+    /// Moves the paint props of the node `id` under `spring` whenever their
+    /// resolved values change. A stale id does nothing.
+    pub(crate) fn set_transition(&mut self, id: WidgetId, spring: Spring) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.transition = Some(Box::new(Transition::new(spring)));
+        }
+    }
+
+    /// Sets the time the next paint pass moves springs to.
+    pub(crate) fn set_now(&mut self, now: Instant) {
+        self.now = now;
+    }
+
+    /// Sets whether springs jump to their targets instead of moving.
+    pub(crate) fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
+    }
+
+    /// Whether a spring was still moving at the last paint, so the next
+    /// frame has motion to paint.
+    pub(crate) fn is_animating(&self) -> bool {
+        !self.animating.is_empty()
+    }
+
+    /// Queues for paint every node whose springs were still moving at the
+    /// last paint.
+    ///
+    /// The nodes are queued for paint alone, without the accessibility
+    /// update a repaint of a projected node queues, since motion changes no
+    /// semantics, and without their ancestors.
+    pub(crate) fn queue_animations(&mut self) {
+        std::mem::swap(&mut self.animating, &mut self.animating_taken);
+        for id in self.animating_taken.drain(..) {
+            let Some(node) = self.nodes.get_mut(id) else {
+                continue;
+            };
+            if node.dirty == Dirty::Clean {
+                node.dirty = Dirty::Paint;
+                self.paint_queue.push(id);
+            }
         }
     }
 

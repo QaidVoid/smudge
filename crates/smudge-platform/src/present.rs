@@ -131,8 +131,8 @@ impl CpuFrames {
     }
 
     /// Whether `frame` must skip its present. See [`present_skipped`].
-    pub(crate) fn skips(&self, frame: &FrameOutput<'_>, has_tick: bool) -> bool {
-        present_skipped(frame.damage, has_tick, self.show_damage)
+    pub(crate) fn skips(&self, frame: &FrameOutput<'_>, driven: bool) -> bool {
+        present_skipped(frame.damage, driven, self.show_damage)
     }
 
     /// Returns the region the last drawn frame presents when
@@ -541,15 +541,16 @@ impl DamageHistory {
 
 /// Whether the frame the last redraw rendered must skip its present.
 ///
-/// A frame with no damage while the app runs a tick changed nothing, and the
-/// window still shows what the last present left, so a present would copy the
+/// A frame with no damage while the app draws frames on its own, through a
+/// tick, an event hook or a moving spring, changed nothing, and the window
+/// still shows what the last present left, so a present would copy the
 /// whole surface only to write the same pixels again. A frame with no damage
-/// without a tick is how the window system asks for a redraw, for example
+/// otherwise is how the window system asks for a redraw, for example
 /// after an X11 window was uncovered, and the full present it gets restores
 /// the window's contents. While the damage overlay is on, no present is
 /// skipped, so the previous frame's tint never outlives that frame.
-pub(crate) fn present_skipped(damage: &[PixelRect], has_tick: bool, show_damage: bool) -> bool {
-    damage.is_empty() && has_tick && !show_damage
+pub(crate) fn present_skipped(damage: &[PixelRect], driven: bool, show_damage: bool) -> bool {
+    damage.is_empty() && driven && !show_damage
 }
 
 /// Chooses the region a present of `age` has to draw or copy, writing it to

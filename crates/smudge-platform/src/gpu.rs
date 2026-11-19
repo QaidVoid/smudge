@@ -150,8 +150,8 @@ impl GpuPath {
 
     /// Renders `frame` onto the surface and presents it.
     ///
-    /// A frame whose damage is empty and whose app runs a tick changed
-    /// nothing, so it is not presented, exactly as on the CPU path. Every
+    /// A frame whose damage is empty while the app draws frames on its own
+    /// changed nothing, so it is not presented, exactly as on the CPU path. Every
     /// presented frame is a full redraw: [`PresentStats::buffer_age`] stays
     /// at its unknown value, [`PresentStats::with_damage`] is off, and
     /// [`PresentStats::bytes_copied`] reports nothing because the GPU copies
@@ -175,9 +175,9 @@ impl GpuPath {
     pub(crate) fn render_and_present(
         &mut self,
         frame: &FrameOutput<'_>,
-        has_tick: bool,
+        driven: bool,
     ) -> Result<Option<PresentStats>, PlatformError> {
-        if present_skipped(frame.damage, has_tick, false) {
+        if present_skipped(frame.damage, driven, false) {
             return Ok(None);
         }
         let acquire_start = Instant::now();

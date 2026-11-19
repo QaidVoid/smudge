@@ -1068,7 +1068,8 @@ where
         {
             (on_event)(&mut state.app);
         }
-        let driven = state.app.has_tick() || state.on_event.is_some();
+        let paced = state.app.has_tick() || state.on_event.is_some();
+        let driven = paced || state.app.is_animating();
         let started = Instant::now();
         state.next_frame = None;
         let output = state.app.frame();
@@ -1087,6 +1088,9 @@ where
         state.update_ime(true);
         #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         state.update_a11y();
+        // A spring the frame set moving keeps the frames coming, and one
+        // that arrived in it lets the window go idle.
+        let driven = paced || state.app.is_animating();
         if presented.is_some() && state.below_frame_limit() {
             state.window.request_redraw();
         } else if driven {
@@ -1104,8 +1108,8 @@ where
     /// Runs the timers that are due and puts the event loop to sleep until
     /// the next one.
     ///
-    /// An app with a tick or an event hook keeps itself awake and needs
-    /// nothing here. Any
+    /// An app with a tick, an event hook or a moving spring keeps itself
+    /// awake and needs nothing here. Any
     /// other app runs its due timers between frames: one that writes a
     /// signal wakes the window through the app's wake callback, and one that
     /// changes nothing draws no frame, so it never costs a present. The loop
@@ -1116,7 +1120,7 @@ where
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        if state.app.has_tick() || state.on_event.is_some() {
+        if state.app.has_tick() || state.on_event.is_some() || state.app.is_animating() {
             if let Some(at) = state.next_frame {
                 if at <= Instant::now() {
                     state.next_frame = None;
@@ -1639,17 +1643,18 @@ impl Presenter {
     /// presented frame.
     ///
     /// Returns `Ok(None)` when nothing was presented: a frame that changed
-    /// nothing while a tick runs, or a surface without a pixel or texture to
+    /// nothing while the app draws frames on its own, or a surface without a
+    /// pixel or texture to
     /// present, both of which the next redraw retries.
     fn render_and_present(
         &mut self,
         frame: &FrameOutput<'_>,
-        has_tick: bool,
+        driven: bool,
     ) -> Result<Option<PresentStats>, PlatformError> {
         match self {
-            Presenter::Cpu(cpu) => cpu.render_and_present(frame, has_tick),
+            Presenter::Cpu(cpu) => cpu.render_and_present(frame, driven),
             #[cfg(feature = "gpu")]
-            Presenter::Gpu(gpu) => gpu.render_and_present(frame, has_tick),
+            Presenter::Gpu(gpu) => gpu.render_and_present(frame, driven),
         }
     }
 
@@ -1744,18 +1749,19 @@ impl CpuPresenter {
     ///
     /// Returns the statistics of a presented frame, or `Ok(None)` when nothing
     /// was presented: a surface without pixels, or a frame with no damage
-    /// while a tick runs. Such a frame changed nothing, so the window still
+    /// while the app draws frames on its own, through a tick, an event hook
+    /// or a moving spring. Such a frame changed nothing, so the window still
     /// shows the last present, no buffer is taken, and the frame limit does
-    /// not count it. An empty frame without a tick is a redraw the window
+    /// not count it. An empty frame otherwise is a redraw the window
     /// system asked for, such as an X11 window being shown again, and presents
     /// the whole surface to restore the window's contents.
     fn render_and_present(
         &mut self,
         frame: &FrameOutput<'_>,
-        has_tick: bool,
+        driven: bool,
     ) -> Result<Option<PresentStats>, PlatformError> {
         let (width, height) = (self.width, self.height);
-        if width == 0 || height == 0 || self.frames.skips(frame, has_tick) {
+        if width == 0 || height == 0 || self.frames.skips(frame, driven) {
             return Ok(None);
         }
         let acquire_start = Instant::now();

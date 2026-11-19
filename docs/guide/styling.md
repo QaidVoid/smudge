@@ -91,6 +91,23 @@ Patches hold fixed values. For a value that changes with your own state, bind th
 
 `disabled(true)`, or a closure, takes the node out of hit testing, so its pointer handlers do not run, and applies its `disabled_style` patch.
 
+## Transitions
+
+`transition` moves a node's background, border color, text color and corner radius under a spring whenever their values change, instead of switching them at once. The change can come from a state patch, a bound closure or a theme switch.
+
+```rust
+let row_item = panel()
+    .padding(px(8.0))
+    .corner_radius(6.0)
+    .background(Color::TRANSPARENT)
+    .hover(|p| p.background(ColorToken::SURFACE_HOVER))
+    .transition(Spring::SNAPPY);
+```
+
+`Spring::SNAPPY` suits state changes, `Spring::SMOOTH` arrives without overshooting, and `Spring::BOUNCY` swings past its value and back. A `Spring` of your own sets its stiffness, damping and mass. Colors move in linear sRGB, and a color that appears or goes away fades through its alpha. A new value that arrives mid-motion continues from where the motion is, at the speed it has, so a hover that ends halfway turns back without a jump. The node's first paint shows its values as they are.
+
+A moving node repaints alone, with no layout. The window keeps drawing frames while anything moves and goes idle once everything has arrived. `App::set_reduced_motion(true)` makes every new value show at once, for a user who asks for less motion. Layout properties never move.
+
 ## Styling children
 
 `style_children` applies one style function to every direct child, which keeps repeated styling in one place:

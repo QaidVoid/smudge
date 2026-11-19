@@ -45,6 +45,10 @@ impl WidgetTree {
     /// whose clip is empty, such as a hidden node, keeps no operations and its
     /// widget is not asked to paint.
     ///
+    /// A node with a transition paints with the values its springs have
+    /// reached at the frame's time, and one whose springs are still moving
+    /// is kept for the next frame to paint again.
+    ///
     /// Before a widget paints, the pass clears the theme's consultation flag,
     /// and after it paints, the node's `uses_tokens` flag records whether the
     /// widget resolved a token. That is how a theme switch finds the nodes
@@ -86,10 +90,25 @@ impl WidgetTree {
             node.inner_ops.clear();
             if !node.clip.is_empty() {
                 self.theme.reset_consulted();
+                let style = match node.transition.as_deref_mut() {
+                    Some(transition) => {
+                        let moving = transition.update(
+                            &node.resolved,
+                            &self.theme,
+                            self.now,
+                            self.reduced_motion,
+                        );
+                        if moving {
+                            self.animating.push(id);
+                        }
+                        transition.animated()
+                    }
+                    None => &node.resolved,
+                };
                 let cx = PaintCx {
                     rect: node.paint_rect,
                     content: node.paint_content,
-                    style: &node.resolved,
+                    style,
                     theme: &self.theme,
                 };
                 node.widget.paint(&cx, &mut node.ops);

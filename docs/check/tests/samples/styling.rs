@@ -69,6 +69,16 @@ fn states() {
 }
 
 #[test]
+fn transitions() {
+    let row_item = panel()
+        .padding(px(8.0))
+        .corner_radius(6.0)
+        .background(Color::TRANSPARENT)
+        .hover(|p| p.background(ColorToken::SURFACE_HOVER))
+        .transition(Spring::SNAPPY);
+}
+
+#[test]
 fn tags() {
     use smudge::core::style::Edges;
     let tags = row()

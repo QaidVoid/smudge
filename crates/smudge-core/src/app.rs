@@ -175,6 +175,12 @@ pub struct App {
     scheme: Option<ColorScheme>,
     /// What the app paints with when it follows the system color scheme.
     scheme_follow: Option<SchemeFollow>,
+    /// Whether motion is reduced, as the app itself set it, which wins over
+    /// the system's setting.
+    reduced_motion_app: Option<bool>,
+    /// Whether the system asks for reduced motion, as the windowing layer
+    /// last reported it.
+    reduced_motion_system: bool,
     /// Whether a remount replaced the text fields since the window last
     /// asked, so the input method's composition belongs to none of them.
     ime_reset: bool,
@@ -294,6 +300,8 @@ impl App {
             carrying: None,
             scheme: None,
             scheme_follow: None,
+            reduced_motion_app: None,
+            reduced_motion_system: false,
             ime_reset: false,
             build_owner,
             _root: root,
@@ -728,6 +736,65 @@ impl App {
         self.set_clear_color(clear);
     }
 
+    /// Makes springs show every new value at once, or move again.
+    ///
+    /// With reduced motion, a node with a
+    /// [`transition`](crate::element::Element::transition) paints a changed
+    /// value in the next frame, as a node without one does. The windowing
+    /// layer reports the system's own setting through
+    /// [`App::set_system_reduced_motion`], and a call here overrides it for
+    /// as long as the app runs.
+    ///
+    /// ```
+    /// use smudge_core::app::{App, AppConfig, RepaintMode};
+    /// use smudge_core::geometry::{Color, Size};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let config = AppConfig {
+    ///     viewport: Size {
+    ///         width: 120.0,
+    ///         height: 80.0,
+    ///     },
+    ///     scale: 1.0,
+    ///     clear_color: Color::WHITE,
+    ///     repaint: RepaintMode::Damage,
+    /// };
+    /// let mut app = App::new(config, panel);
+    /// app.set_reduced_motion(true);
+    /// app.set_system_reduced_motion(false);
+    /// assert!(app.reduced_motion());
+    /// ```
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion_app = Some(reduced);
+        self.tree.set_reduced_motion(self.reduced_motion());
+    }
+
+    /// Reports whether the system asks for reduced motion.
+    ///
+    /// The windowing layer calls it at start and whenever the setting
+    /// changes. It takes effect unless the app chose for itself through
+    /// [`App::set_reduced_motion`].
+    pub fn set_system_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion_system = reduced;
+        self.tree.set_reduced_motion(self.reduced_motion());
+    }
+
+    /// Whether springs show every new value at once: the app's own choice
+    /// when it made one, and the system's setting otherwise.
+    pub fn reduced_motion(&self) -> bool {
+        self.reduced_motion_app
+            .unwrap_or(self.reduced_motion_system)
+    }
+
+    /// Whether a spring is still moving, so the next frame has motion to
+    /// paint.
+    ///
+    /// A window keeps drawing paced frames while it is true, as it does for
+    /// a tick, and goes idle once every spring has arrived.
+    pub fn is_animating(&self) -> bool {
+        self.tree.is_animating()
+    }
+
     /// Whether the app follows the system color scheme.
     ///
     /// The windowing layer starts the watcher that reports scheme changes
@@ -1055,7 +1122,8 @@ impl App {
     /// 1. The values other threads sent through the app's channels: each
     ///    handler runs inside the owner that created its channel, delivering
     ///    at most what the queue held when the drain reached it.
-    /// 2. The timers that are due on the app's clock, then the tick callback,
+    /// 2. The timers that are due on the app's clock, then the nodes whose
+    ///    springs were still moving, which repaint, then the tick callback,
     ///    when one is set.
     /// 3. Reactive effects and the updates they queue, until neither has work
     ///    left. A signal write therefore lands before layout, including one a
@@ -1088,8 +1156,10 @@ impl App {
         let quiet = QuietWakes::enter(&self._root);
         crate::channel::drain_all(&self.channels);
         timer::fire_due(&self.timers);
+        self.tree.queue_animations();
 
         let now = self.now();
+        self.tree.set_now(now);
         if let Some(tick) = &mut self.tick {
             tick(now);
         }
