@@ -1367,3 +1367,123 @@ fn window_focused_reruns_its_readers_on_a_real_change() {
         "each change reruns the reader once, and a repeated report does not"
     );
 }
+
+#[test]
+fn a_press_on_a_node_that_keeps_focus_leaves_the_focus_where_it_is() {
+    let presses = RwSignal::new(0u32);
+    let counted = presses.clone();
+    let mut harness = Harness::new(200.0, 100.0, 1.0, move || {
+        let counted = counted.clone();
+        panel()
+            .row()
+            .child(panel().width(px(40.0)).height(px(40.0)).focusable())
+            .child(
+                panel()
+                    .width(px(40.0))
+                    .height(px(40.0))
+                    .keeps_focus()
+                    .on_press(move || counted.update(|count| *count += 1)),
+            )
+            .child(panel().width(px(40.0)).height(px(40.0)).on_press(|| {}))
+    });
+    harness.frame();
+    harness.click(Point { x: 20.0, y: 20.0 });
+    harness.frame();
+    let field = harness
+        .app()
+        .focused()
+        .expect("the press focused the field");
+
+    harness.click(Point { x: 60.0, y: 20.0 });
+    harness.frame();
+    assert_eq!(presses.get(), 1, "the node heard its press");
+    assert_eq!(
+        harness.app().focused(),
+        Some(field),
+        "the focus stayed on the field"
+    );
+
+    harness.click(Point { x: 100.0, y: 20.0 });
+    harness.frame();
+    assert_eq!(
+        harness.app().focused(),
+        None,
+        "a plain node's press clears it"
+    );
+}
+
+#[test]
+fn a_press_on_a_disabled_node_that_keeps_focus_leaves_the_focus_too() {
+    let mut harness = Harness::new(200.0, 100.0, 1.0, || {
+        panel()
+            .row()
+            .child(panel().width(px(40.0)).height(px(40.0)).focusable())
+            .child(
+                panel()
+                    .width(px(40.0))
+                    .height(px(40.0))
+                    .keeps_focus()
+                    .disabled(true)
+                    .on_press(|| {}),
+            )
+    });
+    harness.frame();
+    harness.click(Point { x: 20.0, y: 20.0 });
+    harness.frame();
+    let field = harness
+        .app()
+        .focused()
+        .expect("the press focused the field");
+    harness.click(Point { x: 60.0, y: 20.0 });
+    harness.frame();
+    assert_eq!(
+        harness.app().focused(),
+        Some(field),
+        "the disabled button left the focus"
+    );
+}
+
+#[test]
+fn the_node_that_takes_a_press_decides_whether_the_focus_stays() {
+    let downs = RwSignal::new(0u32);
+    let counted = downs.clone();
+    let mut harness = Harness::new(200.0, 100.0, 1.0, move || {
+        let counted = counted.clone();
+        panel()
+            .row()
+            .child(panel().width(px(40.0)).height(px(40.0)).focusable())
+            .child(
+                panel()
+                    .width(px(40.0))
+                    .height(px(40.0))
+                    .keeps_focus()
+                    .on_pointer_down(move |_| counted.update(|count| *count += 1))
+                    .child(
+                        panel()
+                            .width(px(40.0))
+                            .height(px(40.0))
+                            .disabled(true)
+                            .on_press(|| {}),
+                    ),
+            )
+    });
+    harness.frame();
+    harness.click(Point { x: 20.0, y: 20.0 });
+    harness.frame();
+    let field = harness
+        .app()
+        .focused()
+        .expect("the press focused the field");
+    harness.click(Point { x: 60.0, y: 20.0 });
+    harness.frame();
+    assert_eq!(
+        downs.get(),
+        1,
+        "the container took the press over its disabled child"
+    );
+    assert_eq!(
+        harness.app().focused(),
+        Some(field),
+        "and its flag kept the focus"
+    );
+}

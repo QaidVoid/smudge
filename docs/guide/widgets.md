@@ -77,7 +77,7 @@ let log = scroll(
 .height(px(300.0));
 ```
 
-`scroll(content)` clips its content to its own box and scrolls it vertically with the wheel or touchpad, showing a thumb as a position indicator. Scrolling does not repaint the content: the rows keep their paint and only move, so a scroll frame through a thousand rows stays well under a millisecond on the CPU renderer.
+`scroll(content)` clips its content to its own box and scrolls it vertically with the wheel or touchpad, and shows a thumb along its right edge while the content does not fit. Dragging the thumb scrolls the view, and a press on the track beside it scrolls one page toward the press. The scrollbar takes presses along the view's right edge, eight logical pixels wide, and leaves the keyboard focus where it was, so dragging it does not take the focus out of a field. Scrolling does not repaint the content: the rows keep their paint and only move, so a scroll frame through a thousand rows stays well under a millisecond on the CPU renderer.
 
 When Tab, `autofocus()`, a focus restored after a remount, a focus trap handing the focus back, or `App::request_focus` moves the keyboard focus to a node the view hides, the view scrolls just far enough to show that node at its nearest edge, and every scroll view around it does the same. A node taller than the view is shown from its top. A click that focuses a node scrolls nothing, because the node is already under the pointer.
 

@@ -1393,3 +1393,354 @@ fn a_drag_past_nested_views_scrolls_the_inner_one_until_its_end() {
     assert!(outer.get() > 0.0, "and the outer one took over");
     harness.button_up(Point { x: 50.0, y: 200.0 });
 }
+
+/// A view 100 pixels tall over one block `content` pixels tall, settled, with
+/// the signal that holds its offset.
+fn view_over(content: f32) -> (Harness, RwSignal<f32>) {
+    let offset = RwSignal::new(0.0f32);
+    let read = offset.clone();
+    let mut harness = Harness::new(120.0, 200.0, 1.0, move || {
+        panel().column().child(
+            scroll(row(content, Color::rgb(90, 90, 90)))
+                .offset(read.clone())
+                .height(px(100.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    (harness, offset)
+}
+
+/// The middle of the thumb, as it is drawn now.
+fn thumb_middle(harness: &mut Harness) -> Point {
+    let thumb = thumb(harness).expect("the thumb shows");
+    Point {
+        x: (thumb.x0 + thumb.x1) / 2.0,
+        y: (thumb.y0 + thumb.y1) / 2.0,
+    }
+}
+
+#[test]
+fn dragging_the_thumb_scrolls_by_the_content_share_of_the_drag() {
+    // 183 pixels of content in 100: the thumb is 55 long and travels 45, so
+    // each pixel it moves scrolls 83 / 45 pixels.
+    let (mut harness, offset) = view_over(183.0);
+    let start = thumb_middle(&mut harness);
+    harness.button_down(start);
+    harness.frame();
+    harness.move_to(Point {
+        x: start.x,
+        y: start.y + 9.0,
+    });
+    harness.frame();
+    harness.button_up(Point {
+        x: start.x,
+        y: start.y + 9.0,
+    });
+    harness.settle();
+    let expected = 9.0 / 45.0 * 83.0;
+    assert!(
+        (offset.get() - expected).abs() < 0.01,
+        "the drag scrolled to {}, not {expected}",
+        offset.get()
+    );
+    let moved = thumb_middle(&mut harness);
+    assert!(
+        (moved.y - (start.y + 9.0)).abs() <= 1.0,
+        "the thumb followed the pointer"
+    );
+}
+
+#[test]
+fn dragging_the_thumb_past_the_track_holds_at_the_end() {
+    let (mut harness, offset) = view_over(183.0);
+    let start = thumb_middle(&mut harness);
+    harness.button_down(start);
+    harness.frame();
+    harness.move_to(Point {
+        x: start.x,
+        y: start.y + 500.0,
+    });
+    harness.frame();
+    assert_eq!(
+        offset.get(),
+        83.0,
+        "the drag stops at the end of the content"
+    );
+    harness.move_to(Point {
+        x: start.x,
+        y: start.y - 500.0,
+    });
+    harness.frame();
+    harness.button_up(Point {
+        x: start.x,
+        y: start.y - 500.0,
+    });
+    harness.settle();
+    assert_eq!(offset.get(), 0.0, "and at the top on the way back");
+}
+
+#[test]
+fn a_press_on_the_track_pages_toward_it() {
+    // 400 pixels of content in 100: a page is the 100 the view shows.
+    let (mut harness, offset) = view_over(400.0);
+    let below = Point { x: 116.0, y: 90.0 };
+    harness.click(below);
+    harness.settle();
+    assert_eq!(offset.get(), 100.0, "a press below the thumb pages down");
+    harness.click(below);
+    harness.settle();
+    assert_eq!(offset.get(), 200.0);
+    harness.click(Point { x: 116.0, y: 2.0 });
+    harness.settle();
+    assert_eq!(offset.get(), 100.0, "a press above the thumb pages up");
+    let on_thumb = thumb_middle(&mut harness);
+    harness.click(on_thumb);
+    harness.settle();
+    assert_eq!(
+        offset.get(),
+        100.0,
+        "a press on the thumb itself pages nothing"
+    );
+}
+
+/// Drags the thumb from `from` down by `down` logical pixels, one frame per
+/// move, and releases it.
+fn drag_thumb(harness: &mut Harness, from: Point, down: &[f32]) {
+    harness.button_down(from);
+    harness.frame();
+    for &by in down {
+        harness.move_to(Point {
+            x: from.x,
+            y: from.y + by,
+        });
+        harness.frame();
+    }
+    let last = down.last().copied().unwrap_or(0.0);
+    harness.button_up(Point {
+        x: from.x,
+        y: from.y + last,
+    });
+    harness.settle();
+}
+
+#[test]
+fn grabbing_the_thumb_moves_nothing_until_the_pointer_does() {
+    // A long content puts the offset between the thumb's rounded pixels, so
+    // a grab measured from the drawn thumb would snap the view.
+    let (mut harness, offset) = view_over(10_000.0);
+    wheel(&mut harness, 64.0);
+    harness.settle();
+    assert_eq!(offset.get(), 64.0);
+    let start = thumb_middle(&mut harness);
+    harness.button_down(start);
+    harness.frame();
+    harness.move_to(Point {
+        x: start.x - 1.0,
+        y: start.y,
+    });
+    harness.frame();
+    assert!(
+        (offset.get() - 64.0).abs() < 0.01,
+        "a sideways move scrolled to {}",
+        offset.get()
+    );
+}
+
+#[test]
+fn a_press_beside_the_thumb_grabs_it_rather_than_paging() {
+    let (mut harness, offset) = view_over(183.0);
+    let middle = thumb_middle(&mut harness);
+    let beside = Point {
+        x: middle.x - 3.0,
+        y: middle.y,
+    };
+    drag_thumb(&mut harness, beside, &[9.0]);
+    let expected = 9.0 / 45.0 * 83.0;
+    assert!(
+        (offset.get() - expected).abs() < 0.01,
+        "the press beside the thumb dragged it to {}, not {expected}",
+        offset.get()
+    );
+}
+
+#[test]
+fn a_thumb_drag_down_to_the_end_engages_following_without_turning_back() {
+    let offset = RwSignal::new(0.0f32);
+    let following = RwSignal::new(false);
+    let (read, follow) = (offset.clone(), following.clone());
+    let mut harness = Harness::new(120.0, 200.0, 1.0, move || {
+        panel().column().child(
+            scroll(row(183.0, Color::rgb(90, 90, 90)))
+                .offset(read.clone())
+                .follow_end(follow.clone())
+                .height(px(100.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    let start = thumb_middle(&mut harness);
+    harness.button_down(start);
+    harness.frame();
+    let mut last = 0.0;
+    for by in [40.0, 42.0, 43.0, 44.0, 45.0, 46.0] {
+        harness.move_to(Point {
+            x: start.x,
+            y: start.y + by,
+        });
+        harness.frame();
+        let now = offset.get();
+        assert!(now >= last, "the view turned back from {last} to {now}");
+        last = now;
+    }
+    assert_eq!(last, 83.0);
+    assert!(following.get(), "reaching the end engaged following");
+}
+
+#[test]
+fn a_press_on_the_track_held_past_the_view_scrolls_nothing_more() {
+    let (mut harness, offset) = view_over(400.0);
+    let below = Point { x: 116.0, y: 90.0 };
+    harness.button_down(below);
+    harness.frame();
+    assert_eq!(offset.get(), 100.0, "the press paged once");
+    harness.move_to(Point { x: 116.0, y: 150.0 });
+    for _ in 0..30 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    assert_eq!(
+        offset.get(),
+        100.0,
+        "holding it past the view's edge scrolls no more"
+    );
+}
+
+#[test]
+fn dragging_an_inner_thumb_leaves_the_outer_view_alone() {
+    let (inner, outer) = (RwSignal::new(0.0f32), RwSignal::new(0.0f32));
+    let (read_inner, read_outer) = (inner.clone(), outer.clone());
+    let mut harness = Harness::new(120.0, 200.0, 1.0, move || {
+        panel().column().child(
+            scroll(
+                column()
+                    .child(
+                        scroll(row(300.0, Color::rgb(90, 90, 90)))
+                            .offset(read_inner.clone())
+                            .width(px(80.0))
+                            .height(px(100.0)),
+                    )
+                    .child(row(300.0, Color::rgb(30, 30, 30))),
+            )
+            .offset(read_outer.clone())
+            .height(px(150.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    let inner_thumb = nodes(&mut harness)
+        .into_iter()
+        .filter(|node| node.name == "Panel" && node.rect.width() == 4.0 && node.rect.x1 <= 80.0)
+        .map(|node| node.rect)
+        .next()
+        .expect("the inner thumb shows");
+    let start = Point {
+        x: (inner_thumb.x0 + inner_thumb.x1) / 2.0,
+        y: (inner_thumb.y0 + inner_thumb.y1) / 2.0,
+    };
+    drag_thumb(&mut harness, start, &[30.0, 400.0]);
+    assert_eq!(inner.get(), 200.0, "the inner view reached its end");
+    assert_eq!(outer.get(), 0.0, "the outer view stayed put");
+}
+
+#[test]
+fn dragging_the_thumb_keeps_the_focus_on_the_field() {
+    TextSystem::bundled_only().install();
+    let offset = RwSignal::new(0.0f32);
+    let read = offset.clone();
+    let mut harness = Harness::new(120.0, 200.0, 1.0, move || {
+        panel()
+            .column()
+            .child(text_input(RwSignal::new(String::new())).width(px(100.0)))
+            .child(
+                scroll(row(183.0, Color::rgb(90, 90, 90)))
+                    .offset(read.clone())
+                    .height(px(100.0)),
+            )
+    });
+    harness.frame();
+    harness.settle();
+    harness.click(Point { x: 20.0, y: 8.0 });
+    harness.frame();
+    let field = harness
+        .app()
+        .focused()
+        .expect("the click focused the field");
+    let start = thumb_middle_anywhere(&mut harness);
+    drag_thumb(&mut harness, start, &[9.0]);
+    assert!(offset.get() > 0.0, "the drag scrolled");
+    assert_eq!(
+        harness.app().focused(),
+        Some(field),
+        "the field kept the focus"
+    );
+}
+
+/// The middle of the first thumb drawn, at any depth.
+fn thumb_middle_anywhere(harness: &mut Harness) -> Point {
+    let thumb = nodes(harness)
+        .into_iter()
+        .find(|node| node.name == "Panel" && node.rect.width() == 4.0)
+        .map(|node| node.rect)
+        .expect("a thumb shows");
+    Point {
+        x: (thumb.x0 + thumb.x1) / 2.0,
+        y: (thumb.y0 + thumb.y1) / 2.0,
+    }
+}
+
+#[test]
+fn content_that_grows_under_a_thumb_drag_keeps_the_view_following() {
+    let height = RwSignal::new(1000.0f32);
+    let offset = RwSignal::new(450.0f32);
+    let following = RwSignal::new(false);
+    let (read_height, read, follow) = (height.clone(), offset.clone(), following.clone());
+    let mut harness = Harness::new(120.0, 200.0, 1.0, move || {
+        let read_height = read_height.clone();
+        panel().column().child(
+            scroll(
+                panel()
+                    .height(move || px(read_height.get()))
+                    .background(Color::rgb(90, 90, 90)),
+            )
+            .offset(read.clone())
+            .follow_end(follow.clone())
+            .height(px(100.0)),
+        )
+    });
+    harness.frame();
+    harness.settle();
+    // The thumb is 24 long and travels 76, and starts halfway, so 38 down
+    // brings it exactly to the end.
+    let start = thumb_middle(&mut harness);
+    harness.button_down(start);
+    harness.frame();
+    let end = Point {
+        x: start.x,
+        y: start.y + 38.0,
+    };
+    harness.move_to(end);
+    harness.settle();
+    assert_eq!(offset.get(), 900.0);
+    assert!(following.get(), "the drag reached the end and follows it");
+
+    height.set(2000.0);
+    harness.settle();
+    assert_eq!(offset.get(), 1900.0, "the grown content stays in view");
+    harness.move_to(Point {
+        x: end.x,
+        y: end.y + 1.0,
+    });
+    harness.settle();
+    assert_eq!(offset.get(), 1900.0, "a move further down keeps the end");
+    assert!(following.get(), "and keeps following it");
+}

@@ -537,6 +537,8 @@ pub struct Element<W: Widget> {
     cursor: Option<crate::window::Cursor>,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
+    /// Whether a press on the node leaves the keyboard focus where it is.
+    keeps_focus: bool,
     /// Whether the node requests the focus on the first frame after it is
     /// laid out.
     autofocus: bool,
@@ -591,6 +593,7 @@ impl<W: Widget> Element<W> {
             disabled: false,
             cursor: None,
             focusable: false,
+            keeps_focus: false,
             autofocus: false,
             trap_focus: false,
             follow_end: None,
@@ -1687,6 +1690,25 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Makes a press on the node leave the keyboard focus where it is,
+    /// rather than move it to the node or clear it, as a scrollbar or a
+    /// toolbar button that acts on the focused field does.
+    ///
+    /// A press on a node normally takes the focus when the node can hold it,
+    /// and clears the focus when it cannot. A node built with this hears the
+    /// press as usual, and the focus stays on whatever held it, so typing
+    /// goes on where it was. A disabled node built with it leaves the focus
+    /// alone too.
+    ///
+    /// It counts on the node a press lands on, the deepest one under the
+    /// pointer that takes a press through a handler, its focus or a style
+    /// patch, so a container built with it does not cover a button inside
+    /// it, and a node that takes no press has nothing for it to change.
+    pub fn keeps_focus(mut self) -> Self {
+        self.keeps_focus = true;
+        self
+    }
+
     /// Takes the keyboard focus on the first frame the node is laid out
     /// after it mounts.
     ///
@@ -2074,6 +2096,8 @@ pub struct AnyElement {
     cursor: Option<crate::window::Cursor>,
     /// Whether the node can take the keyboard focus.
     focusable: bool,
+    /// Whether a press on the node leaves the keyboard focus where it is.
+    keeps_focus: bool,
     /// Whether the node requests the focus on the first frame after it is
     /// laid out.
     autofocus: bool,
@@ -2119,6 +2143,7 @@ impl AnyElement {
             disabled: element.disabled,
             cursor: element.cursor,
             focusable: element.focusable,
+            keeps_focus: element.keeps_focus,
             autofocus: element.autofocus,
             trap_focus: element.trap_focus,
             follow_end: element.follow_end,
@@ -2212,6 +2237,7 @@ fn mount_named(
         disabled,
         cursor,
         focusable,
+        keeps_focus,
         autofocus,
         trap_focus,
         follow_end,
@@ -2238,6 +2264,7 @@ fn mount_named(
     tree.set_disabled(id, disabled);
     tree.set_cursor(id, cursor);
     tree.set_focusable(id, focusable);
+    tree.set_keeps_focus(id, keeps_focus);
     if autofocus {
         tree.queue_autofocus(id);
     }

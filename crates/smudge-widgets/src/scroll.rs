@@ -7,9 +7,9 @@
 //! moves the same way, through the scroll offset of a track it hangs from.
 //! Through [`ScrollExt::follow_end`] the view can also pin itself to the end
 //! of its content while a signal reads `true`, and release itself when a
-//! wheel step leaves the end. When the keyboard focus moves to a node inside
-//! the view by any means but a pointer press, the view scrolls to show that
-//! node, as [`Element::on_reveal`] describes.
+//! wheel step, a thumb drag or a page leaves the end. When the keyboard focus
+//! moves to a node inside the view by any means but a pointer press, the view
+//! scrolls to show that node, as [`Element::on_reveal`] describes.
 //!
 //! The view learns its own height and its content's height when the two
 //! paint, and writes them to signals its bindings read. A size-driven change,
@@ -24,7 +24,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use smudge_core::element::{Element, IntoElement, Value};
-use smudge_core::geometry::Point;
+use smudge_core::geometry::{Point, Size};
 use smudge_core::input::{Drag, Handled};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
@@ -212,8 +212,13 @@ fn clamp_offset(desired: f32, max: f32) -> f32 {
 /// full height, however tall that is. A wheel scroll moves the content up
 /// while the pointer is over the view, clamped so the content's bottom edge
 /// never rises above the bottom of the view's content box, and a thin thumb
-/// at the right edge shows the position while the content overflows. The
-/// thumb is a position indicator only: it has no handlers and no dragging.
+/// at the right edge shows the position while the content overflows.
+/// Dragging the thumb scrolls the view by the content's share of each pixel
+/// it moves, held to the content's ends, and a press on the track beside the
+/// thumb scrolls one page, the height the view shows, toward the press.
+/// While the content overflows, the scrollbar takes the presses along the
+/// view's right edge, eight logical pixels wide, over the content there, and
+/// a press on it leaves the keyboard focus where it is.
 ///
 /// When the keyboard focus moves to a node inside the view that is out of
 /// view, the view scrolls to show it, for every move that
@@ -317,39 +322,7 @@ pub(crate) fn scroll_with_visible_height(
     // The view takes every wheel event over it, even one it cannot use, so
     // a page around a view at its end does not scroll in its place.
     .on_wheel(move |delta| {
-        let Some(max) = wheel_chrome.max_offset() else {
-            return Handled::Yes;
-        };
-        let follow_signal = wheel_chrome.following();
-        // The signal, not the offset the binding last applied, is where a
-        // step starts: several wheel events can arrive before the next flush,
-        // and each must add to the one before it. While the view follows it
-        // sits at the end, so the step starts there even when the signal has
-        // not caught up with the pin yet.
-        let following = follow_signal
-            .as_ref()
-            .is_some_and(|signal| signal.read(|active| *active));
-        let signal = wheel_chrome.signal();
-        let current = if following {
-            max
-        } else {
-            clamp_offset(signal.read(|offset| *offset), max)
-        };
-        let step = finite(delta.y);
-        let next = clamp_offset(current + step, max);
-        if next != current {
-            signal.set(next);
-        }
-        // Any step that moves the view up releases the pin, so small steps
-        // add up instead of each one snapping back. The slack applies only
-        // to a step down, which engages the pin when it lands near the end.
-        if let Some(signal) = &follow_signal {
-            if following && next < current {
-                signal.set(false);
-            } else if !following && step > 0.0 && next >= max - FOLLOW_SLACK {
-                signal.set(true);
-            }
-        }
+        scroll_by(&wheel_chrome, finite(delta.y), FOLLOW_SLACK);
         Handled::Yes
     })
     .scroll_offset(move || {
@@ -482,20 +455,65 @@ impl AutoScroll {
     }
 }
 
+/// Scrolls the view by `step` from where it is, held to its range, as a
+/// wheel step, a page or a thumb drag does, and engages following when a
+/// step down lands within `slack` of the end. Does nothing before the view
+/// and its content have painted.
+fn scroll_by(chrome: &ScrollChrome, step: f32, slack: f32) {
+    let Some(max) = chrome.max_offset() else {
+        return;
+    };
+    let follow_signal = chrome.following();
+    // The signal, not the offset the binding last applied, is where a step
+    // starts: several steps can arrive before the next flush, and each must
+    // add to the one before it. While the view follows it sits at the end,
+    // so the step starts there even when the signal has not caught up with
+    // the pin yet.
+    let following = follow_signal
+        .as_ref()
+        .is_some_and(|signal| signal.read(|active| *active));
+    let signal = chrome.signal();
+    let current = if following {
+        max
+    } else {
+        clamp_offset(signal.read(|offset| *offset), max)
+    };
+    let next = clamp_offset(current + step, max);
+    if next != current {
+        signal.set(next);
+    }
+    // Any step that moves the view up releases the pin, so small steps add
+    // up instead of each one snapping back. The slack applies only to a step
+    // down, which engages the pin when it lands near the end.
+    if let Some(signal) = &follow_signal {
+        if following && next < current {
+            signal.set(false);
+        } else if !following && step > 0.0 && next >= max - slack {
+            signal.set(true);
+        }
+    }
+}
+
+/// Returns where the view is scrolled to, the end while it follows, or
+/// `None` before the view and its content have painted.
+fn current_offset(chrome: &ScrollChrome) -> Option<f32> {
+    let max = chrome.max_offset()?;
+    let pinned = chrome
+        .following()
+        .is_some_and(|signal| signal.read(|on| *on));
+    Some(if pinned {
+        max
+    } else {
+        clamp_offset(chrome.signal().read(|offset| *offset), max)
+    })
+}
+
 /// Returns whether the view of `chrome` can scroll toward `past`: up while
 /// it is below its top, and down while it is above its end and not pinned
 /// to it.
 fn can_scroll(chrome: &ScrollChrome, past: f32) -> bool {
-    let Some(max) = chrome.max_offset() else {
+    let (Some(max), Some(current)) = (chrome.max_offset(), current_offset(chrome)) else {
         return false;
-    };
-    let pinned = chrome
-        .following()
-        .is_some_and(|signal| signal.read(|on| *on));
-    let current = if pinned {
-        max
-    } else {
-        clamp_offset(chrome.signal().read(|offset| *offset), max)
     };
     if past < 0.0 {
         current > 0.0
@@ -550,11 +568,12 @@ pub trait ScrollExt: Sized {
     /// Scrolls with `signal`: the view reads the signal for its offset, so a
     /// write from anywhere moves the content, clamped to the content's size.
     ///
-    /// The wheel writes the same signal, and so does a focus move that
-    /// scrolls the view to show the focused node. The view writes the
-    /// clamped offset back to it, so the view, the thumb and the signal stay
-    /// in step. A focus move scrolls the content in the frame it happens and
-    /// moves the thumb in the frame after it.
+    /// The wheel, a thumb drag and a press on the track write the same
+    /// signal, and so does a focus move that scrolls the view to show the
+    /// focused node. The view writes the clamped offset back to it, so the
+    /// view, the thumb and the signal stay in step. A focus move scrolls the
+    /// content in the frame it happens and moves the thumb in the frame after
+    /// it.
     fn offset(self, signal: RwSignal<f32>) -> Self;
 
     /// Keeps the view at the end of its content while `signal` reads `true`.
@@ -569,9 +588,10 @@ pub trait ScrollExt: Sized {
     /// content.
     ///
     /// The signal is also where the view reports where the user is: any
-    /// wheel step that moves the view up from the end writes `false`, and so
-    /// does a focus move that scrolls the view up to show the focused node,
-    /// while a step down that lands within four logical pixels of the end
+    /// wheel step, thumb drag or page that moves the view up from the end
+    /// writes `false`, and so does a focus move that scrolls the view up to
+    /// show the focused node, while a wheel step down that lands within four
+    /// logical pixels of the end, or a drag or a page that reaches it,
     /// writes `true`. Writing `true` from the application jumps to the end.
     /// A view that starts following with content shorter than itself stays
     /// at offset zero until the content grows past it.
@@ -643,33 +663,99 @@ fn use_follow_signal(view: &mut ScrollView, signal: RwSignal<bool>) -> Dirty {
 }
 
 /// Builds the scrollbar of one scroll view: a track along the right edge, and
-/// the thumb that hangs from it.
+/// the thumb in it.
 ///
-/// The track is absolutely positioned and zero pixels tall, so it covers
-/// nothing a pointer could hit, and the thumb is its child in the flow. The
-/// track's scroll offset moves the thumb down to its position, so the thumb
-/// follows a scroll without a layout pass. The thumb's length is the visible
-/// share of the content, at least [`MIN_THUMB_LENGTH`], and it hides while
-/// the content fits.
+/// The track is absolutely positioned along the view's right edge, inside
+/// its border, as wide as the thumb and its inset on both sides, and the
+/// thumb is its child in the flow. The track's scroll offset moves the thumb
+/// down to its position, so the thumb follows a scroll without a layout
+/// pass. The thumb's length is the visible share of the content, at least
+/// [`MIN_THUMB_LENGTH`], and the scrollbar hides while the content fits.
+///
+/// Dragging the thumb scrolls the view by the content's share of each pixel
+/// the thumb moves, and a press on the track beside the thumb scrolls one
+/// page toward the press. Either way the view moves as a wheel step moves
+/// it, so the end of the content engages following again.
 fn thumb(chrome: Rc<ScrollChrome>) -> Element<Panel> {
+    // Where a drag of the thumb began, along the track, and where the
+    // thumb's top was then, before rounding. Each move puts the top as far
+    // from there as the pointer has come and maps it through the geometry
+    // of the moment, so the pointer keeps its place on the thumb even while
+    // the content grows under the drag.
+    let grab: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
     let hidden_chrome = Rc::clone(&chrome);
     let length_chrome = Rc::clone(&chrome);
-    let top_chrome = chrome;
+    let top_chrome = Rc::clone(&chrome);
+    let press_chrome = Rc::clone(&chrome);
+    let grab_chrome = Rc::clone(&chrome);
+    let drag_chrome = chrome;
+    let press_grab = Rc::clone(&grab);
+    let thumb_grab = Rc::clone(&grab);
     panel()
         .absolute()
         .inset(Edges {
             top: Length::px(0.0),
-            right: Length::px(THUMB_RIGHT_INSET),
-            bottom: Length::Auto,
+            right: Length::px(0.0),
+            bottom: Length::px(0.0),
             left: Length::Auto,
         })
-        .width(px(THUMB_WIDTH))
-        .height(px(0.0))
+        .width(px(THUMB_WIDTH + 2.0 * THUMB_RIGHT_INSET))
+        .padding_xy(Size {
+            width: THUMB_RIGHT_INSET,
+            height: 0.0,
+        })
         .column()
+        .keeps_focus()
         .hidden(move || thumb_track(&hidden_chrome).is_none())
         .scroll_offset(move || Point {
             x: 0.0,
             y: -thumb_top(&top_chrome),
+        })
+        // A press on the thumb is the thumb's own. A press the track hears
+        // beside the thumb, in its padding, grabs the thumb too, and one
+        // above or below it pages.
+        .on_pointer_down(move |at| {
+            let (Some(track), Some(exact)) = (thumb_track(&press_chrome), exact_top(&press_chrome))
+            else {
+                return;
+            };
+            let top = thumb_top(&press_chrome);
+            if at.y >= top && at.y < top + track.length {
+                press_grab.set(Some((at.y, exact)));
+                return;
+            }
+            let Some(page) = press_chrome
+                .viewport
+                .read(|viewport| viewport.map(|v| v.visible))
+            else {
+                return;
+            };
+            let step = if at.y < top { -page } else { page };
+            scroll_by(&press_chrome, step, 0.0);
+        })
+        // A drag that began on the thumb moves it, measured from the track,
+        // which stays put while the thumb moves. Every drag the track hears
+        // began on it, so it takes each move, and the view does not scroll
+        // the drag past its edge.
+        .on_drag(move |step| match (step, grab.get()) {
+            (Drag::Moved(at), Some((start, exact))) => {
+                let (Some(track), Some(current)) =
+                    (thumb_track(&drag_chrome), current_offset(&drag_chrome))
+                else {
+                    return Handled::Yes;
+                };
+                let travel = track.track - track.length;
+                if travel > 0.0 {
+                    let wanted = (exact + at.y - start) / travel * track.max_offset;
+                    scroll_by(&drag_chrome, wanted - current, 0.0);
+                }
+                Handled::Yes
+            }
+            (Drag::Moved(_), None) => Handled::Yes,
+            _ => {
+                grab.set(None);
+                Handled::No
+            }
         })
         .child(
             panel()
@@ -677,7 +763,15 @@ fn thumb(chrome: Rc<ScrollChrome>) -> Element<Panel> {
                 .height(move || Length::px(thumb_length(&length_chrome)))
                 .shrink(0.0)
                 .corner_radius(THUMB_WIDTH / 2.0)
-                .background(ColorToken::BORDER),
+                .background(ColorToken::BORDER)
+                .hover(|patch| patch.background(ColorToken::TEXT_MUTED))
+                .pressed(|patch| patch.background(ColorToken::TEXT))
+                .keeps_focus()
+                .on_pointer_down(move |at| {
+                    if let Some(exact) = exact_top(&grab_chrome) {
+                        thumb_grab.set(Some((thumb_top(&grab_chrome) + at.y, exact)));
+                    }
+                }),
         )
 }
 
@@ -710,6 +804,15 @@ fn thumb_track(chrome: &ScrollChrome) -> Option<Track> {
         track: viewport.track,
         max_offset,
     })
+}
+
+/// Returns the thumb's distance from the top of the track for where the view
+/// is scrolled to, before the rounding it is drawn with, or `None` while the
+/// thumb is hidden.
+fn exact_top(chrome: &ScrollChrome) -> Option<f32> {
+    let track = thumb_track(chrome)?;
+    let offset = current_offset(chrome)?;
+    Some(offset / track.max_offset * (track.track - track.length))
 }
 
 /// Returns the length the thumb is drawn with, or zero while it is hidden.

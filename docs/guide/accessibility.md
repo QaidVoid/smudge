@@ -78,6 +78,7 @@ A screen reader toggles a checkbox or a switch by pressing it, so its `on_press`
 - Tab and Shift+Tab move focus through every `focusable()` node in tree order.
 - `activate_on_keys()` makes Enter and Space trigger `on_press`, the way the button does.
 - The `focused` style patch applies only while focus last moved by keyboard, so a focus ring shows for keyboard users and stays out of the way of mouse users.
+- A press on a node takes the focus when the node is focusable and clears it otherwise. `keeps_focus()` makes a press leave the focus where it is, for a toolbar button that acts on the focused field or a scrollbar of your own, so typing goes on where it was.
 
 ```rust
 let item = panel()

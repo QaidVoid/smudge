@@ -45,6 +45,9 @@ impl Interaction {
     /// The node can take the keyboard focus, by a press or by Tab.
     pub(crate) const FOCUSABLE: u8 = 1 << 5;
 
+    /// A press on the node leaves the keyboard focus where it is.
+    pub(crate) const KEEPS_FOCUS: u8 = 1 << 6;
+
     /// Returns whether `bit` is set.
     pub(crate) fn has(self, bit: u8) -> bool {
         self.0 & bit != 0
@@ -251,7 +254,9 @@ impl WidgetTree {
     /// Any processed press turns the keyboard navigation mode
     /// off, and a primary press focuses the target when it can take the focus
     /// or clears the focus when it cannot. While a focus trap is mounted, a
-    /// press outside the trap leaves the focus where it is instead.
+    /// press outside the trap leaves the focus where it is instead, and so
+    /// does a press on a node built with
+    /// [`keeps_focus`](crate::element::Element::keeps_focus).
     pub(crate) fn pointer_down(&mut self, position: Point, button: PointerButton) {
         self.pointer = position;
         self.pointer_inside = true;
@@ -271,7 +276,14 @@ impl WidgetTree {
         let outside_trap = self
             .active_focus_trap()
             .is_some_and(|trap| target.is_none_or(|target| !self.is_within(target, trap)));
-        if !outside_trap {
+        // The node that takes the press decides, and a press that lands on a
+        // disabled node and goes nowhere is decided by that node.
+        let keeps_focus = target.or_else(|| self.landing(position)).is_some_and(|id| {
+            self.nodes
+                .get(id)
+                .is_some_and(|node| node.interaction.has(Interaction::KEEPS_FOCUS))
+        });
+        if !outside_trap && !keeps_focus {
             if target.is_some_and(|id| self.focusable(id)) {
                 self.set_focus(target);
             } else {
@@ -461,7 +473,8 @@ impl WidgetTree {
     /// shows the default, unless a press is held.
     pub(crate) fn cursor(&self) -> crate::window::Cursor {
         let hit = if self.pointer_inside {
-            self.root.and_then(|root| self.hit(root, self.pointer))
+            self.root
+                .and_then(|root| self.hit(root, self.pointer, false))
         } else {
             None
         };
@@ -522,6 +535,13 @@ impl WidgetTree {
         self.set_bit(id, Interaction::FOCUSABLE, focusable);
     }
 
+    /// Sets whether a press on the node leaves the keyboard focus where it
+    /// is, as the [`keeps_focus`](crate::element::Element::keeps_focus)
+    /// builder asks. A stale id does nothing.
+    pub(crate) fn set_keeps_focus(&mut self, id: WidgetId, keeps: bool) {
+        self.set_bit(id, Interaction::KEEPS_FOCUS, keeps);
+    }
+
     /// Returns the deepest node under `position` that takes a press, or
     /// `None` when no node under the pointer takes one.
     ///
@@ -533,12 +553,24 @@ impl WidgetTree {
     /// rather than passing them to the nodes around it.
     fn target(&self, position: Point) -> Option<WidgetId> {
         let root = self.root?;
-        let mut id = self.hit(root, position)?;
+        let mut id = self.hit(root, position, false)?;
         while !self.takes_press_at(id, position) {
             id = self.nodes.get(id)?.parent?;
         }
         let disabled = self.nodes.get(id)?.interaction.has(Interaction::DISABLED);
         (!disabled).then_some(id)
+    }
+
+    /// Returns the node a press at `position` lands on, a disabled one
+    /// included: the deepest node under it, disabled or not, or the first
+    /// ancestor of that node that takes a press.
+    fn landing(&self, position: Point) -> Option<WidgetId> {
+        let root = self.root?;
+        let mut id = self.hit(root, position, true)?;
+        while !self.takes_press_at(id, position) {
+            id = self.nodes.get(id)?.parent?;
+        }
+        Some(id)
     }
 
     /// Returns the deepest node under `position` that hover lands on, or
@@ -549,7 +581,7 @@ impl WidgetTree {
     /// pointer is over a disabled control inside it.
     pub(super) fn hover_target(&self, position: Point) -> Option<WidgetId> {
         let root = self.root?;
-        let mut id = self.hit(root, position)?;
+        let mut id = self.hit(root, position, false)?;
         loop {
             let node = self.nodes.get(id)?;
             if self.can_respond_at(id, position) && !node.interaction.has(Interaction::DISABLED) {
@@ -613,22 +645,24 @@ impl WidgetTree {
     /// reverse paint order so the topmost node wins.
     ///
     /// A node is hit when the point is inside its rectangle and its clip,
-    /// and it is neither hidden, fading out, nor disabled. The children of a
-    /// node are visited even when the point is outside the node's own
-    /// rectangle, because a child of a node that does not clip its children
-    /// reaches past them. A disabled node is not hit, but its children still
-    /// are.
-    fn hit(&self, id: WidgetId, position: Point) -> Option<WidgetId> {
+    /// and it is neither hidden, fading out, nor disabled, unless `disabled`
+    /// lets a disabled node be hit too. The children of a node are visited
+    /// even when the point is outside the node's own rectangle, because a
+    /// child of a node that does not clip its children reaches past them.
+    /// Otherwise a disabled node is not hit, but its children still are.
+    fn hit(&self, id: WidgetId, position: Point, disabled: bool) -> Option<WidgetId> {
         let node = self.nodes.get(id)?;
         if node.withdrawn() || !node.clip.contains(position) {
             return None;
         }
         for child in node.children.iter().rev() {
-            if let Some(hit) = self.hit(*child, position) {
+            if let Some(hit) = self.hit(*child, position, disabled) {
                 return Some(hit);
             }
         }
-        if node.rect.contains(position) && !node.interaction.has(Interaction::DISABLED) {
+        if node.rect.contains(position)
+            && (disabled || !node.interaction.has(Interaction::DISABLED))
+        {
             return Some(id);
         }
         None
@@ -803,7 +837,7 @@ impl WidgetTree {
     /// the visible area of the node under it and the nodes that observe a
     /// drag that begins inside them.
     fn start_drag(&mut self, position: Point) {
-        let origin = self.root.and_then(|root| self.hit(root, position));
+        let origin = self.root.and_then(|root| self.hit(root, position, false));
         let origin_clip = origin
             .and_then(|id| self.nodes.get(id))
             .map(|node| node.clip)
@@ -935,7 +969,7 @@ impl WidgetTree {
     /// Returns the deepest enabled node under `position` that sets
     /// `on_drag_over`.
     fn drag_over_target(&self, position: Point) -> Option<WidgetId> {
-        let mut next = self.root.and_then(|root| self.hit(root, position));
+        let mut next = self.root.and_then(|root| self.hit(root, position, false));
         while let Some(id) = next {
             let node = self.nodes.get(id)?;
             if node.handlers.on_drag_over.is_some() && !node.interaction.has(Interaction::DISABLED)
