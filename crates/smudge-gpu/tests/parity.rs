@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use parley::{FontFamily, FontWeight, GenericFamily};
 use smudge_core::app::{App, AppConfig, RepaintMode};
 use smudge_core::element::Element;
-use smudge_core::geometry::{Color, Size};
+use smudge_core::geometry::{Color, Corners, Size};
 use smudge_core::renderer::Renderer;
 use smudge_core::style::{Align, Edges, Length, px};
 use smudge_core::widget::{Panel, panel};
@@ -124,6 +124,20 @@ const TOLERANCES: &[Tolerance] = &[
         mean: 0.168,
         max: 96,
         over_eight: 0.0063,
+    },
+    Tolerance {
+        scene: "corner radii",
+        scale: 1.0,
+        mean: 0.37,
+        max: 93,
+        over_eight: 0.0138,
+    },
+    Tolerance {
+        scene: "corner radii",
+        scale: 2.0,
+        mean: 0.19,
+        max: 114,
+        over_eight: 0.0065,
     },
     Tolerance {
         scene: "nested clips",
@@ -914,6 +928,43 @@ fn border_sides() -> Element<Panel> {
         )
 }
 
+/// Panels rounded by a radius of their own at each corner: a card rounded
+/// only at the bottom with a border, a tab rounded only at the top, and
+/// four different radii over a background with a border of unequal sides.
+fn corner_radii() -> Element<Panel> {
+    let radii = |top_left: f32, top_right: f32, bottom_right: f32, bottom_left: f32| Corners {
+        top_left,
+        top_right,
+        bottom_right,
+        bottom_left,
+    };
+    panel()
+        .child(
+            at(8.0, 10.0, 70.0, 50.0)
+                .background(Color::rgb(60, 110, 200))
+                .border(2.0)
+                .border_color(Color::rgb(20, 30, 60))
+                .corner_radii(radii(0.0, 0.0, 14.0, 14.0)),
+        )
+        .child(
+            at(100.0, 10.0, 60.0, 30.0)
+                .background(Color::rgb(220, 120, 60))
+                .corner_radii(radii(10.0, 10.0, 0.0, 0.0)),
+        )
+        .child(
+            at(30.0, 76.0, 120.0, 60.0)
+                .background(Color::rgb(240, 230, 200))
+                .border_edges(Edges {
+                    top: 1.0,
+                    right: 3.0,
+                    bottom: 5.0,
+                    left: 2.0,
+                })
+                .border_color(Color::rgb(90, 40, 120))
+                .corner_radii(radii(4.0, 12.0, 20.0, 28.0)),
+        )
+}
+
 /// Clips nested two deep, with content that overflows every clip edge, plus a
 /// rounded clipping node whose clip stays rectangular on both renderers.
 fn nested_clips() -> Element<Panel> {
@@ -1089,6 +1140,7 @@ fn scenes() -> &'static [Scene] {
         ("rounded rects", rounded_rects),
         ("borders", borders),
         ("border sides", border_sides),
+        ("corner radii", corner_radii),
         ("nested clips", nested_clips),
         ("text", text_lines),
         ("box grid", box_grid),

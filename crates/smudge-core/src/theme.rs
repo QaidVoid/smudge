@@ -20,7 +20,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use crate::geometry::Color;
+use crate::geometry::{Color, Corners};
 
 /// The color a missing token resolves to, so the mistake stays visible on
 /// screen even in a release build.
@@ -187,6 +187,83 @@ impl RadiusValue {
         match self {
             RadiusValue::Literal(radius) => *radius,
             RadiusValue::Token(token) => theme.radius(*token),
+        }
+    }
+}
+
+/// The radius of each corner of a box, each a literal or a theme token.
+///
+/// [`CornerRadii::all`] rounds every corner alike, and the default is square
+/// all round. A [`Corners`] of literal radii converts into one, and so does
+/// a single radius, an [`f32`], a [`RadiusToken`] or a [`RadiusValue`], which
+/// rounds every corner.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct CornerRadii {
+    /// The radius of the top left corner.
+    pub top_left: RadiusValue,
+    /// The radius of the top right corner.
+    pub top_right: RadiusValue,
+    /// The radius of the bottom right corner.
+    pub bottom_right: RadiusValue,
+    /// The radius of the bottom left corner.
+    pub bottom_left: RadiusValue,
+}
+
+impl CornerRadii {
+    /// Every corner rounded by `radius`.
+    pub fn all(radius: impl Into<RadiusValue>) -> CornerRadii {
+        let radius = radius.into();
+        CornerRadii {
+            top_left: radius,
+            top_right: radius,
+            bottom_right: radius,
+            bottom_left: radius,
+        }
+    }
+
+    /// Resolves every corner to a radius in logical pixels, as
+    /// [`RadiusValue::resolve`] resolves one.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds when the theme does not define a token one of
+    /// the corners names. A release build gives that corner zero, which
+    /// makes it square.
+    pub fn resolve(&self, theme: &Theme) -> Corners {
+        Corners {
+            top_left: self.top_left.resolve(theme),
+            top_right: self.top_right.resolve(theme),
+            bottom_right: self.bottom_right.resolve(theme),
+            bottom_left: self.bottom_left.resolve(theme),
+        }
+    }
+}
+
+impl From<RadiusValue> for CornerRadii {
+    fn from(radius: RadiusValue) -> CornerRadii {
+        CornerRadii::all(radius)
+    }
+}
+
+impl From<f32> for CornerRadii {
+    fn from(radius: f32) -> CornerRadii {
+        CornerRadii::all(radius)
+    }
+}
+
+impl From<RadiusToken> for CornerRadii {
+    fn from(token: RadiusToken) -> CornerRadii {
+        CornerRadii::all(token)
+    }
+}
+
+impl From<Corners> for CornerRadii {
+    fn from(radius: Corners) -> CornerRadii {
+        CornerRadii {
+            top_left: radius.top_left.into(),
+            top_right: radius.top_right.into(),
+            bottom_right: radius.bottom_right.into(),
+            bottom_left: radius.bottom_left.into(),
         }
     }
 }

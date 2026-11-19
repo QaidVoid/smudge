@@ -22,7 +22,8 @@ let card = panel()
 | `border` | The border width in logical pixels, the same on all four sides. |
 | `border_edges` | An `Edges<f32>` with the width of each side, such as a bottom border alone under a header. |
 | `border_color` | Same as `background`. |
-| `corner_radius` | An `f32`, a `RadiusToken`, or a closure. |
+| `corner_radius` | An `f32`, a `RadiusToken`, or a closure, the same on all four corners. |
+| `corner_radii` | A `Corners` of `f32` radii, a `CornerRadii` with an `f32` or a `RadiusToken` per corner, or a closure returning a `CornerRadii`, such as a card whose top corners are square under a header. |
 | `text_color` | The color of the node's own text, on a label or an input. A container ignores it; use `style_children` or `provide_text_style` to color the text below it. |
 
 `Color::rgb(r, g, b)` and `Color::rgba(r, g, b, a)` take 8-bit sRGB channels. `Color::WHITE`, `Color::BLACK` and `Color::TRANSPARENT` are predefined.

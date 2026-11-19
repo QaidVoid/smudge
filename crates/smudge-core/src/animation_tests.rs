@@ -5,7 +5,7 @@ use proptest::prelude::*;
 use super::*;
 use crate::geometry::Color;
 use crate::style::Style;
-use crate::theme::{ColorValue, RadiusValue, Theme};
+use crate::theme::{ColorValue, CornerRadii, Theme};
 
 /// The time `millis` milliseconds after `start`.
 fn at(start: Instant, millis: u64) -> Instant {
@@ -169,7 +169,7 @@ fn painted(background: Option<Color>, text: Option<Color>, radius: f32) -> Style
     let mut style = Style::default();
     style.paint.background = background.map(ColorValue::Literal);
     style.paint.text_color = text.map(ColorValue::Literal);
-    style.paint.corner_radius = RadiusValue::Literal(radius);
+    style.paint.corner_radius = CornerRadii::all(radius);
     style
 }
 

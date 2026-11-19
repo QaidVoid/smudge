@@ -44,7 +44,7 @@ use std::hash::Hash;
 use std::rc::Rc;
 
 use crate::animation::Spring;
-use crate::geometry::{Color, Point, Rect, Size};
+use crate::geometry::{Color, Corners, Point, Rect, Size};
 use crate::input::{Handled, KeyEvent};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RenderEffect, RwSignal};
@@ -52,7 +52,7 @@ use crate::semantics::Role;
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
 };
-use crate::theme::{ColorToken, ColorValue, RadiusToken, RadiusValue};
+use crate::theme::{ColorToken, ColorValue, CornerRadii, RadiusToken, RadiusValue};
 use crate::tree::interaction::Handlers;
 use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::variants::{PatchBuilder, StylePatch, Variants};
@@ -133,6 +133,7 @@ macro_rules! static_values {
 static_values!(
     ColorValue,
     RadiusValue,
+    CornerRadii,
     Length,
     Size,
     Edges<Length>,
@@ -196,6 +197,12 @@ impl From<ColorToken> for Value<ColorValue> {
 
 impl From<f32> for Value<RadiusValue> {
     fn from(radius: f32) -> Value<RadiusValue> {
+        Value::Static(radius.into())
+    }
+}
+
+impl From<Corners> for Value<CornerRadii> {
+    fn from(radius: Corners) -> Value<CornerRadii> {
         Value::Static(radius.into())
     }
 }
@@ -1020,7 +1027,41 @@ impl<W: Widget> Element<W> {
     /// the theme that is current when the node paints.
     pub fn corner_radius(self, radius: impl Into<Value<RadiusValue>>) -> Self {
         self.paint_value(Prop::Radius, radius, |paint, radius| {
-            paint.corner_radius = radius;
+            paint.corner_radius = CornerRadii::all(radius);
+        })
+    }
+
+    /// Sets the radius of each corner of the background and the border on
+    /// its own, such as a card whose top corners are square under a header.
+    /// An image widget rounds the pixels it paints by the same radii. This
+    /// repaints the node without laying it out again.
+    ///
+    /// The radii can be a [`Corners`] of [`f32`] values, a [`CornerRadii`]
+    /// that names a [`RadiusToken`] for any corner, or a closure returning a
+    /// [`CornerRadii`]. A token resolves against the theme that is current
+    /// when the node paints.
+    /// Children clip to a rectangle whatever the radii.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Corners;
+    /// use smudge_core::theme::{CornerRadii, RadiusToken};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let footer = panel().corner_radii(Corners {
+    ///     top_left: 0.0,
+    ///     top_right: 0.0,
+    ///     bottom_right: 8.0,
+    ///     bottom_left: 8.0,
+    /// });
+    /// let tab = panel().corner_radii(CornerRadii {
+    ///     top_left: RadiusToken::MEDIUM.into(),
+    ///     top_right: RadiusToken::MEDIUM.into(),
+    ///     ..CornerRadii::default()
+    /// });
+    /// ```
+    pub fn corner_radii(self, radii: impl Into<Value<CornerRadii>>) -> Self {
+        self.paint_value(Prop::Radius, radii, |paint, radii| {
+            paint.corner_radius = radii;
         })
     }
 

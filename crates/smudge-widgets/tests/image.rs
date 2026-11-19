@@ -1,6 +1,6 @@
 //! Tests for the image widget.
 
-use smudge_core::geometry::{Color, PixelRect};
+use smudge_core::geometry::{Color, Corners, PixelRect};
 use smudge_core::image::Image;
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::style::{Align, px};
@@ -109,6 +109,74 @@ fn the_image_fills_the_content_box_inside_a_painted_background_and_border() {
                         .width(px(16.0))
                         .height(px(12.0))
                         .corner_radius(5.0),
+                ),
+        )
+    });
+    expected.frame();
+    harness.assert_matches(&expected);
+}
+
+#[test]
+fn each_image_corner_rounds_by_its_own_radius_inside_the_box() {
+    // Each corner of the image is its own corner radius less the 5 pixels of
+    // border and padding beside it, and square where that leaves nothing.
+    let picture = gradient(60);
+    let radii = |top_left: f32, top_right: f32, bottom_right: f32, bottom_left: f32| Corners {
+        top_left,
+        top_right,
+        bottom_right,
+        bottom_left,
+    };
+    let boxed = move |source: Option<Image>| {
+        Harness::new(40.0, 40.0, 1.0, move || {
+            panel().align_items(Align::Start).child(
+                image(source)
+                    .width(px(26.0))
+                    .height(px(22.0))
+                    .padding(px(3.0))
+                    .border(2.0)
+                    .border_color(Color::rgb(20, 40, 200))
+                    .background(Color::rgb(200, 180, 20))
+                    .corner_radii(radii(0.0, 6.0, 10.0, 14.0)),
+            )
+        })
+    };
+    let mut harness = boxed(Some(picture.clone()));
+    harness.frame();
+    let mut empty = boxed(None);
+    empty.frame();
+    // The content box runs from (5, 5) to (21, 17). Its square top left
+    // corner shows the image, and its bottom corners, rounded by 9 and 5, do
+    // not.
+    assert_ne!(
+        harness.pixel(5, 5),
+        empty.pixel(5, 5),
+        "the image fills its square corner"
+    );
+    assert_eq!(
+        harness.pixel(5, 16),
+        empty.pixel(5, 16),
+        "the image leaves its rounded corner to the box"
+    );
+    assert_eq!(
+        harness.pixel(20, 16),
+        empty.pixel(20, 16),
+        "the image leaves its bottom right corner, rounded by 5, to the box"
+    );
+    let mut expected = Harness::new(40.0, 40.0, 1.0, move || {
+        panel().align_items(Align::Start).child(
+            panel()
+                .align_items(Align::Start)
+                .padding(px(3.0))
+                .border(2.0)
+                .border_color(Color::rgb(20, 40, 200))
+                .background(Color::rgb(200, 180, 20))
+                .corner_radii(radii(0.0, 6.0, 10.0, 14.0))
+                .child(
+                    image(Some(picture))
+                        .width(px(16.0))
+                        .height(px(12.0))
+                        .corner_radii(radii(0.0, 1.0, 5.0, 9.0)),
                 ),
         )
     });

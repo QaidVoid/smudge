@@ -1,7 +1,7 @@
 use crate::geometry::{Color, Corners, Rect};
 use crate::paint::PaintOp;
 use crate::style::{Edges, Style};
-use crate::theme::{RadiusValue, Theme};
+use crate::theme::{CornerRadii, Theme};
 use crate::widget::{PaintCx, Panel, Widget};
 
 /// The rectangle the tests paint into.
@@ -29,7 +29,7 @@ fn a_panel_paints_its_background_and_border() {
     let mut style = Style::default();
     style.paint.background = Some(Color::WHITE.into());
     style.paint.border_color = Some(Color::BLACK.into());
-    style.paint.corner_radius = RadiusValue::from(4.0);
+    style.paint.corner_radius = CornerRadii::all(4.0);
     style.layout.border_width = Edges::all(2.0);
 
     assert_eq!(

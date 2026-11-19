@@ -27,7 +27,7 @@ use web_time::Instant;
 
 use crate::geometry::Color;
 use crate::style::Style;
-use crate::theme::{ColorValue, RadiusValue, Theme};
+use crate::theme::{ColorValue, CornerRadii, RadiusValue, Theme};
 
 /// How close to its target, and how slow, a value must be to count as
 /// arrived.
@@ -332,8 +332,8 @@ pub(crate) struct Transition {
     border: ColorTrack,
     /// The color the node's text paints with.
     text: ColorTrack,
-    /// The radius of the node's corners, once the node has painted.
-    radius: Option<Motion<1>>,
+    /// The radii of the node's four corners, once the node has painted.
+    radius: Option<Motion<4>>,
     /// The opacity of the node's subtree, once the node has painted.
     opacity: Option<Motion<1>>,
     /// The style the node paints with, its resolved style with the moving
@@ -382,11 +382,18 @@ impl Transition {
         let (text, moving_text) = self
             .text
             .update(target(&paint.text_color), spring, now, jump);
-        let radius_target = [f64::from(paint.corner_radius.resolve(theme))];
+        let corners = paint.corner_radius.resolve(theme);
+        let radius_target = [
+            f64::from(corners.top_left),
+            f64::from(corners.top_right),
+            f64::from(corners.bottom_right),
+            f64::from(corners.bottom_left),
+        ];
         let radius = self
             .radius
             .get_or_insert_with(|| Motion::rest(spring, radius_target, now, VALUE));
-        let ([corner], _, radius_settled) = radius.step(radius_target, now, jump);
+        let ([top_left, top_right, bottom_right, bottom_left], _, radius_settled) =
+            radius.step(radius_target, now, jump);
         let opacity_target = [f64::from(crate::style::shown_opacity(paint.opacity))];
         let opacity = self
             .opacity
@@ -398,7 +405,13 @@ impl Transition {
         animated.background = background.map(ColorValue::Literal);
         animated.border_color = border.map(ColorValue::Literal);
         animated.text_color = text.map(ColorValue::Literal);
-        animated.corner_radius = RadiusValue::Literal(corner.max(0.0) as f32);
+        let corner = |radius: f64| RadiusValue::Literal(radius.max(0.0) as f32);
+        animated.corner_radius = CornerRadii {
+            top_left: corner(top_left),
+            top_right: corner(top_right),
+            bottom_right: corner(bottom_right),
+            bottom_left: corner(bottom_left),
+        };
         animated.opacity = shown_opacity as f32;
         moving_background || moving_border || moving_text || !radius_settled || !opacity_settled
     }

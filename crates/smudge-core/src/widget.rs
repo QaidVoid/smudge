@@ -7,7 +7,7 @@
 use std::any::Any;
 
 use crate::element::Element;
-use crate::geometry::{Corners, Rect, Size};
+use crate::geometry::{Rect, Size};
 use crate::paint::PaintOp;
 use crate::semantics::Semantics;
 use crate::style::Style;
@@ -192,7 +192,7 @@ impl Widget for Panel {
         if let Some(background) = &paint.background {
             out.push(PaintOp::FillRect {
                 rect: cx.rect,
-                radius: Corners::all(paint.corner_radius.resolve(cx.theme)),
+                radius: paint.corner_radius.resolve(cx.theme),
                 color: background.resolve(cx.theme),
             });
         }
@@ -203,7 +203,7 @@ impl Widget for Panel {
                 return;
             }
             let rect = cx.rect;
-            let radius = Corners::all(paint.corner_radius.resolve(cx.theme));
+            let radius = paint.corner_radius.resolve(cx.theme);
             let color = border.resolve(cx.theme);
             // Four equal sides keep the single stroke, whose rounded corners
             // keep an even thickness all the way round.

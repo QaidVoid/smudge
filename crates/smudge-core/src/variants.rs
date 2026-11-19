@@ -37,7 +37,7 @@ use std::rc::Rc;
 
 use crate::geometry::Size;
 use crate::style::{Align, Direction, Edges, Justify, Length, Overflow, Position, Style};
-use crate::theme::{ColorValue, RadiusValue};
+use crate::theme::{ColorValue, CornerRadii, RadiusValue};
 
 use crate::tree::interaction::Interaction;
 
@@ -274,7 +274,7 @@ impl PatchBuilder {
     /// the theme that is current when the node paints.
     pub fn corner_radius(self, radius: impl Into<RadiusValue>) -> Self {
         let radius = radius.into();
-        self.push(move |style| style.paint.corner_radius = radius)
+        self.push(move |style| style.paint.corner_radius = CornerRadii::all(radius))
     }
 
     /// Sets how opaque the node and everything under it draw, from 0.0 to

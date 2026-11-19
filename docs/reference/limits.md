@@ -14,7 +14,7 @@
 
 ## Drawing
 
-- **Rectangular clips.** A panel with rounded corners that clips its children clips them to a rectangle.
+- **Rectangular clips.** A panel with rounded corners that clips its children clips them to a rectangle, whether one radius rounds every corner or `corner_radii` gives each its own.
 - **Clip edges are whole pixels.** At a fractional clip edge, a child may draw into a pixel the edge only partly covers.
 - **No color emoji on the CPU renderer.** A glyph from a color font draws as its plain outline, which for most emoji is nothing. The GPU renderer draws color glyphs.
 - **Static faces imitate the styles they lack, and a slant axis is not used.** A variable font draws at the weight the text asks for through its weight axis, and draws its italic through an italic axis. One whose slant comes from a slant axis alone draws its italic upright. A family of static faces draws an italic that none of its faces has by slanting the closest face, and a weight more than 200 above the closest face's by widening it, which comes close to a bold but leaves a medium or a semibold at the regular weight.

@@ -5,7 +5,8 @@
 //! source is empty, so an image that is still decoding holds a `None` until
 //! the pixels arrive. The style's background and border paint as they do on
 //! a panel, the image fills the content box inside the padding, and the
-//! style's [`corner_radius`](Element::corner_radius) rounds both.
+//! style's corner radii, set with [`corner_radius`](Element::corner_radius)
+//! or [`corner_radii`](Element::corner_radii), round both.
 
 use smudge_core::element::{Element, Value};
 use smudge_core::geometry::{Corners, Size};
@@ -24,7 +25,8 @@ use smudge_core::widget::{MeasureInput, PaintCx, Panel, Widget};
 /// column does across its width by default, fixes that axis too, so the
 /// image scales to it; give the container any `align_items` but stretch to
 /// keep the image's pixel size. The image fills the content box, inside any
-/// padding and border, and the style's `corner_radius` rounds it.
+/// padding and border, and the style's corner radii round it, each corner
+/// by its own radius.
 /// An empty source paints no image, only the style's background and border.
 ///
 /// The source can be bound to a signal:
@@ -125,14 +127,14 @@ impl Widget for ImageView {
         let top = cx.content.y0 - cx.rect.y0;
         let right = cx.rect.x1 - cx.content.x1;
         let bottom = cx.rect.y1 - cx.content.y1;
-        let inner = |a: f32, b: f32| (radius - a.max(b)).max(0.0);
+        let inner = |radius: f32, a: f32, b: f32| (radius - a.max(b)).max(0.0);
         out.push(PaintOp::Image {
             rect: cx.content,
             radius: Corners {
-                top_left: inner(left, top),
-                top_right: inner(right, top),
-                bottom_right: inner(right, bottom),
-                bottom_left: inner(left, bottom),
+                top_left: inner(radius.top_left, left, top),
+                top_right: inner(radius.top_right, right, top),
+                bottom_right: inner(radius.bottom_right, right, bottom),
+                bottom_left: inner(radius.bottom_left, left, bottom),
             },
             image: image.clone(),
         });

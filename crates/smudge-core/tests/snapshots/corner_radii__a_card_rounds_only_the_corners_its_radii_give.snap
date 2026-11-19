@@ -1,0 +1,6 @@
+---
+source: crates/smudge-core/tests/corner_radii.rs
+expression: harness.png()
+extension: png
+snapshot_kind: binary
+---
