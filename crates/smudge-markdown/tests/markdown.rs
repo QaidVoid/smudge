@@ -439,3 +439,25 @@ fn an_unmounted_block_s_grapheme_copies_whole_after_its_reference_resolves() {
     harness.frame();
     assert_eq!(clipboard.get().as_deref(), Some("e\u{301}"));
 }
+
+#[test]
+fn headings_reach_the_accessibility_tree_with_their_levels() {
+    let source = MarkdownSource::new();
+    source.push("# Title\n\nSome text.\n\n### Detail\n\nMore.\n");
+    let (mut harness, _) = view_of(&source);
+    let headings: Vec<(Option<String>, Option<usize>)> = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .filter(|node| node.role == smudge_core::semantics::Role::Heading)
+        .map(|node| (node.label, node.level))
+        .collect();
+    assert_eq!(
+        headings,
+        vec![
+            (Some("Title".to_owned()), Some(1)),
+            (Some("Detail".to_owned()), Some(3)),
+        ],
+        "each heading is named by its text and reports its level"
+    );
+}

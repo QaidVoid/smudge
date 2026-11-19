@@ -52,6 +52,13 @@ pub enum Role {
     /// [`Semantics::checked`], without which a screen reader announces no
     /// state. One without a press handler reads as read only.
     Switch,
+    /// A link that a press follows. One with no name of its own is named by
+    /// its text.
+    Link,
+    /// A heading over the content after it. Its level is
+    /// [`Semantics::level`], and one with no name of its own is named by its
+    /// text.
+    Heading,
     /// A bar that shows how far a task has come. Its progress is
     /// [`Semantics::range`]. Without a range it reads as busy, with no known
     /// progress.
@@ -123,6 +130,9 @@ pub struct Semantics {
     /// included, such as the rows of a list, or `None` for a node that holds
     /// no set.
     pub set_size: Option<usize>,
+    /// The level of a heading, from 1 for the top level down, or `None` for
+    /// a node that is no heading.
+    pub level: Option<usize>,
 }
 
 impl Semantics {
@@ -136,6 +146,7 @@ impl Semantics {
             range: None,
             position: None,
             set_size: None,
+            level: None,
         }
     }
 }
@@ -168,6 +179,8 @@ pub struct SemanticsNode {
     pub position: Option<usize>,
     /// How many items the set the node holds has.
     pub set_size: Option<usize>,
+    /// The level of a heading, from 1 for the top level down.
+    pub level: Option<usize>,
     /// The node's absolute rectangle in logical pixels, as the last layout
     /// pass left it.
     pub bounds: Rect,

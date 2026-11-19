@@ -1100,3 +1100,101 @@ fn an_edit_above_a_scrolled_keyed_list_moves_the_places_of_its_rows() {
         "a removal above moves every row up one"
     );
 }
+
+#[test]
+fn a_heading_reports_its_level_and_is_named_by_its_text() {
+    let mut app = app_with(|| {
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Text("Getting started"))
+                .role(Role::Heading)
+                .accessible_level(2),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let heading = node_with_role(&update, AccessKitRole::Heading);
+    assert_eq!(
+        heading.level(),
+        Some(1),
+        "AccessKit counts the levels from zero"
+    );
+    assert_eq!(
+        heading.label().map(str::to_owned),
+        Some("Getting started".to_owned())
+    );
+    assert_eq!(heading.value(), None, "the text is the name alone");
+}
+
+#[test]
+fn a_link_is_named_by_its_text_unless_it_has_a_name_of_its_own() {
+    let mut app = app_with(|| {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(
+                Element::new(Text("smudge.rs"))
+                    .role(Role::Link)
+                    .on_press(|| {}),
+            )
+            .child(
+                Element::new(Text("docs"))
+                    .role(Role::Link)
+                    .accessible_label("Read the docs")
+                    .on_press(|| {}),
+            )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let mut links: Vec<(Option<String>, Option<String>)> = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == AccessKitRole::Link)
+        .map(|(_, node)| {
+            (
+                node.label().map(str::to_owned),
+                node.value().map(str::to_owned),
+            )
+        })
+        .collect();
+    links.sort();
+    assert_eq!(
+        links,
+        vec![
+            (Some("Read the docs".to_owned()), None),
+            (Some("smudge.rs".to_owned()), None),
+        ],
+        "each link is named once, and no text stands for its address"
+    );
+}
+
+#[test]
+fn a_split_divider_reports_where_it_sits() {
+    let ratio = RwSignal::new(0.5f32);
+    let mut app = app_with(|| {
+        use smudge_widgets::SplitExt;
+        Element::new(Panel).role(Role::Group).column().child(
+            smudge_widgets::split(
+                smudge_core::style::Direction::Row,
+                Element::new(Panel),
+                Element::new(Panel),
+            )
+            .ratio(ratio.clone())
+            .height(px(50.0)),
+        )
+    });
+    for _ in 0..3 {
+        app.frame();
+    }
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::Splitter).numeric_value(),
+        Some(50.0)
+    );
+    ratio.set(0.3);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::Splitter).numeric_value(),
+        Some(30.0),
+        "the divider's value follows it, whole"
+    );
+}

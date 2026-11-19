@@ -5,6 +5,7 @@ use std::rc::Rc;
 use smudge_core::element::{AnyElement, Element, IntoElement, Slot, for_each};
 use smudge_core::geometry::Size;
 use smudge_core::reactive::{Memo, RwSignal, prelude::*};
+use smudge_core::semantics::Role;
 use smudge_core::style::{Align, pct, px};
 use smudge_core::theme::{ColorToken, RadiusToken};
 use smudge_core::widget::{Panel, panel};
@@ -207,6 +208,8 @@ impl View {
                 self.leaf(path)
                     .text_size(base * scale)
                     .weight(FontWeight::BOLD)
+                    .role(Role::Heading)
+                    .accessible_level(usize::from(level.clamp(1, 6)))
                     .into_any()
             }
             Node::Paragraph { .. } | Node::Text { .. } | Node::Html { .. } => {

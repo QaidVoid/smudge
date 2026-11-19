@@ -48,7 +48,9 @@ let toggle = panel()
     .accessible_label(move || if named.get() { "Unmute" } else { "Mute" }.to_owned());
 ```
 
-The roles are `Window`, `Group`, `Button`, `Label`, `TextInput`, `MultilineTextInput`, `ScrollView`, `List`, `ListItem`, `Splitter`, `CheckBox`, `Switch` and `ProgressBar`.
+The roles are `Window`, `Group`, `Button`, `Label`, `TextInput`, `MultilineTextInput`, `ScrollView`, `List`, `ListItem`, `Splitter`, `CheckBox`, `Switch`, `ProgressBar`, `Link` and `Heading`.
+
+A heading reports its level with `accessible_level`, from 1 for the top level down, so a screen reader can move between headings. A heading or a link with no `accessible_label` is named by its text. The markdown view reports its headings this way, and a split's divider reports the share its ratio asks the first pane to take as a value from 0 to 100.
 
 A checkbox or a switch of your own reports whether it is checked, and a progress bar how far it has come. Bind both to the state that draws them:
 

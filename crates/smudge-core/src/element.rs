@@ -407,6 +407,23 @@ impl Binding {
         }
     }
 
+    /// A binding that writes the node's heading level.
+    fn a11y_level(get: Rc<dyn Fn() -> usize>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_level(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes the size of the set the node holds.
     fn a11y_set_size(get: Rc<dyn Fn() -> usize>) -> Binding {
         Binding {
@@ -605,6 +622,8 @@ pub struct Element<W: Widget> {
     a11y_position: Option<Value<usize>>,
     /// The size of the set an element holds, when it set one.
     a11y_set_size: Option<Value<usize>>,
+    /// The heading level an element set, when it set one.
+    a11y_level: Option<Value<usize>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// Applied to the style of every child as it is added.
@@ -645,6 +664,7 @@ impl<W: Widget> Element<W> {
             a11y_range: None,
             a11y_position: None,
             a11y_set_size: None,
+            a11y_level: None,
             scroll_offset: Point::default(),
             child_styling: None,
             children: Vec::new(),
@@ -1745,6 +1765,18 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Sets the level of a heading, from 1 for the top level down, which a
+    /// screen reader announces with the heading and uses to move between
+    /// headings. Give the node [`Role::Heading`] too.
+    ///
+    /// This can be bound to a signal, with a closure that returns the level.
+    /// It overrides the level the widget itself reports. The markdown view
+    /// sets it on every heading.
+    pub fn accessible_level(mut self, level: impl Into<Value<usize>>) -> Self {
+        self.a11y_level = Some(level.into());
+        self
+    }
+
     /// Makes the node able to take the keyboard focus, by a press on it or by
     /// Tab navigation.
     ///
@@ -2196,6 +2228,8 @@ pub struct AnyElement {
     a11y_position: Option<Value<usize>>,
     /// The size of the set an element holds, when it set one.
     a11y_set_size: Option<Value<usize>>,
+    /// The heading level an element set, when it set one.
+    a11y_level: Option<Value<usize>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// The children, in paint order.
@@ -2227,6 +2261,7 @@ impl AnyElement {
             a11y_range: element.a11y_range,
             a11y_position: element.a11y_position,
             a11y_set_size: element.a11y_set_size,
+            a11y_level: element.a11y_level,
             scroll_offset: element.scroll_offset,
             children: element.children,
         }
@@ -2323,6 +2358,7 @@ fn mount_named(
         a11y_range,
         a11y_position,
         a11y_set_size,
+        a11y_level,
         scroll_offset,
         children,
     } = element;
@@ -2386,6 +2422,11 @@ fn mount_named(
     match a11y_set_size {
         Some(Value::Static(size)) => tree.set_a11y_set_size(id, Some(size)),
         Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_set_size(get)),
+        None => {}
+    }
+    match a11y_level {
+        Some(Value::Static(level)) => tree.set_a11y_level(id, Some(level)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_level(get)),
         None => {}
     }
     if scroll_offset != Point::default() {

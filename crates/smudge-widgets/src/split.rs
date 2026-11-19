@@ -16,7 +16,7 @@ use smudge_core::geometry::Point;
 use smudge_core::input::{Drag, Handled, Key, KeyEvent};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
-use smudge_core::semantics::Role;
+use smudge_core::semantics::{Role, ValueRange};
 use smudge_core::style::{Direction, Length, Overflow, pct, px};
 use smudge_core::theme::ColorToken;
 use smudge_core::tree::Dirty;
@@ -146,9 +146,11 @@ impl Widget for Split {
 /// focus: the arrow keys of its axis by 16 logical pixels, and Home and End
 /// to the minimums. A double click on it goes back to the ratio the split was
 /// built with. The pointer shows the column or row resize cursor over it,
-/// and a screen reader announces it as a splitter named "Resize". Give the
-/// split a size, or put it where a parent sizes it, and set its ratio and
-/// minimums with [`SplitExt`]. The split clips its panes.
+/// and a screen reader announces it as a splitter named "Resize", with the
+/// share of the split its ratio asks the first pane to take as a value from
+/// 0 to 100, whole. The minimums can hold the divider away from that share.
+/// Give the split a size, or put it where a parent sizes it, and set its
+/// ratio and minimums with [`SplitExt`]. The split clips its panes.
 ///
 /// Each pane stretches its content to fill it, overriding the height and the
 /// growth the content sets directly, so a split nested in a pane fills it.
@@ -214,6 +216,14 @@ pub fn split(
         })
         .role(Role::Splitter)
         .accessible_label("Resize")
+        .accessible_range({
+            let state = Rc::clone(&state);
+            move || ValueRange {
+                value: (f64::from(state.ratio.get().get()) * 100.0).round(),
+                min: 0.0,
+                max: 100.0,
+            }
+        })
         .on_pointer_down(move |at| {
             let now = smudge_core::timer::now();
             let double = down.last_press.get().is_some_and(|(then, there)| {

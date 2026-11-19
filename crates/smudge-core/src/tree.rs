@@ -228,6 +228,9 @@ struct Node {
     /// The size of the set the element's builders set, which overrides the
     /// size the widget reports.
     a11y_set_size: Option<usize>,
+    /// The heading level the element's builders set, which overrides the
+    /// level the widget reports.
+    a11y_level: Option<usize>,
     /// The node's cached paint output, filled by the paint pass.
     ops: Vec<PaintOp>,
     /// The node's cached paint output that draws inside its border, clipped
@@ -575,6 +578,7 @@ impl WidgetTree {
             a11y_range: None,
             a11y_position: None,
             a11y_set_size: None,
+            a11y_level: None,
             ops: Vec::new(),
             inner_ops: Vec::new(),
             painted: None,
@@ -1445,6 +1449,22 @@ impl WidgetTree {
         self.push_a11y(id);
     }
 
+    /// Sets the heading level of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_level`](crate::element::Element::accessible_level)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_level(&mut self, id: WidgetId, level: Option<usize>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        if node.a11y_level == level {
+            return;
+        }
+        node.a11y_level = level;
+        self.push_a11y(id);
+    }
+
     /// Sets the size of the set `id` holds and records the change.
     ///
     /// Called when the node mounts and again by the binding of an
@@ -1569,7 +1589,7 @@ impl WidgetTree {
         // projection, since a text widget copies its whole text into it.
         let widget: &dyn Widget = node.widget.as_ref();
         let semantics = widget.semantics();
-        let (label, value, checked, range, position, set_size) = match semantics {
+        let (label, value, checked, range, position, set_size, level) = match semantics {
             Some(semantics) => (
                 semantics.label,
                 semantics.value,
@@ -1577,20 +1597,32 @@ impl WidgetTree {
                 semantics.range,
                 semantics.position,
                 semantics.set_size,
+                semantics.level,
             ),
-            None => (None, None, None, None, None, None),
+            None => (None, None, None, None, None, None, None),
         };
+        let mut label = node.a11y_label.clone().or(label);
+        let mut value = value;
+        // A screen reader announces a heading or a link by its name, so one
+        // with no name of its own takes its text, and the text is no value
+        // of it, which some readers would announce again or take for a
+        // link's address.
+        if matches!(role, Role::Heading | Role::Link) {
+            let text = value.take();
+            label = label.or(text);
+        }
         SemanticsNode {
             id,
             parent,
             children: Vec::new(),
             role,
-            label: node.a11y_label.clone().or(label),
+            label,
             value,
             checked: node.a11y_checked.or(checked),
             range: node.a11y_range.as_deref().copied().or(range),
             position: node.a11y_position.or(position),
             set_size: node.a11y_set_size.or(set_size),
+            level: node.a11y_level.or(level),
             bounds: node.rect,
             focusable: node.interaction.has(Interaction::FOCUSABLE),
             disabled: node.interaction.has(Interaction::DISABLED),
