@@ -181,9 +181,8 @@ impl Widget for Label {
     /// the value and the label stays empty.
     fn semantics(&self) -> Option<Semantics> {
         Some(Semantics {
-            role: Role::Label,
-            label: None,
             value: Some(self.text.clone()),
+            ..Semantics::new(Role::Label)
         })
     }
 

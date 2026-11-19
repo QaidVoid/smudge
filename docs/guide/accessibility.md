@@ -47,7 +47,31 @@ let toggle = panel()
     .accessible_label(move || if named.get() { "Unmute" } else { "Mute" }.to_owned());
 ```
 
-The roles are `Window`, `Group`, `Button`, `Label`, `TextInput`, `MultilineTextInput`, `ScrollView`, `List` and `ListItem`.
+The roles are `Window`, `Group`, `Button`, `Label`, `TextInput`, `MultilineTextInput`, `ScrollView`, `List`, `ListItem`, `Splitter`, `CheckBox`, `Switch` and `ProgressBar`.
+
+A checkbox or a switch of your own reports whether it is checked, and a progress bar how far it has come. Bind both to the state that draws them:
+
+```rust
+use smudge::core::semantics::{Checked, ValueRange};
+
+let on = RwSignal::new(false);
+let (read, flip) = (on.clone(), on.clone());
+let switch = panel()
+    .focusable()
+    .activate_on_keys()
+    .role(Role::Switch)
+    .accessible_label("Wi-Fi")
+    .accessible_checked(move || Checked::from(read.get()))
+    .on_press(move || flip.update(|on| *on = !*on));
+
+let done = RwSignal::new(0.4);
+let progress = panel()
+    .role(Role::ProgressBar)
+    .accessible_label("Upload")
+    .accessible_range(move || ValueRange { value: done.get(), min: 0.0, max: 1.0 });
+```
+
+A screen reader toggles a checkbox or a switch by pressing it, so its `on_press` handler is what flips the state, and one without a handler reads as read only. A progress bar without a range reads as busy, with no known progress, and so does one whose range is not finite or runs backwards. `Checked::Mixed` reports a checkbox that is neither checked nor unchecked, such as one over a list whose boxes are partly checked.
 
 ## Keyboard
 

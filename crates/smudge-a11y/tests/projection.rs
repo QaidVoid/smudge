@@ -9,12 +9,12 @@ use smudge_core::geometry::{Color, Size};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
-use smudge_core::semantics::{Role, Semantics};
+use smudge_core::semantics::{Checked, Role, Semantics, ValueRange};
 use smudge_core::style::px;
 use smudge_core::theme::ColorValue;
 use smudge_core::widget::{PaintCx, Panel, Widget};
 
-use accesskit::{Action, NodeId, Role as AccessKitRole};
+use accesskit::{Action, NodeId, Role as AccessKitRole, Toggled};
 use accesskit_consumer::{NodeRef, Tree, TreeChangeHandler};
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
@@ -31,9 +31,8 @@ impl Widget for Text {
 
     fn semantics(&self) -> Option<Semantics> {
         Some(Semantics {
-            role: Role::Label,
-            label: None,
             value: Some(self.0.to_owned()),
+            ..Semantics::new(Role::Label)
         })
     }
 }
@@ -150,9 +149,8 @@ impl Widget for Field {
 
     fn semantics(&self) -> Option<Semantics> {
         Some(Semantics {
-            role: self.0,
-            label: None,
             value: Some(self.1.to_owned()),
+            ..Semantics::new(self.0)
         })
     }
 }
@@ -688,4 +686,224 @@ proptest! {
             prop_assert_eq!(reachable(&tree), reachable(&Tree::new(fresh, true)));
         }
     }
+}
+
+/// The id of the projected node with `role` in `app`.
+fn projected(app: &App, role: Role) -> smudge_core::tree::WidgetId {
+    app.semantics_nodes()
+        .iter()
+        .find(|node| node.role == role)
+        .map(|node| node.id)
+        .expect("the node projects")
+}
+
+#[test]
+fn a_switch_reports_its_state_and_a_press_toggles_it() {
+    let on = RwSignal::new(false);
+    let mut app = app_with(|| {
+        let (read, flip) = (on.clone(), on.clone());
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Panel)
+                .role(Role::Switch)
+                .accessible_label("Wi-Fi")
+                .accessible_checked(move || Checked::from(read.get()))
+                .focusable()
+                .on_press(move || flip.update(|on| *on = !*on)),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let switch = node_with_role(&update, AccessKitRole::Switch);
+    assert_eq!(switch.toggled(), Some(Toggled::False));
+    assert!(
+        switch.supports_action(Action::Click),
+        "a screen reader can press it"
+    );
+
+    assert!(app.press(projected(&app, Role::Switch)));
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let switch = node_with_role(&update, AccessKitRole::Switch);
+    assert_eq!(
+        switch.toggled(),
+        Some(Toggled::True),
+        "the press turned it on"
+    );
+}
+
+#[test]
+fn a_checkbox_reports_a_mixed_state() {
+    let mut app = app_with(|| {
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Panel)
+                .role(Role::CheckBox)
+                .accessible_label("Select all")
+                .accessible_checked(Checked::Mixed)
+                .on_press(|| {}),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let checkbox = node_with_role(&update, AccessKitRole::CheckBox);
+    assert_eq!(checkbox.toggled(), Some(Toggled::Mixed));
+    assert_eq!(
+        checkbox.label().map(str::to_owned),
+        Some("Select all".to_owned())
+    );
+}
+
+#[test]
+fn a_progress_bar_reports_its_value_in_its_range_as_it_moves() {
+    let done = RwSignal::new(0.25f64);
+    let total = RwSignal::new(1.0f64);
+    let mut app = app_with(|| {
+        let (done, total) = (done.clone(), total.clone());
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Panel)
+                .role(Role::ProgressBar)
+                .accessible_label("Upload")
+                .accessible_range(move || ValueRange {
+                    value: done.get(),
+                    min: 0.0,
+                    max: total.get(),
+                }),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let bar = node_with_role(&update, AccessKitRole::ProgressIndicator);
+    assert_eq!(bar.numeric_value(), Some(0.25));
+    assert_eq!(bar.min_numeric_value(), Some(0.0));
+    assert_eq!(bar.max_numeric_value(), Some(1.0));
+
+    done.set(0.75);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let bar = node_with_role(&update, AccessKitRole::ProgressIndicator);
+    assert_eq!(
+        bar.numeric_value(),
+        Some(0.75),
+        "the new progress reaches the tree"
+    );
+
+    total.set(3.0);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let bar = node_with_role(&update, AccessKitRole::ProgressIndicator);
+    assert_eq!(
+        bar.max_numeric_value(),
+        Some(3.0),
+        "the new total reaches the tree"
+    );
+
+    done.set(5.0);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let bar = node_with_role(&update, AccessKitRole::ProgressIndicator);
+    assert_eq!(
+        bar.numeric_value(),
+        Some(3.0),
+        "a value past the range reads as its end"
+    );
+
+    done.set(f64::NAN);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let bar = node_with_role(&update, AccessKitRole::ProgressIndicator);
+    assert_eq!(
+        bar.numeric_value(),
+        None,
+        "a value that is not finite reads as busy"
+    );
+
+    done.set(1.0);
+    total.set(f64::NAN);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let bar = node_with_role(&update, AccessKitRole::ProgressIndicator);
+    assert_eq!(
+        bar.numeric_value(),
+        None,
+        "a range that is not finite reads as busy"
+    );
+
+    total.set(-1.0);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let bar = node_with_role(&update, AccessKitRole::ProgressIndicator);
+    assert_eq!(
+        bar.numeric_value(),
+        None,
+        "a range that runs backwards reads as busy"
+    );
+
+    total.set(f64::INFINITY);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let bar = node_with_role(&update, AccessKitRole::ProgressIndicator);
+    assert_eq!(bar.numeric_value(), None, "an endless range reads as busy");
+}
+
+#[test]
+fn a_checkbox_without_a_press_handler_reads_as_read_only() {
+    let mut app = app_with(|| {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(
+                Element::new(Panel)
+                    .role(Role::CheckBox)
+                    .accessible_checked(true),
+            )
+            .child(
+                Element::new(Panel)
+                    .role(Role::Switch)
+                    .accessible_checked(true)
+                    .on_press(|| {}),
+            )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    assert!(node_with_role(&update, AccessKitRole::CheckBox).is_read_only());
+    assert!(!node_with_role(&update, AccessKitRole::Switch).is_read_only());
+}
+
+/// A widget that reports itself as a checked checkbox with a value in a
+/// range, the way a widget of an app's own would.
+struct OwnCheckBox;
+
+impl Widget for OwnCheckBox {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+
+    fn semantics(&self) -> Option<Semantics> {
+        Some(Semantics {
+            checked: Some(Checked::True),
+            range: Some(ValueRange {
+                value: 3.0,
+                min: 0.0,
+                max: 5.0,
+            }),
+            ..Semantics::new(Role::CheckBox)
+        })
+    }
+}
+
+#[test]
+fn a_widget_reports_its_own_state_and_the_element_overrides_it() {
+    let mut app = app_with(|| {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(Element::new(OwnCheckBox))
+            .child(
+                Element::new(OwnCheckBox)
+                    .role(Role::Switch)
+                    .accessible_checked(false)
+                    .accessible_range(ValueRange {
+                        value: 1.0,
+                        min: 0.0,
+                        max: 2.0,
+                    }),
+            )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let own = node_with_role(&update, AccessKitRole::CheckBox);
+    assert_eq!(own.toggled(), Some(Toggled::True));
+    assert_eq!(own.numeric_value(), Some(3.0));
+    assert_eq!(own.max_numeric_value(), Some(5.0));
+    let overridden = node_with_role(&update, AccessKitRole::Switch);
+    assert_eq!(overridden.toggled(), Some(Toggled::False));
+    assert_eq!(overridden.numeric_value(), Some(1.0));
+    assert_eq!(overridden.max_numeric_value(), Some(2.0));
 }

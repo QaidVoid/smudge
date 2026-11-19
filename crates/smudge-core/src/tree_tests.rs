@@ -285,9 +285,8 @@ impl Widget for Described {
 
     fn semantics(&self) -> Option<crate::semantics::Semantics> {
         Some(crate::semantics::Semantics {
-            role: self.role,
-            label: None,
             value: Some(self.value.to_owned()),
+            ..crate::semantics::Semantics::new(self.role)
         })
     }
 }

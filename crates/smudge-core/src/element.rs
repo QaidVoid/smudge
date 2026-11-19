@@ -48,7 +48,7 @@ use crate::geometry::{Color, Corners, Point, Rect, Size};
 use crate::input::{Handled, KeyEvent};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RenderEffect, RwSignal};
-use crate::semantics::Role;
+use crate::semantics::{Checked, Role, ValueRange};
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
 };
@@ -138,6 +138,8 @@ static_values!(
     Size,
     Edges<Length>,
     Edges<f32>,
+    Checked,
+    ValueRange,
     f32,
     bool,
     Direction,
@@ -198,6 +200,12 @@ impl From<ColorToken> for Value<ColorValue> {
 impl From<f32> for Value<RadiusValue> {
     fn from(radius: f32) -> Value<RadiusValue> {
         Value::Static(radius.into())
+    }
+}
+
+impl From<bool> for Value<Checked> {
+    fn from(checked: bool) -> Value<Checked> {
+        Value::Static(checked.into())
     }
 }
 
@@ -364,6 +372,40 @@ impl Binding {
         }
     }
 
+    /// A binding that writes the node's checked state.
+    fn a11y_checked(get: Rc<dyn Fn() -> Checked>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_checked(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that writes the node's value and range.
+    fn a11y_range(get: Rc<dyn Fn() -> ValueRange>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_range(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes the node's scroll offset.
     ///
     /// The write moves the node's flowing descendants without running the
@@ -518,6 +560,10 @@ pub struct Element<W: Widget> {
     a11y_role: Option<Role>,
     /// The accessible label an element set, when it set one.
     a11y_label: Option<Value<String>>,
+    /// The checked state an element set, when it set one.
+    a11y_checked: Option<Value<Checked>>,
+    /// The value and range an element set, when it set one.
+    a11y_range: Option<Value<ValueRange>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// Applied to the style of every child as it is added.
@@ -553,6 +599,8 @@ impl<W: Widget> Element<W> {
             exit: None,
             a11y_role: None,
             a11y_label: None,
+            a11y_checked: None,
+            a11y_range: None,
             scroll_offset: Point::default(),
             child_styling: None,
             children: Vec::new(),
@@ -1588,6 +1636,45 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Sets whether the node, a checkbox or a switch, is checked, which a
+    /// screen reader announces with the node's role.
+    ///
+    /// This can be bound to a signal, with a closure that returns a
+    /// [`Checked`]. It overrides the state the widget itself reports. A
+    /// screen reader toggles the node by pressing it, so the node's
+    /// [`on_press`](Element::on_press) handler is what flips the state.
+    ///
+    /// ```
+    /// use smudge_core::element::Element;
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_core::semantics::{Checked, Role};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let on = RwSignal::new(false);
+    /// let flip = on.clone();
+    /// let read = on.clone();
+    /// let switch = panel()
+    ///     .role(Role::Switch)
+    ///     .accessible_label("Wi-Fi")
+    ///     .accessible_checked(move || Checked::from(read.get()))
+    ///     .on_press(move || flip.update(|on| *on = !*on));
+    /// ```
+    pub fn accessible_checked(mut self, checked: impl Into<Value<Checked>>) -> Self {
+        self.a11y_checked = Some(checked.into());
+        self
+    }
+
+    /// Sets the number the node shows and the range it moves in, such as a
+    /// progress bar's progress, which a screen reader announces with the
+    /// node's role.
+    ///
+    /// This can be bound to a signal, with a closure that returns a
+    /// [`ValueRange`]. It overrides the range the widget itself reports.
+    pub fn accessible_range(mut self, range: impl Into<Value<ValueRange>>) -> Self {
+        self.a11y_range = Some(range.into());
+        self
+    }
+
     /// Makes the node able to take the keyboard focus, by a press on it or by
     /// Tab navigation.
     ///
@@ -2010,6 +2097,10 @@ pub struct AnyElement {
     a11y_role: Option<Role>,
     /// The accessible label an element set, when it set one.
     a11y_label: Option<Value<String>>,
+    /// The checked state an element set, when it set one.
+    a11y_checked: Option<Value<Checked>>,
+    /// The value and range an element set, when it set one.
+    a11y_range: Option<Value<ValueRange>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// The children, in paint order.
@@ -2036,6 +2127,8 @@ impl AnyElement {
             exit: element.exit,
             a11y_role: element.a11y_role,
             a11y_label: element.a11y_label,
+            a11y_checked: element.a11y_checked,
+            a11y_range: element.a11y_range,
             scroll_offset: element.scroll_offset,
             children: element.children,
         }
@@ -2127,6 +2220,8 @@ fn mount_named(
         exit,
         a11y_role,
         a11y_label,
+        a11y_checked,
+        a11y_range,
         scroll_offset,
         children,
     } = element;
@@ -2160,7 +2255,7 @@ fn mount_named(
     }
     tree.set_a11y_role(id, a11y_role);
     tree.set_handlers(id, handlers);
-    let bindings = match a11y_label {
+    let mut bindings = match a11y_label {
         Some(Value::Static(text)) => {
             tree.set_a11y_label(id, Some(text));
             bindings
@@ -2171,6 +2266,16 @@ fn mount_named(
         }
         None => bindings,
     };
+    match a11y_checked {
+        Some(Value::Static(checked)) => tree.set_a11y_checked(id, Some(checked)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_checked(get)),
+        None => {}
+    }
+    match a11y_range {
+        Some(Value::Static(range)) => tree.set_a11y_range(id, Some(range)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_range(get)),
+        None => {}
+    }
     if scroll_offset != Point::default() {
         tree.set_scroll_offset(id, scroll_offset);
     }

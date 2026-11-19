@@ -21,7 +21,7 @@ use crate::damage::DamageAccumulator;
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RwSignal};
-use crate::semantics::{A11yChanges, Role, SemanticsNode};
+use crate::semantics::{A11yChanges, Checked, Role, SemanticsNode, ValueRange};
 use crate::style::{LayoutProps, PaintProps, Style};
 use crate::theme::Theme;
 use crate::variants::{Variants, resolve};
@@ -216,6 +216,12 @@ struct Node {
     /// The accessible label the element's builders set, which overrides the
     /// label the widget reports.
     a11y_label: Option<String>,
+    /// The checked state the element's builders set, which overrides the
+    /// state the widget reports.
+    a11y_checked: Option<Checked>,
+    /// The value and range the element's builders set, which override the
+    /// range the widget reports. Boxed, since few nodes have one.
+    a11y_range: Option<Box<ValueRange>>,
     /// The node's cached paint output, filled by the paint pass.
     ops: Vec<PaintOp>,
     /// The node's cached paint output that draws inside its border, clipped
@@ -559,6 +565,8 @@ impl WidgetTree {
             handlers: Handlers::default(),
             a11y_role: None,
             a11y_label: None,
+            a11y_checked: None,
+            a11y_range: None,
             ops: Vec::new(),
             inner_ops: Vec::new(),
             painted: None,
@@ -1381,6 +1389,38 @@ impl WidgetTree {
         self.push_a11y(id);
     }
 
+    /// Sets the accessible checked state of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_checked`](crate::element::Element::accessible_checked)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_checked(&mut self, id: WidgetId, checked: Option<Checked>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        if node.a11y_checked == checked {
+            return;
+        }
+        node.a11y_checked = checked;
+        self.push_a11y(id);
+    }
+
+    /// Sets the accessible value and range of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_range`](crate::element::Element::accessible_range)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_range(&mut self, id: WidgetId, range: Option<ValueRange>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        if node.a11y_range.as_deref() == range.as_ref() {
+            return;
+        }
+        node.a11y_range = range.map(Box::new);
+        self.push_a11y(id);
+    }
+
     /// Projects every visible node in paint order, for an accessibility
     /// backend.
     ///
@@ -1489,9 +1529,14 @@ impl WidgetTree {
         // projection, since a text widget copies its whole text into it.
         let widget: &dyn Widget = node.widget.as_ref();
         let semantics = widget.semantics();
-        let (label, value) = match semantics {
-            Some(semantics) => (semantics.label, semantics.value),
-            None => (None, None),
+        let (label, value, checked, range) = match semantics {
+            Some(semantics) => (
+                semantics.label,
+                semantics.value,
+                semantics.checked,
+                semantics.range,
+            ),
+            None => (None, None, None, None),
         };
         SemanticsNode {
             id,
@@ -1500,6 +1545,8 @@ impl WidgetTree {
             role,
             label: node.a11y_label.clone().or(label),
             value,
+            checked: node.a11y_checked.or(checked),
+            range: node.a11y_range.as_deref().copied().or(range),
             bounds: node.rect,
             focusable: node.interaction.has(Interaction::FOCUSABLE),
             disabled: node.interaction.has(Interaction::DISABLED),

@@ -289,9 +289,8 @@ impl Widget for RichText {
     /// Reports the joined text as the accessible value, as a label does.
     fn semantics(&self) -> Option<Semantics> {
         Some(Semantics {
-            role: Role::Label,
-            label: None,
             value: Some(self.text.clone()),
+            ..Semantics::new(Role::Label)
         })
     }
 

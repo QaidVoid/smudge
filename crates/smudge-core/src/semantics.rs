@@ -3,9 +3,11 @@
 //!
 //! A widget opts into the projection by returning [`Semantics`] from
 //! [`Widget::semantics`](crate::widget::Widget::semantics), and an element can
-//! override the role or set the label with the
-//! [`role`](crate::element::Element::role) and
-//! [`accessible_label`](crate::element::Element::accessible_label) builders.
+//! override the role, the label, the checked state and the value range with
+//! the [`role`](crate::element::Element::role),
+//! [`accessible_label`](crate::element::Element::accessible_label),
+//! [`accessible_checked`](crate::element::Element::accessible_checked) and
+//! [`accessible_range`](crate::element::Element::accessible_range) builders.
 //! An accessibility backend reads the projected tree through the app and the
 //! changes since the last frame; this module defines the vocabulary the two
 //! sides exchange. It stays backend-neutral: mapping it onto a specific
@@ -42,13 +44,62 @@ pub enum Role {
     ListItem,
     /// A divider between two panes that moves to resize them.
     Splitter,
+    /// A box that is checked, unchecked or mixed, which a press toggles. Its
+    /// state is [`Semantics::checked`], without which a screen reader
+    /// announces no state. One without a press handler reads as read only.
+    CheckBox,
+    /// A switch that is on or off, which a press toggles. Its state is
+    /// [`Semantics::checked`], without which a screen reader announces no
+    /// state. One without a press handler reads as read only.
+    Switch,
+    /// A bar that shows how far a task has come. Its progress is
+    /// [`Semantics::range`]. Without a range it reads as busy, with no known
+    /// progress.
+    ProgressBar,
+}
+
+/// Whether a checkbox or a switch is checked.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Checked {
+    /// Checked, or on.
+    True,
+    /// Not checked, or off.
+    False,
+    /// Neither, as a checkbox over a set of boxes some of which are checked.
+    Mixed,
+}
+
+impl From<bool> for Checked {
+    fn from(checked: bool) -> Checked {
+        if checked {
+            Checked::True
+        } else {
+            Checked::False
+        }
+    }
+}
+
+/// A number and the range it moves in, such as a progress bar's progress.
+///
+/// The three numbers are finite and `min` is at most `max`. A range that is
+/// not reads as no known value, and a value outside its range reads as the
+/// nearer end.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ValueRange {
+    /// The current value, which lies between `min` and `max`.
+    pub value: f64,
+    /// The least the value can be.
+    pub min: f64,
+    /// The most the value can be.
+    pub max: f64,
 }
 
 /// The accessibility description a widget reports about itself.
 ///
 /// Return one from [`Widget::semantics`](crate::widget::Widget::semantics) to
-/// place the widget in the projection.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// place the widget in the projection. [`Semantics::new`] leaves everything
+/// but the role unset.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Semantics {
     /// The kind of control the widget is.
     pub role: Role,
@@ -56,15 +107,23 @@ pub struct Semantics {
     pub label: Option<String>,
     /// The current value: for a text field its content, for a label its text.
     pub value: Option<String>,
+    /// Whether a checkbox or a switch is checked, or `None` for a control
+    /// that is neither.
+    pub checked: Option<Checked>,
+    /// The number a control shows and the range it moves in, such as a
+    /// progress bar's progress, or `None` for a control without one.
+    pub range: Option<ValueRange>,
 }
 
 impl Semantics {
-    /// Creates a description with the role and no name or value.
+    /// Creates a description with the role and nothing else.
     pub fn new(role: Role) -> Semantics {
         Semantics {
             role,
             label: None,
             value: None,
+            checked: None,
+            range: None,
         }
     }
 }
@@ -89,6 +148,10 @@ pub struct SemanticsNode {
     pub label: Option<String>,
     /// The current value.
     pub value: Option<String>,
+    /// Whether a checkbox or a switch is checked.
+    pub checked: Option<Checked>,
+    /// The number the node shows and the range it moves in.
+    pub range: Option<ValueRange>,
     /// The node's absolute rectangle in logical pixels, as the last layout
     /// pass left it.
     pub bounds: Rect,

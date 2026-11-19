@@ -94,9 +94,9 @@ impl Widget for TextInput {
         let label = (!self.placeholder.borrow().text().is_empty())
             .then(|| self.placeholder.borrow().text().into());
         Some(Semantics {
-            role: Role::TextInput,
             label,
             value: Some(self.chrome.editor.text()),
+            ..Semantics::new(Role::TextInput)
         })
     }
 

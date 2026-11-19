@@ -40,6 +40,27 @@ fn named() {
 }
 
 #[test]
+fn switch_and_progress() {
+    use smudge::core::semantics::{Checked, ValueRange};
+    
+    let on = RwSignal::new(false);
+    let (read, flip) = (on.clone(), on.clone());
+    let switch = panel()
+        .focusable()
+        .activate_on_keys()
+        .role(Role::Switch)
+        .accessible_label("Wi-Fi")
+        .accessible_checked(move || Checked::from(read.get()))
+        .on_press(move || flip.update(|on| *on = !*on));
+    
+    let done = RwSignal::new(0.4);
+    let progress = panel()
+        .role(Role::ProgressBar)
+        .accessible_label("Upload")
+        .accessible_range(move || ValueRange { value: done.get(), min: 0.0, max: 1.0 });
+}
+
+#[test]
 fn focus_ring() {
     let item = panel()
         .focusable()

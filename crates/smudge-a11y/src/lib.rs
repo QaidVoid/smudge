@@ -19,11 +19,11 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use smudge_core::app::App;
 use smudge_core::geometry::Rect;
-use smudge_core::semantics::Role;
 use smudge_core::semantics::SemanticsNode;
+use smudge_core::semantics::{Checked, Role};
 use smudge_core::tree::WidgetId;
 
-use accesskit::{Node, NodeId, Rect as AccessKitRect};
+use accesskit::{Node, NodeId, Rect as AccessKitRect, Toggled};
 use accesskit::{Role as AccessKitRole, TreeId, TreeInfo, TreeUpdate};
 
 /// The node id of the synthesized window root.
@@ -220,6 +220,12 @@ fn digest(node: &SemanticsNode, scale: f32) -> u64 {
     map_role(node.role).hash(&mut hasher);
     node.label.hash(&mut hasher);
     node.value.hash(&mut hasher);
+    node.checked.hash(&mut hasher);
+    if let Some(range) = node.range {
+        for number in [range.value, range.min, range.max] {
+            number.to_bits().hash(&mut hasher);
+        }
+    }
     let bounds = node.bounds;
     for coordinate in [bounds.x0, bounds.y0, bounds.x1, bounds.y1, scale] {
         coordinate.to_bits().hash(&mut hasher);
@@ -241,6 +247,28 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     }
     if let Some(value) = &node.value {
         out.set_value(value.clone());
+    }
+    if let Some(checked) = node.checked {
+        out.set_toggled(match checked {
+            Checked::True => Toggled::True,
+            Checked::False => Toggled::False,
+            Checked::Mixed => Toggled::Mixed,
+        });
+    }
+    // A range that is not finite or runs backwards is left out, which reads
+    // as a control with no known value, such as a busy progress bar.
+    if let Some(range) = node.range
+        && range.min.is_finite()
+        && range.max.is_finite()
+        && range.min <= range.max
+        && range.value.is_finite()
+    {
+        out.set_numeric_value(range.value.clamp(range.min, range.max));
+        out.set_min_numeric_value(range.min);
+        out.set_max_numeric_value(range.max);
+    }
+    if matches!(node.role, Role::CheckBox | Role::Switch) && !node.pressable {
+        out.set_read_only();
     }
     out.set_bounds(scaled_bounds(node.bounds, scale));
     if !node.children.is_empty() {
@@ -288,6 +316,9 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::List => AccessKitRole::List,
         Role::ListItem => AccessKitRole::ListItem,
         Role::Splitter => AccessKitRole::Splitter,
+        Role::CheckBox => AccessKitRole::CheckBox,
+        Role::Switch => AccessKitRole::Switch,
+        Role::ProgressBar => AccessKitRole::ProgressIndicator,
         // A role added after this mapping reports as a plain group.
         _ => AccessKitRole::Group,
     }
