@@ -136,6 +136,7 @@ static_values!(
     Length,
     Size,
     Edges<Length>,
+    Edges<f32>,
     f32,
     bool,
     Direction,
@@ -820,6 +821,37 @@ impl<W: Widget> Element<W> {
     pub fn border(self, width: impl Into<Value<f32>>) -> Self {
         self.layout_value(Prop::BorderWidth, width, |layout, width| {
             layout.border_width = Edges::all(width);
+        })
+    }
+
+    /// Sets the border width of each side, such as a bottom border alone
+    /// under a header. This takes part in layout, because the border takes
+    /// space away from the content. The border is painted in the color set
+    /// by [`Element::border_color`].
+    ///
+    /// Where two sides of different widths meet at a rounded corner, the
+    /// border's inner edge curves as a quarter ellipse whose radii are the
+    /// corner radius less each side's width, so the band narrows smoothly
+    /// along the curve from the wider side to the narrower one. Four equal
+    /// sides draw as [`Element::border`] does.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Color;
+    /// use smudge_core::style::Edges;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let header = panel()
+    ///     .border_edges(Edges {
+    ///         top: 0.0,
+    ///         right: 0.0,
+    ///         bottom: 1.0,
+    ///         left: 0.0,
+    ///     })
+    ///     .border_color(Color::rgb(200, 200, 200));
+    /// ```
+    pub fn border_edges(self, widths: impl Into<Value<Edges<f32>>>) -> Self {
+        self.layout_value(Prop::BorderWidth, widths, |layout, widths| {
+            layout.border_width = widths;
         })
     }
 

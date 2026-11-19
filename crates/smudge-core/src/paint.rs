@@ -20,6 +20,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::geometry::{Color, Corners, Point, Rect};
+use crate::style::Edges;
 
 /// The bytes of one font file, shared by every glyph run that uses it.
 ///
@@ -187,6 +188,30 @@ pub enum PaintOp {
         /// Straight-alpha sRGB border color.
         color: Color,
     },
+    /// A border drawn inside `rect` with a width of its own on each side, so
+    /// it never extends past the rectangle.
+    ///
+    /// The inner edge lies each side's width inside `rect`. Each inner
+    /// corner is a quarter ellipse centered where the outer corner's circle
+    /// is centered: its horizontal radius is the outer radius less the width
+    /// of the side beside it, its vertical radius the outer radius less the
+    /// width of the side above or below it, and it is square when either
+    /// comes to zero or less. Four equal sides give quarter circles. Where a
+    /// side is so wide that a corner's curve reaches past the inner side
+    /// across from it, the curve stops there. The border never draws outside
+    /// `rect`'s rounded outline. A side whose width is zero, negative or not
+    /// finite draws nothing along it.
+    StrokeSides {
+        /// Outer edge of the border.
+        rect: Rect,
+        /// Corner radii of the border's outer edge.
+        radius: Corners,
+        /// The thickness of each side in logical pixels, measured inwards
+        /// from that side of `rect`.
+        widths: Edges<f32>,
+        /// Straight-alpha sRGB border color.
+        color: Color,
+    },
     /// A shaped run of glyphs, painted in one font, size and color.
     ///
     /// The run is shared in an `Rc` so that rebuilding the display list for a
@@ -213,7 +238,9 @@ impl PaintOp {
     /// rounding outwards rather than to the nearest pixel.
     pub fn bounds(&self) -> Rect {
         match self {
-            PaintOp::FillRect { rect, .. } | PaintOp::StrokeRect { rect, .. } => *rect,
+            PaintOp::FillRect { rect, .. }
+            | PaintOp::StrokeRect { rect, .. }
+            | PaintOp::StrokeSides { rect, .. } => *rect,
             PaintOp::Glyphs(run) => run.ink_bounds,
             PaintOp::Image { rect, .. } => *rect,
         }

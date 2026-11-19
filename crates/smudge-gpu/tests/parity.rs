@@ -112,6 +112,20 @@ const TOLERANCES: &[Tolerance] = &[
         over_eight: 0.0047,
     },
     Tolerance {
+        scene: "border sides",
+        scale: 1.0,
+        mean: 0.31,
+        max: 99,
+        over_eight: 0.0129,
+    },
+    Tolerance {
+        scene: "border sides",
+        scale: 2.0,
+        mean: 0.168,
+        max: 96,
+        over_eight: 0.0063,
+    },
+    Tolerance {
         scene: "nested clips",
         scale: 1.0,
         mean: 0.0,
@@ -850,6 +864,56 @@ fn borders() -> Element<Panel> {
         )
 }
 
+/// Borders with a width of their own on each side: a bottom border alone,
+/// four different widths, four different widths inside rounded corners over
+/// a background, translucent sides inside rounder corners, a pill whose
+/// bottom border alone leaves its top corners empty, and a pill whose bottom
+/// border is wider than the pill less its radius.
+fn border_sides() -> Element<Panel> {
+    let sides = |top: f32, right: f32, bottom: f32, left: f32| Edges {
+        top,
+        right,
+        bottom,
+        left,
+    };
+    panel()
+        .child(
+            at(8.0, 10.0, 60.0, 30.0)
+                .border_edges(sides(0.0, 0.0, 2.0, 0.0))
+                .border_color(Color::rgb(40, 40, 40)),
+        )
+        .child(
+            at(84.0, 10.0, 60.0, 40.0)
+                .border_edges(sides(1.0, 3.0, 5.0, 7.0))
+                .border_color(Color::rgb(30, 130, 60)),
+        )
+        .child(
+            at(20.0, 64.0, 70.0, 48.0)
+                .corner_radius(12.0)
+                .border_edges(sides(2.0, 4.0, 8.0, 10.0))
+                .border_color(Color::rgb(150, 80, 20))
+                .background(Color::rgb(250, 210, 120)),
+        )
+        .child(
+            at(110.0, 64.0, 70.0, 48.0)
+                .corner_radius(16.0)
+                .border_edges(sides(0.0, 6.0, 0.0, 6.0))
+                .border_color(Color::rgba(120, 20, 150, 160)),
+        )
+        .child(
+            at(150.0, 10.0, 40.0, 20.0)
+                .corner_radius(10.0)
+                .border_edges(sides(0.0, 0.0, 4.0, 0.0))
+                .border_color(Color::rgb(20, 20, 20)),
+        )
+        .child(
+            at(150.0, 120.0, 40.0, 20.0)
+                .corner_radius(10.0)
+                .border_edges(sides(0.0, 0.0, 15.0, 0.0))
+                .border_color(Color::rgb(20, 20, 20)),
+        )
+}
+
 /// Clips nested two deep, with content that overflows every clip edge, plus a
 /// rounded clipping node whose clip stays rectangular on both renderers.
 fn nested_clips() -> Element<Panel> {
@@ -1024,6 +1088,7 @@ fn scenes() -> &'static [Scene] {
         ("plain rects", plain_rects),
         ("rounded rects", rounded_rects),
         ("borders", borders),
+        ("border sides", border_sides),
         ("nested clips", nested_clips),
         ("text", text_lines),
         ("box grid", box_grid),

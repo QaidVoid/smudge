@@ -10,6 +10,7 @@ use smudge_core::app::{App, AppConfig, FrameOutput, RepaintMode};
 use smudge_core::geometry::{Color, Corners, Point, Rect, Size};
 use smudge_core::paint::{DisplayList, FontBlob, GlyphRun, PaintOp, PositionedGlyph};
 use smudge_core::renderer::Renderer;
+use smudge_core::style::Edges;
 use smudge_cpu::CpuRenderer;
 use smudge_gpu::GpuRenderer;
 use smudge_text::{FontWeight, Span, SpanStyle, TextSystem, label, rich_text};
@@ -35,6 +36,28 @@ fn headless_renderer(width: u32, height: u32) -> Option<GpuRenderer> {
 /// Renders `ops` onto a white surface and returns the pixels.
 fn rendered(ops: &[PaintOp], scale: f32) -> Vec<u8> {
     let mut renderer = headless_renderer(SIZE, SIZE)
+        .unwrap_or_else(|| panic!("the GPU adapter disappeared between tests"));
+    let mut list = DisplayList::new();
+    list.extend_ops(ops);
+    list.finish();
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &[],
+        full: true,
+        clear_color: Color::WHITE,
+        scale,
+    });
+    renderer.read_pixels()
+}
+
+/// The side of the surface [`rendered_on`] draws on when a test needs more
+/// room than [`SIZE`] gives, in physical pixels.
+const WIDE: u32 = 128;
+
+/// Renders `ops` onto a white surface `size` pixels square and returns the
+/// pixels.
+fn rendered_on(ops: &[PaintOp], scale: f32, size: u32) -> Vec<u8> {
+    let mut renderer = headless_renderer(size, size)
         .unwrap_or_else(|| panic!("the GPU adapter disappeared between tests"));
     let mut list = DisplayList::new();
     list.extend_ops(ops);
@@ -118,6 +141,123 @@ fn a_stroke_draws_inside_its_rectangle() {
     assert_eq!(pixel_at(&pixels, 32, 32), [255, 255, 255, 255]);
     // Outside the rectangle nothing is drawn.
     assert_eq!(pixel_at(&pixels, 4, 4), [255, 255, 255, 255]);
+}
+
+#[test]
+fn a_side_of_width_zero_draws_nothing_where_it_cuts_through_pixels() {
+    let Some(_) = headless_renderer(SIZE, SIZE) else {
+        eprintln!("skipping: no GPU adapter available for the headless renderer");
+        return;
+    };
+    let pixels = rendered(
+        &[PaintOp::StrokeSides {
+            rect: Rect::new(8.0, 4.5, 56.0, 40.5),
+            radius: Corners::ZERO,
+            widths: Edges {
+                top: 0.0,
+                right: 0.0,
+                bottom: 3.0,
+                left: 0.0,
+            },
+            color: Color::rgb(20, 20, 20),
+        }],
+        1.0,
+    );
+    for x in [8, 20, 40, 55] {
+        assert_eq!(
+            pixel_at(&pixels, x, 4),
+            [255, 255, 255, 255],
+            "the empty top side at column {x}"
+        );
+        assert_eq!(
+            pixel_at(&pixels, x, 38),
+            [20, 20, 20, 255],
+            "the bottom band at column {x}"
+        );
+    }
+    for y in [10, 20, 30] {
+        assert_eq!(
+            pixel_at(&pixels, 8, y),
+            [255, 255, 255, 255],
+            "the empty left side"
+        );
+    }
+}
+
+#[test]
+fn a_side_wider_than_the_rounded_rectangle_allows_draws_nothing_outside_it() {
+    let Some(_) = headless_renderer(SIZE, SIZE) else {
+        eprintln!("skipping: no GPU adapter available for the headless renderer");
+        return;
+    };
+    let sides = |top: f32, right: f32, bottom: f32| Edges {
+        top,
+        right,
+        bottom,
+        left: 0.0,
+    };
+    // Each border has a side wider than its rectangle less a corner radius,
+    // so an inner corner's curve stops at the inner side across from it, and
+    // some of those curves run along the outer one.
+    let cases = [
+        (
+            Rect::new(2.0, 2.0, 42.0, 22.0),
+            10.0,
+            sides(0.0, 0.0, 15.0),
+            1.0,
+        ),
+        (
+            Rect::new(2.0, 2.0, 41.5, 39.75),
+            20.75,
+            sides(6.75, 37.5, 0.0),
+            2.0,
+        ),
+        (
+            Rect::new(3.25, 2.75, 51.5, 8.75),
+            11.75,
+            sides(0.0, 5.75, 5.5),
+            2.0,
+        ),
+    ];
+    let color = Color::rgb(20, 20, 20);
+    for (rect, radius, widths, scale) in cases {
+        let radius = Corners::all(radius);
+        let border = rendered_on(
+            &[PaintOp::StrokeSides {
+                rect,
+                radius,
+                widths,
+                color,
+            }],
+            scale,
+            WIDE,
+        );
+        let shape = rendered_on(
+            &[PaintOp::FillRect {
+                rect,
+                radius,
+                color,
+            }],
+            scale,
+            WIDE,
+        );
+        for y in 0..WIDE {
+            for x in 0..WIDE {
+                let at = ((y * WIDE + x) * 4) as usize;
+                let (drawn, allowed) = (border[at], shape[at]);
+                // Pixels the outline's edge passes through may shade a few
+                // levels apart, since the two outlines are flattened apart.
+                // A pixel the outline leaves blank must stay blank.
+                if allowed >= 250 {
+                    assert!(
+                        u16::from(drawn) + 10 >= u16::from(allowed),
+                        "{rect:?} at scale {scale}: ink at ({x}, {y}) outside the \
+                         rounded outline, {drawn} where the shape itself draws {allowed}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

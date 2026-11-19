@@ -11,6 +11,7 @@ use std::ops::Range;
 
 use smudge_core::geometry::{Color, Corners, PixelRect, Point, Rect};
 use smudge_core::paint::{DisplayItem, GlyphRun, PaintOp};
+use smudge_core::style::Edges;
 
 use crate::glyph_cache::{GlyphCache, MAX_GLYPH_SIZE, MaskKey};
 
@@ -512,24 +513,37 @@ impl Canvas<'_> {
                 if !width.is_finite() || width <= 0.0 {
                     return;
                 }
-                let Some(outer) = Shape::new(maybe_translated(rect, offset), radius, self.scale)
-                else {
-                    return;
+                self.ring(
+                    area,
+                    maybe_translated(rect, offset),
+                    radius,
+                    Edges::all(width),
+                    color,
+                );
+            }
+            PaintOp::StrokeSides {
+                rect,
+                radius,
+                widths,
+                color,
+            } => {
+                let side = |width: f32| {
+                    if width.is_finite() && width > 0.0 {
+                        width
+                    } else {
+                        0.0
+                    }
                 };
-                match outer.inset(width * self.scale) {
-                    Some(inner) => self.fill(
-                        area,
-                        color,
-                        |x, y| (outer.coverage(x, y) - inner.coverage(x, y)).max(0.0),
-                        |y| inner.steady(y),
-                    ),
-                    None => self.fill(
-                        area,
-                        color,
-                        |x, y| outer.coverage(x, y),
-                        |y| outer.steady(y),
-                    ),
+                let widths = Edges {
+                    top: side(widths.top),
+                    right: side(widths.right),
+                    bottom: side(widths.bottom),
+                    left: side(widths.left),
+                };
+                if widths == Edges::all(0.0) {
+                    return;
                 }
+                self.ring(area, maybe_translated(rect, offset), radius, widths, color);
             }
             PaintOp::Glyphs(ref run) => self.draw_glyphs(run.as_ref(), area, offset),
             PaintOp::Image {
@@ -705,6 +719,51 @@ impl Canvas<'_> {
         }
     }
 
+    /// Draws the border inside the logical `rect` whose sides are `widths`
+    /// thick: the coverage of the rounded rectangle less that of the shape
+    /// [`Shape::inset`] leaves inside it, or the whole rectangle when nothing
+    /// is left inside.
+    fn ring(
+        &mut self,
+        area: PixelRect,
+        rect: Rect,
+        radius: Corners,
+        widths: Edges<f32>,
+        color: Color,
+    ) {
+        let Some(outer) = Shape::new(rect, radius, self.scale) else {
+            return;
+        };
+        let scale = self.scale;
+        let by = Edges {
+            top: widths.top * scale,
+            right: widths.right * scale,
+            bottom: widths.bottom * scale,
+            left: widths.left * scale,
+        };
+        match outer.inset(by) {
+            Some(inner) => self.fill(
+                area,
+                color,
+                |x, y| (outer.coverage(x, y) - inner.coverage(x, y)).max(0.0),
+                // A run inside the inner shape can reach into a corner of the
+                // outer one when the sides differ, where the outer coverage
+                // falls below one, so the run keeps clear of both.
+                |y| {
+                    let (inner, outer) = (inner.steady(y), outer.steady(y));
+                    let start = inner.start.max(outer.start);
+                    start..inner.end.min(outer.end).max(start)
+                },
+            ),
+            None => self.fill(
+                area,
+                color,
+                |x, y| outer.coverage(x, y),
+                |y| outer.steady(y),
+            ),
+        }
+    }
+
     /// Blends `color` into every pixel of `area`, weighted by the coverage
     /// that `coverage` gives for the pixel's absolute position.
     ///
@@ -760,7 +819,15 @@ impl Canvas<'_> {
     }
 }
 
-/// A rounded rectangle in physical pixels whose radii fit inside it.
+/// A rectangle in physical pixels whose corners are quarter ellipses.
+///
+/// Each corner's ellipse is centered `radius` in and `vertical` down or up
+/// from its corner, and the two corners along each side together fit that
+/// side, so no two corners overlap. A corner with either radius at zero is
+/// square. A filled shape's corners are quarter circles at most half the
+/// shorter side. The inner edge of a border can have elliptical corners, and
+/// a corner whose ellipse reaches past the edge across from it, which then
+/// cuts it off.
 #[derive(Copy, Clone)]
 struct Shape {
     /// The left edge.
@@ -771,8 +838,10 @@ struct Shape {
     x1: f32,
     /// The bottom edge.
     y1: f32,
-    /// The corner radii, each at most half the shorter side.
+    /// The horizontal radius of each corner.
     radius: Corners,
+    /// The vertical radius of each corner.
+    vertical: Corners,
 }
 
 impl Shape {
@@ -796,28 +865,58 @@ impl Shape {
         )
     }
 
-    /// Returns the shape that lies `by` pixels inside this one, with each
-    /// radius shrunk by the same amount so the two edges stay `by` apart.
+    /// Returns the shape that lies each side's pixels of `by` inside this
+    /// one, or `None` when nothing is left inside.
     ///
-    /// Returns `None` when nothing is left inside.
-    fn inset(&self, by: f32) -> Option<Shape> {
+    /// Each inner corner is the quarter ellipse centered where this shape's
+    /// corner circle is centered, reaching the two inner sides: its
+    /// horizontal radius is this corner's radius less the width of the side
+    /// beside it, and its vertical radius this radius less the width of the
+    /// side above or below it. It is square when either comes to zero or
+    /// less. Equal sides give quarter circles `by` inside this shape's, and
+    /// the inner shape always lies inside this one.
+    fn inset(&self, by: Edges<f32>) -> Option<Shape> {
+        let (x0, y0) = (self.x0 + by.left, self.y0 + by.top);
+        let (x1, y1) = (self.x1 - by.right, self.y1 - by.bottom);
+        let finite = x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite();
+        if !finite || x0 >= x1 || y0 >= y1 {
+            return None;
+        }
         let radius = self.radius;
-        Shape::fitted(
-            self.x0 + by,
-            self.y0 + by,
-            self.x1 - by,
-            self.y1 - by,
-            Corners {
-                top_left: radius.top_left - by,
-                top_right: radius.top_right - by,
-                bottom_right: radius.bottom_right - by,
-                bottom_left: radius.bottom_left - by,
+        let corner = |radius: f32, across: f32, down: f32| {
+            let (horizontal, vertical) = (radius - across, radius - down);
+            if horizontal > 0.0 && vertical > 0.0 {
+                (horizontal, vertical)
+            } else {
+                (0.0, 0.0)
+            }
+        };
+        let top_left = corner(radius.top_left, by.left, by.top);
+        let top_right = corner(radius.top_right, by.right, by.top);
+        let bottom_right = corner(radius.bottom_right, by.right, by.bottom);
+        let bottom_left = corner(radius.bottom_left, by.left, by.bottom);
+        Some(Shape {
+            x0,
+            y0,
+            x1,
+            y1,
+            radius: Corners {
+                top_left: top_left.0,
+                top_right: top_right.0,
+                bottom_right: bottom_right.0,
+                bottom_left: bottom_left.0,
             },
-        )
+            vertical: Corners {
+                top_left: top_left.1,
+                top_right: top_right.1,
+                bottom_right: bottom_right.1,
+                bottom_left: bottom_left.1,
+            },
+        })
     }
 
-    /// Builds a shape from physical edges, clamping each radius to between
-    /// zero and half the shorter side.
+    /// Builds a shape from physical edges with quarter circle corners,
+    /// clamping each radius to between zero and half the shorter side.
     fn fitted(x0: f32, y0: f32, x1: f32, y1: f32, radius: Corners) -> Option<Shape> {
         let finite = x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite();
         if !finite || x0 >= x1 || y0 >= y1 {
@@ -825,22 +924,24 @@ impl Shape {
         }
         let limit = (x1 - x0).min(y1 - y0) / 2.0;
         let fit = |radius: f32| radius.max(0.0).min(limit);
+        let radius = Corners {
+            top_left: fit(radius.top_left),
+            top_right: fit(radius.top_right),
+            bottom_right: fit(radius.bottom_right),
+            bottom_left: fit(radius.bottom_left),
+        };
         Some(Shape {
             x0,
             y0,
             x1,
             y1,
-            radius: Corners {
-                top_left: fit(radius.top_left),
-                top_right: fit(radius.top_right),
-                bottom_right: fit(radius.bottom_right),
-                bottom_left: fit(radius.bottom_left),
-            },
+            radius,
+            vertical: radius,
         })
     }
 
     /// Returns the pixels of row `y` that lie wholly inside the shape's
-    /// straight edges and outside every corner square, which all share the
+    /// straight edges and outside every corner's box, which all share the
     /// row's vertical coverage.
     fn steady(&self, y: u32) -> Range<u32> {
         let top = y as f32;
@@ -849,32 +950,37 @@ impl Shape {
             return 0..0;
         }
         let cy = top + 0.5;
-        let Corners {
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        } = self.radius;
-        let band = |upper: f32, lower: f32| {
-            if cy < self.y0 + upper {
-                upper
-            } else if cy > self.y1 - lower {
-                lower
+        let (radius, vertical) = (self.radius, self.vertical);
+        let band = |upper: (f32, f32), lower: (f32, f32)| {
+            if cy < self.y0 + upper.1 {
+                upper.0
+            } else if cy > self.y1 - lower.1 {
+                lower.0
             } else {
                 0.0
             }
         };
-        let start = (self.x0 + band(top_left, bottom_left)).ceil() as u32;
-        let end = (self.x1 - band(top_right, bottom_right)).floor() as u32;
+        let start = (self.x0
+            + band(
+                (radius.top_left, vertical.top_left),
+                (radius.bottom_left, vertical.bottom_left),
+            ))
+        .ceil() as u32;
+        let end = (self.x1
+            - band(
+                (radius.top_right, vertical.top_right),
+                (radius.bottom_right, vertical.bottom_right),
+            ))
+        .floor() as u32;
         start..end.max(start)
     }
 
     /// Returns how much of pixel `(x, y)` the shape covers, from 0 to 1.
     ///
     /// Along the straight edges this is the exact area of the pixel inside the
-    /// shape. Inside a corner square it is also limited by the distance from
-    /// the pixel center to the arc, which approximates the area the arc cuts
-    /// off.
+    /// shape. Inside a corner's box it is also limited by the distance from
+    /// the pixel center to the corner's curve, which approximates the area
+    /// the curve cuts off.
     fn coverage(&self, x: u32, y: u32) -> f32 {
         let (left, top) = (x as f32, y as f32);
         let across = (self.x1.min(left + 1.0) - self.x0.max(left)).clamp(0.0, 1.0);
@@ -885,26 +991,37 @@ impl Shape {
         }
 
         let (cx, cy) = (left + 0.5, top + 0.5);
-        let Corners {
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        } = self.radius;
-        let corner = if cx < self.x0 + top_left && cy < self.y0 + top_left {
-            (top_left, self.x0 + top_left, self.y0 + top_left)
-        } else if cx > self.x1 - top_right && cy < self.y0 + top_right {
-            (top_right, self.x1 - top_right, self.y0 + top_right)
-        } else if cx > self.x1 - bottom_right && cy > self.y1 - bottom_right {
-            (bottom_right, self.x1 - bottom_right, self.y1 - bottom_right)
-        } else if cx < self.x0 + bottom_left && cy > self.y1 - bottom_left {
-            (bottom_left, self.x0 + bottom_left, self.y1 - bottom_left)
+        let (radius, vertical) = (self.radius, self.vertical);
+        let (rx, ry, ox, oy) = if cx < self.x0 + radius.top_left && cy < self.y0 + vertical.top_left
+        {
+            let (rx, ry) = (radius.top_left, vertical.top_left);
+            (rx, ry, self.x0 + rx, self.y0 + ry)
+        } else if cx > self.x1 - radius.top_right && cy < self.y0 + vertical.top_right {
+            let (rx, ry) = (radius.top_right, vertical.top_right);
+            (rx, ry, self.x1 - rx, self.y0 + ry)
+        } else if cx > self.x1 - radius.bottom_right && cy > self.y1 - vertical.bottom_right {
+            let (rx, ry) = (radius.bottom_right, vertical.bottom_right);
+            (rx, ry, self.x1 - rx, self.y1 - ry)
+        } else if cx < self.x0 + radius.bottom_left && cy > self.y1 - vertical.bottom_left {
+            let (rx, ry) = (radius.bottom_left, vertical.bottom_left);
+            (rx, ry, self.x0 + rx, self.y1 - ry)
         } else {
             return area;
         };
-        let (radius, ox, oy) = corner;
-        let distance = (cx - ox).hypot(cy - oy);
-        area.min((radius - distance + 0.5).clamp(0.0, 1.0))
+        let inside = if rx == ry {
+            rx - (cx - ox).hypot(cy - oy)
+        } else {
+            // The level of the ellipse's equation over the length of its
+            // gradient, which is the distance to the curve near it.
+            let (u, v) = ((cx - ox) / rx, (cy - oy) / ry);
+            let gradient = 2.0 * ((u / rx).powi(2) + (v / ry).powi(2)).sqrt();
+            if gradient > 0.0 {
+                (1.0 - u * u - v * v) / gradient
+            } else {
+                rx.min(ry)
+            }
+        };
+        area.min((inside + 0.5).clamp(0.0, 1.0))
     }
 }
 

@@ -10,7 +10,7 @@ use crate::element::Element;
 use crate::geometry::{Corners, Rect, Size};
 use crate::paint::PaintOp;
 use crate::semantics::Semantics;
-use crate::style::{Edges, Style};
+use crate::style::Style;
 use crate::theme::Theme;
 
 /// The space a measure call offers on one axis, or the intrinsic size it asks
@@ -197,26 +197,33 @@ impl Widget for Panel {
             });
         }
         if let Some(border) = &paint.border_color {
-            let width = widest_side(cx.style.layout.border_width);
-            if width > 0.0 {
+            let widths = cx.style.layout.border_width;
+            let sides = [widths.top, widths.right, widths.bottom, widths.left];
+            if !sides.iter().any(|side| *side > 0.0) {
+                return;
+            }
+            let rect = cx.rect;
+            let radius = Corners::all(paint.corner_radius.resolve(cx.theme));
+            let color = border.resolve(cx.theme);
+            // Four equal sides keep the single stroke, whose rounded corners
+            // keep an even thickness all the way round.
+            if sides.iter().all(|side| *side == widths.top) {
                 out.push(PaintOp::StrokeRect {
-                    rect: cx.rect,
-                    radius: Corners::all(paint.corner_radius.resolve(cx.theme)),
-                    width,
-                    color: border.resolve(cx.theme),
+                    rect,
+                    radius,
+                    width: widths.top,
+                    color,
+                });
+            } else {
+                out.push(PaintOp::StrokeSides {
+                    rect,
+                    radius,
+                    widths,
+                    color,
                 });
             }
         }
     }
-}
-
-/// Returns the widest of the four border sides, because a stroke has one width.
-fn widest_side(border: Edges<f32>) -> f32 {
-    border
-        .top
-        .max(border.right)
-        .max(border.bottom)
-        .max(border.left)
 }
 
 #[cfg(test)]

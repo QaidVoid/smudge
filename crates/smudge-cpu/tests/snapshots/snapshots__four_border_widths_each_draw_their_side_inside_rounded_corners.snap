@@ -1,0 +1,6 @@
+---
+source: crates/smudge-cpu/tests/snapshots.rs
+expression: renderer.encode_png()
+extension: png
+snapshot_kind: binary
+---

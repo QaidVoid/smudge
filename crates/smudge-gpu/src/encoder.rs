@@ -7,8 +7,10 @@ use std::sync::Arc;
 use smudge_core::app::FrameOutput;
 use smudge_core::geometry::{Color, Corners, Rect};
 use smudge_core::paint::{DisplayItem, EMBOLDEN_MITER_LIMIT, FontBlob, PaintOp};
+use smudge_core::style::Edges;
 use vello::kurbo::{
-    Affine, BezPath, Diagonal2, Rect as KurboRect, RoundedRect, RoundedRectRadii, Shape,
+    Affine, BezPath, CubicBez, Diagonal2, ParamCurve, Point as KurboPoint, Rect as KurboRect,
+    RoundedRect, RoundedRectRadii,
 };
 use vello::peniko::{
     BlendMode, Blob, Color as PenikoColor, Fill, FontData, ImageAlphaType, ImageBrush, ImageData,
@@ -186,20 +188,39 @@ fn encode_op(
             if !width.is_finite() || width <= 0.0 {
                 return;
             }
-            // The border is the ring between the rectangle and the
-            // rectangle shrunk by the width, filled even-odd, which is the
-            // coverage the CPU renderer gives it: square corners stay square
-            // where a stroke would join them round. A border that leaves no
-            // inner rectangle covers the rectangle whole.
-            match inset(rect, radius, width) {
-                Some((inner, inner_radius)) => {
-                    ring.truncate(0);
-                    ring.extend(rounded(rect, radius).path_elements(PATH_TOLERANCE));
-                    ring.extend(rounded(inner, inner_radius).path_elements(PATH_TOLERANCE));
-                    scene.fill(Fill::EvenOdd, transform, peniko_color(color), None, &*ring);
+            border(
+                scene,
+                ring,
+                transform,
+                color,
+                rect,
+                radius,
+                Edges::all(width),
+            );
+        }
+        PaintOp::StrokeSides {
+            rect,
+            radius,
+            widths,
+            color,
+        } => {
+            let side = |width: f32| {
+                if width.is_finite() && width > 0.0 {
+                    width
+                } else {
+                    0.0
                 }
-                None => fill(scene, transform, color, rect, radius),
+            };
+            let widths = Edges {
+                top: side(widths.top),
+                right: side(widths.right),
+                bottom: side(widths.bottom),
+                left: side(widths.left),
+            };
+            if widths == Edges::all(0.0) {
+                return;
             }
+            border(scene, ring, transform, color, rect, radius, widths);
         }
         PaintOp::Glyphs(ref run) => {
             if !run.size.is_finite() || run.size <= 0.0 {
@@ -268,10 +289,6 @@ fn encode_op(
         _ => {}
     }
 }
-
-/// How far a flattened corner arc may stray from the true arc, in logical
-/// pixels.
-const PATH_TOLERANCE: f64 = 0.01;
 
 /// Returns `rect` with `radius` as kurbo's rounded rectangle.
 fn rounded(rect: Rect, radius: Corners) -> RoundedRect {
@@ -438,28 +455,308 @@ fn fill(scene: &mut Scene, transform: Affine, color: Color, rect: Rect, radius: 
     }
 }
 
-/// Returns `rect` shrunk by `inset` on every side with the corner radii
-/// reduced to match, or `None` when nothing remains.
+/// Fills the border inside `rect` whose sides are `widths` thick.
 ///
-/// A non-finite extent counts as nothing remaining, so the border of a broken
-/// rectangle fills the rectangle whole instead of reaching vello as a ring.
-fn inset(rect: Rect, radius: Corners, inset: f32) -> Option<(Rect, Corners)> {
+/// The border is the area between the rectangle's outline and the inner
+/// outline [`inset`] gives, which runs the other way round, filled with the
+/// non-zero rule. That is the coverage the CPU renderer gives it, and the
+/// edges the two outlines share, along a side of width zero, cancel instead
+/// of drawing a line. A border that leaves no inner shape covers the
+/// rectangle whole.
+fn border(
+    scene: &mut Scene,
+    ring: &mut BezPath,
+    transform: Affine,
+    color: Color,
+    rect: Rect,
+    radius: Corners,
+    widths: Edges<f32>,
+) {
+    let outer_radius = fitted(rect, radius);
+    let outer = outline(rect, outer_radius, outer_radius);
+    let inner = inset(rect, outer_radius, widths);
+    let Some(inner) = inner.and_then(|(inner, across, down)| outline(inner, across, down)) else {
+        fill(scene, transform, color, rect, radius);
+        return;
+    };
+    let Some(mut outer) = outer else {
+        return;
+    };
+    // Where an inner corner is cut from the outer corner's own quarter, the
+    // outer corner is drawn in pieces at the same cuts, so the piece the two
+    // share is the same cubic in both outlines and cancels exactly.
+    for (outer, inner) in outer.iter_mut().zip(&inner) {
+        if let (
+            Bend::Curve {
+                quarter, cuts: own, ..
+            },
+            Bend::Curve {
+                quarter: cut,
+                from,
+                to,
+                ..
+            },
+        ) = (outer, inner)
+            && quarter == cut
+        {
+            *own = Some((*from, *to));
+        }
+    }
+    ring.truncate(0);
+    push_outline(ring, &outer, false);
+    push_outline(ring, &inner, true);
+    scene.fill(Fill::NonZero, transform, peniko_color(color), None, &*ring);
+}
+
+/// Returns `radius` with each corner held between zero and half the shorter
+/// side of `rect`, as the CPU renderer fits it.
+fn fitted(rect: Rect, radius: Corners) -> Corners {
+    let limit = (rect.width().min(rect.height()) / 2.0).max(0.0);
+    let fit = |radius: f32| radius.max(0.0).min(limit);
+    Corners {
+        top_left: fit(radius.top_left),
+        top_right: fit(radius.top_right),
+        bottom_right: fit(radius.bottom_right),
+        bottom_left: fit(radius.bottom_left),
+    }
+}
+
+/// Returns `rect` shrunk by each side's width of `by`, with the horizontal
+/// and the vertical radius of each inner corner, as the CPU renderer insets
+/// it, or `None` when nothing remains.
+///
+/// Each inner corner is the quarter ellipse centered where the fitted outer
+/// corner `radius` is centered: its horizontal radius is the outer radius
+/// less the width of the side beside it, its vertical radius the outer
+/// radius less the width of the side above or below it, and it is square
+/// when either comes to zero or less. A non-finite extent counts as nothing
+/// remaining, so the border of a broken rectangle fills the rectangle whole
+/// instead of reaching vello as a ring.
+fn inset(rect: Rect, radius: Corners, by: Edges<f32>) -> Option<(Rect, Corners, Corners)> {
     let rect = Rect::new(
-        rect.x0 + inset,
-        rect.y0 + inset,
-        rect.x1 - inset,
-        rect.y1 - inset,
+        rect.x0 + by.left,
+        rect.y0 + by.top,
+        rect.x1 - by.right,
+        rect.y1 - by.bottom,
     );
     if !(rect.width() > 0.0 && rect.height() > 0.0) {
         return None;
     }
-    let radius = Corners {
-        top_left: (radius.top_left - inset).max(0.0),
-        top_right: (radius.top_right - inset).max(0.0),
-        bottom_right: (radius.bottom_right - inset).max(0.0),
-        bottom_left: (radius.bottom_left - inset).max(0.0),
+    let corner = |radius: f32, across: f32, down: f32| {
+        let (horizontal, vertical) = (radius - across, radius - down);
+        if horizontal > 0.0 && vertical > 0.0 {
+            (horizontal, vertical)
+        } else {
+            (0.0, 0.0)
+        }
     };
-    Some((rect, radius))
+    let top_left = corner(radius.top_left, by.left, by.top);
+    let top_right = corner(radius.top_right, by.right, by.top);
+    let bottom_right = corner(radius.bottom_right, by.right, by.bottom);
+    let bottom_left = corner(radius.bottom_left, by.left, by.bottom);
+    let across = Corners {
+        top_left: top_left.0,
+        top_right: top_right.0,
+        bottom_right: bottom_right.0,
+        bottom_left: bottom_left.0,
+    };
+    let down = Corners {
+        top_left: top_left.1,
+        top_right: top_right.1,
+        bottom_right: bottom_right.1,
+        bottom_left: bottom_left.1,
+    };
+    Some((rect, across, down))
+}
+
+/// How far a cubic's control points sit from the ends of the quarter circle
+/// or ellipse it stands for, as a share of each radius.
+const QUARTER_ARC: f64 = 0.552_284_749_830_793_6;
+
+/// One corner of an outline, in the order a clockwise walk meets its ends.
+#[derive(Clone, Copy)]
+enum Bend {
+    /// A square corner, at this point.
+    Square(KurboPoint),
+    /// The part of the corner's quarter curve, drawn clockwise as one cubic,
+    /// that lies inside the rectangle.
+    Curve {
+        /// The whole quarter, clockwise on the screen.
+        quarter: CubicBez,
+        /// Where along the quarter the part inside the rectangle starts.
+        from: f64,
+        /// Where along the quarter the part inside the rectangle ends.
+        to: f64,
+        /// Two places between `from` and `to` to draw the part in three
+        /// pieces at, so a piece matches another outline's part exactly.
+        cuts: Option<(f64, f64)>,
+    },
+}
+
+impl Bend {
+    /// Where a walk in the given direction enters this corner.
+    fn entry(self, reverse: bool) -> KurboPoint {
+        match self {
+            Bend::Square(point) => point,
+            Bend::Curve {
+                quarter, from, to, ..
+            } => quarter.eval(if reverse { to } else { from }),
+        }
+    }
+}
+
+/// Returns the part of `0..=1` where the monotonic `along` stays between
+/// `low` and `high`, or an empty range, whose start is past its end, when it
+/// never does.
+fn within(along: impl Fn(f64) -> f64, low: f64, high: f64) -> (f64, f64) {
+    const SLACK: f64 = 1e-7;
+    let (start, end) = (along(0.0), along(1.0));
+    let rising = end >= start;
+    let (least, most) = if rising { (start, end) } else { (end, start) };
+    if most < low - SLACK || least > high + SLACK {
+        return (1.0, 0.0);
+    }
+    // The parameter where `along` reaches `value`, which it crosses once.
+    let crossing = |value: f64| {
+        let (mut below, mut above) = (0.0, 1.0);
+        for _ in 0..50 {
+            let middle = (below + above) / 2.0;
+            if (along(middle) < value) == rising {
+                below = middle;
+            } else {
+                above = middle;
+            }
+        }
+        (below + above) / 2.0
+    };
+    let (enter, leave) = if rising { (low, high) } else { (high, low) };
+    let first = if (start - enter) * if rising { 1.0 } else { -1.0 } >= -SLACK {
+        0.0
+    } else {
+        crossing(enter)
+    };
+    let last = if (leave - end) * if rising { 1.0 } else { -1.0 } >= -SLACK {
+        1.0
+    } else {
+        crossing(leave)
+    };
+    (first, last)
+}
+
+/// Returns the four corners of `rect`, clockwise from the top left, whose
+/// horizontal and vertical radii are `across` and `down`, or `None` when the
+/// shape they leave is empty.
+///
+/// Each corner's quarter curve is centered its radii in from the corner, so
+/// it meets the two sides beside it. Where a side is so wide that the curve
+/// reaches past the side across from it, the curve stops at that side, so
+/// the outline follows the shape inside the rectangle and inside every
+/// corner's curve. When a corner's curve lies wholly outside the rectangle,
+/// the corner covers it all and nothing is left. Every corner is cut from
+/// the one cubic its whole quarter would be, so an inner corner that
+/// follows an outer one along a side of width zero is the very same curve.
+fn outline(rect: Rect, across: Corners, down: Corners) -> Option<[Bend; 4]> {
+    let (x0, y0) = (f64::from(rect.x0), f64::from(rect.y0));
+    let (x1, y1) = (f64::from(rect.x1), f64::from(rect.y1));
+    // Each corner as its point, the point a clockwise walk reaches its curve
+    // at, and the point it leaves at, given its radii.
+    let corner = |point: (f64, f64),
+                  radii: (f32, f32),
+                  ends: &dyn Fn(f64, f64) -> ((f64, f64), (f64, f64))| {
+        let (rx, ry) = (f64::from(radii.0), f64::from(radii.1));
+        if rx <= 0.0 || ry <= 0.0 {
+            return Some(Bend::Square(KurboPoint::new(point.0, point.1)));
+        }
+        let (reach, leave) = ends(rx, ry);
+        let toward = |end: (f64, f64)| {
+            KurboPoint::new(
+                end.0 + QUARTER_ARC * (point.0 - end.0),
+                end.1 + QUARTER_ARC * (point.1 - end.1),
+            )
+        };
+        let quarter = CubicBez::new(
+            KurboPoint::new(reach.0, reach.1),
+            toward(reach),
+            toward(leave),
+            KurboPoint::new(leave.0, leave.1),
+        );
+        let (x_from, x_to) = within(|t| quarter.eval(t).x, x0, x1);
+        let (y_from, y_to) = within(|t| quarter.eval(t).y, y0, y1);
+        let (from, to) = (x_from.max(y_from), x_to.min(y_to));
+        (from <= to).then_some(Bend::Curve {
+            quarter,
+            from,
+            to,
+            cuts: None,
+        })
+    };
+    Some([
+        corner((x0, y0), (across.top_left, down.top_left), &|rx, ry| {
+            ((x0, y0 + ry), (x0 + rx, y0))
+        })?,
+        corner((x1, y0), (across.top_right, down.top_right), &|rx, ry| {
+            ((x1 - rx, y0), (x1, y0 + ry))
+        })?,
+        corner(
+            (x1, y1),
+            (across.bottom_right, down.bottom_right),
+            &|rx, ry| ((x1, y1 - ry), (x1 - rx, y1)),
+        )?,
+        corner(
+            (x0, y1),
+            (across.bottom_left, down.bottom_left),
+            &|rx, ry| ((x0 + rx, y1), (x0, y1 - ry)),
+        )?,
+    ])
+}
+
+/// Appends the closed outline of `bends` to `path`, clockwise on the screen,
+/// or counter-clockwise when `reverse` is set.
+fn push_outline(path: &mut BezPath, bends: &[Bend; 4], reverse: bool) {
+    let mut started = false;
+    let mut visit = |path: &mut BezPath, bend: Bend| {
+        let entry = bend.entry(reverse);
+        if started {
+            path.line_to(entry);
+        } else {
+            path.move_to(entry);
+            started = true;
+        }
+        if let Bend::Curve {
+            quarter,
+            from,
+            to,
+            cuts,
+        } = bend
+        {
+            let (first, second) = cuts.unwrap_or((to, to));
+            let mut pieces = [(from, first), (first, second), (second, to)];
+            if reverse {
+                pieces.reverse();
+            }
+            for (start, end) in pieces {
+                if end <= start {
+                    continue;
+                }
+                let part = quarter.subsegment(start..end);
+                if reverse {
+                    path.curve_to(part.p2, part.p1, part.p0);
+                } else {
+                    path.curve_to(part.p1, part.p2, part.p3);
+                }
+            }
+        }
+    };
+    if reverse {
+        for &bend in bends.iter().rev() {
+            visit(path, bend);
+        }
+    } else {
+        for &bend in bends {
+            visit(path, bend);
+        }
+    }
+    path.close_path();
 }
 
 /// Returns the vello font data for `blob`, creating it once per font file and

@@ -12,6 +12,7 @@ use insta::assert_binary_snapshot;
 use smudge_core::app::FrameOutput;
 use smudge_core::geometry::{Color, Corners, PixelRect, Point, Rect};
 use smudge_core::paint::{DisplayItem, DisplayList, PaintOp};
+use smudge_core::style::Edges;
 use smudge_cpu::CpuRenderer;
 use smudge_text::{FontFamily, FontWeight, TextLayout, TextStyle, TextSystem};
 
@@ -481,4 +482,248 @@ fn a_variable_font_draws_at_the_weight_the_text_asks_for() {
         "a heavier weight leaves more dark ink, found {dark:?}"
     );
     assert_binary_snapshot!(".png", png);
+}
+
+/// The color the border scenes draw their borders in.
+const BORDER: Color = Color::rgb(30, 60, 140);
+
+/// Renders a white surface of 48 by 40 pixels with one border of `widths`
+/// on the rectangle from (4, 4) to (44, 36), rounded by `radius`, and
+/// returns the renderer that drew it.
+fn render_border(widths: Edges<f32>, radius: f32) -> CpuRenderer {
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::StrokeSides {
+        rect: Rect::new(4.0, 4.0, 44.0, 36.0),
+        radius: Corners::all(radius),
+        widths,
+        color: BORDER,
+    });
+    list.finish();
+    let (width, height) = (48, 40);
+    let mut renderer = CpuRenderer::new(width, height);
+    renderer.render(&FrameOutput {
+        list: &list,
+        damage: &[PixelRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }],
+        full: true,
+        clear_color: Color::WHITE,
+        scale: 1.0,
+    });
+    renderer
+}
+
+/// The pixel at `(x, y)` of a 48 pixel wide surface, without its alpha.
+fn rgb_at(renderer: &CpuRenderer, x: usize, y: usize) -> [u8; 3] {
+    let start = (y * 48 + x) * 4;
+    let pixel = &renderer.pixels()[start..start + 3];
+    [pixel[0], pixel[1], pixel[2]]
+}
+
+/// The border color without its alpha.
+const BORDER_RGB: [u8; 3] = [30, 60, 140];
+
+/// White without its alpha.
+const WHITE_RGB: [u8; 3] = [255, 255, 255];
+
+#[test]
+fn a_bottom_border_alone_draws_one_band_along_the_bottom() {
+    let renderer = render_border(
+        Edges {
+            top: 0.0,
+            right: 0.0,
+            bottom: 3.0,
+            left: 0.0,
+        },
+        0.0,
+    );
+    for x in [4, 24, 43] {
+        for y in 33..36 {
+            assert_eq!(
+                rgb_at(&renderer, x, y),
+                BORDER_RGB,
+                "the band at ({x}, {y})"
+            );
+        }
+        assert_eq!(rgb_at(&renderer, x, 32), WHITE_RGB, "above the band at {x}");
+        assert_eq!(rgb_at(&renderer, x, 4), WHITE_RGB, "no top border at {x}");
+    }
+    assert_eq!(rgb_at(&renderer, 4, 20), WHITE_RGB, "no left border");
+    assert_eq!(rgb_at(&renderer, 43, 20), WHITE_RGB, "no right border");
+    assert_binary_snapshot!(".png", renderer.encode_png());
+}
+
+#[test]
+fn four_border_widths_each_draw_their_side_inside_rounded_corners() {
+    let renderer = render_border(
+        Edges {
+            top: 1.0,
+            right: 2.0,
+            bottom: 4.0,
+            left: 6.0,
+        },
+        8.0,
+    );
+    let (mid_x, mid_y) = (24, 20);
+    assert_eq!(rgb_at(&renderer, mid_x, 4), BORDER_RGB, "the top band");
+    assert_eq!(rgb_at(&renderer, mid_x, 5), WHITE_RGB, "one pixel of top");
+    assert_eq!(rgb_at(&renderer, 42, mid_y), BORDER_RGB, "the right band");
+    assert_eq!(
+        rgb_at(&renderer, 41, mid_y),
+        WHITE_RGB,
+        "two pixels of right"
+    );
+    assert_eq!(rgb_at(&renderer, mid_x, 32), BORDER_RGB, "the bottom band");
+    assert_eq!(
+        rgb_at(&renderer, mid_x, 31),
+        WHITE_RGB,
+        "four pixels of bottom"
+    );
+    assert_eq!(rgb_at(&renderer, 9, mid_y), BORDER_RGB, "the left band");
+    assert_eq!(
+        rgb_at(&renderer, 10, mid_y),
+        WHITE_RGB,
+        "six pixels of left"
+    );
+    assert_eq!(
+        rgb_at(&renderer, 4, 4),
+        WHITE_RGB,
+        "the rounded corner leaves its outer pixel unpainted"
+    );
+    assert_binary_snapshot!(".png", renderer.encode_png());
+}
+
+/// Renders a list holding one border into a 64 by 40 surface, whole, and
+/// returns its pixels.
+fn border_pixels(list: &DisplayList, damage: Option<PixelRect>) -> Vec<u8> {
+    let (width, height) = (64, 40);
+    let everything = PixelRect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    let mut renderer = CpuRenderer::new(width, height);
+    let mut blank = DisplayList::new();
+    blank.finish();
+    renderer.render(&FrameOutput {
+        list: if damage.is_some() { &blank } else { list },
+        damage: &[everything],
+        full: true,
+        clear_color: Color::WHITE,
+        scale: 1.0,
+    });
+    if let Some(part) = damage {
+        renderer.render(&FrameOutput {
+            list,
+            damage: &[part],
+            full: false,
+            clear_color: Color::WHITE,
+            scale: 1.0,
+        });
+    }
+    renderer.pixels().to_vec()
+}
+
+#[test]
+fn a_border_of_unequal_sides_repainted_from_any_column_matches_a_full_repaint() {
+    let borders = [
+        (
+            Rect::new(2.0, 0.5, 20.25, 21.25),
+            5.0,
+            Edges {
+                top: 0.0,
+                right: 2.75,
+                bottom: 5.0,
+                left: 0.0,
+            },
+        ),
+        (
+            Rect::new(5.0, 1.5, 47.5, 28.25),
+            25.5,
+            Edges {
+                top: 0.25,
+                right: 0.0,
+                bottom: 2.5,
+                left: 0.0,
+            },
+        ),
+        (
+            Rect::new(4.0, 4.0, 44.0, 24.0),
+            10.0,
+            Edges {
+                top: 0.0,
+                right: 0.0,
+                bottom: 4.0,
+                left: 0.0,
+            },
+        ),
+        (
+            Rect::new(2.0, 2.0, 42.0, 22.0),
+            10.0,
+            Edges {
+                top: 0.0,
+                right: 0.0,
+                bottom: 15.0,
+                left: 0.0,
+            },
+        ),
+    ];
+    for (rect, radius, widths) in borders {
+        let mut list = DisplayList::new();
+        list.push_op(PaintOp::StrokeSides {
+            rect,
+            radius: Corners::all(radius),
+            widths,
+            color: BORDER,
+        });
+        list.finish();
+        let full = border_pixels(&list, None);
+        for x in 0..48 {
+            let part = PixelRect {
+                x,
+                y: 0,
+                width: 64 - x,
+                height: 40,
+            };
+            let damaged = border_pixels(&list, Some(part));
+            for y in 0..40 {
+                let row =
+                    |pixels: &[u8]| pixels[(y * 64 + x as usize) * 4..(y + 1) * 64 * 4].to_vec();
+                assert_eq!(
+                    row(&damaged),
+                    row(&full),
+                    "{rect:?} rounded {radius} with {widths:?}, row {y} repainted from column {x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_pill_with_a_bottom_border_leaves_its_top_corners_blank() {
+    let mut list = DisplayList::new();
+    list.push_op(PaintOp::StrokeSides {
+        rect: Rect::new(4.0, 4.0, 44.0, 24.0),
+        radius: Corners::all(10.0),
+        widths: Edges {
+            top: 0.0,
+            right: 0.0,
+            bottom: 4.0,
+            left: 0.0,
+        },
+        color: BORDER,
+    });
+    list.finish();
+    let pixels = border_pixels(&list, None);
+    let (pixels, _) = pixels.as_chunks::<4>();
+    for y in 4..12 {
+        for x in 4..44 {
+            let [red, ..] = pixels[y * 64 + x];
+            assert_eq!(red, 255, "ink at ({x}, {y}), above the bottom border");
+        }
+    }
 }

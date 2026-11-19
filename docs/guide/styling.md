@@ -19,14 +19,17 @@ let card = panel()
 | Method | Takes |
 |---|---|
 | `background` | A `Color`, a `ColorToken`, or a closure returning either (with `.into()`). |
-| `border` | The border width in logical pixels. |
+| `border` | The border width in logical pixels, the same on all four sides. |
+| `border_edges` | An `Edges<f32>` with the width of each side, such as a bottom border alone under a header. |
 | `border_color` | Same as `background`. |
 | `corner_radius` | An `f32`, a `RadiusToken`, or a closure. |
 | `text_color` | The color of the node's own text, on a label or an input. A container ignores it; use `style_children` or `provide_text_style` to color the text below it. |
 
 `Color::rgb(r, g, b)` and `Color::rgba(r, g, b, a)` take 8-bit sRGB channels. `Color::WHITE`, `Color::BLACK` and `Color::TRANSPARENT` are predefined.
 
-None of these properties affect size, so changing them repaints the node without laying anything out again.
+Where two sides of different widths meet at a rounded corner, the border's inner edge curves as a quarter ellipse whose radii are the corner radius less each side's width, so the band narrows smoothly along the curve from the wider side to the narrower one.
+
+The border widths take space from the content, so changing them lays the node out again. None of the other properties affect size, so changing them repaints the node without laying anything out again.
 
 ## Theme tokens
 

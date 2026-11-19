@@ -56,22 +56,23 @@ fn a_panel_without_paint_properties_paints_nothing() {
 }
 
 #[test]
-fn a_panel_border_with_different_sides_uses_the_widest() {
+fn a_panel_border_with_different_sides_draws_each_side_at_its_width() {
     let mut style = Style::default();
     style.paint.border_color = Some(Color::BLACK.into());
-    style.layout.border_width = Edges {
+    let widths = Edges {
         top: 1.0,
         right: 4.0,
         bottom: 2.0,
         left: 3.0,
     };
+    style.layout.border_width = widths;
 
     assert_eq!(
         paint(&style),
-        vec![PaintOp::StrokeRect {
+        vec![PaintOp::StrokeSides {
             rect: rect(),
             radius: Corners::ZERO,
-            width: 4.0,
+            widths,
             color: Color::BLACK,
         }]
     );
