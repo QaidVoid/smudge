@@ -37,3 +37,10 @@ unimplemented = "warn"
 unwrap_used = "warn"
 undocumented_unsafe_blocks = "warn"
 print_stdout = "warn"
+
+# A float range strategy can overshoot its low bound by more than its own
+# debug assertion allows, which then fails a property test at random. The
+# sampler clamps the value right after the assertion, so building it without
+# debug assertions keeps every sample in range.
+[profile.dev.package.proptest]
+debug-assertions = false
