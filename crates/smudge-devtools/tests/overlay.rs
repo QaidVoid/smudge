@@ -248,6 +248,7 @@ fn the_panels_buttons_turn_the_switches_on_and_off() {
     harness.frame();
     for (off, on) in [
         ("Damage tint: off", "Damage tint: on"),
+        ("Paint flashing: off", "Paint flashing: on"),
         ("Full repaint: off", "Full repaint: on"),
     ] {
         let button = text_at(&mut harness, off).expect("the switch shows off");
@@ -256,7 +257,7 @@ fn the_panels_buttons_turn_the_switches_on_and_off() {
         assert!(text_at(&mut harness, on).is_some(), "{on}");
     }
     let switches = tools.switches();
-    assert!(switches.damage_tint && switches.full_repaint);
+    assert!(switches.damage_tint && switches.paint_flashing && switches.full_repaint);
 
     let button = text_at(&mut harness, "Damage tint: on").expect("still shown");
     harness.click(button);

@@ -19,6 +19,8 @@ use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::theme::Theme;
 use smudge_core::window::Cursor;
 
+use web_time::Instant;
+
 use crate::cover::Cover;
 
 /// The environment variable that opens the panel when the app starts, when
@@ -28,6 +30,23 @@ pub(crate) const OPEN_VARIABLE: &str = "SMUDGE_DEVTOOLS";
 /// The environment variable that names the key that shows and hides the
 /// panel, such as `ctrl+shift+d`.
 pub(crate) const KEY_VARIABLE: &str = "SMUDGE_DEVTOOLS_KEY";
+
+/// How long a flash takes to fade out.
+const FADE: Duration = Duration::from_millis(500);
+
+/// The opacity a flash starts at, out of 255.
+const FLASH_OPACITY: f32 = 160.0;
+
+/// The most flashes kept at once, so a burst of frames with scattered
+/// damage stays cheap to draw. The oldest go first.
+const FLASH_CAP: usize = 512;
+
+/// Returns the opacity, out of 255, of a flash `age` old: its starting
+/// opacity falling evenly to nothing over [`FADE`].
+fn opacity(age: Duration) -> u8 {
+    let left = 1.0 - age.as_secs_f32() / FADE.as_secs_f32();
+    (FLASH_OPACITY * left).round().clamp(0.0, 255.0) as u8
+}
 
 /// The devtools of one window: the overlay's app, whether it shows, and
 /// where input goes.
@@ -43,6 +62,9 @@ pub(crate) struct Devtools {
     full_repaint: bool,
     /// The damage the tint covers, each pixel once.
     cover: Cover,
+    /// The rectangles the app's recent frames repainted, in logical pixels,
+    /// each with when it was repainted, oldest first.
+    flashes: Vec<(Rect, Instant)>,
     /// What the panel shows, which the window feeds.
     tools: smudge_devtools::Tools,
     /// Whether a wake of the overlay requests no redraw, because the window
@@ -120,6 +142,7 @@ impl Devtools {
             scale,
             full_repaint: false,
             cover: Cover::default(),
+            flashes: Vec::new(),
             tools,
             quiet: Rc::new(Cell::new(false)),
             open,
@@ -187,26 +210,67 @@ impl Devtools {
     }
 
     /// Takes `damage`, the rectangles in physical pixels that the app's
-    /// frame just repainted, which the damage tint covers while it is on.
+    /// frame repainted at `now`, which the damage tint covers while it is
+    /// on, and which flash from `now` while paint flashing is on.
     ///
-    /// The overlay's frame runs next in the same redraw, so the tint shows
-    /// in the present of the frame it marks, and this requests no redraw.
-    pub(crate) fn show_damage(&mut self, damage: &[PixelRect]) {
-        if !self.tools.switches().damage_tint {
+    /// The overlay's frame runs next in the same redraw, so the marks show
+    /// in the present of the frame they mark, and this requests no redraw.
+    pub(crate) fn show_damage(&mut self, damage: &[PixelRect], now: Instant) {
+        let switches = self.tools.switches();
+        if !switches.damage_tint && !switches.paint_flashing {
             return;
         }
         let scale = self.scale;
+        let logical = |rect: &PixelRect| {
+            Rect::new(
+                rect.x as f32 / scale,
+                rect.y as f32 / scale,
+                (rect.x + rect.width) as f32 / scale,
+                (rect.y + rect.height) as f32 / scale,
+            )
+        };
+        let covered = self.cover.of(damage);
+        if switches.paint_flashing {
+            self.flashes
+                .extend(covered.iter().map(|rect| (logical(rect), now)));
+            let excess = self.flashes.len().saturating_sub(FLASH_CAP);
+            self.flashes.drain(..excess);
+        }
+        if switches.damage_tint {
+            self.quiet.set(true);
+            self.tools.show_damage(covered.iter().map(logical));
+            self.quiet.set(false);
+        }
+    }
+
+    /// Fades the flashes to `now`, dropping those older than [`FADE`], so
+    /// the overlay's next frame shows each at the opacity its age gives.
+    ///
+    /// The overlay's frame runs next in the same redraw, so this requests
+    /// no redraw. While flashes remain, [`Devtools::is_fading`] keeps the
+    /// window drawing frames.
+    pub(crate) fn fade(&mut self, now: Instant) {
+        if !self.tools.switches().paint_flashing {
+            self.flashes.clear();
+        }
+        if self.flashes.is_empty() {
+            return;
+        }
+        self.flashes
+            .retain(|&(_, at)| now.saturating_duration_since(at) < FADE);
         self.quiet.set(true);
-        self.tools
-            .show_damage(self.cover.of(damage).iter().map(|rect| {
-                Rect::new(
-                    rect.x as f32 / scale,
-                    rect.y as f32 / scale,
-                    (rect.x + rect.width) as f32 / scale,
-                    (rect.y + rect.height) as f32 / scale,
-                )
-            }));
+        self.tools.show_flashes(
+            self.flashes
+                .iter()
+                .map(|&(rect, at)| (rect, opacity(now.saturating_duration_since(at)))),
+        );
         self.quiet.set(false);
+    }
+
+    /// Returns whether flashes are still fading, so the window keeps
+    /// drawing frames.
+    pub(crate) fn is_fading(&self) -> bool {
+        self.open && !self.flashes.is_empty()
     }
 
     /// Returns whether the panel shows.
@@ -330,6 +394,7 @@ impl Devtools {
             }
             self.focus_keys(app, false);
             self.tools.forget_damage();
+            self.flashes.clear();
         }
         self.open = open;
         self.captured = false;

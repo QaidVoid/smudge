@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use smudge_core::app::{App, AppConfig, FrameOutput, RepaintMode};
 use smudge_core::element::Element;
@@ -13,6 +14,7 @@ use smudge_text::TextSystem;
 
 use super::{Devtools, Shortcut};
 use crate::present::CpuFrames;
+use web_time::Instant;
 
 /// The window both apps fill, in logical pixels.
 const VIEWPORT: Size = Size {
@@ -634,7 +636,7 @@ fn the_damage_tint_matches_the_fixed_damage_overlay_pixel_for_pixel() {
             };
             fixed.draw(&frame, None, 0, &mut tinted);
             fixed.presented(&frame);
-            devtools.show_damage(damage);
+            devtools.show_damage(damage, Instant::now());
             let over = devtools.app.frame();
             overlaid.draw(&frame, Some(&over), 0, &mut overlay_tinted);
             overlaid.presented(&frame);
@@ -722,7 +724,7 @@ fn the_tint_forgets_old_damage_when_it_comes_back() {
     let mut switches = devtools.tools.switches();
     switches.damage_tint = true;
     devtools.tools.set_switches(switches);
-    devtools.show_damage(&damage);
+    devtools.show_damage(&damage, Instant::now());
     assert!(tints(&mut devtools));
 
     switches.damage_tint = false;
@@ -734,8 +736,110 @@ fn the_tint_forgets_old_damage_when_it_comes_back() {
         "turned on again, it waits for a new frame"
     );
 
-    devtools.show_damage(&damage);
+    devtools.show_damage(&damage, Instant::now());
     devtools.show(&mut app, false);
     devtools.show(&mut app, true);
     assert!(!tints(&mut devtools), "reopened, it waits for a new frame");
+}
+
+/// The opacities of the flashes the overlay's next frame paints, oldest
+/// first.
+fn flash_opacities(devtools: &mut Devtools) -> Vec<u8> {
+    let output = devtools.app.frame();
+    output
+        .list
+        .items()
+        .iter()
+        .filter_map(|item| match item {
+            DisplayItem::Op(PaintOp::FillRect { color, .. })
+                if (color.r, color.g, color.b) == (70, 210, 120) =>
+            {
+                Some(color.a)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A damaged rectangle in physical pixels, away from the panel.
+fn damaged(x: u32) -> [PixelRect; 1] {
+    [PixelRect {
+        x,
+        y: 400,
+        width: 30,
+        height: 20,
+    }]
+}
+
+/// Turns paint flashing on or off.
+fn set_flashing(devtools: &Devtools, on: bool) {
+    let mut switches = devtools.tools.switches();
+    switches.paint_flashing = on;
+    devtools.tools.set_switches(switches);
+}
+
+#[test]
+fn paint_flashes_fade_out_and_then_stop() {
+    let (_app, mut devtools, _) = apps(true);
+    set_flashing(&devtools, true);
+    let start = Instant::now();
+    let at = |millis| start + Duration::from_millis(millis);
+
+    devtools.show_damage(&damaged(500), at(0));
+    devtools.fade(at(0));
+    assert_eq!(flash_opacities(&mut devtools), [160]);
+
+    devtools.show_damage(&damaged(600), at(100));
+    devtools.fade(at(250));
+    assert_eq!(
+        flash_opacities(&mut devtools),
+        [80, 112],
+        "older fades more"
+    );
+    assert!(devtools.is_fading());
+
+    devtools.fade(at(550));
+    assert_eq!(flash_opacities(&mut devtools), [16], "the first is gone");
+
+    devtools.fade(at(700));
+    assert_eq!(flash_opacities(&mut devtools), Vec::<u8>::new());
+    assert!(!devtools.is_fading(), "the window may go idle");
+}
+
+#[test]
+fn turning_paint_flashing_off_ends_the_fade() {
+    let (_app, mut devtools, _) = apps(true);
+    set_flashing(&devtools, true);
+    let now = Instant::now();
+    devtools.show_damage(&damaged(500), now);
+    devtools.fade(now);
+    assert!(devtools.is_fading());
+
+    set_flashing(&devtools, false);
+    devtools.fade(now);
+    assert!(!devtools.is_fading());
+    assert_eq!(flash_opacities(&mut devtools), Vec::<u8>::new());
+
+    set_flashing(&devtools, true);
+    devtools.fade(now);
+    assert_eq!(
+        flash_opacities(&mut devtools),
+        Vec::<u8>::new(),
+        "turned on again, it waits for a new frame"
+    );
+}
+
+#[test]
+fn a_reopened_panel_shows_no_old_flashes() {
+    let (mut app, mut devtools, _) = apps(true);
+    set_flashing(&devtools, true);
+    let now = Instant::now();
+    devtools.show_damage(&damaged(500), now);
+    devtools.fade(now);
+    assert_eq!(flash_opacities(&mut devtools), [160]);
+
+    devtools.show(&mut app, false);
+    devtools.show(&mut app, true);
+    devtools.fade(now);
+    assert_eq!(flash_opacities(&mut devtools), Vec::<u8>::new());
 }

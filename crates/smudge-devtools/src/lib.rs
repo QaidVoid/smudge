@@ -57,6 +57,9 @@ pub struct Tools {
     switches: RwSignal<Switches>,
     /// The rectangles the app's last frame repainted, in logical pixels.
     damage: RwSignal<Rc<Vec<Rect>>>,
+    /// The rectangles the app's recent frames repainted, in logical pixels,
+    /// each with the opacity it flashes at.
+    flashes: RwSignal<Rc<Vec<(Rect, u8)>>>,
 }
 
 /// The devtools' switches, which the panel's buttons turn on and off and the
@@ -67,6 +70,9 @@ pub struct Switches {
     /// Whether the overlay tints the pixels the app's last frame repainted,
     /// with the color and opacity of the window's fixed damage overlay.
     pub damage_tint: bool,
+    /// Whether the overlay flashes the pixels the app's recent frames
+    /// repainted, each flash fading out after its frame.
+    pub paint_flashing: bool,
     /// Whether the app repaints its whole surface on every frame, instead of
     /// only what changed.
     pub full_repaint: bool,
@@ -85,6 +91,7 @@ impl Tools {
             timeline: RwSignal::new(Rc::new(Timeline::default())),
             switches: RwSignal::new(Switches::default()),
             damage: RwSignal::new(Rc::new(Vec::new())),
+            flashes: RwSignal::new(Rc::new(Vec::new())),
         }
     }
 
@@ -96,20 +103,27 @@ impl Tools {
     /// Turns the switches on and off as `switches` says, as the panel's
     /// buttons do.
     ///
-    /// With the damage tint off, the rectangles it would cover are dropped,
-    /// so turning it on again tints nothing until the app's next frame.
+    /// With the damage tint or paint flashing off, the rectangles it would
+    /// cover are dropped, so turning it on again marks nothing until the
+    /// app's next frame.
     pub fn set_switches(&self, switches: Switches) {
         self.switches.set(switches);
-        if !switches.damage_tint {
-            self.forget_damage();
+        if !switches.damage_tint && self.damage.with(|damage| !damage.is_empty()) {
+            self.show_damage([]);
+        }
+        if !switches.paint_flashing && self.flashes.with(|flashes| !flashes.is_empty()) {
+            self.show_flashes([]);
         }
     }
 
-    /// Drops the rectangles the damage tint covers, as when the panel hides
-    /// and no longer hears the app's frames.
+    /// Drops the rectangles the damage tint and paint flashing cover, as
+    /// when the panel hides and no longer hears the app's frames.
     pub fn forget_damage(&self) {
         if self.damage.with(|damage| !damage.is_empty()) {
             self.show_damage([]);
+        }
+        if self.flashes.with(|flashes| !flashes.is_empty()) {
+            self.show_flashes([]);
         }
     }
 
@@ -120,6 +134,18 @@ impl Tools {
             let damage = Rc::make_mut(damage);
             damage.clear();
             damage.extend(rects);
+        });
+    }
+
+    /// Takes `flashes`, the rectangles the app's recent frames repainted in
+    /// logical pixels, each with the opacity it flashes at out of 255, which
+    /// paint flashing shows while it is on. The window fades them as their
+    /// frames grow older.
+    pub fn show_flashes(&self, flashes: impl IntoIterator<Item = (Rect, u8)>) {
+        self.flashes.update(|shown| {
+            let shown = Rc::make_mut(shown);
+            shown.clear();
+            shown.extend(flashes);
         });
     }
 
@@ -210,7 +236,19 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
     // coordinates, which stay put while the panel moves. The title bar sits
     // inside the border.
     let (switches, damage) = (tools.switches.clone(), tools.damage.clone());
+    let (flashing, flashes) = (tools.switches.clone(), tools.flashes.clone());
     Element::new(Marks::default())
+        .bind(
+            Flashed,
+            move || flashing.get().paint_flashing.then(|| flashes.get()),
+            |marks, flashes| {
+                marks.flashes.clear();
+                if let Some(flashes) = flashes {
+                    marks.flashes.extend_from_slice(&flashes);
+                }
+                Dirty::Paint
+            },
+        )
         .bind(
             Tinted,
             move || switches.get().damage_tint.then(|| damage.get()),
@@ -245,6 +283,10 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
 
 /// The marker of the damage the root tints, which [`Element::bind`] keys on.
 struct Tinted;
+
+/// The marker of the damage the root flashes, which [`Element::bind`] keys
+/// on.
+struct Flashed;
 
 /// Returns `at` moved as little as it takes for a panel there to stay inside
 /// a window of `viewport`: its left and top edges in the window, its right
@@ -293,12 +335,16 @@ fn body(tools: &Tools) -> Element<Panel> {
         .child(timeline)
         .child(
             row()
+                .wrap(true)
                 .gap(Size {
                     width: PAD,
                     height: PAD,
                 })
                 .child(switch(tools, "Damage tint", |switches| {
                     &mut switches.damage_tint
+                }))
+                .child(switch(tools, "Paint flashing", |switches| {
+                    &mut switches.paint_flashing
                 }))
                 .child(switch(tools, "Full repaint", |switches| {
                     &mut switches.full_repaint

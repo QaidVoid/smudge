@@ -1151,8 +1151,12 @@ where
         let output = state.app.frame();
         state.rendered = true;
         #[cfg(feature = "_devtools")]
-        if app_wanted && state.devtools.is_open() {
-            state.devtools.show_damage(output.damage);
+        if state.devtools.is_open() {
+            let now = Instant::now();
+            if app_wanted {
+                state.devtools.show_damage(output.damage, now);
+            }
+            state.devtools.fade(now);
         }
         // Timed apart, so the app's statistics never count the overlay.
         #[cfg(feature = "_devtools")]
@@ -1585,10 +1589,12 @@ impl WindowState {
     }
 
     /// Returns whether a spring of the app, or of the devtools overlay
-    /// while it shows, is moving.
+    /// while it shows, is moving, or the devtools' paint flashes are still
+    /// fading, so the window keeps drawing frames.
     fn is_animating(&self) -> bool {
         #[cfg(feature = "_devtools")]
-        if self.devtools.is_open() && self.devtools.app.is_animating() {
+        if self.devtools.is_fading() || self.devtools.is_open() && self.devtools.app.is_animating()
+        {
             return true;
         }
         self.app.is_animating()
