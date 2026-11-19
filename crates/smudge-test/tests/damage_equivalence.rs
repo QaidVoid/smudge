@@ -939,9 +939,34 @@ enum Values<'a> {
     /// scene reads.
     Signals,
     /// The values another scene holds now, which is what a fresh mount of it
-    /// reads, except for the disabled bits. Those are signals at the values
-    /// the slice holds, because the mount replays the toggles that followed.
-    Current(&'a Scene, &'a [bool]),
+    /// reads, except for the disabled bits and the scroll offsets. Those come
+    /// from the [`Replayed`] values, the ones the scene held when its first
+    /// event ran, because the mount replays the toggles that followed and
+    /// the presses on a scrollbar that moved a view.
+    Current(&'a Scene, &'a Replayed),
+}
+
+/// The values a fresh mount starts from that events change, as the reactive
+/// scene held them before its first event, so replaying the events brings
+/// the mount to the state the scene reached.
+struct Replayed {
+    /// The disabled bit of every node that binds one.
+    disabled: Vec<bool>,
+    /// The outer view's scroll offset.
+    scroll: f32,
+    /// The inner view's scroll offset.
+    inner_scroll: f32,
+}
+
+impl Replayed {
+    /// The values `scene` holds now.
+    fn of(scene: &Scene) -> Replayed {
+        Replayed {
+            disabled: scene.disabled_values(),
+            scroll: scene.scroll.value(),
+            inner_scroll: scene.inner_scroll.value(),
+        }
+    }
 }
 
 /// One node of a built scene.
@@ -1014,14 +1039,14 @@ impl Scene {
     /// property holds the value `from`'s property has at this moment, and the
     /// viewport and scale are copied from it.
     ///
-    /// The disabled bits are the exception. They are signals at `disabled`,
-    /// the values `from` held when its first event ran, so that replaying the
-    /// events and toggles since then brings the mount to the state the
-    /// reactive scene reached.
-    fn fresh(data: &SceneData, from: &Scene, disabled: &[bool]) -> Scene {
+    /// The disabled bits and the scroll offsets are the exception. They come
+    /// from `replayed`, the values `from` held when its first event ran, so
+    /// that replaying the events and toggles since then brings the mount to
+    /// the state the reactive scene reached.
+    fn fresh(data: &SceneData, from: &Scene, replayed: &Replayed) -> Scene {
         Scene::build(
             data,
-            Values::Current(from, disabled),
+            Values::Current(from, replayed),
             from.viewport.get(),
             from.scale.get(),
         )
@@ -1056,11 +1081,11 @@ impl Scene {
             },
             scroll: match values {
                 Values::Signals => ScrollTracked::new(0.0),
-                Values::Current(from, _) => ScrollTracked::new(from.scroll.value()),
+                Values::Current(_, replayed) => ScrollTracked::new(replayed.scroll),
             },
             inner_scroll: match values {
                 Values::Signals => ScrollTracked::new(0.0),
-                Values::Current(from, _) => ScrollTracked::new(from.inner_scroll.value()),
+                Values::Current(_, replayed) => ScrollTracked::new(replayed.inner_scroll),
             },
             viewport: Cell::new(viewport),
             scale: Cell::new(scale),
@@ -1152,7 +1177,7 @@ impl Scene {
             let disabled = if spec.bind_disabled {
                 let value = match values {
                     Values::Signals => Tracked::reactive(false),
-                    Values::Current(_, start) => Tracked::reactive(start[disabled]),
+                    Values::Current(_, start) => Tracked::reactive(start.disabled[disabled]),
                 };
                 disabled += 1;
                 let get = value.get.clone();
@@ -1942,10 +1967,10 @@ fn assert_matches_fresh_mount(
     harness: &Harness,
     scene: &Scene,
     data: &SceneData,
-    disabled: &[bool],
+    replayed: &Replayed,
     applied_events: &[Vec<Edit>],
 ) {
-    let fresh = Rc::new(Scene::fresh(data, scene, disabled));
+    let fresh = Rc::new(Scene::fresh(data, scene, replayed));
     let built = Rc::clone(&fresh);
     let viewport = scene.viewport.get();
     let scale = scene.scale.get();
@@ -1989,7 +2014,7 @@ fn check_scene(scale: f32, data: &SceneData, geometry: &[Vec<Edit>], events: &[V
     assert_settled(&mut harness);
     harness.assert_matches_full_repaint();
     settle(&mut harness);
-    assert_matches_fresh_mount(&harness, &scene, data, &scene.disabled_values(), &[]);
+    assert_matches_fresh_mount(&harness, &scene, data, &Replayed::of(&scene), &[]);
 
     for edits in geometry {
         for edit in edits {
@@ -1999,10 +2024,10 @@ fn check_scene(scale: f32, data: &SceneData, geometry: &[Vec<Edit>], events: &[V
         assert_settled(&mut harness);
         harness.assert_matches_full_repaint();
         settle(&mut harness);
-        assert_matches_fresh_mount(&harness, &scene, data, &scene.disabled_values(), &[]);
+        assert_matches_fresh_mount(&harness, &scene, data, &Replayed::of(&scene), &[]);
     }
 
-    let disabled = scene.disabled_values();
+    let replayed = Replayed::of(&scene);
     for (index, edits) in events.iter().enumerate() {
         for edit in edits {
             edit.apply(&scene, &mut harness);
@@ -2011,7 +2036,7 @@ fn check_scene(scale: f32, data: &SceneData, geometry: &[Vec<Edit>], events: &[V
         assert_settled(&mut harness);
         harness.assert_matches_full_repaint();
         settle(&mut harness);
-        assert_matches_fresh_mount(&harness, &scene, data, &disabled, &events[..=index]);
+        assert_matches_fresh_mount(&harness, &scene, data, &replayed, &events[..=index]);
     }
 }
 
