@@ -266,33 +266,6 @@ struct Exit {
     /// The owner of what the node's build created, cleaned up when the node
     /// is finally removed.
     owner: Owner,
-    /// Where the node is held: its last offset from its parent's border
-    /// edge, as the parent's absolutely positioned children are placed.
-    at: Point,
-    /// The size the node is held at, its last.
-    size: Size,
-}
-
-impl Exit {
-    /// Takes `layout` out of the flow and holds it where the node last was,
-    /// over whatever its bindings and variants set.
-    fn hold(&self, layout: &mut LayoutProps) {
-        use crate::style::{Edges, Length, Position};
-        layout.position = Position::Absolute;
-        layout.inset = Edges {
-            left: Length::Px(self.at.x),
-            top: Length::Px(self.at.y),
-            right: Length::Auto,
-            bottom: Length::Auto,
-        };
-        layout.margin = Edges::all(Length::Px(0.0));
-        layout.width = Length::Px(self.size.width);
-        layout.height = Length::Px(self.size.height);
-        layout.min_width = Length::Auto;
-        layout.min_height = Length::Auto;
-        layout.max_width = Length::Auto;
-        layout.max_height = Length::Auto;
-    }
 }
 
 /// Returns whether two child lists that hold the same nodes in a different
@@ -936,12 +909,12 @@ impl WidgetTree {
     /// exit finishes. Hands `owner` back when the node has no exit, so the
     /// caller removes it at once.
     ///
-    /// The node is held where it last was, out of the layout flow, so its
-    /// siblings close the gap at once. A held press inside it ends first,
-    /// as [`WidgetTree::release_press`] ends it. Its subtree then counts as
-    /// withdrawn, as a hidden one does: it takes no input, the hover and the
-    /// focus leave it, a trap inside it hands the focus back, and the
-    /// accessibility projection drops it.
+    /// The node keeps its place in the layout until its fade ends, so
+    /// nothing moves into it while it fades. A held press inside it ends
+    /// first, as [`WidgetTree::release_press`] ends it. Its subtree then
+    /// counts as withdrawn, as a hidden one does: it takes no input, the
+    /// hover and the focus leave it, a trap inside it hands the focus back,
+    /// and the accessibility projection drops it.
     pub(crate) fn begin_exit(&mut self, id: WidgetId, owner: Owner) -> Result<(), Owner> {
         let Some(node) = self.nodes.get(id) else {
             return Err(owner);
@@ -961,16 +934,14 @@ impl WidgetTree {
         {
             self.release_press();
         }
-        let (at, size) = self.last_placement(id);
         let node = self.nodes.get_mut(id).expect("the node is live");
         if let Some(presence) = node.presence.as_deref_mut() {
             presence.set_exiting(true);
         }
-        node.exit = Some(Box::new(Exit { owner, at, size }));
+        node.exit = Some(Box::new(Exit { owner }));
         let parent = node.parent;
-        self.re_resolve(id);
-        // Marked even when the hold changes no rectangle, so the next frame
-        // paints the fade and its layout pass resolves the focus traps.
+        // Marked for layout, though nothing moves, so the next frame paints
+        // the fade and its layout pass resolves the focus traps.
         self.mark(id, Dirty::Layout);
         if let Some(parent) = parent {
             self.push_a11y(parent);
@@ -983,8 +954,8 @@ impl WidgetTree {
     }
 
     /// Stops the exit of the node `id`, which fades in again from where it
-    /// is and takes its place in the layout back, and returns the owner the
-    /// exit kept, or `None` when the node is not exiting.
+    /// is, and returns the owner the exit kept, or `None` when the node is
+    /// not exiting.
     pub(crate) fn cancel_exit(&mut self, id: WidgetId) -> Option<Owner> {
         let node = self.nodes.get_mut(id)?;
         let exit = node.exit.take()?;
@@ -993,9 +964,8 @@ impl WidgetTree {
         }
         let parent = node.parent;
         self.exited.retain(|exited| *exited != id);
-        self.re_resolve(id);
-        // Marked even when the hold changes no rectangle, so the next frame
-        // paints the fade and its layout pass resolves the focus traps.
+        // Marked for layout, though nothing moves, so the next frame paints
+        // the fade and its layout pass resolves the focus traps.
         self.mark(id, Dirty::Layout);
         self.push_a11y_visible_subtree(id);
         if let Some(parent) = parent {
@@ -1016,35 +986,6 @@ impl WidgetTree {
             exit.owner.cleanup();
         }
         self.exited = exited;
-    }
-
-    /// The node's last offset from its parent's border edge, where the
-    /// parent places an absolutely positioned child, and its last size.
-    ///
-    /// A child in the flow of a parent that scrolls is drawn shifted by the
-    /// scroll offset, and an absolutely positioned one is not, so the offset
-    /// takes the scroll in. A later scroll leaves the held node behind.
-    fn last_placement(&self, id: WidgetId) -> (Point, Size) {
-        let Some(node) = self.nodes.get(id) else {
-            return (Point::default(), Size::default());
-        };
-        let Ok(placed) = self.taffy.layout(node.taffy) else {
-            return (Point::default(), Size::default());
-        };
-        let (border, scroll) = node
-            .parent
-            .and_then(|parent| self.nodes.get(parent))
-            .map(|parent| (parent.resolved.layout.border_width, parent.scroll_offset))
-            .unwrap_or((crate::style::Edges::all(0.0), Point::default()));
-        let at = Point {
-            x: placed.location.x - border.left - scroll.x,
-            y: placed.location.y - border.top - scroll.y,
-        };
-        let size = Size {
-            width: placed.size.width,
-            height: placed.size.height,
-        };
-        (at, size)
     }
 
     /// Queues for paint every node whose springs were still moving at the
@@ -1181,10 +1122,7 @@ impl WidgetTree {
         };
         let empty = Variants::default();
         let variants = node.variants.as_deref().unwrap_or(&empty);
-        let mut resolved = resolve(&node.base, variants, node.interaction);
-        if let Some(exit) = node.exit.as_deref() {
-            exit.hold(&mut resolved.layout);
-        }
+        let resolved = resolve(&node.base, variants, node.interaction);
         if resolved == node.resolved {
             return;
         }

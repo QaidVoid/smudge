@@ -80,7 +80,7 @@ let toast = show(
 );
 ```
 
-The fade goes through the node's opacity, so its whole subtree fades as one. A node that fades out is held where it last was, out of the layout, so the rows around it close the gap at once. It takes no input, loses the focus, and leaves the accessibility tree straight away, and it is removed once its fade ends. A key or a condition that comes back before then brings the same node back, fading in again from where it is. With reduced motion, nodes appear and go at once. A list can mount and remove rows all the time, as the virtual lists do, so only the nodes that ask for a fade get one.
+The fade goes through the node's opacity, so its whole subtree fades as one. A node that fades out keeps its place while it fades, so nothing slides under or over it, and the rows after it move up once it is gone. It takes no input, loses the focus, and leaves the accessibility tree straight away, and it is removed once its fade ends. A key or a condition that comes back before then brings the same node back, fading in again from where it is. With reduced motion, nodes appear and go at once. A list can mount and remove rows all the time, as the virtual lists do, so only the nodes that ask for a fade get one.
 
 ## Very long lists
 

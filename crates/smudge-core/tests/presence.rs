@@ -164,7 +164,7 @@ fn an_exiting_node_loses_the_focus_and_leaves_the_projection() {
 }
 
 #[test]
-fn a_row_fading_out_of_a_list_leaves_its_place_at_once_and_comes_back_in_it() {
+fn a_row_fading_out_of_a_list_keeps_its_place_until_its_fade_ends() {
     let items = RwSignal::new(vec![1u32, 2, 3]);
     let read = items.clone();
     let mut harness = Harness::new(100.0, 200.0, 1.0, move || {
@@ -191,28 +191,92 @@ fn a_row_fading_out_of_a_list_leaves_its_place_at_once_and_comes_back_in_it() {
 
     items.set(vec![1, 3, 4]);
     harness.frame();
+    harness.advance(FRAME);
+    let fading = pixel(&harness, second);
+    assert!(
+        fading != [80, 40, 40, 255]
+            && fading != [120, 40, 40, 255]
+            && fading != [255, 255, 255, 255],
+        "the second place shows the second row fading, and nothing over it: {fading:?}"
+    );
+    assert_eq!(
+        pixel(&harness, third),
+        [120, 40, 40, 255],
+        "the third row stays put"
+    );
     assert_eq!(
         pixel(&harness, Point { x: 10.0, y: 70.0 }),
-        [255, 255, 255, 255],
-        "nothing below the third row, which moved up"
-    );
-    assert_ne!(
-        pixel(&harness, second),
-        [255, 255, 255, 255],
-        "the second place shows the third row with the fading row over it"
+        [160, 40, 40, 255],
+        "the new row comes in after the rows that stay"
     );
     harness.assert_matches_full_repaint();
 
-    items.set(vec![1, 2, 3, 4]);
-    harness.frame();
     for _ in 0..90 {
         harness.advance(FRAME);
     }
-    assert_eq!(pixel(&harness, second), [80, 40, 40, 255]);
-    assert_eq!(pixel(&harness, third), [120, 40, 40, 255]);
+    assert_eq!(
+        pixel(&harness, second),
+        [120, 40, 40, 255],
+        "the rows after it move up once it is gone"
+    );
+    assert_eq!(pixel(&harness, third), [160, 40, 40, 255]);
     assert_eq!(
         pixel(&harness, Point { x: 10.0, y: 70.0 }),
-        [160, 40, 40, 255]
+        [255, 255, 255, 255]
+    );
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn a_row_whose_key_comes_back_fades_in_again_in_its_place() {
+    let items = RwSignal::new(vec![1u32, 2, 3]);
+    let read = items.clone();
+    let mut harness = Harness::new(100.0, 200.0, 1.0, move || {
+        let read = read.clone();
+        panel().child(
+            for_each(
+                move || read.get(),
+                |item| *item,
+                |item| {
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .background(Color::rgb(40 * item as u8, 40, 40))
+                        .exit(Spring::SMOOTH)
+                },
+            )
+            .column(),
+        )
+    });
+    harness.frame();
+    items.set(vec![1, 3]);
+    harness.frame();
+    harness.advance(FRAME);
+    items.set(vec![1, 2, 3]);
+    harness.frame();
+    assert_eq!(
+        harness
+            .layout_dump()
+            .lines()
+            .filter(|line| line.trim_start().starts_with("Panel [0, ") && line.contains(", 40, "))
+            .count(),
+        3,
+        "the returning key reuses its row rather than mounting another"
+    );
+    assert_eq!(
+        pixel(&harness, Point { x: 10.0, y: 50.0 }),
+        [120, 40, 40, 255]
+    );
+    for _ in 0..90 {
+        harness.advance(FRAME);
+    }
+    assert_eq!(
+        pixel(&harness, Point { x: 10.0, y: 30.0 }),
+        [80, 40, 40, 255]
+    );
+    assert_eq!(
+        pixel(&harness, Point { x: 10.0, y: 50.0 }),
+        [120, 40, 40, 255]
     );
     harness.assert_matches_full_repaint();
 }
@@ -233,41 +297,6 @@ fn beside(open: RwSignal<bool>, child: impl Fn() -> Element<Panel> + 'static) ->
     });
     harness.frame();
     harness
-}
-
-#[test]
-fn a_node_whose_hold_changes_no_layout_still_fades_out() {
-    let open = RwSignal::new(true);
-    let read = open.clone();
-    let mut harness = Harness::new(100.0, 100.0, 1.0, move || {
-        let read = read.clone();
-        panel().child(show(
-            move || read.get(),
-            || {
-                panel()
-                    .absolute()
-                    .inset(Edges {
-                        left: Length::Px(10.0),
-                        top: Length::Px(10.0),
-                        right: Length::Auto,
-                        bottom: Length::Auto,
-                    })
-                    .width(px(40.0))
-                    .height(px(40.0))
-                    .background(SQUARE)
-                    .exit(Spring::SMOOTH)
-            },
-        ))
-    });
-    harness.frame();
-    assert_eq!(pixel(&harness, INSIDE), [200, 40, 40, 255]);
-    open.set(false);
-    for _ in 0..90 {
-        harness.advance(FRAME);
-    }
-    assert_eq!(pixel(&harness, INSIDE), [255, 255, 255, 255]);
-    assert!(!harness.layout_dump().contains("[10, 10, 50, 50]"));
-    assert!(!harness.app().is_animating());
 }
 
 #[test]
@@ -364,7 +393,7 @@ fn a_node_that_comes_back_does_not_keep_the_focus_it_lost() {
 }
 
 #[test]
-fn a_node_that_comes_back_takes_the_layout_its_bindings_wrote_meanwhile() {
+fn a_fading_node_follows_its_bindings_and_comes_back_with_them() {
     let open = RwSignal::new(true);
     let width = RwSignal::new(40.0f32);
     let read = width.clone();
@@ -381,37 +410,14 @@ fn a_node_that_comes_back_takes_the_layout_its_bindings_wrote_meanwhile() {
     width.set(80.0);
     harness.advance(FRAME);
     assert!(
-        harness.layout_dump().contains("[0, 20, 40, 40]"),
-        "the fading node holds its size"
+        harness.layout_dump().contains("[0, 20, 80, 40]"),
+        "the fading node keeps its place and follows its bindings"
     );
     open.set(true);
     for _ in 0..90 {
         harness.advance(FRAME);
     }
     assert!(harness.layout_dump().contains("[0, 20, 80, 40]"));
-}
-
-#[test]
-fn a_hover_patch_does_not_move_an_exiting_node() {
-    let open = RwSignal::new(true);
-    let mut harness = beside(open.clone(), || {
-        panel()
-            .width(px(40.0))
-            .height(px(40.0))
-            .hover(|patch| patch.margin(px(10.0)))
-            .exit(Spring::SMOOTH)
-    });
-    harness.move_to(Point { x: 20.0, y: 40.0 });
-    harness.frame();
-    assert!(harness.layout_dump().contains("[10, 30, 50, 70]"));
-    open.set(false);
-    harness.frame();
-    harness.move_to(Point { x: 90.0, y: 90.0 });
-    harness.frame();
-    assert!(
-        harness.layout_dump().contains("[10, 30, 50, 70]"),
-        "the node stays where it was when its exit began"
-    );
 }
 
 #[test]
@@ -548,4 +554,76 @@ fn an_ancestor_whose_hover_moves_it_keeps_the_hover_when_a_hovered_child_exits()
         vec![true],
         "the ancestor kept its hover throughout"
     );
+}
+
+/// A column of rows 20 tall, one per item, each colored by its item and
+/// fading out when its key leaves the list.
+fn fading_rows(items: RwSignal<Vec<u32>>) -> Harness {
+    let mut harness = Harness::new(100.0, 200.0, 1.0, move || {
+        let read = items.clone();
+        panel().child(
+            for_each(
+                move || read.get(),
+                |item| *item,
+                |item| {
+                    panel()
+                        .width(px(40.0))
+                        .height(px(20.0))
+                        .background(Color::rgb(40 * item as u8, 40, 40))
+                        .exit(Spring::SMOOTH)
+                },
+            )
+            .column(),
+        )
+    });
+    harness.frame();
+    harness
+}
+
+#[test]
+fn a_row_fading_out_stays_in_its_place_after_an_earlier_row_has_gone() {
+    let items = RwSignal::new(vec![1u32, 2, 3]);
+    let mut harness = fading_rows(items.clone());
+    items.set(vec![2, 3]);
+    harness.frame();
+    for _ in 0..90 {
+        harness.advance(FRAME);
+    }
+    items.set(vec![3]);
+    harness.frame();
+    harness.advance(FRAME);
+    let top = pixel(&harness, Point { x: 10.0, y: 10.0 });
+    assert_ne!(
+        top,
+        [120, 40, 40, 255],
+        "the third row stays below the fading second"
+    );
+    assert_eq!(
+        pixel(&harness, Point { x: 10.0, y: 30.0 }),
+        [120, 40, 40, 255]
+    );
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn a_row_added_before_a_fading_row_leaves_it_after_its_neighbour() {
+    let items = RwSignal::new(vec![1u32, 2, 3]);
+    let mut harness = fading_rows(items.clone());
+    items.set(vec![4, 1, 2]);
+    harness.frame();
+    harness.advance(FRAME);
+    assert_eq!(
+        pixel(&harness, Point { x: 10.0, y: 10.0 }),
+        [160, 40, 40, 255]
+    );
+    assert_eq!(
+        pixel(&harness, Point { x: 10.0, y: 30.0 }),
+        [40, 40, 40, 255]
+    );
+    assert_eq!(
+        pixel(&harness, Point { x: 10.0, y: 50.0 }),
+        [80, 40, 40, 255],
+        "the second row is not pushed down twice"
+    );
+    harness.assert_matches_full_repaint();
 }

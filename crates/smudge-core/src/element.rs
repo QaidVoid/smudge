@@ -39,7 +39,7 @@
 
 use std::any::TypeId;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -1664,16 +1664,15 @@ impl<W: Widget> Element<W> {
     /// Fades the node and its subtree out under `spring` when [`show`] or
     /// [`for_each`] removes it, and removes it once the fade ends.
     ///
-    /// While it fades, the node is held where it last was, out of the
-    /// layout flow, so its siblings close the gap at once, and bindings and
-    /// variants that would move or resize it wait until it comes back. Its
-    /// subtree is out of the interface as a hidden one is: it takes no
-    /// pointer or keyboard input, the focus leaves it, a held press inside
-    /// it ends, a focus trap inside it hands the focus back, and it leaves
-    /// the accessibility projection at once. A key or a condition that comes
-    /// back while the node fades brings this node back, fading in again from
-    /// where it is, rather than mounting another. An app with reduced motion
-    /// removes the node at once.
+    /// While it fades, the node keeps its place in the layout, so nothing
+    /// moves into it or overlaps it, and the nodes after it close the gap
+    /// once it is gone. Its subtree is out of the interface as a hidden one
+    /// is: it takes no pointer or keyboard input, the focus leaves it, a held
+    /// press inside it ends, a focus trap inside it hands the focus back, and
+    /// it leaves the accessibility projection at once. A key or a condition
+    /// that comes back while the node fades brings this node back, fading in
+    /// again from where it is, rather than mounting another. An app with
+    /// reduced motion removes the node at once.
     pub fn exit(mut self, spring: Spring) -> Self {
         self.exit = Some(spring);
         self
@@ -2736,7 +2735,33 @@ where
                         };
                         children.push(child);
                     }
-                    children.extend(exiting.iter().map(|(_, child)| *child));
+                    // A row fading out keeps its place among the rows until
+                    // its fade ends: right after the row that came before it
+                    // last time and is still in the list, or first when none
+                    // is.
+                    if !exiting.is_empty() {
+                        let fading: HashSet<WidgetId> =
+                            exiting.iter().map(|(_, child)| *child).collect();
+                        let live: HashSet<WidgetId> = children.iter().copied().collect();
+                        let mut after: HashMap<Option<WidgetId>, Vec<WidgetId>> = HashMap::new();
+                        let mut anchor = None;
+                        for id in shown.iter() {
+                            if fading.contains(id) {
+                                after.entry(anchor).or_default().push(*id);
+                            } else if live.contains(id) {
+                                anchor = Some(*id);
+                            }
+                        }
+                        let mut placed = after.remove(&None).unwrap_or_default();
+                        placed.reserve(children.len() + fading.len());
+                        for child in children {
+                            placed.push(child);
+                            if let Some(rows) = after.remove(&Some(child)) {
+                                placed.extend(rows);
+                            }
+                        }
+                        children = placed;
+                    }
 
                     if *shown != children {
                         tree.set_children(slot, children.clone());
