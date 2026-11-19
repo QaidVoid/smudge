@@ -9,6 +9,7 @@ mod access;
 mod inspector;
 mod marks;
 mod reactive;
+mod theme_file;
 mod timeline;
 
 use std::cell::Cell;
@@ -17,6 +18,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use marks::Marks;
+pub use theme_file::{apply_theme_file, theme_file, watch_theme};
 pub use timeline::FrameRecord;
 use timeline::{HEIGHT, Timeline, TimelineView};
 
@@ -133,6 +135,10 @@ pub struct Tools {
     access: RwSignal<String>,
     /// The last few hot reload events, oldest first, as text.
     hot: RwSignal<Rc<VecDeque<String>>>,
+    /// The lines the last read of the watched theme file skipped.
+    theme_skipped: RwSignal<Vec<String>>,
+    /// What the last "Write theme" press wrote, or why it could not.
+    theme_written: RwSignal<Option<String>>,
     /// Where the app's focus is and where Tab takes it, while the focus
     /// overlay is on.
     focus: RwSignal<Option<Rc<FocusInfo>>>,
@@ -196,8 +202,15 @@ impl Default for Tools {
 
 impl Tools {
     /// Creates the devtools state with no frames recorded.
+    ///
+    /// The lines that a read of the file [`watch_theme`] watches skips go to
+    /// the panel of the newest `Tools` of the thread.
     pub fn new() -> Tools {
+        let theme_skipped = RwSignal::new(Vec::new());
+        theme_file::report_to(theme_skipped.clone());
         Tools {
+            theme_skipped,
+            theme_written: RwSignal::new(None),
             timeline: RwSignal::new(Rc::new(Timeline::default())),
             switches: RwSignal::new(Switches::default()),
             damage: RwSignal::new(Rc::new(Vec::new())),
@@ -608,6 +621,22 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
         .into_any()
 }
 
+/// Writes the theme [`watch_theme`] watches, in the theme file format, to
+/// `target/smudge-devtools/theme.txt`, and says where, or why it could not.
+fn write_theme() -> String {
+    let Some((_, theme)) = theme_file::watched() else {
+        return String::from("Call watch_theme to tune the theme from a file.");
+    };
+    let dir = std::path::Path::new("target").join("smudge-devtools");
+    let path = dir.join("theme.txt");
+    let written = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&path, theme.with(theme_file::theme_file)));
+    match written {
+        Ok(()) => format!("Wrote the theme to {}", path.display()),
+        Err(error) => format!("Could not write the theme: {error}"),
+    }
+}
+
 /// The marker of the damage the root tints, which [`Element::bind`] keys on.
 struct Tinted;
 
@@ -797,8 +826,31 @@ fn frames_tab(tools: &Tools) -> Element<Panel> {
                 }))
                 .child(switch(tools, "Keep tree", |switches| {
                     &mut switches.keep_tree
-                })),
+                }))
+                .child({
+                    let written = tools.theme_written.clone();
+                    button("Write theme").on_press(move || written.set(Some(write_theme())))
+                }),
         )
+        .child({
+            let (skipped, written) = (tools.theme_skipped.clone(), tools.theme_written.clone());
+            label(move || {
+                let mut text = written.get().unwrap_or_default();
+                skipped.with(|skipped| {
+                    if !skipped.is_empty() {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str("Theme file lines skipped:");
+                        for line in skipped {
+                            text.push_str("\n  ");
+                            text.push_str(line);
+                        }
+                    }
+                });
+                text
+            })
+        })
         .child({
             let (hot, keeping) = (tools.hot.clone(), tools.switches.clone());
             label(move || {

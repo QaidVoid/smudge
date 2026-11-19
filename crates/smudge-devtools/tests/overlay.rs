@@ -308,3 +308,43 @@ fn the_frames_tab_shows_a_build_failure_and_a_patch_outcome() {
         "{text}"
     );
 }
+
+#[test]
+fn a_watched_theme_file_recolors_the_app_and_its_bad_lines_show() {
+    TextSystem::bundled_only().install();
+    let dir = std::env::temp_dir().join(format!("smudge-theme-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("the directory is made");
+    let path = dir.join("theme.txt");
+    std::fs::write(&path, "accent = #e07a3a\nglow = #ffffff\n").expect("the file is written");
+
+    let tools = smudge_devtools::Tools::new();
+    let theme = RwSignal::new(smudge_core::theme::Theme::dark());
+    let (watched, shown) = (theme.clone(), tools.clone());
+    let watching = path.clone();
+    let mut harness = Harness::new(800.0, 600.0, 1.0, move || {
+        std::mem::forget(smudge_devtools::watch_theme(
+            watching.clone(),
+            watched.clone(),
+        ));
+        smudge_devtools::overlay(&shown, || Size {
+            width: 800.0,
+            height: 600.0,
+        })
+    });
+    harness.frame();
+    harness.advance(std::time::Duration::from_millis(300));
+    harness.frame();
+    assert_eq!(
+        theme.get().color(smudge_core::theme::ColorToken::ACCENT),
+        smudge_core::geometry::Color::rgb(0xe0, 0x7a, 0x3a),
+        "the file's accent reached the theme"
+    );
+    let reported = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .filter_map(|node| node.value)
+        .any(|text| text.contains("line 2: the theme has no token `glow`"));
+    assert!(reported, "the bad line shows in the panel");
+    let _ = std::fs::remove_dir_all(&dir);
+}
