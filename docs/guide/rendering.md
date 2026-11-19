@@ -78,6 +78,8 @@ let header = panel()
 
 `focused()` reads whether the window holds the input focus, and a binding or an effect that reads it reruns when the window comes to the front or goes to the background. The keyboard focus inside the window stays where it is either way. An app with no window to report it, such as a headless test, counts as focused.
 
+To open a native dialog, such as a file picker, over the window, `smudge::window::handle::with_window_handles(|handles| ...)` lends the window's native handles to a closure, where a dialog library takes them as the dialog's parent. They implement the `raw-window-handle` traits in the version `smudge::window::handle::raw_window_handle` re-exports, so match the dialog library to it. Borrow them in the configure step of `run_with` or `run_view_with`, in an event handler or in a timer, all of which run on the window's thread once the window is open. The handles are lent, never kept, so they cannot hold the window open past the run. With no window open, and on the web, `with_window_handles` returns an error.
+
 Any element can set the pointer cursor over itself with `cursor`. `Cursor` is in the prelude:
 
 ```rust

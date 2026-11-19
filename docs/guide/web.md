@@ -9,6 +9,7 @@
 - `run` returns `Ok(())` as soon as the browser's event loop has started, before the first frame. Errors detected before that, such as a translucent clear color, still come back as an `Err`.
 - The bundled fonts and the fonts the application registers are the only fonts. `system-fonts` is not available.
 - The window commands `start_move`, `start_resize`, `toggle_maximize` and `close` do nothing, because the page owns the canvas, and `maximized` stays `false`. `WindowOptions::decorations` and `app_id` have no effect either, and `min_size` becomes the canvas's minimum size.
+- `with_window_handles` returns an error, since there is no native window to parent a dialog to.
 - There is no system clipboard, so copy and paste work only inside the application, and no screen reader support yet. See [Known limits](/reference/limits).
 
 ## Build

@@ -844,6 +844,7 @@ where
                 .create_window(attributes)
                 .map_err(PlatformError::Window)?,
         );
+        crate::handle::opened(&window);
         #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         let adapter = accesskit_winit::Adapter::with_event_loop_proxy(
             event_loop,

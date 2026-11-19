@@ -41,6 +41,7 @@ mod error;
 mod events;
 #[cfg(feature = "gpu")]
 mod gpu;
+pub mod handle;
 // Loading a patch library and calling the patched view are unsafe by nature,
 // and the receiver is the one module that does either.
 #[cfg(all(feature = "hot-reload", target_os = "linux"))]
