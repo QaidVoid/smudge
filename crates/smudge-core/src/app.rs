@@ -1332,6 +1332,12 @@ impl App {
         self.tree.semantics_node(id)
     }
 
+    /// Returns whether [`App::semantics_node`] projects `id`, without
+    /// building the node's description, which a text widget makes costly.
+    pub fn is_projected(&self, id: WidgetId) -> bool {
+        self.tree.is_projected(id)
+    }
+
     /// Returns whether the projection has unread changes.
     ///
     /// A backend that only rebuilds when this returns true skips frames that

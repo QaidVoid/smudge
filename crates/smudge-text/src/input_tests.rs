@@ -257,3 +257,111 @@ fn selection_rectangles_outside_the_visible_range_are_left_out() {
         "every kept rectangle meets the range: {rects:?}"
     );
 }
+
+/// An editor laid out in the default style holding `text`.
+fn editor_with(text: &str) -> Editor {
+    crate::TextSystem::bundled_only().install();
+    let editor = Editor::new(smudge_core::reactive::RwSignal::new(String::new()));
+    editor.set_style(&crate::TextStyle::default());
+    editor.set_text(text);
+    editor
+}
+
+/// The text of each run of `editor`, with where it starts.
+fn runs_of(editor: &Editor) -> Vec<(usize, String)> {
+    let (runs, _) = editor.accessible_text(smudge_core::geometry::Point::default());
+    runs.into_iter().map(|run| (run.start, run.text)).collect()
+}
+
+#[test]
+fn a_paragraph_ends_its_last_run_in_its_line_feed() {
+    let editor = editor_with("ab\ncd");
+    assert_eq!(
+        runs_of(&editor),
+        vec![(0, String::from("ab\n")), (3, String::from("cd"))]
+    );
+}
+
+#[test]
+fn an_empty_line_is_a_run_of_its_own() {
+    let editor = editor_with("ab\n\ncd");
+    let (runs, _) = editor.accessible_text(smudge_core::geometry::Point::default());
+    let texts: Vec<&str> = runs.iter().map(|run| run.text.as_str()).collect();
+    assert_eq!(texts, vec!["ab\n", "\n", "cd"]);
+    assert!(!runs[1].continues_line, "the empty line starts a line");
+    assert_eq!(runs[1].word_starts, vec![0]);
+    assert!(
+        runs[1].bounds.y0 >= runs[0].bounds.y1 - 0.01,
+        "it sits below the first line"
+    );
+}
+
+#[test]
+fn an_empty_last_line_gives_the_caret_a_run() {
+    let empty = editor_with("");
+    assert_eq!(runs_of(&empty), vec![(0, String::new())]);
+    let trailing = editor_with("ab\n");
+    assert_eq!(
+        runs_of(&trailing),
+        vec![(0, String::from("ab\n")), (3, String::new())]
+    );
+}
+
+#[test]
+fn the_selection_keeps_which_end_moves() {
+    let editor = editor_with("abc");
+    editor.move_to_end();
+    editor.extend_left();
+    let (_, selection) = editor.accessible_text(smudge_core::geometry::Point::default());
+    assert_eq!((selection.anchor.byte, selection.focus.byte), (3, 2));
+}
+
+#[test]
+fn a_caret_moved_to_the_end_of_a_wrapped_line_says_it_ends_the_line() {
+    let editor = editor_with("word word word");
+    editor.set_wrap_width(Some(60.0));
+    editor.move_to_start();
+    editor.move_to_line_end();
+    let (runs, selection) = editor.accessible_text(smudge_core::geometry::Point::default());
+    assert!(runs.len() > 1, "the text wraps");
+    assert_eq!(selection.focus.byte, runs[1].start);
+    assert!(selection.focus.ends_line);
+}
+
+#[test]
+fn a_full_run_leaves_its_line_feed_a_run_on_its_line() {
+    let text = format!(
+        "a\u{2028}{}\nb",
+        "x".repeat(smudge_core::semantics::TEXT_RUN_CAP)
+    );
+    let editor = editor_with(&text);
+    let (runs, _) = editor.accessible_text(smudge_core::geometry::Point::default());
+    let feed = runs
+        .iter()
+        .position(|run| run.text == "\n")
+        .expect("the line feed has a run of its own");
+    assert!(
+        runs[feed].continues_line,
+        "it goes on with the full run's line"
+    );
+    assert_eq!(
+        (runs[feed].bounds.y0, runs[feed].bounds.y1),
+        (runs[feed - 1].bounds.y0, runs[feed - 1].bounds.y1)
+    );
+    assert_eq!(runs[feed].bounds.x0, runs[feed - 1].bounds.x1);
+}
+
+#[test]
+fn a_caret_moved_past_a_line_separator_starts_the_next_line() {
+    let editor = editor_with("ab\u{2028}cd");
+    editor.move_to_start();
+    editor.move_right();
+    editor.move_right();
+    editor.move_right();
+    let (_, selection) = editor.accessible_text(smudge_core::geometry::Point::default());
+    assert_eq!(selection.focus.byte, 5);
+    assert!(
+        !selection.focus.ends_line,
+        "past a line break the caret paints at the start of the next line"
+    );
+}

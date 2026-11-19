@@ -90,12 +90,25 @@ impl Widget for TextInput {
     ///
     /// An input with no placeholder reports no name, which leaves the
     /// announcement to the field's surroundings.
+    ///
+    /// It also reports its text line by line as it shows it, with the caret
+    /// and the selection in it, so a reader can follow the caret. While an
+    /// input method composes, the lines hold the preedit the field shows, and
+    /// the value holds the committed text alone, which is what the field
+    /// holds once the composition is cancelled.
     fn semantics(&self) -> Option<Semantics> {
         let label = (!self.placeholder.borrow().text().is_empty())
             .then(|| self.placeholder.borrow().text().into());
+        let scroll = Point {
+            x: -self.chrome.scroll_x.get(),
+            y: -self.chrome.scroll_y.get(),
+        };
+        let (text_runs, selection) = self.chrome.editor.accessible_text(scroll);
         Some(Semantics {
             label,
             value: Some(self.chrome.editor.text()),
+            text_runs,
+            text_selection: Some(selection),
             ..Semantics::new(Role::TextInput)
         })
     }

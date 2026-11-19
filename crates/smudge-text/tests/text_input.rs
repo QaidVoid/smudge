@@ -1850,3 +1850,41 @@ fn the_caret_shows_after_the_focus_leaves_and_returns_within_one_frame() {
         "the caret shows at once on the field the focus came back to"
     );
 }
+
+#[test]
+fn a_scrolled_input_reports_its_caret_inside_the_field() {
+    let (mut harness, _value) = mounted(&"long words ".repeat(12));
+    focus(&mut harness);
+    harness.press_key(Key::End);
+    harness.settle();
+    let node = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == smudge_core::semantics::Role::TextInput)
+        .expect("the input projects");
+    let caret = node
+        .text_selection
+        .expect("the input reports its caret")
+        .focus
+        .byte;
+    let run = node
+        .text_runs
+        .iter()
+        .rev()
+        .find(|run| run.start <= caret)
+        .expect("a run holds the caret");
+    let mut at = run.start;
+    let mut x = run.bounds.x1;
+    for (index, length) in run.character_lengths.iter().enumerate() {
+        if at == caret {
+            x = run.bounds.x0 + run.character_positions[index];
+        }
+        at += usize::from(*length);
+    }
+    assert!(
+        x >= node.bounds.x0 && x <= node.bounds.x1,
+        "the caret at {x} sits inside the field {:?}",
+        node.bounds
+    );
+}

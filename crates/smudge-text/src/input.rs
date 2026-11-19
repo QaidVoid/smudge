@@ -14,6 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ops::Range;
 
+use parley::BreakReason;
 use parley::Cluster;
 use parley::editing::Cursor;
 use parley::editing::Selection as ParagraphSelection;
@@ -22,7 +23,9 @@ use parley::layout::Affinity;
 use smudge_core::geometry::{Color, Point, Rect, Size};
 use smudge_core::paint::GlyphRun;
 use smudge_core::reactive::{RwSignal, prelude::*};
+use smudge_core::semantics::{TEXT_RUN_CAP, TextOffset, TextRun, TextSelection};
 
+use crate::a11y::text_runs;
 use crate::glyphs::glyph_runs;
 use crate::layout::TextLayout;
 use crate::line_breaks::flatten_line_breaks;
@@ -1280,6 +1283,127 @@ impl Editor {
             });
             y += layout.size().height;
         }
+    }
+
+    /// Returns the editor's text as a screen reader reads it: its runs, a
+    /// run per stretch of each laid out line with the paragraphs stacked
+    /// from `origin` in the widget's content box, and the selection as
+    /// places in the text the runs hold, which is the buffer, preedit
+    /// included, each saying whether it sits at the end of a wrapped line.
+    ///
+    /// Each paragraph but the last ends its last run in its line feed, one
+    /// character with no width, and a paragraph with no text has a run of
+    /// its own, so a caret on an empty line sits in a run.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the conditions of [`TextSystem::with`].
+    pub(crate) fn accessible_text(&self, origin: Point) -> (Vec<TextRun>, TextSelection) {
+        self.session(|session| session.refresh_all());
+        let buffer = self.buffer.borrow();
+        let table = self.paragraphs.borrow();
+        let selection = self.selection.borrow();
+        let mut runs = Vec::new();
+        let mut y = 0.0;
+        let count = table.paragraphs.len();
+        for (index, paragraph) in table.paragraphs.iter().enumerate() {
+            let layout = paragraph
+                .layout
+                .as_ref()
+                .expect("refresh built every layout");
+            let end = paragraph.start + paragraph.len;
+            let top = origin.y + y;
+            let first = runs.len();
+            runs.extend(
+                text_runs(
+                    &layout.layout,
+                    &buffer[paragraph.start..end],
+                    Point {
+                        x: origin.x,
+                        y: top,
+                    },
+                    None,
+                )
+                .into_iter()
+                .map(|run| TextRun {
+                    start: run.start + paragraph.start,
+                    ..run
+                }),
+            );
+            let height = layout.size().height;
+            let last = index + 1 == count;
+            let has_text = runs.len() > first;
+            let room = runs
+                .last()
+                .is_some_and(|run| run.character_lengths.len() < TEXT_RUN_CAP);
+            if !last && has_text && room {
+                let run = runs.last_mut().expect("the paragraph made a run");
+                let width = run.bounds.width();
+                run.text.push('\n');
+                run.character_lengths.push(1);
+                run.character_positions.push(width);
+                run.character_widths.push(0.0);
+            } else if !(last && has_text) {
+                let before = runs[first..].last();
+                let left = before.map_or(origin.x, |run| {
+                    if run.right_to_left {
+                        run.bounds.x0
+                    } else {
+                        run.bounds.x1
+                    }
+                });
+                let (row_top, row_bottom) =
+                    before.map_or((top, top + height), |run| (run.bounds.y0, run.bounds.y1));
+                let (text, characters) = if last {
+                    (String::new(), Vec::new())
+                } else {
+                    (String::from("\n"), vec![1])
+                };
+                let count = characters.len();
+                runs.push(TextRun {
+                    start: end,
+                    text,
+                    character_lengths: characters,
+                    word_starts: if has_text || count == 0 {
+                        Vec::new()
+                    } else {
+                        vec![0]
+                    },
+                    character_positions: vec![0.0; count],
+                    character_widths: vec![0.0; count],
+                    bounds: Rect::new(left, row_top, left, row_bottom),
+                    right_to_left: false,
+                    continues_line: has_text,
+                });
+            }
+            y += height;
+        }
+        // A caret ends a line only where the line wraps, as it paints: past
+        // a line break it paints at the start of the next line.
+        let offset = |anchor: Anchor| {
+            let wraps_here = anchor.affinity == Affinity::Upstream
+                && table.paragraphs[anchor.paragraph]
+                    .layout
+                    .as_ref()
+                    .is_some_and(|layout| {
+                        layout.layout.lines().any(|line| {
+                            line.text_range().end == anchor.index
+                                && matches!(
+                                    line.break_reason(),
+                                    BreakReason::Regular | BreakReason::Emergency
+                                )
+                        })
+                    });
+            TextOffset {
+                byte: table.global(anchor),
+                ends_line: wraps_here,
+            }
+        };
+        let ends = TextSelection {
+            anchor: offset(selection.anchor),
+            focus: offset(selection.focus),
+        };
+        (runs, ends)
     }
 
     /// Returns `text` with its line breaks as the editor keeps them: every

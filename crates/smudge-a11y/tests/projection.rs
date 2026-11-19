@@ -10,7 +10,7 @@ use smudge_core::paint::PaintOp;
 use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
 use smudge_core::semantics::{
-    Announcer, Checked, Politeness, Role, Semantics, TextRun, ValueRange,
+    Announcer, Checked, Politeness, Role, Semantics, TextOffset, TextRun, TextSelection, ValueRange,
 };
 use smudge_core::style::px;
 use smudge_core::theme::ColorValue;
@@ -1658,4 +1658,222 @@ fn a_scroll_sends_the_new_bounds_of_what_it_moves() {
             "each row moves up by the scroll, at the app scale"
         );
     }
+}
+
+/// The place at `byte`, at the start of the line when a line wraps there.
+fn at(byte: usize) -> TextOffset {
+    TextOffset {
+        byte,
+        ends_line: false,
+    }
+}
+
+/// A text field that reports the runs and selection it was built with.
+struct Selected(Vec<TextRun>, TextSelection);
+
+impl Widget for Selected {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+
+    fn semantics(&self) -> Option<Semantics> {
+        Some(Semantics {
+            text_runs: self.0.clone(),
+            text_selection: Some(self.1),
+            ..Semantics::new(Role::TextInput)
+        })
+    }
+}
+
+/// The selection the projection sends for a field of `runs` with the
+/// selection from `anchor` to `focus`, as (run, character) pairs, with the
+/// text a reader reads from it.
+fn selection_of(
+    runs: Vec<TextRun>,
+    anchor: TextOffset,
+    focus: TextOffset,
+) -> ((usize, usize), (usize, usize), String) {
+    let mut app = app_with(move || {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(Element::new(Selected(runs, TextSelection { anchor, focus })).height(px(40.0)))
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let field = node_with_role(&update, AccessKitRole::TextInput);
+    let selection = *field
+        .text_selection()
+        .expect("the field reports its selection");
+    let order: Vec<NodeId> = field.children().to_vec();
+    let place = |position: accesskit::TextPosition| {
+        (
+            order
+                .iter()
+                .position(|id| *id == position.node)
+                .expect("the position names a run of the field"),
+            position.character_index,
+        )
+    };
+    let (anchor, focus) = (place(selection.anchor), place(selection.focus));
+    let tree = Tree::new(update, true);
+    let field = tree
+        .state()
+        .root()
+        .children()
+        .next()
+        .and_then(|group| group.children().next())
+        .expect("the group holds the field");
+    let text = field
+        .text_selection()
+        .map(|range| range.text())
+        .unwrap_or_default();
+    (anchor, focus, text)
+}
+
+/// The runs of the two lines "ab" and "cd", the first ending in its line
+/// feed.
+fn two_lines() -> Vec<TextRun> {
+    let mut second = run("cd", 10.0);
+    second.start = 3;
+    vec![run("ab\n", 0.0), second]
+}
+
+#[test]
+fn a_selection_reaches_a_reader_across_lines() {
+    let (anchor, focus, text) = selection_of(two_lines(), at(1), at(4));
+    assert_eq!((anchor, focus), ((0, 1), (1, 1)));
+    assert_eq!(text, "b\nc");
+}
+
+#[test]
+fn a_caret_at_the_end_of_a_line_sits_on_its_line_feed() {
+    let (_, focus, _) = selection_of(two_lines(), at(2), at(2));
+    assert_eq!(focus, (0, 2));
+}
+
+#[test]
+fn a_caret_on_an_empty_last_line_sits_in_its_run() {
+    let mut empty = run("", 10.0);
+    empty.start = 3;
+    let (_, focus, _) = selection_of(vec![run("ab\n", 0.0), empty], at(3), at(3));
+    assert_eq!(focus, (1, 0));
+}
+
+#[test]
+fn a_caret_after_the_last_character_sits_past_it() {
+    let (_, focus, _) = selection_of(vec![run("ab", 0.0)], at(2), at(2));
+    assert_eq!(focus, (0, 2));
+}
+
+/// A text field whose selection the cell holds.
+struct Moving(std::rc::Rc<std::cell::Cell<TextSelection>>);
+
+impl Widget for Moving {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+
+    fn semantics(&self) -> Option<Semantics> {
+        Some(Semantics {
+            text_runs: two_lines(),
+            text_selection: Some(self.0.get()),
+            ..Semantics::new(Role::TextInput)
+        })
+    }
+}
+
+#[test]
+fn a_move_of_the_caret_alone_is_sent_again() {
+    let caret = std::rc::Rc::new(std::cell::Cell::new(TextSelection {
+        anchor: at(0),
+        focus: at(0),
+    }));
+    let tint = RwSignal::new(Color::WHITE);
+    let (shown, painted) = (caret.clone(), tint.clone());
+    let mut app = app_with(move || {
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Moving(shown))
+                .height(px(40.0))
+                .background(move || ColorValue::from(painted.get())),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    update_after_frame(&mut app, &mut projection, true);
+
+    caret.set(TextSelection {
+        anchor: at(4),
+        focus: at(4),
+    });
+    tint.set(Color::BLACK);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let field = node_with_role(&update, AccessKitRole::TextInput);
+    let focus = field
+        .text_selection()
+        .expect("the field reports its caret")
+        .focus;
+    assert_eq!(focus.character_index, 1);
+    assert!(
+        update
+            .nodes
+            .iter()
+            .all(|(_, node)| node.role() != AccessKitRole::TextRun),
+        "the runs did not change, so they are not sent again"
+    );
+}
+
+#[test]
+fn a_caret_at_the_end_of_a_wrapped_line_stays_on_that_line() {
+    let mut second = run("cd", 10.0);
+    second.start = 2;
+    let wrapped = vec![run("ab", 0.0), second];
+    let end = TextOffset {
+        byte: 2,
+        ends_line: true,
+    };
+    let (_, focus, _) = selection_of(wrapped.clone(), end, end);
+    assert_eq!(focus, (0, 2), "past the last character of the first line");
+    let (_, focus, _) = selection_of(wrapped, at(2), at(2));
+    assert_eq!(focus, (1, 0), "the same byte at the start of the next line");
+}
+
+/// A focusable field that counts how often its description is built.
+struct Counted(std::rc::Rc<std::cell::Cell<usize>>);
+
+impl Widget for Counted {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+
+    fn semantics(&self) -> Option<Semantics> {
+        self.0.set(self.0.get() + 1);
+        Some(Semantics::new(Role::TextInput))
+    }
+
+    fn role(&self) -> Option<Role> {
+        Some(Role::TextInput)
+    }
+}
+
+#[test]
+fn an_update_builds_the_focused_fields_description_once() {
+    let built = std::rc::Rc::new(std::cell::Cell::new(0));
+    let tint = RwSignal::new(Color::WHITE);
+    let (counted, painted) = (built.clone(), tint.clone());
+    let mut app = app_with(move || {
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Counted(counted))
+                .height(px(20.0))
+                .focusable()
+                .background(move || ColorValue::from(painted.get())),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    let full = update_after_frame(&mut app, &mut projection, true);
+    let field = id_with_role(&full, AccessKitRole::TextInput);
+    assert!(app.request_focus(smudge_core::tree::WidgetId::from_u64(field.0)));
+    update_after_frame(&mut app, &mut projection, false);
+
+    built.set(0);
+    tint.set(Color::BLACK);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    assert_eq!(update.focus, field);
+    assert_eq!(
+        built.get(),
+        1,
+        "the focus asks whether the field projects without building it"
+    );
 }

@@ -1469,6 +1469,16 @@ impl WidgetTree {
         roots
     }
 
+    /// Returns whether `id` projects: it is live, nothing above or at it is
+    /// hidden, and it reports a role. Builds no description.
+    pub(crate) fn is_projected(&self, id: WidgetId) -> bool {
+        self.a11y_id_is_visible(id)
+            && self
+                .nodes
+                .get(id)
+                .is_some_and(|node| Self::effective_role(node).is_some())
+    }
+
     /// Projects one node with the children the projection gives it, or
     /// [`None`] when the id is stale, hidden above or at `id`, or reports no
     /// role.
@@ -1553,6 +1563,7 @@ impl WidgetTree {
             set_size,
             level,
             mut text_runs,
+            text_selection,
             ..
         } = semantics;
         let content = node.content.origin();
@@ -1582,6 +1593,7 @@ impl WidgetTree {
             set_size: node.a11y_set_size.or(set_size),
             level: node.a11y_level.or(level),
             text_runs,
+            text_selection,
             bounds: node.rect,
             focusable: node.interaction.has(Interaction::FOCUSABLE),
             disabled: node.interaction.has(Interaction::DISABLED),

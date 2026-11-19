@@ -144,6 +144,32 @@ pub struct Semantics {
     /// bounds are relative to the widget's content box, where its text is
     /// laid out. Empty for a widget that shows no text.
     pub text_runs: Vec<TextRun>,
+    /// The selection in the widget's text, or the caret when its ends
+    /// meet, or `None` for a widget with no selection.
+    pub text_selection: Option<TextSelection>,
+}
+
+/// A selection in a widget's text, between two places in the text its
+/// [`TextRun`]s hold together.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TextSelection {
+    /// The end the selection was made from, which stays put as it grows.
+    pub anchor: TextOffset,
+    /// The end that moves as the selection grows, where the caret is.
+    pub focus: TextOffset,
+}
+
+/// A place in a widget's text.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TextOffset {
+    /// The byte offset into the text, on a character boundary. The length
+    /// of the text names its end.
+    pub byte: usize,
+    /// Whether the place sits at the end of the line before `byte` rather
+    /// than at the start of the line after it, which tells the two apart
+    /// where a line wraps: a caret moved to the end of a wrapped line sits
+    /// there.
+    pub ends_line: bool,
 }
 
 /// The most characters one [`TextRun`] holds, since a screen reader indexes
@@ -200,6 +226,7 @@ impl Semantics {
             set_size: None,
             level: None,
             text_runs: Vec::new(),
+            text_selection: None,
         }
     }
 }
@@ -237,6 +264,8 @@ pub struct SemanticsNode {
     /// The node's text, a run per stretch of a line, with each run's bounds
     /// absolute, in logical pixels.
     pub text_runs: Vec<TextRun>,
+    /// The selection in the node's text, or the caret when its ends meet.
+    pub text_selection: Option<TextSelection>,
     /// The node's absolute rectangle in logical pixels, as the last layout
     /// pass left it.
     pub bounds: Rect,

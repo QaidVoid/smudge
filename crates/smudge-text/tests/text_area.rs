@@ -1285,3 +1285,45 @@ fn tab_into_an_area_the_wheel_scrolled_reveals_the_caret() {
         "the caret {caret:?} shows inside the area {area:?}"
     );
 }
+
+/// The projected node of the area.
+fn area_node(harness: &mut Harness) -> smudge_core::semantics::SemanticsNode {
+    harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == Role::MultilineTextInput)
+        .expect("the area projects")
+}
+
+#[test]
+fn an_area_reports_its_lines_and_where_its_caret_is() {
+    let (mut harness, _value) = mounted("one\ntwo");
+    focus(&mut harness);
+    harness.press_key_with(Key::End, command());
+    harness.settle();
+    let node = area_node(&mut harness);
+    let joined: String = node.text_runs.iter().map(|run| run.text.as_str()).collect();
+    assert_eq!(joined, "one\ntwo");
+    let caret = node.text_selection.expect("the area reports its caret");
+    assert_eq!((caret.anchor.byte, caret.focus.byte), (7, 7));
+
+    harness.app().take_a11y_changes();
+    harness.press_key_with(
+        Key::ArrowLeft,
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
+    harness.settle();
+    let changes = harness.app().take_a11y_changes();
+    assert!(
+        changes.reset || changes.changed.contains(&node.id),
+        "a move of the caret reaches a reader"
+    );
+    let moved = area_node(&mut harness)
+        .text_selection
+        .expect("the area reports its selection");
+    assert_eq!((moved.anchor.byte, moved.focus.byte), (7, 6));
+}

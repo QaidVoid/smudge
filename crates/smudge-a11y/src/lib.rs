@@ -20,7 +20,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use smudge_core::app::App;
 use smudge_core::geometry::Rect;
 use smudge_core::semantics::SemanticsNode;
-use smudge_core::semantics::{Checked, Politeness, Role, TextRun};
+use smudge_core::semantics::{Checked, Politeness, Role, TextOffset, TextRun};
 use smudge_core::tree::WidgetId;
 
 use accesskit::{Live, Node, NodeId, Rect as AccessKitRect, Toggled};
@@ -74,6 +74,8 @@ pub struct Projection {
 struct Sent {
     /// The digest of the node.
     digest: u64,
+    /// The digest of its text runs.
+    runs: u64,
     /// The node's children.
     children: Vec<NodeId>,
 }
@@ -136,7 +138,10 @@ impl Projection {
             {
                 let id = NodeId(node.id.as_u64());
                 let digest = digest(&node, scale);
-                if self.sent.get(&id).is_some_and(|sent| sent.digest == digest) {
+                let runs = runs_digest(&node, scale);
+                let same = |sent: &Sent| (sent.digest, sent.runs);
+                let before = self.sent.get(&id).map(same);
+                if before == Some((digest, runs)) {
                     continue;
                 }
                 let children = node_ids(&node.children);
@@ -144,13 +149,15 @@ impl Projection {
                     id,
                     Sent {
                         digest,
+                        runs,
                         children: children.clone(),
                     },
                 );
                 if let Some(previous) = previous {
                     self.forget_dropped(&previous.children, &children);
                 }
-                self.push_node(&node, scale, &mut nodes);
+                let send_runs = before.is_none_or(|(_, sent)| sent != runs);
+                self.push_node(&node, scale, send_runs, &mut nodes);
             }
             if changes.roots_changed || surface != self.surface {
                 let roots = app.semantics_roots();
@@ -234,10 +241,11 @@ impl Projection {
             let id = NodeId(node.id.as_u64());
             let sent = Sent {
                 digest: digest(node, scale),
+                runs: runs_digest(node, scale),
                 children: node_ids(&node.children),
             };
             self.sent.insert(id, sent);
-            self.push_node(node, scale, &mut nodes);
+            self.push_node(node, scale, true, &mut nodes);
         }
         let mut tree = TreeInfo::new(WINDOW_ROOT);
         tree.toolkit_name = Some("smudge".to_owned());
@@ -278,8 +286,15 @@ impl Projection {
     }
 
     /// Appends the AccessKit node `node` projects to `nodes`, followed by a
-    /// node for each of its text runs, which it holds ahead of its children.
-    fn push_node(&mut self, node: &SemanticsNode, scale: f32, nodes: &mut Vec<(NodeId, Node)>) {
+    /// node for each of its text runs, which it holds ahead of its children,
+    /// when `send_runs` says the runs changed since they were last sent.
+    fn push_node(
+        &mut self,
+        node: &SemanticsNode,
+        scale: f32,
+        send_runs: bool,
+        nodes: &mut Vec<(NodeId, Node)>,
+    ) {
         let id = NodeId(node.id.as_u64());
         let mut ids = self.runs.remove(&id).unwrap_or_default();
         ids.truncate(node.text_runs.len());
@@ -288,13 +303,22 @@ impl Projection {
             ids.push(run);
         }
         let mut out = build_node(node, scale);
+        if let Some(selection) = node.text_selection
+            && !ids.is_empty()
+        {
+            out.set_text_selection(accesskit::TextSelection {
+                anchor: text_position(&node.text_runs, &ids, selection.anchor),
+                focus: text_position(&node.text_runs, &ids, selection.focus),
+            });
+        }
         if !ids.is_empty() {
             let mut children = ids.clone();
             children.extend(node_ids(&node.children));
             out.set_children(children);
         }
         nodes.push((id, out));
-        for (index, (run, run_id)) in node.text_runs.iter().zip(&ids).enumerate() {
+        let sent_runs: &[TextRun] = if send_runs { &node.text_runs } else { &[] };
+        for (index, (run, run_id)) in sent_runs.iter().zip(&ids).enumerate() {
             let mut out = build_run(run, scale);
             if run.continues_line && index > 0 {
                 out.set_previous_on_line(ids[index - 1]);
@@ -340,6 +364,27 @@ fn digest(node: &SemanticsNode, scale: f32) -> u64 {
     node.value.hash(&mut hasher);
     node.checked.hash(&mut hasher);
     (node.position, node.set_size, node.level).hash(&mut hasher);
+    node.text_selection.hash(&mut hasher);
+    node.text_runs.len().hash(&mut hasher);
+    if let Some(range) = node.range {
+        for number in [range.value, range.min, range.max] {
+            number.to_bits().hash(&mut hasher);
+        }
+    }
+    let bounds = node.bounds;
+    for coordinate in [bounds.x0, bounds.y0, bounds.x1, bounds.y1, scale] {
+        coordinate.to_bits().hash(&mut hasher);
+    }
+    (node.focusable, node.disabled, node.focused, node.pressable).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Returns a digest of the text runs of `node` at `scale`, which tells runs
+/// that changed from runs that did not, so a move of the caret alone sends
+/// the node without its runs.
+fn runs_digest(node: &SemanticsNode, scale: f32) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    scale.to_bits().hash(&mut hasher);
     for run in &node.text_runs {
         (run.start, run.right_to_left, run.continues_line).hash(&mut hasher);
         run.text.hash(&mut hasher);
@@ -359,16 +404,6 @@ fn digest(node: &SemanticsNode, scale: f32) -> u64 {
             number.to_bits().hash(&mut hasher);
         }
     }
-    if let Some(range) = node.range {
-        for number in [range.value, range.min, range.max] {
-            number.to_bits().hash(&mut hasher);
-        }
-    }
-    let bounds = node.bounds;
-    for coordinate in [bounds.x0, bounds.y0, bounds.x1, bounds.y1, scale] {
-        coordinate.to_bits().hash(&mut hasher);
-    }
-    (node.focusable, node.disabled, node.focused, node.pressable).hash(&mut hasher);
     hasher.finish()
 }
 
@@ -434,6 +469,41 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     out
 }
 
+/// Returns where `offset` into the text `runs` hold lands: on the character
+/// that holds its byte, or past the last character of the last run, which
+/// is where a caret after all the text sits, in an empty last run when the
+/// text ends in a line break. An offset that ends a wrapped line lands past
+/// the last character of that line instead of on the first of the next.
+/// `ids` names the runs, in the same order, and is not empty.
+fn text_position(runs: &[TextRun], ids: &[NodeId], offset: TextOffset) -> accesskit::TextPosition {
+    let byte = offset.byte;
+    for (index, (run, id)) in runs.iter().zip(ids).enumerate() {
+        let mut at = run.start;
+        for (character, length) in run.character_lengths.iter().enumerate() {
+            let end = at + usize::from(*length);
+            if (at..end).contains(&byte) {
+                let wrapped = index > 0 && !runs[index - 1].text.ends_with('\n');
+                if offset.ends_line && byte == run.start && !run.continues_line && wrapped {
+                    return accesskit::TextPosition {
+                        node: ids[index - 1],
+                        character_index: runs[index - 1].character_lengths.len(),
+                    };
+                }
+                return accesskit::TextPosition {
+                    node: *id,
+                    character_index: character,
+                };
+            }
+            at = end;
+        }
+    }
+    let last = runs.len().min(ids.len()) - 1;
+    accesskit::TextPosition {
+        node: ids[last],
+        character_index: runs[last].character_lengths.len(),
+    }
+}
+
 /// Maps one text run onto an AccessKit text run node, its positions and
 /// widths scaled to physical pixels as its bounds are.
 fn build_run(run: &TextRun, scale: f32) -> Node {
@@ -481,7 +551,7 @@ fn node_ids(ids: &[WidgetId]) -> Vec<NodeId> {
 /// the projection leaves out falls back to the window root, which is how
 /// AccessKit reads "no focus inside the tree".
 fn current_focus(app: &App) -> NodeId {
-    match app.focused().filter(|id| app.semantics_node(*id).is_some()) {
+    match app.focused().filter(|id| app.is_projected(*id)) {
         Some(id) => NodeId(id.as_u64()),
         None => WINDOW_ROOT,
     }
