@@ -467,14 +467,15 @@ impl WidgetTree {
     /// inside the active focus trap, if one is mounted. Then the autofocus
     /// requests of every node that is visible now are dropped, so the next
     /// layout pass does not move the focus away again. A request whose node
-    /// is hidden stays queued, to resolve when the node shows.
-    pub(crate) fn restore_focus(&mut self, path: &[usize]) {
+    /// is hidden stays queued, to resolve when the node shows. Returns
+    /// whether the node took the focus.
+    pub(crate) fn restore_focus(&mut self, path: &[usize]) -> bool {
         let Some(mut id) = self.root else {
-            return;
+            return false;
         };
         for &index in path {
             let Some(&child) = self.nodes.get(id).and_then(|node| node.children.get(index)) else {
-                return;
+                return false;
             };
             id = child;
         }
@@ -483,11 +484,12 @@ impl WidgetTree {
             .is_some_and(|trap| !self.is_within(id, trap))
             || !self.request_focus(id)
         {
-            return;
+            return false;
         }
         let mut pending = std::mem::take(&mut self.pending_autofocus);
         pending.retain(|&request| self.hidden_in_tree(request));
         self.pending_autofocus = pending;
+        true
     }
 
     /// Queues an autofocus request for the node `id`, to resolve once a

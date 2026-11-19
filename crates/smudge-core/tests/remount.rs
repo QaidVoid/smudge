@@ -466,7 +466,9 @@ fn a_remount_inside_a_running_frame_hook_does_not_panic() {
     // The windowing layer hands its input hook the app right before it runs
     // a frame, and this hook remounts there, with a press held, a trap
     // active, an autofocus request pending, a due timer and a queued value.
-    let hook: Rc<dyn Fn(&mut App)> = Rc::new(move |app| app.remount(build.clone()));
+    let hook: Rc<dyn Fn(&mut App)> = Rc::new(move |app| {
+        app.remount(build.clone());
+    });
     hook(harness.app());
     harness.frame();
     harness.button_up(in_square(0));
@@ -1695,5 +1697,30 @@ fn a_row_key_comparison_takes_no_value_of_its_rows_signals() {
         [read_u32(&first), read_u32(&second)],
         [7, 8],
         "the comparison's signal took a row's value"
+    );
+}
+
+#[test]
+fn a_remount_reports_whether_the_focus_came_back() {
+    let log = FocusLog::default();
+    let first = log.clone();
+    let mut harness = Harness::new(200.0, 100.0, 1.0, move || focus_row(&first, "old"));
+    harness.frame();
+    harness.click(in_square(1));
+    harness.frame();
+
+    let again = log.clone();
+    let same = harness.app().remount(move || focus_row(&again, "new"));
+    assert!(
+        same.focus_restored,
+        "the new build has the focused square in the same place"
+    );
+
+    let gone = harness.app().remount(|| panel().child(square()));
+    assert!(!gone.focus_restored, "the new build has no node there");
+    assert_eq!(
+        (gone.signals_kept, gone.signals_left),
+        (0, 0),
+        "no patch, so nothing carries"
     );
 }

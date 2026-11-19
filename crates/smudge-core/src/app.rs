@@ -37,6 +37,24 @@ pub enum RepaintMode {
     Full,
 }
 
+/// What [`App::remount`] kept of the build it replaced.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Remounted {
+    /// Whether the node that held the keyboard focus has a counterpart in
+    /// the new build that took the focus back.
+    pub focus_restored: bool,
+    /// How many signals of the new build took the value of their
+    /// counterpart in the old one, during the remount itself. Only a remount
+    /// after a hot patch carries values, so it is zero otherwise.
+    pub signals_kept: usize,
+    /// How many values of the old build no signal of the new one claimed
+    /// during the remount. Rows and branches that mount in the frames after
+    /// it may still claim them, and the rest start from their initial
+    /// values.
+    pub signals_left: usize,
+}
+
 /// The settings an [`App`] starts with.
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -419,6 +437,9 @@ impl App {
     /// [`RwSignal::new`]: crate::reactive::RwSignal::new
     /// [`signal_local`]: crate::reactive::signal_local
     ///
+    /// Returns what the remount kept: whether the focus came back, and how
+    /// many values the new build's signals took over. See [`Remounted`].
+    ///
     /// # Panics
     ///
     /// Panics when `build` panics, or when code the remount runs for the
@@ -463,7 +484,7 @@ impl App {
     /// app.visit_nodes(|_, _, rect| widths.push(rect.x1 - rect.x0));
     /// assert_eq!(widths[1], 50.0, "the signal kept outside the build kept its value");
     /// ```
-    pub fn remount<E: IntoElement>(&mut self, build: impl FnOnce() -> E) {
+    pub fn remount<E: IntoElement>(&mut self, build: impl FnOnce() -> E) -> Remounted {
         // The values are taken before the tree is unmounted, which cleans
         // up the owners of the nodes it removes.
         // An offer an earlier remount left ends first, so its values never
@@ -491,14 +512,24 @@ impl App {
                 .with(|| mount(build().into_any(), &mut self.tree, &self.queue, None));
             self.queue.apply(&mut self.tree);
         }
-        if let Some(path) = focus {
-            self.tree.restore_focus(&path);
-        }
+        let focus_restored = focus.is_some_and(|path| self.tree.restore_focus(&path));
         // Input that arrives before the next frame hits the new tree, so it
         // is laid out now, and that frame lays it out again after its flush.
         self.tree.layout_ahead(self.config.viewport);
         self.force_full = true;
         self.ime_reset = true;
+        #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+        let (signals_kept, signals_left) = self
+            .carrying
+            .as_ref()
+            .map_or((0, 0), |offer| offer.counts());
+        #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
+        let (signals_kept, signals_left) = (0, 0);
+        Remounted {
+            focus_restored,
+            signals_kept,
+            signals_left,
+        }
     }
 
     /// Changes the viewport and the scale, and makes the next frame repaint the
@@ -1353,6 +1384,10 @@ impl App {
     /// Returns the cycles of this app's bindings that a flush cut short,
     /// oldest first, at most the last 32 of the thread. See
     /// [`crate::inspect`].
+    ///
+    /// With the `devtools` feature, every cycle a frame cuts short is also
+    /// written to standard error with its places, once per frame it happens
+    /// in, so a cycle that persists repeats there.
     #[cfg(feature = "devtools")]
     pub fn cycles(&self) -> Vec<crate::inspect::CycleInfo> {
         crate::reactive::runtime::cycles(&self._root)

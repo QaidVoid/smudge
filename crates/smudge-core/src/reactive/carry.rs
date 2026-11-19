@@ -679,6 +679,18 @@ pub(crate) struct Offered {
 }
 
 impl Offered {
+    /// Returns how many of the old build's values the new build claimed so
+    /// far, and how many are still on offer.
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        STASHES.with(|stashes| {
+            stashes
+                .borrow()
+                .iter()
+                .find(|stash| stash.id == self.id)
+                .map_or((0, 0), |stash| (stash.claims, stash.values.len()))
+        })
+    }
+
     /// Counts a frame that ended, and answers whether the offer goes on.
     pub(crate) fn frame_ended(&mut self) -> bool {
         let (claims, left) = STASHES.with(|stashes| {
