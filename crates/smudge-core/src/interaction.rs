@@ -390,9 +390,11 @@ impl WidgetTree {
             return;
         };
         for id in self.chain(Some(target)) {
-            if self.nodes.get(id).is_some_and(|node| {
-                node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
-            }) {
+            if self
+                .nodes
+                .get(id)
+                .is_some_and(|node| node.interaction.has(Interaction::DISABLED) || node.withdrawn())
+            {
                 continue;
             }
             let Some(owner) = self.owner(id).cloned() else {
@@ -610,14 +612,15 @@ impl WidgetTree {
     /// Returns the deepest node that `position` hits, walking children in
     /// reverse paint order so the topmost node wins.
     ///
-    /// A node is hit when the point is inside its rectangle and its clip, and
-    /// it is neither hidden nor disabled. The children of a node are visited
-    /// even when the point is outside the node's own rectangle, because a
-    /// child of a node that does not clip its children reaches past them. A
-    /// disabled node is not hit, but its children still are.
+    /// A node is hit when the point is inside its rectangle and its clip,
+    /// and it is neither hidden, fading out, nor disabled. The children of a
+    /// node are visited even when the point is outside the node's own
+    /// rectangle, because a child of a node that does not clip its children
+    /// reaches past them. A disabled node is not hit, but its children still
+    /// are.
     fn hit(&self, id: WidgetId, position: Point) -> Option<WidgetId> {
         let node = self.nodes.get(id)?;
-        if node.resolved.layout.hidden || !node.clip.contains(position) {
+        if node.withdrawn() || !node.clip.contains(position) {
             return None;
         }
         for child in node.children.iter().rev() {
@@ -742,9 +745,11 @@ impl WidgetTree {
     /// run it, because a disabled node's handlers never run. Key activation
     /// shares this path, so a button fires the same handler from either input.
     pub(crate) fn run_press(&mut self, id: WidgetId) -> bool {
-        if self.nodes.get(id).is_none_or(|node| {
-            node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
-        }) {
+        if self
+            .nodes
+            .get(id)
+            .is_none_or(|node| node.interaction.has(Interaction::DISABLED) || node.withdrawn())
+        {
             return false;
         }
         let Some(owner) = self.owner(id).cloned() else {
@@ -841,9 +846,11 @@ impl WidgetTree {
         };
         let mut taken = false;
         for id in observers {
-            if self.nodes.get(id).is_none_or(|node| {
-                node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
-            }) {
+            if self
+                .nodes
+                .get(id)
+                .is_none_or(|node| node.interaction.has(Interaction::DISABLED) || node.withdrawn())
+            {
                 continue;
             }
             let step = if taken {
@@ -981,9 +988,11 @@ impl WidgetTree {
     /// A node that became disabled or hidden hears nothing, like every other
     /// pointer handler.
     fn run_pointer_move(&mut self, id: WidgetId, position: Point) {
-        if self.nodes.get(id).is_none_or(|node| {
-            node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
-        }) {
+        if self
+            .nodes
+            .get(id)
+            .is_none_or(|node| node.interaction.has(Interaction::DISABLED) || node.withdrawn())
+        {
             return;
         }
         let Some(owner) = self.owner(id).cloned() else {
@@ -1006,9 +1015,11 @@ impl WidgetTree {
     /// A node that became disabled or hidden hears nothing, like every other
     /// pointer handler.
     fn run_pointer_up(&mut self, id: WidgetId, position: Point) {
-        if self.nodes.get(id).is_none_or(|node| {
-            node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
-        }) {
+        if self
+            .nodes
+            .get(id)
+            .is_none_or(|node| node.interaction.has(Interaction::DISABLED) || node.withdrawn())
+        {
             return;
         }
         let Some(owner) = self.owner(id).cloned() else {
@@ -1067,7 +1078,7 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.resolved.layout.hidden {
+        if node.withdrawn() {
             return;
         }
         if node.handlers.on_press_outside.is_some() && !node.interaction.has(Interaction::DISABLED)

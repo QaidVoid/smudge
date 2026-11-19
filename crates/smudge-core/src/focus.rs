@@ -51,7 +51,9 @@ impl WidgetTree {
         // A node that lost the focus by becoming disabled or hidden still
         // anchors the next key, so shortcuts above it keep working. The key
         // starts at its parent: the node itself no longer holds the focus,
-        // even if it has been enabled again since. With no anchor either,
+        // even if it has been enabled again since. It starts higher when
+        // that parent is inside a hidden or fading subtree, above the
+        // subtree, whose handlers hear nothing. With no anchor either,
         // because nothing ever held the focus or a press consumed the last
         // one, the key starts at the root.
         let start = match self.focused {
@@ -62,6 +64,7 @@ impl WidgetTree {
                 .and_then(|anchor| self.nodes.get(anchor)?.parent)
                 .or(self.root),
         };
+        let start = self.outside_withdrawn(start);
         // An active trap holds the keyboard: a key that would start outside
         // it starts at the trap, so the trap's own handlers hear it before
         // the shortcuts above it, and a control behind it never does.
@@ -107,9 +110,11 @@ impl WidgetTree {
             next = self.nodes.get(id).and_then(|node| node.parent);
             // A disabled or hidden node's handlers never run, but the key keeps
             // bubbling, so shortcuts above it still work.
-            if self.nodes.get(id).is_some_and(|node| {
-                node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
-            }) {
+            if self
+                .nodes
+                .get(id)
+                .is_some_and(|node| node.interaction.has(Interaction::DISABLED) || node.withdrawn())
+            {
                 continue;
             }
             // A control that activates on Enter or Space fires its press
@@ -205,14 +210,17 @@ impl WidgetTree {
                 .take()
                 .and_then(|anchor| self.nodes.get(anchor)?.parent),
         };
+        let start = self.outside_withdrawn(start);
         let start = self.confine_to_trap(start);
         self.drop_invalid_focus();
         let mut next = start;
         while let Some(id) = next {
             next = self.nodes.get(id).and_then(|node| node.parent);
-            if self.nodes.get(id).is_some_and(|node| {
-                node.interaction.has(Interaction::DISABLED) || node.resolved.layout.hidden
-            }) {
+            if self
+                .nodes
+                .get(id)
+                .is_some_and(|node| node.interaction.has(Interaction::DISABLED) || node.withdrawn())
+            {
                 continue;
             }
             let Some(owner) = self.owner(id).cloned() else {
@@ -398,7 +406,7 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.resolved.layout.hidden {
+        if node.withdrawn() {
             return;
         }
         let focusable = node.interaction.has(Interaction::FOCUSABLE)
@@ -427,7 +435,7 @@ impl WidgetTree {
             let Some(node) = self.nodes.get(current) else {
                 return false;
             };
-            if node.resolved.layout.hidden {
+            if node.withdrawn() {
                 return false;
             }
             next = node.parent;
@@ -537,6 +545,24 @@ impl WidgetTree {
         }
     }
 
+    /// Returns `id`, or the parent of the outermost node from `id` up that
+    /// is withdrawn, so an event that would start inside a hidden or fading
+    /// subtree starts above it and no handler inside it hears the event.
+    pub(super) fn outside_withdrawn(&self, id: Option<WidgetId>) -> Option<WidgetId> {
+        let mut start = id;
+        let mut next = id;
+        while let Some(current) = next {
+            let Some(node) = self.nodes.get(current) else {
+                break;
+            };
+            next = node.parent;
+            if node.withdrawn() {
+                start = node.parent;
+            }
+        }
+        start
+    }
+
     /// Returns whether the live node `id` or one of its ancestors is hidden.
     ///
     /// A stale id counts as visible, so a caller that resolves it finds
@@ -547,7 +573,7 @@ impl WidgetTree {
             let Some(node) = self.nodes.get(current) else {
                 return false;
             };
-            if node.resolved.layout.hidden {
+            if node.withdrawn() {
                 return true;
             }
             next = node.parent;
@@ -641,7 +667,7 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.resolved.layout.hidden {
+        if node.withdrawn() {
             return;
         }
         if pending.contains(&id) {

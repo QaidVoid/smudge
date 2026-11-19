@@ -499,6 +499,12 @@ pub struct Element<W: Widget> {
     /// The spring the node's paint props move under, when the element asked
     /// for a transition.
     transition: Option<Spring>,
+    /// The spring the node fades in under when it mounts, when the element
+    /// asked for one.
+    enter: Option<Spring>,
+    /// The spring the node fades out under when a parent removes it, when
+    /// the element asked for one.
+    exit: Option<Spring>,
     /// The role the accessibility projection reports, when an element set
     /// one.
     a11y_role: Option<Role>,
@@ -535,6 +541,8 @@ impl<W: Widget> Element<W> {
             trap_focus: false,
             follow_end: None,
             transition: None,
+            enter: None,
+            exit: None,
             a11y_role: None,
             a11y_label: None,
             scroll_offset: Point::default(),
@@ -1444,6 +1452,48 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Fades the node and its subtree in under `spring` when it mounts, as
+    /// a [`show`] or [`for_each`] child or anywhere else, from nothing to the
+    /// opacity it draws at.
+    ///
+    /// The fade goes through the node's group opacity, so the subtree fades
+    /// as one. An app with reduced motion shows the node at once.
+    ///
+    /// ```
+    /// use smudge_core::animation::Spring;
+    /// use smudge_core::element::show;
+    /// use smudge_core::reactive::{self, prelude::*};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let (open, _set_open) = reactive::signal_local(true);
+    /// let toast = show(
+    ///     move || open.get(),
+    ///     || panel().enter(Spring::SMOOTH).exit(Spring::SNAPPY),
+    /// );
+    /// ```
+    pub fn enter(mut self, spring: Spring) -> Self {
+        self.enter = Some(spring);
+        self
+    }
+
+    /// Fades the node and its subtree out under `spring` when [`show`] or
+    /// [`for_each`] removes it, and removes it once the fade ends.
+    ///
+    /// While it fades, the node is held where it last was, out of the
+    /// layout flow, so its siblings close the gap at once, and bindings and
+    /// variants that would move or resize it wait until it comes back. Its
+    /// subtree is out of the interface as a hidden one is: it takes no
+    /// pointer or keyboard input, the focus leaves it, a held press inside
+    /// it ends, a focus trap inside it hands the focus back, and it leaves
+    /// the accessibility projection at once. A key or a condition that comes
+    /// back while the node fades brings this node back, fading in again from
+    /// where it is, rather than mounting another. An app with reduced motion
+    /// removes the node at once.
+    pub fn exit(mut self, spring: Spring) -> Self {
+        self.exit = Some(spring);
+        self
+    }
+
     /// Sets the role the accessibility projection reports for the node.
     ///
     /// A widget that reports no role of its own stays out of the projection
@@ -1876,6 +1926,12 @@ pub struct AnyElement {
     /// The spring the node's paint props move under, when the element asked
     /// for a transition.
     transition: Option<Spring>,
+    /// The spring the node fades in under when it mounts, when the element
+    /// asked for one.
+    enter: Option<Spring>,
+    /// The spring the node fades out under when a parent removes it, when
+    /// the element asked for one.
+    exit: Option<Spring>,
     /// The role the accessibility projection reports, when an element set
     /// one.
     a11y_role: Option<Role>,
@@ -1903,6 +1959,8 @@ impl AnyElement {
             trap_focus: element.trap_focus,
             follow_end: element.follow_end,
             transition: element.transition,
+            enter: element.enter,
+            exit: element.exit,
             a11y_role: element.a11y_role,
             a11y_label: element.a11y_label,
             scroll_offset: element.scroll_offset,
@@ -1992,6 +2050,8 @@ fn mount_named(
         trap_focus,
         follow_end,
         transition,
+        enter,
+        exit,
         a11y_role,
         a11y_label,
         scroll_offset,
@@ -2021,6 +2081,9 @@ fn mount_named(
     }
     if let Some(spring) = transition {
         tree.set_transition(id, spring);
+    }
+    if enter.is_some() || exit.is_some() {
+        tree.set_presence(id, enter, exit);
     }
     tree.set_a11y_role(id, a11y_role);
     tree.set_handlers(id, handlers);
@@ -2131,22 +2194,31 @@ pub fn show<E: IntoElement>(
         install: Box::new(move |id, queue| {
             let queue = queue.clone();
             let mounted: Rc<RefCell<Option<(WidgetId, Owner)>>> = Rc::new(RefCell::new(None));
+            // The child fading out after the condition turned false, which
+            // comes back if the condition turns true before its fade ends.
+            let exiting: Rc<RefCell<Option<WidgetId>>> = Rc::new(RefCell::new(None));
             RenderEffect::new_unwrapped(move || {
                 let visible = when();
                 let child_queue = queue.clone();
                 let mounted = Rc::clone(&mounted);
+                let exiting = Rc::clone(&exiting);
                 let build = Rc::clone(&build);
                 queue.push(Box::new(move |tree| {
                     let mut mounted = mounted.borrow_mut();
+                    let mut exiting = exiting.borrow_mut();
                     match (visible, mounted.take()) {
                         (true, None) => {
-                            if let Some(child) =
+                            let back = exiting.take().and_then(|child| {
+                                tree.cancel_exit(child).map(|owner| (child, owner))
+                            });
+                            *mounted = back.or_else(|| {
                                 mount_under_slot(id, tree, &child_queue, None, || build())
-                            {
-                                *mounted = Some(child);
-                            }
+                            });
                         }
-                        (false, Some((child, owner))) => unmount_child(child, &owner, tree),
+                        (false, Some((child, owner))) => match tree.begin_exit(child, owner) {
+                            Ok(()) => *exiting = Some(child),
+                            Err(owner) => unmount_child(child, &owner, tree),
+                        },
                         (_, unchanged) => *mounted = unchanged,
                     }
                 }));
@@ -2218,7 +2290,12 @@ where
             let queue = queue.clone();
             let mounted: Rc<RefCell<HashMap<K, (WidgetId, Owner)>>> =
                 Rc::new(RefCell::new(HashMap::new()));
-            let order: Rc<RefCell<Vec<K>>> = Rc::new(RefCell::new(Vec::new()));
+            // The rows fading out after their keys left the list, in the
+            // order they began. They are no live child of the reconcile, so
+            // new rows never take their places, and a key that comes back
+            // before its row's fade ends brings the row back.
+            let exiting: Rc<RefCell<Vec<(K, WidgetId)>>> = Rc::new(RefCell::new(Vec::new()));
+            let shown: Rc<RefCell<Vec<WidgetId>>> = Rc::new(RefCell::new(Vec::new()));
             RenderEffect::new_unwrapped(move || {
                 let items = items();
                 let keys: Vec<K> = items.iter().map(|item| key(item)).collect();
@@ -2234,16 +2311,22 @@ where
                 );
                 let child_queue = queue.clone();
                 let mounted = Rc::clone(&mounted);
-                let order = Rc::clone(&order);
+                let exiting = Rc::clone(&exiting);
+                let shown = Rc::clone(&shown);
                 let row = Rc::clone(&row);
                 queue.push(Box::new(move |tree| {
                     let mut mounted = mounted.borrow_mut();
-                    let mut order = order.borrow_mut();
+                    let mut exiting = exiting.borrow_mut();
+                    let mut shown = shown.borrow_mut();
 
+                    exiting.retain(|(_, child)| tree.contains(*child));
                     mounted.retain(|key, (child, owner)| {
                         let kept = last.contains_key(key);
                         if !kept {
-                            unmount_child(*child, owner, tree);
+                            match tree.begin_exit(*child, owner.clone()) {
+                                Ok(()) => exiting.push((key.clone(), *child)),
+                                Err(_) => unmount_child(*child, owner, tree),
+                            }
                         }
                         kept
                     });
@@ -2261,8 +2344,7 @@ where
                         }
                         names
                     };
-                    let mut new_order = Vec::with_capacity(last.len());
-                    let mut children = Vec::with_capacity(last.len());
+                    let mut children = Vec::with_capacity(last.len() + exiting.len());
                     for (at, (item, item_key)) in items.into_iter().zip(keys).enumerate() {
                         if last[&item_key] != at {
                             continue;
@@ -2291,12 +2373,30 @@ where
                                 *child
                             }
                             None => {
-                                let row = Rc::clone(&row);
-                                let Some((child, owner)) =
-                                    mount_under_slot(slot, tree, &child_queue, name, move || {
-                                        row(item)
-                                    })
-                                else {
+                                let back = exiting
+                                    .iter()
+                                    .position(|(key, _)| *key == item_key)
+                                    .map(|at| exiting.remove(at).1)
+                                    .and_then(|child| {
+                                        tree.cancel_exit(child).map(|owner| (child, owner))
+                                    });
+                                let mounted_now = match back {
+                                    Some((child, owner)) => {
+                                        name_row(tree, child, &owner, name);
+                                        Some((child, owner))
+                                    }
+                                    None => {
+                                        let row = Rc::clone(&row);
+                                        mount_under_slot(
+                                            slot,
+                                            tree,
+                                            &child_queue,
+                                            name,
+                                            move || row(item),
+                                        )
+                                    }
+                                };
+                                let Some((child, owner)) = mounted_now else {
                                     continue;
                                 };
                                 mounted.insert(item_key.clone(), (child, owner));
@@ -2304,12 +2404,12 @@ where
                             }
                         };
                         children.push(child);
-                        new_order.push(item_key);
                     }
+                    children.extend(exiting.iter().map(|(_, child)| *child));
 
-                    if *order != new_order {
-                        tree.set_children(slot, children);
-                        *order = new_order;
+                    if *shown != children {
+                        tree.set_children(slot, children.clone());
+                        *shown = children;
                     }
                 }));
             })

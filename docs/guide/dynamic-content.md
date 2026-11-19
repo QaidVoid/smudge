@@ -65,6 +65,23 @@ Keys must be unique within the list. Debug builds check this.
 
 The returned slot manages its own children, so do not add other children to the same element beside it. Wrap it in a `column` or `row` as above.
 
+## Fading in and out
+
+`enter` fades a node in when it mounts, and `exit` fades it out when `show` or `for_each` removes it, each under a spring:
+
+```rust
+let toast = show(
+    move || saved.get(),
+    || {
+        label("Saved")
+            .enter(Spring::SMOOTH)
+            .exit(Spring::SNAPPY)
+    },
+);
+```
+
+The fade goes through the node's opacity, so its whole subtree fades as one. A node that fades out is held where it last was, out of the layout, so the rows around it close the gap at once. It takes no input, loses the focus, and leaves the accessibility tree straight away, and it is removed once its fade ends. A key or a condition that comes back before then brings the same node back, fading in again from where it is. With reduced motion, nodes appear and go at once. A list can mount and remove rows all the time, as the virtual lists do, so only the nodes that ask for a fade get one.
+
 ## Very long lists
 
 `for_each` mounts every item. For thousands of rows of one height, use [`virtual_list`](./widgets#virtual-list), which mounts only the rows near the viewport.

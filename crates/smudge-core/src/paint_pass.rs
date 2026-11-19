@@ -109,7 +109,16 @@ impl WidgetTree {
                     }
                     None => &node.resolved,
                 };
-                let opacity = shown_opacity(style.paint.opacity);
+                let mut opacity = shown_opacity(style.paint.opacity);
+                if let Some(presence) = node.presence.as_deref_mut() {
+                    let (factor, moving) = presence.update(self.now, self.reduced_motion);
+                    opacity *= factor;
+                    if moving {
+                        self.animating.push(id);
+                    } else if presence.exiting() {
+                        self.exited.push(id);
+                    }
+                }
                 if opacity != node.opacity {
                     node.opacity = opacity;
                     self.opacity_changed.push(id);
@@ -124,8 +133,16 @@ impl WidgetTree {
                 node.widget.paint_inside(&cx, &mut node.inner_ops);
                 node.uses_tokens = self.theme.consulted();
             } else {
-                // A node that paints nothing shows no theme value.
+                // A node that paints nothing shows no theme value, and one
+                // that fades out unseen is done fading.
                 node.uses_tokens = false;
+                if node
+                    .presence
+                    .as_ref()
+                    .is_some_and(|presence| presence.exiting())
+                {
+                    self.exited.push(id);
+                }
             }
 
             let union = |ops: &[PaintOp]| {

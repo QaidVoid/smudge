@@ -192,6 +192,21 @@ impl<const N: usize> Motion<N> {
         }
     }
 
+    /// Moves the values under `spring` from `now` on, from where they are
+    /// and at the speed they have then.
+    fn respring(&mut self, spring: Spring, now: Instant) {
+        if spring == self.spring {
+            return;
+        }
+        let (value, velocity) = self.at(now);
+        self.spring = spring;
+        self.origin = now;
+        self.velocity = velocity;
+        for index in 0..N {
+            self.distance[index] = value[index] - self.target[index];
+        }
+    }
+
     /// The values and their velocities at `now`.
     fn at(&self, now: Instant) -> ([f64; N], [f64; N]) {
         if self.settled || !self.spring.moves() {
@@ -391,6 +406,74 @@ impl Transition {
     /// The style the node paints with, as the last update left it.
     pub(crate) fn animated(&self) -> &Style {
         &self.animated
+    }
+}
+
+/// How a node fades in when it mounts and out when it is removed, and how
+/// far along it is.
+///
+/// A node whose element called [`Element::enter`](crate::element::Element::enter)
+/// or [`Element::exit`](crate::element::Element::exit) owns one. Its factor,
+/// from 0.0 to 1.0, multiplies the opacity the node's subtree draws at.
+#[derive(Debug)]
+pub(crate) struct Presence {
+    /// The spring the node fades in under, or `None` to show it at once.
+    enter: Option<Spring>,
+    /// The spring the node fades out under, or `None` to remove it at once.
+    exit: Option<Spring>,
+    /// Whether the node is fading out of a parent that removed it.
+    exiting: bool,
+    /// The motion of the factor, once the node has painted.
+    factor: Option<Motion<1>>,
+}
+
+impl Presence {
+    /// The presence of a node that has not painted yet.
+    pub(crate) fn new(enter: Option<Spring>, exit: Option<Spring>) -> Presence {
+        Presence {
+            enter,
+            exit,
+            exiting: false,
+            factor: None,
+        }
+    }
+
+    /// Whether the node fades out when it is removed.
+    pub(crate) fn exits(&self) -> bool {
+        self.exit.is_some()
+    }
+
+    /// Whether the node is fading out.
+    pub(crate) fn exiting(&self) -> bool {
+        self.exiting
+    }
+
+    /// Starts the node fading out, or fading in again, from where it is.
+    pub(crate) fn set_exiting(&mut self, exiting: bool) {
+        self.exiting = exiting;
+    }
+
+    /// Moves the factor toward 0.0 while the node exits and 1.0 otherwise,
+    /// and returns it at `now` with whether it is still moving. With `jump`
+    /// set, the factor is at its target at once.
+    ///
+    /// The first update starts at 0.0 when the node fades in, and at 1.0
+    /// otherwise.
+    pub(crate) fn update(&mut self, now: Instant, jump: bool) -> (f32, bool) {
+        let fallback = Spring::SMOOTH;
+        let spring = if self.exiting {
+            self.exit.or(self.enter).unwrap_or(fallback)
+        } else {
+            self.enter.or(self.exit).unwrap_or(fallback)
+        };
+        let target = if self.exiting { 0.0 } else { 1.0 };
+        let start = if self.enter.is_some() { 0.0 } else { 1.0 };
+        let motion = self
+            .factor
+            .get_or_insert_with(|| Motion::rest(spring, [start], now, VALUE));
+        motion.respring(spring, now);
+        let ([factor], _, settled) = motion.step([target], now, jump);
+        (factor.clamp(0.0, 1.0) as f32, !settled)
     }
 }
 

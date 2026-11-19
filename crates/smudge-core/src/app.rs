@@ -1203,7 +1203,9 @@ impl App {
         }
 
         // Queued after the flush, so a node a binding repainted in it keeps
-        // the accessibility update its repaint asked for.
+        // the accessibility update its repaint asked for. Exits that ended
+        // at the last paint are removed first.
+        self.tree.finish_exits();
         self.tree.queue_animations();
 
         let layout_start = Instant::now();

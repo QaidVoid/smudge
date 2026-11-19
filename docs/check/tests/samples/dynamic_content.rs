@@ -29,6 +29,19 @@ fn sign_in() {
 }
 
 #[test]
+fn fading() {
+    let saved = RwSignal::new(false);
+    let toast = show(
+        move || saved.get(),
+        || {
+            label("Saved")
+                .enter(Spring::SMOOTH)
+                .exit(Spring::SNAPPY)
+        },
+    );
+}
+
+#[test]
 fn hidden() {
     let expanded = RwSignal::new(true);
     let details = column().hidden(move || !expanded.get());

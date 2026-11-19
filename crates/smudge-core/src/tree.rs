@@ -16,7 +16,7 @@ use std::rc::Rc;
 use slotmap::{Key, SlotMap, new_key_type};
 use web_time::Instant;
 
-use crate::animation::{Spring, Transition};
+use crate::animation::{Presence, Spring, Transition};
 use crate::damage::DamageAccumulator;
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
@@ -229,6 +229,55 @@ struct Node {
     /// The opacity the node's subtree was last drawn at, which the paint
     /// pass keeps and the display list reads.
     opacity: f32,
+    /// How the node fades in and out, when its element asked for it.
+    presence: Option<Box<Presence>>,
+    /// What the node needs back if its exit is cancelled, and the owner its
+    /// removal cleans up, while it fades out of a parent that removed it.
+    exit: Option<Box<Exit>>,
+}
+
+impl Node {
+    /// Whether the node and its subtree are out of the interface: hidden,
+    /// or fading out of a parent that removed it. Such a subtree takes no
+    /// input, holds no focus, and is left out of the accessibility
+    /// projection.
+    fn withdrawn(&self) -> bool {
+        self.resolved.layout.hidden || self.exit.is_some()
+    }
+}
+
+/// A node fading out of a parent that removed it.
+struct Exit {
+    /// The owner of what the node's build created, cleaned up when the node
+    /// is finally removed.
+    owner: Owner,
+    /// Where the node is held: its last offset from its parent's border
+    /// edge, as the parent's absolutely positioned children are placed.
+    at: Point,
+    /// The size the node is held at, its last.
+    size: Size,
+}
+
+impl Exit {
+    /// Takes `layout` out of the flow and holds it where the node last was,
+    /// over whatever its bindings and variants set.
+    fn hold(&self, layout: &mut LayoutProps) {
+        use crate::style::{Edges, Length, Position};
+        layout.position = Position::Absolute;
+        layout.inset = Edges {
+            left: Length::Px(self.at.x),
+            top: Length::Px(self.at.y),
+            right: Length::Auto,
+            bottom: Length::Auto,
+        };
+        layout.margin = Edges::all(Length::Px(0.0));
+        layout.width = Length::Px(self.size.width);
+        layout.height = Length::Px(self.size.height);
+        layout.min_width = Length::Auto;
+        layout.min_height = Length::Auto;
+        layout.max_width = Length::Auto;
+        layout.max_height = Length::Auto;
+    }
 }
 
 /// Returns whether two child lists that hold the same nodes in a different
@@ -378,6 +427,9 @@ pub(crate) struct WidgetTree {
     opacity_changed: Vec<WidgetId>,
     /// The stack a walk of a subtree uses, kept so its capacity is reused.
     walk: Vec<WidgetId>,
+    /// The nodes whose exit finished at their last paint, which the next
+    /// frame removes.
+    exited: Vec<WidgetId>,
 }
 
 impl WidgetTree {
@@ -418,6 +470,7 @@ impl WidgetTree {
             animating_taken: Vec::new(),
             opacity_changed: Vec::new(),
             walk: Vec::new(),
+            exited: Vec::new(),
         }
     }
 
@@ -511,6 +564,8 @@ impl WidgetTree {
             painted: None,
             transition: None,
             opacity: 1.0,
+            presence: None,
+            exit: None,
         };
         let id = self.nodes.insert(node);
         self.taffy
@@ -601,7 +656,11 @@ impl WidgetTree {
             let owner = node.owner.clone();
             let painted = node.painted.take();
             let taffy = node.taffy;
+            let exit = node.exit.take();
             owner.cleanup();
+            if let Some(exit) = exit {
+                exit.owner.cleanup();
+            }
             if let Some(painted) = painted {
                 self.pending_damage.push(painted);
             }
@@ -829,7 +888,143 @@ impl WidgetTree {
     /// Whether a spring was still moving at the last paint, so the next
     /// frame has motion to paint.
     pub(crate) fn is_animating(&self) -> bool {
-        !self.animating.is_empty()
+        !self.animating.is_empty() || !self.exited.is_empty()
+    }
+
+    /// Gives the node `id` a presence that fades it in under `enter` when it
+    /// mounts and out under `exit` when a parent removes it, either of which
+    /// may be absent. A stale id does nothing.
+    pub(crate) fn set_presence(
+        &mut self,
+        id: WidgetId,
+        enter: Option<Spring>,
+        exit: Option<Spring>,
+    ) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.presence = Some(Box::new(Presence::new(enter, exit)));
+            self.transitions_mounted = true;
+        }
+    }
+
+    /// Whether `id` names a live node.
+    pub(crate) fn contains(&self, id: WidgetId) -> bool {
+        self.nodes.contains_key(id)
+    }
+
+    /// Starts the node `id` fading out instead of removing it, when its
+    /// element asked for an exit, and keeps `owner` to clean up when the
+    /// exit finishes. Hands `owner` back when the node has no exit, so the
+    /// caller removes it at once.
+    ///
+    /// The node is held where it last was, out of the layout flow, so its
+    /// siblings close the gap at once. A held press inside it ends first,
+    /// as [`WidgetTree::release_press`] ends it. Its subtree then counts as
+    /// withdrawn, as a hidden one does: it takes no input, the hover and the
+    /// focus leave it, a trap inside it hands the focus back, and the
+    /// accessibility projection drops it.
+    pub(crate) fn begin_exit(&mut self, id: WidgetId, owner: Owner) -> Result<(), Owner> {
+        let Some(node) = self.nodes.get(id) else {
+            return Err(owner);
+        };
+        let exits = node
+            .presence
+            .as_ref()
+            .is_some_and(|presence| presence.exits());
+        if !exits || node.exit.is_some() {
+            return Err(owner);
+        }
+        // The press ends while the node still takes input, so the pressed
+        // node hears its release and lets go of a grab it holds.
+        if self
+            .pressed
+            .is_some_and(|pressed| self.is_within(pressed, id))
+        {
+            self.release_press();
+        }
+        let (at, size) = self.last_placement(id);
+        let node = self.nodes.get_mut(id).expect("the node is live");
+        if let Some(presence) = node.presence.as_deref_mut() {
+            presence.set_exiting(true);
+        }
+        node.exit = Some(Box::new(Exit { owner, at, size }));
+        let parent = node.parent;
+        self.re_resolve(id);
+        // Marked even when the hold changes no rectangle, so the next frame
+        // paints the fade and its layout pass resolves the focus traps.
+        self.mark(id, Dirty::Layout);
+        if let Some(parent) = parent {
+            self.push_a11y(parent);
+        }
+        self.drop_invalid_focus();
+        if self.pointer_inside && self.pressed.is_none() {
+            self.refresh_hover();
+        }
+        Ok(())
+    }
+
+    /// Stops the exit of the node `id`, which fades in again from where it
+    /// is and takes its place in the layout back, and returns the owner the
+    /// exit kept, or `None` when the node is not exiting.
+    pub(crate) fn cancel_exit(&mut self, id: WidgetId) -> Option<Owner> {
+        let node = self.nodes.get_mut(id)?;
+        let exit = node.exit.take()?;
+        if let Some(presence) = node.presence.as_deref_mut() {
+            presence.set_exiting(false);
+        }
+        let parent = node.parent;
+        self.exited.retain(|exited| *exited != id);
+        self.re_resolve(id);
+        // Marked even when the hold changes no rectangle, so the next frame
+        // paints the fade and its layout pass resolves the focus traps.
+        self.mark(id, Dirty::Layout);
+        self.push_a11y_visible_subtree(id);
+        if let Some(parent) = parent {
+            self.push_a11y(parent);
+        }
+        Some(exit.owner)
+    }
+
+    /// Removes every node whose exit finished at its last paint, and cleans
+    /// up the owner each exit kept.
+    pub(crate) fn finish_exits(&mut self) {
+        let mut exited = std::mem::take(&mut self.exited);
+        for id in exited.drain(..) {
+            let Some(exit) = self.nodes.get_mut(id).and_then(|node| node.exit.take()) else {
+                continue;
+            };
+            self.remove(id);
+            exit.owner.cleanup();
+        }
+        self.exited = exited;
+    }
+
+    /// The node's last offset from its parent's border edge, where the
+    /// parent places an absolutely positioned child, and its last size.
+    ///
+    /// A child in the flow of a parent that scrolls is drawn shifted by the
+    /// scroll offset, and an absolutely positioned one is not, so the offset
+    /// takes the scroll in. A later scroll leaves the held node behind.
+    fn last_placement(&self, id: WidgetId) -> (Point, Size) {
+        let Some(node) = self.nodes.get(id) else {
+            return (Point::default(), Size::default());
+        };
+        let Ok(placed) = self.taffy.layout(node.taffy) else {
+            return (Point::default(), Size::default());
+        };
+        let (border, scroll) = node
+            .parent
+            .and_then(|parent| self.nodes.get(parent))
+            .map(|parent| (parent.resolved.layout.border_width, parent.scroll_offset))
+            .unwrap_or((crate::style::Edges::all(0.0), Point::default()));
+        let at = Point {
+            x: placed.location.x - border.left - scroll.x,
+            y: placed.location.y - border.top - scroll.y,
+        };
+        let size = Size {
+            width: placed.size.width,
+            height: placed.size.height,
+        };
+        (at, size)
     }
 
     /// Queues for paint every node whose springs were still moving at the
@@ -966,7 +1161,10 @@ impl WidgetTree {
         };
         let empty = Variants::default();
         let variants = node.variants.as_deref().unwrap_or(&empty);
-        let resolved = resolve(&node.base, variants, node.interaction);
+        let mut resolved = resolve(&node.base, variants, node.interaction);
+        if let Some(exit) = node.exit.as_deref() {
+            exit.hold(&mut resolved.layout);
+        }
         if resolved == node.resolved {
             return;
         }
@@ -1116,7 +1314,7 @@ impl WidgetTree {
             let Some(node) = self.nodes.get(current) else {
                 return false;
             };
-            if node.resolved.layout.hidden {
+            if node.withdrawn() {
                 return false;
             }
             next = node.parent;
@@ -1149,7 +1347,7 @@ impl WidgetTree {
             let Some(node) = self.nodes.get(current) else {
                 continue;
             };
-            if node.resolved.layout.hidden {
+            if node.withdrawn() {
                 continue;
             }
             let children = node.children.clone();
@@ -1206,7 +1404,7 @@ impl WidgetTree {
         let mut roots = Vec::new();
         if let Some(root) = self.root
             && let Some(node) = self.nodes.get(root)
-            && !node.resolved.layout.hidden
+            && !node.withdrawn()
         {
             if Self::effective_role(node).is_some() {
                 roots.push(root);
@@ -1238,7 +1436,7 @@ impl WidgetTree {
         let mut next = self.nodes.get(id).and_then(|node| node.parent);
         while let Some(current) = next {
             let node = self.nodes.get(current)?;
-            if !node.resolved.layout.hidden && Self::effective_role(node).is_some() {
+            if !node.withdrawn() && Self::effective_role(node).is_some() {
                 return Some(current);
             }
             next = node.parent;
@@ -1258,7 +1456,7 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.resolved.layout.hidden {
+        if node.withdrawn() {
             return;
         }
         let Some(role) = Self::effective_role(node) else {
@@ -1316,14 +1514,14 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.resolved.layout.hidden {
+        if node.withdrawn() {
             return;
         }
         for &child in &node.children {
             let Some(child_node) = self.nodes.get(child) else {
                 continue;
             };
-            if child_node.resolved.layout.hidden {
+            if child_node.withdrawn() {
                 continue;
             }
             if Self::effective_role(child_node).is_some() {

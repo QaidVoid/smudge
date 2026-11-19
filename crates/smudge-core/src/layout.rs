@@ -690,19 +690,31 @@ impl WidgetTree {
     /// that lays out, and which state a frame showed would depend on how
     /// many passes ran before it. The node keeps the hover until a pointer
     /// event moves it, which makes the hover a function of the layout and
-    /// the pointer events alone.
-    fn refresh_hover(&mut self) {
+    /// the pointer events alone. A node inside a hidden or fading subtree
+    /// loses the hover anyway, since no pointer can hit it again, and an
+    /// ancestor outside the subtree that the rule keeps hovered keeps the
+    /// hover alone.
+    pub(super) fn refresh_hover(&mut self) {
         let target = self.hover_target(self.pointer);
         if target == self.hovered {
             return;
         }
+        let boundary = self.outside_withdrawn(self.hovered);
+        let leaving = boundary != self.hovered;
+        let mut inside = leaving;
         let mut next = self.hovered;
         while let Some(id) = next {
             let Some(node) = self.nodes.get(id) else {
                 break;
             };
+            if Some(id) == boundary {
+                inside = false;
+            }
             let stays = target.is_some_and(|target| self.is_within(target, id));
-            if !stays && self.hover_moves_layout(id) {
+            if !stays && !inside && self.hover_moves_layout(id) {
+                if leaving {
+                    self.set_hover_target(Some(id));
+                }
                 return;
             }
             next = node.parent;
