@@ -65,6 +65,11 @@ pub(crate) struct Devtools {
     /// The rectangles the app's recent frames repainted, in logical pixels,
     /// each with when it was repainted, oldest first.
     flashes: Vec<(Rect, Instant)>,
+    /// The rectangles of the app's nodes last handed to the panel, each
+    /// with its depth.
+    bounds: Vec<(usize, Rect)>,
+    /// The rectangles of the app's nodes as this redraw finds them.
+    found: Vec<(usize, Rect)>,
     /// What the panel shows, which the window feeds.
     tools: smudge_devtools::Tools,
     /// Whether a wake of the overlay requests no redraw, because the window
@@ -143,6 +148,8 @@ impl Devtools {
             full_repaint: false,
             cover: Cover::default(),
             flashes: Vec::new(),
+            bounds: Vec::new(),
+            found: Vec::new(),
             tools,
             quiet: Rc::new(Cell::new(false)),
             open,
@@ -264,6 +271,41 @@ impl Devtools {
                 .iter()
                 .map(|&(rect, at)| (rect, opacity(now.saturating_duration_since(at)))),
         );
+        self.quiet.set(false);
+    }
+
+    /// Hands the panel the rectangles of `app`'s nodes while layout bounds
+    /// is on, when they differ from the ones it holds. A rectangle with an
+    /// edge that is not finite is left out.
+    ///
+    /// A node moves with a layout pass and with a scroll, so this walks the
+    /// tree after every present and writes only when something moved. The
+    /// outlines show in the overlay's next frame: with `paced`, the window
+    /// draws it on its own, as [`Devtools::record`] describes, and otherwise
+    /// the write requests it. That frame finds nothing moved and writes
+    /// nothing, so the window then goes idle.
+    pub(crate) fn show_bounds(&mut self, app: &App, paced: bool) {
+        if !self.tools.switches().layout_bounds {
+            self.bounds.clear();
+            return;
+        }
+        self.found.clear();
+        // A rectangle that is not finite cannot be outlined, and one holding
+        // a NaN never equals itself, which would rewrite it on every redraw.
+        app.visit_nodes(|depth, _, rect| {
+            if [rect.x0, rect.y0, rect.x1, rect.y1]
+                .iter()
+                .all(|edge| edge.is_finite())
+            {
+                self.found.push((depth, rect));
+            }
+        });
+        if self.found == self.bounds {
+            return;
+        }
+        std::mem::swap(&mut self.found, &mut self.bounds);
+        self.quiet.set(paced);
+        self.tools.show_bounds(self.bounds.iter().copied());
         self.quiet.set(false);
     }
 
@@ -393,8 +435,9 @@ impl Devtools {
                 self.app.handle_event(InputEvent::PointerLeft);
             }
             self.focus_keys(app, false);
-            self.tools.forget_damage();
+            self.tools.forget_marks();
             self.flashes.clear();
+            self.bounds.clear();
         }
         self.open = open;
         self.captured = false;

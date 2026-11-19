@@ -60,6 +60,9 @@ pub struct Tools {
     /// The rectangles the app's recent frames repainted, in logical pixels,
     /// each with the opacity it flashes at.
     flashes: RwSignal<Rc<Vec<(Rect, u8)>>>,
+    /// The rectangles of the app's nodes, in logical pixels, each with its
+    /// depth in the tree.
+    bounds: RwSignal<Rc<Vec<(usize, Rect)>>>,
 }
 
 /// The devtools' switches, which the panel's buttons turn on and off and the
@@ -73,6 +76,10 @@ pub struct Switches {
     /// Whether the overlay flashes the pixels the app's recent frames
     /// repainted, each flash fading out after its frame.
     pub paint_flashing: bool,
+    /// Whether the overlay outlines the rectangle of every node of the app,
+    /// in a color that follows its depth in the tree. A node that a scroll
+    /// view or a clip hides is outlined too, where layout put it.
+    pub layout_bounds: bool,
     /// Whether the app repaints its whole surface on every frame, instead of
     /// only what changed.
     pub full_repaint: bool,
@@ -92,6 +99,7 @@ impl Tools {
             switches: RwSignal::new(Switches::default()),
             damage: RwSignal::new(Rc::new(Vec::new())),
             flashes: RwSignal::new(Rc::new(Vec::new())),
+            bounds: RwSignal::new(Rc::new(Vec::new())),
         }
     }
 
@@ -103,9 +111,9 @@ impl Tools {
     /// Turns the switches on and off as `switches` says, as the panel's
     /// buttons do.
     ///
-    /// With the damage tint or paint flashing off, the rectangles it would
-    /// cover are dropped, so turning it on again marks nothing until the
-    /// app's next frame.
+    /// With the damage tint, paint flashing or layout bounds off, the
+    /// rectangles it would mark are dropped, so turning it on again marks
+    /// nothing until the window hands it new ones.
     pub fn set_switches(&self, switches: Switches) {
         self.switches.set(switches);
         if !switches.damage_tint && self.damage.with(|damage| !damage.is_empty()) {
@@ -114,17 +122,35 @@ impl Tools {
         if !switches.paint_flashing && self.flashes.with(|flashes| !flashes.is_empty()) {
             self.show_flashes([]);
         }
+        if !switches.layout_bounds && self.bounds.with(|bounds| !bounds.is_empty()) {
+            self.show_bounds([]);
+        }
     }
 
-    /// Drops the rectangles the damage tint and paint flashing cover, as
-    /// when the panel hides and no longer hears the app's frames.
-    pub fn forget_damage(&self) {
+    /// Drops the rectangles the damage tint, paint flashing and layout
+    /// bounds mark, as when the panel hides and no longer hears the app's
+    /// frames.
+    pub fn forget_marks(&self) {
         if self.damage.with(|damage| !damage.is_empty()) {
             self.show_damage([]);
         }
         if self.flashes.with(|flashes| !flashes.is_empty()) {
             self.show_flashes([]);
         }
+        if self.bounds.with(|bounds| !bounds.is_empty()) {
+            self.show_bounds([]);
+        }
+    }
+
+    /// Takes `bounds`, the rectangles of the app's nodes in logical pixels,
+    /// each with its depth in the tree, which layout bounds outlines while
+    /// it is on.
+    pub fn show_bounds(&self, bounds: impl IntoIterator<Item = (usize, Rect)>) {
+        self.bounds.update(|shown| {
+            let shown = Rc::make_mut(shown);
+            shown.clear();
+            shown.extend(bounds);
+        });
     }
 
     /// Takes `rects`, the rectangles the app's last frame repainted in
@@ -237,7 +263,19 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
     // inside the border.
     let (switches, damage) = (tools.switches.clone(), tools.damage.clone());
     let (flashing, flashes) = (tools.switches.clone(), tools.flashes.clone());
+    let (outlining, bounds) = (tools.switches.clone(), tools.bounds.clone());
     Element::new(Marks::default())
+        .bind(
+            Outlined,
+            move || outlining.get().layout_bounds.then(|| bounds.get()),
+            |marks, bounds| {
+                marks.bounds.clear();
+                if let Some(bounds) = bounds {
+                    marks.bounds.extend_from_slice(&bounds);
+                }
+                Dirty::Paint
+            },
+        )
         .bind(
             Flashed,
             move || flashing.get().paint_flashing.then(|| flashes.get()),
@@ -287,6 +325,10 @@ struct Tinted;
 /// The marker of the damage the root flashes, which [`Element::bind`] keys
 /// on.
 struct Flashed;
+
+/// The marker of the node rectangles the root outlines, which
+/// [`Element::bind`] keys on.
+struct Outlined;
 
 /// Returns `at` moved as little as it takes for a panel there to stay inside
 /// a window of `viewport`: its left and top edges in the window, its right
@@ -345,6 +387,9 @@ fn body(tools: &Tools) -> Element<Panel> {
                 }))
                 .child(switch(tools, "Paint flashing", |switches| {
                     &mut switches.paint_flashing
+                }))
+                .child(switch(tools, "Layout bounds", |switches| {
+                    &mut switches.layout_bounds
                 }))
                 .child(switch(tools, "Full repaint", |switches| {
                     &mut switches.full_repaint

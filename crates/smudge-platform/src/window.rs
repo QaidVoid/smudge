@@ -1178,12 +1178,15 @@ where
             };
         }
         #[cfg(feature = "_devtools")]
-        if app_wanted && state.devtools.is_open() {
+        if state.devtools.is_open() {
             let paced = paced || state.is_animating();
-            state.devtools.record(
-                frame_record(state.app.stats(), presented.map(|(stats, _)| stats)),
-                paced,
-            );
+            if app_wanted {
+                state.devtools.record(
+                    frame_record(state.app.stats(), presented.map(|(stats, _)| stats)),
+                    paced,
+                );
+            }
+            state.devtools.show_bounds(&state.app, paced);
         }
         let presented = presented.map(|(stats, _)| stats);
         if let Some(stats) = presented {

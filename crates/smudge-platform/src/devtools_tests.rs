@@ -8,7 +8,7 @@ use smudge_core::geometry::{Color, Corners, PixelRect, Point, Rect, Size};
 use smudge_core::input::{Handled, InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use smudge_core::paint::{DisplayItem, DisplayList, PaintOp};
 use smudge_core::reactive::{RwSignal, prelude::*};
-use smudge_core::style::pct;
+use smudge_core::style::{pct, px};
 use smudge_core::widget::Panel;
 use smudge_text::TextSystem;
 
@@ -842,4 +842,152 @@ fn a_reopened_panel_shows_no_old_flashes() {
     devtools.show(&mut app, true);
     devtools.fade(now);
     assert_eq!(flash_opacities(&mut devtools), Vec::<u8>::new());
+}
+
+/// The rectangles the overlay's next frame outlines in the colors of the
+/// first two depths, which leaves out the panel's own border.
+fn outlines(devtools: &mut Devtools) -> Vec<Rect> {
+    let depths = [Color::rgb(255, 120, 80), Color::rgb(250, 200, 60)];
+    let output = devtools.app.frame();
+    output
+        .list
+        .items()
+        .iter()
+        .filter_map(|item| match item {
+            DisplayItem::Op(PaintOp::StrokeRect { rect, color, .. }) if depths.contains(color) => {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn layout_bounds_outline_every_node_and_follow_a_layout_change() {
+    TextSystem::bundled_only().install();
+    let width = RwSignal::new(100.0_f32);
+    let read = width.clone();
+    let mut app = App::new(
+        AppConfig {
+            viewport: VIEWPORT,
+            scale: 1.0,
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Damage,
+        },
+        move || {
+            Element::new(Panel)
+                .width(pct(100.0))
+                .height(pct(100.0))
+                .child(
+                    Element::new(Panel)
+                        .width(move || px(read.get()))
+                        .height(px(40.0)),
+                )
+        },
+    );
+    app.frame();
+    let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
+    devtools.app.frame();
+    let wakes = Rc::new(Cell::new(0u32));
+    let counted = Rc::clone(&wakes);
+    devtools.set_wake(move || counted.set(counted.get() + 1));
+    let mut switches = devtools.tools.switches();
+    switches.layout_bounds = true;
+    devtools.tools.set_switches(switches);
+    devtools.app.frame();
+    wakes.set(0);
+
+    devtools.show_bounds(&app, false);
+    assert_eq!(
+        wakes.get(),
+        1,
+        "an idle window draws once more to show them"
+    );
+    assert_eq!(
+        outlines(&mut devtools),
+        [
+            Rect::new(0.0, 0.0, VIEWPORT.width, VIEWPORT.height),
+            Rect::new(0.0, 0.0, 100.0, 40.0),
+        ]
+    );
+
+    devtools.show_bounds(&app, false);
+    assert_eq!(wakes.get(), 1, "nothing moved, so nothing is asked for");
+
+    width.set(180.0);
+    app.frame();
+    devtools.show_bounds(&app, true);
+    assert_eq!(wakes.get(), 1, "a paced window draws the next frame itself");
+    assert_eq!(outlines(&mut devtools)[1], Rect::new(0.0, 0.0, 180.0, 40.0));
+
+    switches.layout_bounds = false;
+    devtools.tools.set_switches(switches);
+    devtools.show_bounds(&app, false);
+    assert!(outlines(&mut devtools).is_empty());
+
+    switches.layout_bounds = true;
+    devtools.tools.set_switches(switches);
+    devtools.show_bounds(&app, false);
+    assert_eq!(outlines(&mut devtools).len(), 2, "on again, they come back");
+
+    devtools.show(&mut app, false);
+    devtools.show(&mut app, true);
+    assert!(
+        outlines(&mut devtools).is_empty(),
+        "a reopened panel waits for a walk"
+    );
+    devtools.show_bounds(&app, false);
+    assert_eq!(
+        outlines(&mut devtools).len(),
+        2,
+        "and the next walk shows them"
+    );
+}
+
+#[test]
+fn a_node_with_an_unbounded_size_lets_layout_bounds_go_idle() {
+    TextSystem::bundled_only().install();
+    let mut app = App::new(
+        AppConfig {
+            viewport: VIEWPORT,
+            scale: 1.0,
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Damage,
+        },
+        || {
+            Element::new(Panel)
+                .width(pct(100.0))
+                .height(pct(100.0))
+                .child(
+                    Element::new(Panel)
+                        .width(px(f32::INFINITY))
+                        .height(px(10.0)),
+                )
+                .child(
+                    Element::new(Panel)
+                        .width(px(10.0))
+                        .height(pct(f32::INFINITY)),
+                )
+        },
+    );
+    app.frame();
+    let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
+    devtools.app.frame();
+    let wakes = Rc::new(Cell::new(0u32));
+    let counted = Rc::clone(&wakes);
+    devtools.set_wake(move || counted.set(counted.get() + 1));
+    let mut switches = devtools.tools.switches();
+    switches.layout_bounds = true;
+    devtools.tools.set_switches(switches);
+    devtools.app.frame();
+    wakes.set(0);
+
+    devtools.show_bounds(&app, false);
+    devtools.app.frame();
+    devtools.show_bounds(&app, false);
+    assert_eq!(
+        wakes.get(),
+        1,
+        "an unchanged tree asks for no second redraw"
+    );
 }
