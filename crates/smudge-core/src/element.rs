@@ -1395,13 +1395,16 @@ impl<W: Widget> Element<W> {
     /// another state, a binding or a theme switch, instead of switching at
     /// once.
     ///
-    /// Colors move in linear sRGB. A new value mid-motion continues from
-    /// where the motion is, at the speed it has. A color that appears or
-    /// goes away fades through its alpha. The node's first paint shows its
-    /// values as they are. The window keeps drawing frames while anything
-    /// moves and stops once everything has arrived, and an app with reduced
-    /// motion shows every new value at once, as
-    /// [`App::set_reduced_motion`](crate::app::App::set_reduced_motion)
+    /// Colors move in linear sRGB with premultiplied alpha, so a fade never
+    /// passes through a color darker or lighter than its ends. A new value
+    /// mid-motion continues from where the motion is, at the speed it has.
+    /// A background or border that appears or goes away fades in or out. A
+    /// text color that becomes set or unset switches at once, since an
+    /// unset one is the widget's own, which the transition cannot see. The
+    /// node's first paint shows its values as they are. The window keeps
+    /// drawing frames while anything moves and stops once everything has
+    /// arrived, and an app with reduced motion shows every new value at
+    /// once, as [`App::set_reduced_motion`](crate::app::App::set_reduced_motion)
     /// describes. Layout props never move.
     ///
     /// ```

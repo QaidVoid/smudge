@@ -1132,13 +1132,13 @@ impl App {
     /// 1. The values other threads sent through the app's channels: each
     ///    handler runs inside the owner that created its channel, delivering
     ///    at most what the queue held when the drain reached it.
-    /// 2. The timers that are due on the app's clock, then the nodes whose
-    ///    springs were still moving, which repaint, then the tick callback,
+    /// 2. The timers that are due on the app's clock, then the tick callback,
     ///    when one is set.
     /// 3. Reactive effects and the updates they queue, until neither has work
     ///    left. A signal write therefore lands before layout, including one a
     ///    channel handler or a timer made at the start of the frame.
-    /// 4. The layout pass, which runs the layout engine only when a node needs
+    /// 4. The nodes whose springs were still moving, which repaint. Then the
+    ///    layout pass, which runs the layout engine only when a node needs
     ///    it.
     /// 5. The paint pass, which regenerates the operations of the nodes that
     ///    changed and reports their old and new bounds as damage.
@@ -1166,7 +1166,6 @@ impl App {
         let quiet = QuietWakes::enter(&self._root);
         crate::channel::drain_all(&self.channels);
         timer::fire_due(&self.timers);
-        self.tree.queue_animations();
 
         let now = self.now();
         self.tree.set_now(now);
@@ -1202,6 +1201,10 @@ impl App {
             // The capped loop left work queued that no frame has run yet.
             self._root.wake();
         }
+
+        // Queued after the flush, so a node a binding repainted in it keeps
+        // the accessibility update its repaint asked for.
+        self.tree.queue_animations();
 
         let layout_start = Instant::now();
         self.stats.layout_ran = self.tree.layout(self.config.viewport);

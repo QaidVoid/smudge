@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use smudge_core::animation::Spring;
 use smudge_core::geometry::{Color, Point};
+use smudge_core::reactive::{RwSignal, prelude::*};
+use smudge_core::semantics::Role;
 use smudge_core::style::px;
+use smudge_core::theme::ColorValue;
 use smudge_core::widget::panel;
 use smudge_test::Harness;
 
@@ -174,4 +177,42 @@ fn a_fill_that_appears_on_hover_fades_in() {
         "only {between} frames showed the fill fading in"
     );
     assert_eq!(shown(&harness), rgba(HOVERED));
+}
+
+#[test]
+fn a_moving_node_that_a_binding_repaints_still_updates_its_projection() {
+    let fill = RwSignal::new(RESTING);
+    let read = fill.clone();
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        let read = read.clone();
+        panel().child(
+            panel()
+                .width(px(100.0))
+                .height(px(100.0))
+                .role(Role::Button)
+                .background(move || ColorValue::from(read.get()))
+                .hover(|style| style.border_color(HOVERED))
+                .transition(Spring::SMOOTH),
+        )
+    });
+    harness.frame();
+    harness.move_to(INSIDE);
+    harness.frame();
+    harness.advance(FRAME);
+    assert!(harness.app().is_animating());
+    harness.app().take_a11y_changes();
+
+    fill.set(HOVERED);
+    harness.advance(FRAME);
+    let changes = harness.app().take_a11y_changes();
+    let button = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == Role::Button)
+        .expect("the button is projected");
+    assert!(
+        changes.changed.contains(&button.id),
+        "the repaint the binding asked for reached the projection: {changes:?}"
+    );
 }

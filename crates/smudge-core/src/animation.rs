@@ -29,11 +29,28 @@ use crate::geometry::Color;
 use crate::style::Style;
 use crate::theme::{ColorValue, RadiusValue, Theme};
 
-/// How far from its target a value may be and still count as arrived.
-const SETTLED_DISTANCE: f64 = 1e-3;
+/// How close to its target, and how slow, a value must be to count as
+/// arrived.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Tolerance {
+    /// How far from its target the value may be.
+    distance: f64,
+    /// How fast the value may still move, per second.
+    speed: f64,
+}
 
-/// How fast a value may still move, per second, and count as arrived.
-const SETTLED_SPEED: f64 = 1e-2;
+/// The tolerance of a value in its own units, such as a radius in pixels.
+const VALUE: Tolerance = Tolerance {
+    distance: 1e-3,
+    speed: 1e-2,
+};
+
+/// The tolerance of a linear color channel, tight enough that no 8-bit
+/// channel jumps when the color arrives, near black included.
+const COLOR: Tolerance = Tolerance {
+    distance: 1e-4,
+    speed: 1e-3,
+};
 
 /// How close to 1 a damping ratio counts as critical, where the formulas
 /// for the other two regimes divide by a number near zero.
@@ -152,11 +169,18 @@ pub(crate) struct Motion<const N: usize> {
     target: [f64; N],
     /// Whether the values have arrived and stopped.
     settled: bool,
+    /// How close and how slow the values must be to arrive.
+    tolerance: Tolerance,
 }
 
 impl<const N: usize> Motion<N> {
-    /// Values at rest at `at`, from `now`.
-    pub(crate) fn rest(spring: Spring, at: [f64; N], now: Instant) -> Motion<N> {
+    /// Values at rest at `at`, from `now`, that arrive within `tolerance`.
+    pub(crate) fn rest(
+        spring: Spring,
+        at: [f64; N],
+        now: Instant,
+        tolerance: Tolerance,
+    ) -> Motion<N> {
         Motion {
             spring,
             origin: now,
@@ -164,12 +188,8 @@ impl<const N: usize> Motion<N> {
             velocity: [0.0; N],
             target: at,
             settled: true,
+            tolerance,
         }
-    }
-
-    /// Where the values are going.
-    fn target(&self) -> [f64; N] {
-        self.target
     }
 
     /// The values and their velocities at `now`.
@@ -195,15 +215,21 @@ impl<const N: usize> Motion<N> {
     /// A target that differs from the last one is taken from `now`, with the
     /// values and velocities they have then, so the motion stays
     /// continuous. Values that arrive snap to the target and stop. With
-    /// `jump` set, the values are at the target at once.
+    /// `jump` set, the values are at the target at once, as they are when
+    /// the new target or the old one is not finite, which no motion
+    /// reaches.
     pub(crate) fn step(
         &mut self,
         target: [f64; N],
         now: Instant,
         jump: bool,
     ) -> ([f64; N], [f64; N], bool) {
-        if jump || !self.spring.moves() {
-            *self = Motion::rest(self.spring, target, now);
+        let unreachable = target
+            .iter()
+            .chain(self.target.iter())
+            .any(|value| !value.is_finite());
+        if jump || unreachable || !self.spring.moves() {
+            *self = Motion::rest(self.spring, target, now, self.tolerance);
             return (target, [0.0; N], true);
         }
         if target != self.target {
@@ -218,11 +244,11 @@ impl<const N: usize> Motion<N> {
         }
         let (value, velocity) = self.at(now);
         let arrived = (0..N).all(|index| {
-            (value[index] - target[index]).abs() < SETTLED_DISTANCE
-                && velocity[index].abs() < SETTLED_SPEED
+            (value[index] - target[index]).abs() < self.tolerance.distance
+                && velocity[index].abs() < self.tolerance.speed
         });
         if arrived && !self.settled {
-            *self = Motion::rest(self.spring, target, now);
+            *self = Motion::rest(self.spring, target, now, self.tolerance);
         }
         if self.settled {
             return (target, [0.0; N], true);
@@ -247,7 +273,7 @@ impl SpringState {
     /// A value at rest at `value`, moved by `spring` from `now` on.
     pub fn new(spring: Spring, value: f32, now: Instant) -> SpringState {
         SpringState {
-            motion: Motion::rest(spring, [f64::from(value)], now),
+            motion: Motion::rest(spring, [f64::from(value)], now, VALUE),
         }
     }
 
@@ -304,7 +330,10 @@ impl Transition {
             spring,
             background: ColorTrack::default(),
             border: ColorTrack::default(),
-            text: ColorTrack::default(),
+            text: ColorTrack {
+                switches_unset: true,
+                ..ColorTrack::default()
+            },
             radius: None,
             animated: Style::default(),
         }
@@ -337,7 +366,7 @@ impl Transition {
         let radius_target = [f64::from(paint.corner_radius.resolve(theme))];
         let radius = self
             .radius
-            .get_or_insert_with(|| Motion::rest(spring, radius_target, now));
+            .get_or_insert_with(|| Motion::rest(spring, radius_target, now, VALUE));
         let ([corner], _, radius_settled) = radius.step(radius_target, now, jump);
 
         self.animated.clone_from(resolved);
@@ -355,12 +384,20 @@ impl Transition {
     }
 }
 
-/// One color prop under a spring, in linear sRGB with straight alpha.
+/// One color prop under a spring, in linear sRGB with premultiplied alpha,
+/// so a fade never passes through a darker or a lighter color than its two
+/// ends.
 #[derive(Debug, Default)]
 struct ColorTrack {
     /// Whether the node has painted, so a color that appears later fades in
     /// rather than the first paint fading up from nothing.
     seen: bool,
+    /// Whether a change between a color and none switches at once instead
+    /// of fading. A text color that is unset falls back to the widget's own
+    /// color, which the transition cannot see, so it cannot fade toward it.
+    switches_unset: bool,
+    /// Whether the prop held a color at the last update.
+    held: bool,
     /// The motion of the four channels, once the prop has held a color.
     motion: Option<Motion<4>>,
 }
@@ -369,9 +406,9 @@ impl ColorTrack {
     /// Moves the color toward `target` and returns the color to paint and
     /// whether it is still moving.
     ///
-    /// A color that goes away fades out through its alpha and paints
-    /// nothing once it arrives, and one that appears fades in from its own
-    /// color at no alpha.
+    /// A color that goes away fades out to nothing and paints nothing once
+    /// it arrives, and one that appears fades in from nothing, unless the
+    /// track switches such changes at once.
     fn update(
         &mut self,
         target: Option<Color>,
@@ -380,34 +417,34 @@ impl ColorTrack {
         jump: bool,
     ) -> (Option<Color>, bool) {
         let first = !self.seen;
+        let held = self.held;
         self.seen = true;
-        let goal = match (target, &self.motion) {
-            (Some(color), _) => linear(color),
-            (None, Some(motion)) => {
-                let [r, g, b, _] = motion.target();
-                [r, g, b, 0.0]
-            }
-            (None, None) => return (None, false),
-        };
+        self.held = target.is_some();
+        if self.switches_unset && (target.is_none() || !held) {
+            self.motion =
+                target.map(|color| Motion::rest(spring, premultiplied(color), now, COLOR));
+            return (target, false);
+        }
+        if target.is_none() && self.motion.is_none() {
+            return (None, false);
+        }
+        let goal = target.map_or([0.0; 4], premultiplied);
         let motion = self.motion.get_or_insert_with(|| {
-            let start = if first {
-                goal
-            } else {
-                [goal[0], goal[1], goal[2], 0.0]
-            };
-            Motion::rest(spring, start, now)
+            let start = if first { goal } else { [0.0; 4] };
+            Motion::rest(spring, start, now, COLOR)
         });
         let (value, _, settled) = motion.step(goal, now, jump);
         let shown = match target {
             None if settled => None,
-            _ => Some(srgb(value)),
+            _ => Some(straight(value)),
         };
         (shown, !settled)
     }
 }
 
-/// `color` as linear red, green and blue, with its alpha, each from 0 to 1.
-fn linear(color: Color) -> [f64; 4] {
+/// `color` as linear red, green and blue multiplied by its alpha, and the
+/// alpha, each from 0 to 1.
+fn premultiplied(color: Color) -> [f64; 4] {
     let channel = |value: u8| {
         let value = f64::from(value) / 255.0;
         if value <= 0.04045 {
@@ -416,19 +453,26 @@ fn linear(color: Color) -> [f64; 4] {
             ((value + 0.055) / 1.055).powf(2.4)
         }
     };
+    let alpha = f64::from(color.a) / 255.0;
     [
-        channel(color.r),
-        channel(color.g),
-        channel(color.b),
-        f64::from(color.a) / 255.0,
+        channel(color.r) * alpha,
+        channel(color.g) * alpha,
+        channel(color.b) * alpha,
+        alpha,
     ]
 }
 
-/// The sRGB color of linear red, green, blue and alpha, each clamped to the
-/// range a color holds, since a spring can overshoot it.
-fn srgb([r, g, b, a]: [f64; 4]) -> Color {
+/// The sRGB color with straight alpha of premultiplied linear channels,
+/// each clamped to the range a color holds, since a spring can overshoot
+/// it.
+fn straight([r, g, b, a]: [f64; 4]) -> Color {
+    let alpha = a.clamp(0.0, 1.0);
     let channel = |value: f64| {
-        let value = value.clamp(0.0, 1.0);
+        let value = if alpha > 0.0 {
+            (value / alpha).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let encoded = if value <= 0.003_130_8 {
             value * 12.92
         } else {
@@ -440,7 +484,7 @@ fn srgb([r, g, b, a]: [f64; 4]) -> Color {
         channel(r),
         channel(g),
         channel(b),
-        (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (alpha * 255.0).round() as u8,
     )
 }
 

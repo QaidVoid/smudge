@@ -72,6 +72,19 @@ pub(crate) enum PlatformEvent {
     ColorSchemeChanged(smudge_core::theme::ColorScheme),
     /// The system's reduced-motion setting changed, or the watcher learned
     /// the one it holds: hand it to the app.
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(
+            unix,
+            not(any(
+                target_os = "redox",
+                target_family = "wasm",
+                target_os = "android",
+                target_os = "ios",
+                target_os = "macos"
+            ))
+        )
+    ))]
     ReducedMotionChanged(bool),
 }
 
@@ -897,7 +910,7 @@ where
         // follower.
         let motion_watcher_started = app.has_transitions();
         if motion_watcher_started {
-            watch_reduced_motion(&self.proxy);
+            watch_reduced_motion(&mut app, &self.proxy);
         }
 
         // The window system reports the theme itself on macOS and Windows,
@@ -1079,7 +1092,7 @@ where
         }
         if !state.motion_watcher_started && state.app.has_transitions() {
             state.motion_watcher_started = true;
-            watch_reduced_motion(&self.proxy);
+            watch_reduced_motion(&mut state.app, &self.proxy);
         }
         if state.rendered
             && let Some(on_event) = &state.on_event
@@ -1107,8 +1120,13 @@ where
         #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         state.update_a11y();
         // A spring the frame set moving keeps the frames coming, and one
-        // that arrived in it lets the window go idle.
+        // that arrived in it lets the window go idle. A transition the frame
+        // mounted starts the watcher now, before its first motion.
         let driven = paced || state.app.is_animating();
+        if !state.motion_watcher_started && state.app.has_transitions() {
+            state.motion_watcher_started = true;
+            watch_reduced_motion(&mut state.app, &self.proxy);
+        }
         if presented.is_some() && state.below_frame_limit() {
             state.window.request_redraw();
         } else if driven {
@@ -1300,6 +1318,19 @@ where
                     }
                 }
             }
+            #[cfg(any(
+                target_arch = "wasm32",
+                all(
+                    unix,
+                    not(any(
+                        target_os = "redox",
+                        target_family = "wasm",
+                        target_os = "android",
+                        target_os = "ios",
+                        target_os = "macos"
+                    ))
+                )
+            ))]
             PlatformEvent::ReducedMotionChanged(reduced) => {
                 if let Some(state) = self.state.as_mut() {
                     state.app.set_system_reduced_motion(reduced);
@@ -1837,15 +1868,15 @@ impl CpuPresenter {
     }
 }
 
-/// Starts reporting the system's reduced-motion setting to the window, now
-/// and whenever it changes, through `proxy`.
+/// Starts reporting the system's reduced-motion setting to `app`, now and
+/// whenever it changes.
 ///
 /// On Linux and the other free desktops the settings portal holds it, and
-/// on the web the `prefers-reduced-motion` media query. Windows and macOS
-/// answer it on demand, so the window reads it here and again whenever it
-/// regains the focus. Elsewhere nothing reports it, and the app keeps what
-/// it set itself.
-fn watch_reduced_motion(proxy: &winit::event_loop::EventLoopProxy<UserEvent>) {
+/// on the web the `prefers-reduced-motion` media query, which report
+/// through `proxy`. Windows and macOS answer it on demand, so the app gets
+/// it here, and again whenever the window regains the focus. Elsewhere
+/// nothing reports it, and the app keeps what it set itself.
+fn watch_reduced_motion(app: &mut App, proxy: &winit::event_loop::EventLoopProxy<UserEvent>) {
     #[cfg(all(
         unix,
         not(any(
@@ -1866,12 +1897,12 @@ fn watch_reduced_motion(proxy: &winit::event_loop::EventLoopProxy<UserEvent>) {
     watch_motion_query(proxy.clone());
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     if let Some(reduced) = crate::reduced_motion::reduced() {
-        let _ = proxy.send_event(PlatformEvent::ReducedMotionChanged(reduced));
+        app.set_system_reduced_motion(reduced);
     }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = &app;
     #[cfg(not(any(
         target_arch = "wasm32",
-        target_os = "windows",
-        target_os = "macos",
         all(
             unix,
             not(any(

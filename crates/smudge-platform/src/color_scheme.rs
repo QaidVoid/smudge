@@ -95,8 +95,8 @@ fn scheme_of(value: u32) -> ColorScheme {
     }
 }
 
-/// Whether a portal value asks for reduced motion. A value of one does;
-/// anything else, including an unknown value, is no preference, which the
+/// Whether a portal value asks for reduced motion. A value of one does.
+/// Anything else, including an unknown value, is no preference, which the
 /// specification says to treat as zero.
 fn reduced_of(value: u32) -> bool {
     value == 1
