@@ -113,6 +113,16 @@ pub struct Semantics {
     /// The number a control shows and the range it moves in, such as a
     /// progress bar's progress, or `None` for a control without one.
     pub range: Option<ValueRange>,
+    /// The node's place from zero among the items of the set around it,
+    /// such as a row of a list, or `None` for a node that is no item of a
+    /// set. A screen reader announces it with [`Semantics::set_size`] of the
+    /// nearest ancestor that has one, so place 39 in a set of 3,000 is
+    /// announced as "item 40 of 3,000".
+    pub position: Option<usize>,
+    /// How many items the set the node holds has, the ones not on screen
+    /// included, such as the rows of a list, or `None` for a node that holds
+    /// no set.
+    pub set_size: Option<usize>,
 }
 
 impl Semantics {
@@ -124,6 +134,8 @@ impl Semantics {
             value: None,
             checked: None,
             range: None,
+            position: None,
+            set_size: None,
         }
     }
 }
@@ -152,6 +164,10 @@ pub struct SemanticsNode {
     pub checked: Option<Checked>,
     /// The number the node shows and the range it moves in.
     pub range: Option<ValueRange>,
+    /// The node's place from zero among the items of the set around it.
+    pub position: Option<usize>,
+    /// How many items the set the node holds has.
+    pub set_size: Option<usize>,
     /// The node's absolute rectangle in logical pixels, as the last layout
     /// pass left it.
     pub bounds: Rect,

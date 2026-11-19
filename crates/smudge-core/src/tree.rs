@@ -222,6 +222,12 @@ struct Node {
     /// The value and range the element's builders set, which override the
     /// range the widget reports. Boxed, since few nodes have one.
     a11y_range: Option<Box<ValueRange>>,
+    /// The place in a set the element's builders set, which overrides the
+    /// place the widget reports.
+    a11y_position: Option<usize>,
+    /// The size of the set the element's builders set, which overrides the
+    /// size the widget reports.
+    a11y_set_size: Option<usize>,
     /// The node's cached paint output, filled by the paint pass.
     ops: Vec<PaintOp>,
     /// The node's cached paint output that draws inside its border, clipped
@@ -567,6 +573,8 @@ impl WidgetTree {
             a11y_label: None,
             a11y_checked: None,
             a11y_range: None,
+            a11y_position: None,
+            a11y_set_size: None,
             ops: Vec::new(),
             inner_ops: Vec::new(),
             painted: None,
@@ -1421,6 +1429,38 @@ impl WidgetTree {
         self.push_a11y(id);
     }
 
+    /// Sets the place in its set of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_position`](crate::element::Element::accessible_position)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_position(&mut self, id: WidgetId, position: Option<usize>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        if node.a11y_position == position {
+            return;
+        }
+        node.a11y_position = position;
+        self.push_a11y(id);
+    }
+
+    /// Sets the size of the set `id` holds and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_set_size`](crate::element::Element::accessible_set_size)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_set_size(&mut self, id: WidgetId, size: Option<usize>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        if node.a11y_set_size == size {
+            return;
+        }
+        node.a11y_set_size = size;
+        self.push_a11y(id);
+    }
+
     /// Projects every visible node in paint order, for an accessibility
     /// backend.
     ///
@@ -1529,14 +1569,16 @@ impl WidgetTree {
         // projection, since a text widget copies its whole text into it.
         let widget: &dyn Widget = node.widget.as_ref();
         let semantics = widget.semantics();
-        let (label, value, checked, range) = match semantics {
+        let (label, value, checked, range, position, set_size) = match semantics {
             Some(semantics) => (
                 semantics.label,
                 semantics.value,
                 semantics.checked,
                 semantics.range,
+                semantics.position,
+                semantics.set_size,
             ),
-            None => (None, None, None, None),
+            None => (None, None, None, None, None, None),
         };
         SemanticsNode {
             id,
@@ -1547,6 +1589,8 @@ impl WidgetTree {
             value,
             checked: node.a11y_checked.or(checked),
             range: node.a11y_range.as_deref().copied().or(range),
+            position: node.a11y_position.or(position),
+            set_size: node.a11y_set_size.or(set_size),
             bounds: node.rect,
             focusable: node.interaction.has(Interaction::FOCUSABLE),
             disabled: node.interaction.has(Interaction::DISABLED),

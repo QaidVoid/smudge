@@ -3038,6 +3038,7 @@ dependencies = [
  "insta",
  "proptest",
  "smudge-core",
+ "smudge-widgets",
 ]
 
 [[package]]

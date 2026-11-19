@@ -13,6 +13,7 @@ Every widget that has a meaning reports a role, and a name or a value:
 | `text_input` | Text input | Its placeholder, with the current text as its value |
 | `text_area` | Multi-line text input | Its placeholder, with the current text as its value |
 | `scroll` | Scroll view | None by default |
+| `virtual_list`, `virtual_list_keyed` | Scroll view holding a list, with how many rows the list has | None by default. Each mounted row is a list item with its place among all the rows. |
 | The window | Window | The window title |
 
 Bounds, keyboard focus and the press action are reported too, and each frame sends only what changed since the last one.
@@ -70,6 +71,8 @@ let progress = panel()
     .accessible_label("Upload")
     .accessible_range(move || ValueRange { value: done.get(), min: 0.0, max: 1.0 });
 ```
+
+A list of your own reports its rows the same way the virtual lists do: give the list `Role::List` and `accessible_set_size(count)`, and each row `Role::ListItem` and `accessible_position(index)`, counted from zero, so a screen reader announces place 39 as "item 40 of 3,000". Both accept a closure, for a count that grows or a row whose place moves.
 
 A screen reader toggles a checkbox or a switch by pressing it, so its `on_press` handler is what flips the state, and one without a handler reads as read only. A progress bar without a range reads as busy, with no known progress, and so does one whose range is not finite or runs backwards. `Checked::Mixed` reports a checkbox that is neither checked nor unchecked, such as one over a list whose boxes are partly checked.
 

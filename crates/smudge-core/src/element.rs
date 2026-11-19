@@ -140,6 +140,7 @@ static_values!(
     Edges<f32>,
     Checked,
     ValueRange,
+    usize,
     f32,
     bool,
     Direction,
@@ -406,6 +407,40 @@ impl Binding {
         }
     }
 
+    /// A binding that writes the size of the set the node holds.
+    fn a11y_set_size(get: Rc<dyn Fn() -> usize>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_set_size(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that writes the node's place in its set.
+    fn a11y_position(get: Rc<dyn Fn() -> usize>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_position(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes the node's scroll offset.
     ///
     /// The write moves the node's flowing descendants without running the
@@ -566,6 +601,10 @@ pub struct Element<W: Widget> {
     a11y_checked: Option<Value<Checked>>,
     /// The value and range an element set, when it set one.
     a11y_range: Option<Value<ValueRange>>,
+    /// The place in a set an element set, when it set one.
+    a11y_position: Option<Value<usize>>,
+    /// The size of the set an element holds, when it set one.
+    a11y_set_size: Option<Value<usize>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// Applied to the style of every child as it is added.
@@ -604,6 +643,8 @@ impl<W: Widget> Element<W> {
             a11y_label: None,
             a11y_checked: None,
             a11y_range: None,
+            a11y_position: None,
+            a11y_set_size: None,
             scroll_offset: Point::default(),
             child_styling: None,
             children: Vec::new(),
@@ -1678,6 +1719,32 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Sets the node's place from zero among the items of the set around it,
+    /// such as a row of a list. A screen reader announces it with the size
+    /// [`accessible_set_size`](Element::accessible_set_size) gives the set,
+    /// so place 39 in a set of 3,000 is announced as "item 40 of 3,000".
+    ///
+    /// This can be bound to a signal, with a closure that returns the place,
+    /// for an item that moves as items before it come and go. It overrides
+    /// the place the widget itself reports. The virtual lists set it on every
+    /// row they mount.
+    pub fn accessible_position(mut self, position: impl Into<Value<usize>>) -> Self {
+        self.a11y_position = Some(position.into());
+        self
+    }
+
+    /// Sets how many items the set the node holds has, the ones not on screen
+    /// included, such as the rows of a list, which a screen reader announces
+    /// with the place of an item inside it.
+    ///
+    /// This can be bound to a signal, with a closure that returns the size,
+    /// so it follows the set as it grows. It overrides the size the widget
+    /// itself reports. The virtual lists set it on the list.
+    pub fn accessible_set_size(mut self, size: impl Into<Value<usize>>) -> Self {
+        self.a11y_set_size = Some(size.into());
+        self
+    }
+
     /// Makes the node able to take the keyboard focus, by a press on it or by
     /// Tab navigation.
     ///
@@ -2125,6 +2192,10 @@ pub struct AnyElement {
     a11y_checked: Option<Value<Checked>>,
     /// The value and range an element set, when it set one.
     a11y_range: Option<Value<ValueRange>>,
+    /// The place in a set an element set, when it set one.
+    a11y_position: Option<Value<usize>>,
+    /// The size of the set an element holds, when it set one.
+    a11y_set_size: Option<Value<usize>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// The children, in paint order.
@@ -2154,6 +2225,8 @@ impl AnyElement {
             a11y_label: element.a11y_label,
             a11y_checked: element.a11y_checked,
             a11y_range: element.a11y_range,
+            a11y_position: element.a11y_position,
+            a11y_set_size: element.a11y_set_size,
             scroll_offset: element.scroll_offset,
             children: element.children,
         }
@@ -2248,6 +2321,8 @@ fn mount_named(
         a11y_label,
         a11y_checked,
         a11y_range,
+        a11y_position,
+        a11y_set_size,
         scroll_offset,
         children,
     } = element;
@@ -2301,6 +2376,16 @@ fn mount_named(
     match a11y_range {
         Some(Value::Static(range)) => tree.set_a11y_range(id, Some(range)),
         Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_range(get)),
+        None => {}
+    }
+    match a11y_position {
+        Some(Value::Static(position)) => tree.set_a11y_position(id, Some(position)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_position(get)),
+        None => {}
+    }
+    match a11y_set_size {
+        Some(Value::Static(size)) => tree.set_a11y_set_size(id, Some(size)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_set_size(get)),
         None => {}
     }
     if scroll_offset != Point::default() {

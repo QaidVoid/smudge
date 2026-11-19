@@ -907,3 +907,196 @@ fn a_widget_reports_its_own_state_and_the_element_overrides_it() {
     assert_eq!(overridden.numeric_value(), Some(1.0));
     assert_eq!(overridden.max_numeric_value(), Some(2.0));
 }
+
+/// Scrolls the view under `at` down by `down` logical pixels and runs the
+/// frames that settle it.
+fn wheel_at(app: &mut App, at: smudge_core::geometry::Point, down: f32) {
+    use smudge_core::input::InputEvent;
+    app.handle_event(InputEvent::PointerMoved { position: at });
+    app.handle_event(InputEvent::Wheel {
+        delta: smudge_core::geometry::Point { x: 0.0, y: down },
+    });
+    for _ in 0..4 {
+        app.frame();
+    }
+}
+
+/// The place in its set of every node with `role` in `update`, sorted.
+fn positions(update: &accesskit::TreeUpdate, role: AccessKitRole) -> Vec<usize> {
+    let mut positions: Vec<usize> = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == role)
+        .filter_map(|(_, node)| node.position_in_set())
+        .collect();
+    positions.sort_unstable();
+    positions
+}
+
+#[test]
+fn a_scrolled_virtual_list_reports_each_mounted_row_among_all_its_rows() {
+    let mut app = app_with(|| {
+        Element::new(Panel).role(Role::Group).column().child(
+            smudge_widgets::virtual_list(|| 3000, 20.0, |_| Element::new(Panel).height(px(20.0)))
+                .height(px(100.0)),
+        )
+    });
+    for _ in 0..4 {
+        app.frame();
+    }
+    wheel_at(
+        &mut app,
+        smudge_core::geometry::Point { x: 50.0, y: 50.0 },
+        800.0,
+    );
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let list = node_with_role(&update, AccessKitRole::List);
+    assert_eq!(list.size_of_set(), Some(3000), "the list counts every row");
+    // The view shows rows 40 to 44 from zero, and four more mount on each
+    // side of them.
+    let rows = positions(&update, AccessKitRole::ListItem);
+    assert_eq!(
+        rows,
+        (36..49).collect::<Vec<_>>(),
+        "only the mounted rows, by their places"
+    );
+}
+
+#[test]
+fn a_row_inserted_above_moves_the_places_of_the_keyed_rows_below() {
+    let items: RwSignal<std::rc::Rc<[u32]>> = RwSignal::new((0..100).collect());
+    let mut app = app_with(|| {
+        let items = items.clone();
+        Element::new(Panel).role(Role::Group).column().child(
+            smudge_widgets::virtual_list_keyed(
+                move || items.get(),
+                |item| *item,
+                20.0,
+                |_| Element::new(Panel).height(px(20.0)),
+            )
+            .height(px(100.0)),
+        )
+    });
+    for _ in 0..4 {
+        app.frame();
+    }
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::List).size_of_set(),
+        Some(100)
+    );
+    let before = positions(&update, AccessKitRole::ListItem);
+    assert_eq!(before.first(), Some(&0));
+
+    items.set(std::iter::once(1000).chain(0..100).collect());
+    for _ in 0..3 {
+        app.frame();
+    }
+    let update = update_after_frame(&mut app, &mut projection, false);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::List).size_of_set(),
+        Some(101)
+    );
+    let after = positions(&update, AccessKitRole::ListItem);
+    assert!(
+        after.windows(2).all(|pair| pair[1] == pair[0] + 1),
+        "the rows still hold consecutive places: {after:?}"
+    );
+    assert_eq!(after.first(), Some(&0), "the new row is the first");
+}
+
+#[test]
+fn a_set_that_grows_updates_its_size_and_leaves_its_items_alone() {
+    let count = RwSignal::new(10usize);
+    let mut app = app_with(|| {
+        let count = count.clone();
+        Element::new(Panel)
+            .role(Role::List)
+            .accessible_set_size(move || count.get())
+            .child(
+                Element::new(Panel)
+                    .role(Role::ListItem)
+                    .accessible_position(3),
+            )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::List).size_of_set(),
+        Some(10)
+    );
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::ListItem).position_in_set(),
+        Some(3)
+    );
+
+    count.set(11);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::List).size_of_set(),
+        Some(11)
+    );
+    assert!(
+        update
+            .nodes
+            .iter()
+            .all(|(_, node)| node.role() != AccessKitRole::ListItem),
+        "the item's place did not change, so it is not sent again"
+    );
+}
+
+#[test]
+fn an_edit_above_a_scrolled_keyed_list_moves_the_places_of_its_rows() {
+    let items: RwSignal<std::rc::Rc<[u32]>> = RwSignal::new((0..100).collect());
+    let mut app = app_with(|| {
+        let items = items.clone();
+        Element::new(Panel).role(Role::Group).column().child(
+            smudge_widgets::virtual_list_keyed(
+                move || items.get(),
+                |item| *item,
+                20.0,
+                |_| Element::new(Panel).height(px(20.0)),
+            )
+            .height(px(100.0)),
+        )
+    });
+    for _ in 0..4 {
+        app.frame();
+    }
+    wheel_at(
+        &mut app,
+        smudge_core::geometry::Point { x: 50.0, y: 50.0 },
+        800.0,
+    );
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let before = positions(&update, AccessKitRole::ListItem);
+    assert!(before.first().is_some_and(|first| *first > 0), "{before:?}");
+
+    // The same keys stay mounted, so only the places move.
+    items.set(std::iter::once(1000).chain(0..100).collect());
+    for _ in 0..3 {
+        app.frame();
+    }
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let shifted: Vec<usize> = before.iter().map(|place| place + 1).collect();
+    assert_eq!(
+        positions(&update, AccessKitRole::ListItem),
+        shifted,
+        "an insert above moves every row down one"
+    );
+
+    items.set((1..100).collect());
+    for _ in 0..3 {
+        app.frame();
+    }
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let lowered: Vec<usize> = before.iter().map(|place| place - 1).collect();
+    assert_eq!(
+        positions(&update, AccessKitRole::ListItem),
+        lowered,
+        "a removal above moves every row up one"
+    );
+}

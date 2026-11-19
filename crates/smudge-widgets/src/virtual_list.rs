@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use smudge_core::element::{Element, IntoElement, for_each};
 use smudge_core::reactive::{RwSignal, prelude::*};
+use smudge_core::semantics::Role;
 use smudge_core::style::{Edges, Length, px};
 use smudge_core::widget::panel;
 
@@ -43,6 +44,11 @@ const OVERSCAN: usize = 4;
 /// `count` runs inside a binding, so only the signals it reads remount the
 /// window. A shrinking count clamps the offset, and the window follows on the
 /// frame after the new height has been measured.
+///
+/// The scroll view holds a list for the accessibility tree, which reports
+/// `count` as its size, and each mounted row is a list item with its index
+/// as its place, so a screen reader can announce "item 40 of 3,000". Only
+/// the mounted rows have nodes.
 ///
 /// The list owns its scroll offset; do not call
 /// [`ScrollExt::offset`](crate::ScrollExt::offset) on the returned view,
@@ -113,16 +119,21 @@ pub fn virtual_list<E: IntoElement>(
                     bottom: Length::Auto,
                     left: px(0.0),
                 })
+                .role(Role::ListItem)
+                .accessible_position(index)
                 .child(row(index))
         },
     );
 
     let height_count = Rc::clone(&count);
+    let size_count = Rc::clone(&count);
     // A column stretches the keyed slot to the list's width, which the
     // absolutely positioned rows then span.
     let content = panel()
         .column()
         .height(move || px(height_count() as f32 * row_height))
+        .role(Role::List)
+        .accessible_set_size(move || size_count())
         .child(rows);
 
     scroll_with_visible_height(content, visible, None, RwSignal::new(None)).offset(offset)

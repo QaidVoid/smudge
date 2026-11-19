@@ -22,6 +22,7 @@ use std::rc::Rc;
 use smudge_core::element::{Element, IntoElement, for_each};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{Memo, Owner, RenderEffect, RwSignal, prelude::*};
+use smudge_core::semantics::Role;
 use smudge_core::style::{Length, px};
 use smudge_core::widget::{PaintCx, Widget, panel};
 
@@ -79,6 +80,11 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// or through a parent that sizes it. It scrolls with the wheel like any
 /// scroll view, and it shows a thumb for the whole list, whose length
 /// follows the total height the index gives the rows.
+///
+/// The scroll view holds a list for the accessibility tree, which reports
+/// how many items there are as its size, and each mounted row is a list
+/// item with its item's place, which follows edits before it. Only the
+/// mounted rows have nodes.
 ///
 /// `items` runs inside a memo of its own, so an edit to the signals it reads
 /// remeasures the list and a scroll never runs it. Every update calls `key`
@@ -218,6 +224,10 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
     let lead: RwSignal<Option<f32>> = RwSignal::new(None);
     let following: RwSignal<Option<RwSignal<bool>>> = RwSignal::new(None);
     let reported = RwSignal::new(0u64);
+    // Counts the edits that moved keys already in the list, which change the
+    // places the mounted rows report. Appends, measurements and scrolls move
+    // none.
+    let order = RwSignal::new(0u64);
     let pending: Rc<RefCell<Vec<(K, f32)>>> = Rc::new(RefCell::new(Vec::new()));
 
     // One effect reconciles the list with its inputs: it takes the items,
@@ -237,6 +247,7 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
         let lead = lead.clone();
         let following = following.clone();
         let reported = reported.clone();
+        let order = order.clone();
         let pending = Rc::clone(&pending);
         // The state a remount carried was built by the old code, whose key
         // and estimate this list's first run must check, even when the items
@@ -258,6 +269,7 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
             let follows = following.get().is_some_and(|signal| signal.get());
 
             let mut geometry_changed = false;
+            let mut reordered = false;
             {
                 let mut state = state.borrow_mut();
                 // Flowing rows put the screen at the laid-out end, which an
@@ -339,6 +351,7 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                                 measured.get(missing).copied().unwrap_or(estimate)
                             });
                             geometry_changed = true;
+                            reordered = true;
                         }
                     }
                     for (item_key, height) in batch {
@@ -444,6 +457,9 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
             if pin.read(|value| *value != next_pin) {
                 pin.set(next_pin);
             }
+            if reordered {
+                order.update(|count| *count += 1);
+            }
             if lead.read(|value| *value != next_lead) {
                 lead.set(next_lead);
             }
@@ -482,6 +498,17 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                         report_signal.update(|count| *count += 1);
                     }
                 };
+                // A row's place moves only when an edit moves the keys before
+                // it, which the order counter reports.
+                let position = {
+                    let state = Rc::clone(&state);
+                    let order = order.clone();
+                    let item_key = item_key.clone();
+                    move || {
+                        order.with(|_| ());
+                        state.borrow().index.position(&item_key).unwrap_or(0)
+                    }
+                };
                 // A column stretches the row's content to the list's width,
                 // as any column does with its children.
                 Element::new(MeasureRow {
@@ -489,6 +516,8 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
                 })
                 .column()
                 .shrink(0.0)
+                .role(Role::ListItem)
+                .accessible_position(position)
                 .child(content)
             },
         )
@@ -499,6 +528,8 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
 
     let content = panel()
         .column()
+        .role(Role::List)
+        .accessible_set_size(move || current_items.with(|snapshot| snapshot.0.len()))
         .height({
             let total = total.clone();
             let lead = lead.clone();

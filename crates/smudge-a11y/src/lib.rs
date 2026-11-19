@@ -221,6 +221,7 @@ fn digest(node: &SemanticsNode, scale: f32) -> u64 {
     node.label.hash(&mut hasher);
     node.value.hash(&mut hasher);
     node.checked.hash(&mut hasher);
+    (node.position, node.set_size).hash(&mut hasher);
     if let Some(range) = node.range {
         for number in [range.value, range.min, range.max] {
             number.to_bits().hash(&mut hasher);
@@ -266,6 +267,12 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
         out.set_numeric_value(range.value.clamp(range.min, range.max));
         out.set_min_numeric_value(range.min);
         out.set_max_numeric_value(range.max);
+    }
+    if let Some(position) = node.position {
+        out.set_position_in_set(position);
+    }
+    if let Some(size) = node.set_size {
+        out.set_size_of_set(size);
     }
     if matches!(node.role, Role::CheckBox | Role::Switch) && !node.pressable {
         out.set_read_only();
