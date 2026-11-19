@@ -547,3 +547,24 @@ fn a_smaller_window_pulls_the_panel_inside() {
         "{origin:?}"
     );
 }
+
+#[test]
+fn a_frame_recorded_while_the_window_paces_itself_requests_no_redraw() {
+    let (_app, mut devtools, _) = apps(true);
+    let wakes = Rc::new(Cell::new(0u32));
+    let counted = Rc::clone(&wakes);
+    devtools.set_wake(move || counted.set(counted.get() + 1));
+    devtools.record(smudge_devtools::FrameRecord::default(), true);
+    assert_eq!(
+        wakes.get(),
+        0,
+        "the window's next paced frame shows the bar"
+    );
+    devtools.app.frame();
+    devtools.record(smudge_devtools::FrameRecord::default(), false);
+    assert_eq!(
+        wakes.get(),
+        1,
+        "an idle window draws once more to show the bar"
+    );
+}

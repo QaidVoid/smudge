@@ -9,7 +9,7 @@ use smudge_text::TextSystem;
 fn overlay() -> Harness {
     TextSystem::bundled_only().install();
     let mut harness = Harness::new(800.0, 600.0, 1.0, || {
-        smudge_devtools::overlay(|| Size {
+        smudge_devtools::overlay(&smudge_devtools::Tools::new(), || Size {
             width: 800.0,
             height: 600.0,
         })
@@ -127,7 +127,7 @@ fn the_panel_stays_inside_the_window_past_its_right_and_bottom_edges() {
     let read = viewport.clone();
     let mut harness = Harness::new(800.0, 600.0, 1.0, move || {
         let read = read.clone();
-        smudge_devtools::overlay(move || read.get())
+        smudge_devtools::overlay(&smudge_devtools::Tools::new(), move || read.get())
     });
     harness.frame();
     let before = panel_rect(&mut harness);
@@ -163,4 +163,60 @@ fn the_panel_stays_inside_the_window_past_its_right_and_bottom_edges() {
         "a smaller window pulls the panel in: {shrunk:?}"
     );
     assert!(shrunk.y0 <= 300.0 - 32.0);
+}
+
+#[test]
+fn hovering_a_bar_describes_its_frame() {
+    TextSystem::bundled_only().install();
+    let tools = smudge_devtools::Tools::new();
+    let shown = tools.clone();
+    let mut harness = Harness::new(800.0, 600.0, 1.0, move || {
+        smudge_devtools::overlay(&shown, || Size {
+            width: 800.0,
+            height: 600.0,
+        })
+    });
+    harness.frame();
+    for painted in [3, 7] {
+        tools.record(smudge_devtools::FrameRecord {
+            layout: std::time::Duration::from_millis(4),
+            presented: true,
+            nodes_painted: painted,
+            ..smudge_devtools::FrameRecord::default()
+        });
+    }
+    harness.frame();
+    let mut timeline = None;
+    harness.app().visit_nodes(|_, type_name, rect| {
+        if type_name.ends_with("TimelineView") {
+            timeline = Some(rect);
+        }
+    });
+    let timeline = timeline.expect("the panel shows the timeline");
+    harness.move_to(Point {
+        x: timeline.x1 - 0.5,
+        y: timeline.y0 + 20.0,
+    });
+    harness.frame();
+    let described = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .filter_map(|node| node.value)
+        .any(|text| text.contains("7 painted"));
+    assert!(described, "the newest frame is described");
+
+    tools.record(smudge_devtools::FrameRecord {
+        presented: true,
+        nodes_painted: 11,
+        ..smudge_devtools::FrameRecord::default()
+    });
+    harness.frame();
+    let followed = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .filter_map(|node| node.value)
+        .any(|text| text.contains("11 painted"));
+    assert!(followed, "a new frame under the still pointer is described");
 }

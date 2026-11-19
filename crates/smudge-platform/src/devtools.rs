@@ -8,6 +8,8 @@
 //! [`Devtools::dispatch`] decides, and draws the overlay's frame over the
 //! app's without letting it reach the app's own frames or numbers.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use smudge_core::app::{App, AppConfig, RepaintMode};
@@ -32,6 +34,11 @@ pub(crate) struct Devtools {
     pub(crate) app: App,
     /// The window's size in logical pixels, which the panel stays inside.
     viewport: RwSignal<Size>,
+    /// What the panel shows, which the window feeds.
+    tools: smudge_devtools::Tools,
+    /// Whether a wake of the overlay requests no redraw, because the window
+    /// draws the next frame on its own.
+    quiet: Rc<Cell<bool>>,
     /// Whether the panel shows.
     open: bool,
     /// Whether a primary press began over the panel, so the pointer stays
@@ -84,6 +91,8 @@ impl Devtools {
     pub(crate) fn with(viewport: Size, scale: f32, open: bool, toggle: Shortcut) -> Devtools {
         let size = RwSignal::new(viewport);
         let read = size.clone();
+        let tools = smudge_devtools::Tools::new();
+        let shown = tools.clone();
         let mut app = App::new(
             AppConfig {
                 viewport,
@@ -91,7 +100,7 @@ impl Devtools {
                 clear_color: Color::TRANSPARENT,
                 repaint: RepaintMode::Damage,
             },
-            move || smudge_devtools::overlay(move || read.get()),
+            move || smudge_devtools::overlay(&shown, move || read.get()),
         );
         app.set_theme(Theme::dark());
         // Keys start with the app, so the overlay starts unfocused.
@@ -99,6 +108,8 @@ impl Devtools {
         Devtools {
             app,
             viewport: size,
+            tools,
+            quiet: Rc::new(Cell::new(false)),
             open,
             captured: false,
             app_pressed: false,
@@ -108,6 +119,29 @@ impl Devtools {
             toggle,
             timing: OverlayTiming::default(),
         }
+    }
+
+    /// Sets `wake` as what a wake of the overlay runs to request a redraw.
+    pub(crate) fn set_wake(&self, wake: impl Fn() + 'static) {
+        let quiet = Rc::clone(&self.quiet);
+        self.app.set_wake_callback(move || {
+            if !quiet.get() {
+                wake();
+            }
+        });
+    }
+
+    /// Records one frame of the app for the timeline.
+    ///
+    /// With `paced`, the window draws its next frame on its own, so the
+    /// recording requests no redraw and its bar shows with that frame. A
+    /// redraw requested here would come before the window's pacing allows
+    /// the next frame, and an app that keeps itself awake would then draw
+    /// as fast as the window system lets it.
+    pub(crate) fn record(&self, record: smudge_devtools::FrameRecord, paced: bool) {
+        self.quiet.set(paced);
+        self.tools.record(record);
+        self.quiet.set(false);
     }
 
     /// Takes the window's new size, `viewport` logical pixels at `scale`,

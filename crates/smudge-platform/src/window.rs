@@ -981,7 +981,7 @@ where
         let devtools = {
             let mut devtools = crate::devtools::Devtools::new(logical_size(physical, scale), scale);
             let weak = Arc::downgrade(&window);
-            devtools.app.set_wake_callback(move || {
+            devtools.set_wake(move || {
                 if let Some(window) = weak.upgrade() {
                     window.request_redraw();
                 }
@@ -1135,6 +1135,10 @@ where
         }
         let paced = state.app.has_tick() || state.on_event.is_some();
         let driven = paced || state.is_animating();
+        // A frame the overlay alone asked for records nothing, or recording
+        // a frame, which wakes the overlay, would ask for the next.
+        #[cfg(feature = "_devtools")]
+        let app_wanted = state.app.needs_frame() || paced || state.app.is_animating();
         #[cfg(feature = "_devtools")]
         let driven = driven && !std::mem::take(&mut state.toggled);
         let started = Instant::now();
@@ -1159,6 +1163,14 @@ where
                 frame: overlay_frame,
                 draw: overlay_draw,
             };
+        }
+        #[cfg(feature = "_devtools")]
+        if app_wanted && state.devtools.is_open() {
+            let paced = paced || state.is_animating();
+            state.devtools.record(
+                frame_record(state.app.stats(), presented.map(|(stats, _)| stats)),
+                paced,
+            );
         }
         let presented = presented.map(|(stats, _)| stats);
         if let Some(stats) = presented {
@@ -2246,3 +2258,31 @@ impl HasDisplayHandle for SharedWindow {
 #[cfg(test)]
 #[path = "window_tests.rs"]
 mod tests;
+
+/// The record the devtools keep of one frame: the app's `frame` statistics,
+/// and `presented`, the statistics of its present, or `None` when it was
+/// skipped.
+#[cfg(feature = "_devtools")]
+fn frame_record(
+    frame: &smudge_core::app::FrameStats,
+    presented: Option<PresentStats>,
+) -> smudge_devtools::FrameRecord {
+    let present = presented.unwrap_or_default();
+    smudge_devtools::FrameRecord {
+        flush: frame.flush,
+        layout: frame.layout,
+        paint: frame.paint,
+        list: frame.list,
+        damage: frame.damage,
+        raster: present.raster,
+        acquire: present.acquire,
+        present: present.present,
+        presented: presented.is_some(),
+        nodes_painted: frame.nodes_painted,
+        damage_rects: frame.damage_rects,
+        damage_pixels: frame.damage_pixels,
+        damage_pixels_before_merge: frame.damage_pixels_before_merge,
+        flush_rounds: frame.flush_rounds,
+        layout_ran: frame.layout_ran,
+    }
+}
