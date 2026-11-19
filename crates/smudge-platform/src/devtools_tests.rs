@@ -1173,3 +1173,58 @@ fn copy_as_test_writes_what_a_harness_of_the_node_draws() {
     assert!(harness.png() == png, "the image matches the harness's");
     let _ = std::fs::remove_dir_all(&devtools.copy_dir);
 }
+
+#[test]
+fn the_reactive_tab_counts_runs_a_second_where_each_effect_was_created() {
+    TextSystem::bundled_only().install();
+    let created = line!() + 11;
+    let mut app = App::new(
+        AppConfig {
+            viewport: VIEWPORT,
+            scale: 1.0,
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Damage,
+        },
+        || {
+            let count = RwSignal::new(0_u32);
+            let (seen, press) = (count.clone(), count);
+            std::mem::forget(smudge_core::reactive::RenderEffect::new(move || seen.get()));
+            smudge_widgets::column().padding(px(300.0)).child(
+                smudge_widgets::button("More").on_press(move || press.update(|count| *count += 1)),
+            )
+        },
+    );
+    app.frame();
+    let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
+    devtools.app.frame();
+    let at = overlay_text(&devtools, "Reactive");
+    click(&mut devtools, &mut app, at);
+    devtools.app.frame();
+    let start = Instant::now();
+    devtools.trace(&app, start, false);
+
+    let more = Point { x: 400.0, y: 317.0 };
+    for _ in 0..4 {
+        click(&mut devtools, &mut app, more);
+        app.frame();
+    }
+    devtools.trace(&app, start + Duration::from_secs(2), false);
+    devtools.app.frame();
+    let text = devtools
+        .app
+        .semantics_nodes()
+        .into_iter()
+        .filter_map(|node| node.value)
+        .find(|text| text.starts_with("Busiest effects"))
+        .expect("the reactive tab shows its text");
+    let place = format!("{}:{created}:", file!());
+    let line = text
+        .lines()
+        .find(|line| line.contains(&place))
+        .unwrap_or_else(|| panic!("the effect's place is listed: {text}"));
+    assert!(
+        line.trim_start().starts_with("2.0"),
+        "four runs in two seconds: {line}"
+    );
+    assert!(text.contains("Owners: "), "{text}");
+}

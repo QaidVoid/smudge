@@ -22,6 +22,7 @@ use smudge_core::theme::Theme;
 use smudge_core::window::Cursor;
 use smudge_cpu::CpuRenderer;
 
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::PathBuf;
 
@@ -36,6 +37,16 @@ pub(crate) const OPEN_VARIABLE: &str = "SMUDGE_DEVTOOLS";
 /// The environment variable that names the key that shows and hides the
 /// panel, such as `ctrl+shift+d`.
 pub(crate) const KEY_VARIABLE: &str = "SMUDGE_DEVTOOLS_KEY";
+
+/// How long the reactive tab waits between two samples of the app's
+/// effects.
+const SAMPLE: Duration = Duration::from_secs(1);
+
+/// How many places the busiest effects list shows.
+const BUSIEST: usize = 10;
+
+/// A place in the source.
+type Site = &'static std::panic::Location<'static>;
 
 /// How long a flash takes to fade out.
 const FADE: Duration = Duration::from_millis(500);
@@ -86,6 +97,9 @@ pub(crate) struct Devtools {
     highlighted: Option<BoxModel>,
     /// The directory "Copy as test" writes into.
     pub(crate) copy_dir: PathBuf,
+    /// When the reactive tab last sampled the app's effects, and how many
+    /// times the effects created at each place had run by then.
+    sampled: Option<(Instant, HashMap<Option<Site>, u64>)>,
     /// What the panel shows, which the window feeds.
     tools: smudge_devtools::Tools,
     /// Whether a wake of the overlay requests no redraw, because the window
@@ -171,6 +185,7 @@ impl Devtools {
             details: None,
             highlighted: None,
             copy_dir: PathBuf::from("target").join("smudge-devtools"),
+            sampled: None,
             tools,
             quiet: Rc::new(Cell::new(false)),
             open,
@@ -517,6 +532,49 @@ impl Devtools {
         std::fs::write(&dump_path, dump)?;
         std::fs::write(&png_path, renderer.encode_png())?;
         Ok((dump_path, png_path))
+    }
+
+    /// Hands the reactive tab the app's busiest effects, its cycles and its
+    /// owner tree at `now`, while the tab shows, at most once a second.
+    ///
+    /// The busiest effects are the places effects were created, with how
+    /// many times a second the effects created there ran since the last
+    /// sample, busiest first. The first sample has no rate yet. Like
+    /// [`Devtools::show_bounds`], it runs after every present, and with
+    /// `paced` its write requests no redraw.
+    pub(crate) fn trace(&mut self, app: &App, now: Instant, paced: bool) {
+        if !self.tools.is_tracing() {
+            self.sampled = None;
+            return;
+        }
+        if let Some((at, _)) = &self.sampled
+            && now.saturating_duration_since(*at) < SAMPLE
+        {
+            return;
+        }
+        let mut totals: HashMap<Option<Site>, u64> = HashMap::new();
+        for effect in app.busiest_effects(usize::MAX) {
+            *totals.entry(effect.defined_at).or_default() += effect.runs;
+        }
+        let mut busiest = Vec::new();
+        if let Some((then, before)) = &self.sampled {
+            let seconds = now.saturating_duration_since(*then).as_secs_f64();
+            busiest = totals
+                .iter()
+                .filter_map(|(place, runs)| {
+                    let ran = runs.saturating_sub(before.get(place).copied().unwrap_or(0));
+                    (ran > 0).then(|| (*place, ran as f64 / seconds))
+                })
+                .collect();
+            busiest.sort_by(|a, b| b.1.total_cmp(&a.1));
+            busiest.truncate(BUSIEST);
+        }
+        let mut owners = Vec::new();
+        app.visit_owners(|owner| owners.push(owner));
+        self.quiet.set(paced);
+        self.tools.show_reactive(&busiest, &app.cycles(), &owners);
+        self.quiet.set(false);
+        self.sampled = Some((now, totals));
     }
 
     /// Returns whether flashes are still fading, so the window keeps

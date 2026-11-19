@@ -7,6 +7,7 @@
 
 mod inspector;
 mod marks;
+mod reactive;
 mod timeline;
 
 use std::cell::Cell;
@@ -19,7 +20,7 @@ use timeline::{HEIGHT, Timeline, TimelineView};
 use smudge_core::element::{AnyElement, Element, IntoElement, show};
 use smudge_core::geometry::{Point, Rect, Size};
 use smudge_core::input::{Drag, Handled};
-use smudge_core::inspect::{BoxModel, NodeDetails, TreeEntry};
+use smudge_core::inspect::{BoxModel, CycleInfo, NodeDetails, OwnerEntry, TreeEntry};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::style::{Edges, Length, Overflow, pct, px};
 use smudge_core::theme::ColorToken;
@@ -65,8 +66,10 @@ pub struct Tools {
     /// The rectangles of the app's nodes, in logical pixels, each with its
     /// depth in the tree.
     bounds: RwSignal<Rc<Vec<(usize, Rect)>>>,
-    /// Whether the inspector tab shows.
-    inspecting: RwSignal<bool>,
+    /// The tab the panel shows.
+    tab: RwSignal<Tab>,
+    /// What the reactive tab shows, as text.
+    reactive: RwSignal<String>,
     /// Whether pick mode is on, so the pointer picks a node of the app.
     picking: RwSignal<bool>,
     /// Every node of the app's tree, hidden ones included.
@@ -119,7 +122,8 @@ impl Tools {
             damage: RwSignal::new(Rc::new(Vec::new())),
             flashes: RwSignal::new(Rc::new(Vec::new())),
             bounds: RwSignal::new(Rc::new(Vec::new())),
-            inspecting: RwSignal::new(false),
+            tab: RwSignal::new(Tab::Frames),
+            reactive: RwSignal::new(String::new()),
             picking: RwSignal::new(false),
             tree: RwSignal::new(Rc::new(Vec::new())),
             selected: RwSignal::new(None),
@@ -178,7 +182,28 @@ impl Tools {
     /// Returns whether the inspector tab shows, so the window hands it the
     /// app's tree and the selected node's details.
     pub fn is_inspecting(&self) -> bool {
-        self.inspecting.get()
+        self.tab.get() == Tab::Inspector
+    }
+
+    /// Returns whether the reactive tab shows, so the window hands it the
+    /// app's busiest effects, cycles and owners.
+    pub fn is_tracing(&self) -> bool {
+        self.tab.get() == Tab::Reactive
+    }
+
+    /// Takes what the reactive tab shows: `busiest`, the places effects were
+    /// created with how many times a second they ran there, busiest first,
+    /// `None` standing for the element bindings the library creates;
+    /// `cycles`, the cycles a frame cut short; and `owners`, the app's owner
+    /// tree, parents first.
+    pub fn show_reactive(
+        &self,
+        busiest: &[(Option<&'static std::panic::Location<'static>>, f64)],
+        cycles: &[CycleInfo],
+        owners: &[OwnerEntry],
+    ) {
+        self.reactive
+            .set(reactive::describe(busiest, cycles, owners));
     }
 
     /// Returns whether pick mode is on, so the window sends the pointer to
@@ -458,14 +483,17 @@ struct Frames;
 /// the frame under the pointer. The line follows the bars as new frames
 /// move them, so it always describes the bar the pointer is over.
 fn body(tools: &Tools) -> Element<Panel> {
-    let (frames, inspecting) = (tools.inspecting.clone(), tools.inspecting.clone());
-    let tab = |name: &'static str, inspector: bool| {
-        let (shown, choose) = (tools.inspecting.clone(), tools.inspecting.clone());
+    let tab = |name: &'static str, which: Tab| {
+        let (shown, choose) = (tools.tab.clone(), tools.tab.clone());
         button(move || {
-            let mark = if shown.get() == inspector { "> " } else { "" };
+            let mark = if shown.get() == which { "> " } else { "" };
             format!("{mark}{name}")
         })
-        .on_press(move || choose.set(inspector))
+        .on_press(move || choose.set(which))
+    };
+    let shown = |which: Tab, build: fn(&Tools) -> Element<Panel>| {
+        let (tab, tools) = (tools.tab.clone(), tools.clone());
+        show(move || tab.get() == which, move || build(&tools))
     };
     column()
         .width(pct(100.0))
@@ -480,17 +508,24 @@ fn body(tools: &Tools) -> Element<Panel> {
                     width: PAD,
                     height: PAD,
                 })
-                .child(tab("Frames", false))
-                .child(tab("Inspector", true)),
+                .child(tab("Frames", Tab::Frames))
+                .child(tab("Inspector", Tab::Inspector))
+                .child(tab("Reactive", Tab::Reactive)),
         )
-        .child(show(move || !frames.get(), {
-            let tools = tools.clone();
-            move || frames_tab(&tools)
-        }))
-        .child(show(move || inspecting.get(), {
-            let tools = tools.clone();
-            move || inspector::inspector(&tools)
-        }))
+        .child(shown(Tab::Frames, frames_tab))
+        .child(shown(Tab::Inspector, inspector::inspector))
+        .child(shown(Tab::Reactive, reactive::reactive_tab))
+}
+
+/// The tabs of the panel.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Tab {
+    /// The frame timeline and the switches.
+    Frames,
+    /// The node picker, the tree and a node's details.
+    Inspector,
+    /// The busiest effects, the cycles and the owner tree.
+    Reactive,
 }
 
 /// Builds the frames tab: the timeline, the switches, and a line that

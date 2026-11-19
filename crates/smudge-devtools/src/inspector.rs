@@ -5,7 +5,7 @@ use std::fmt::Write;
 
 use smudge_core::element::Element;
 use smudge_core::geometry::Rect;
-use smudge_core::inspect::NodeDetails;
+use smudge_core::inspect::{NodeDetails, SourceKind};
 use smudge_core::reactive::prelude::*;
 use smudge_core::style::px;
 use smudge_core::theme::{ColorToken, ColorValue};
@@ -175,11 +175,46 @@ pub(crate) fn describe(details: &NodeDetails) -> String {
         }
         None => text.push_str("\nnot painted yet"),
     }
+    if !details.bindings.is_empty() {
+        text.push_str("\nbindings:");
+        for binding in &details.bindings {
+            let _ = write!(text, "\n  ran {} times", binding.runs);
+            if let Some(at) = binding.defined_at {
+                let _ = write!(text, ", created at {}", site(at));
+            }
+            for source in &binding.sources {
+                let kind = match source.kind {
+                    SourceKind::Signal => "signal",
+                    SourceKind::Memo => "memo",
+                    _ => "source",
+                };
+                let _ = write!(
+                    text,
+                    "\n    reads a {kind} created at {}",
+                    source
+                        .defined_at
+                        .map_or_else(|| String::from("an unknown place"), site)
+                );
+            }
+            if let Some(wake) = binding.woken_by {
+                let _ = write!(
+                    text,
+                    "\n    woken by the write at {}",
+                    site(wake.written_at)
+                );
+            }
+        }
+    }
     let _ = write!(text, "\nstyle: {:#?}", details.base);
     if details.resolved != details.base {
         let _ = write!(text, "\nresolved: {:#?}", details.resolved);
     }
     text
+}
+
+/// Writes `at` as `file:line:column`.
+pub(crate) fn site(at: &std::panic::Location<'_>) -> String {
+    format!("{}:{}:{}", at.file(), at.line(), at.column())
 }
 
 /// Writes `rect` as its top left corner and its size.

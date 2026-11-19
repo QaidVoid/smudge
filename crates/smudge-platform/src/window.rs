@@ -1188,6 +1188,7 @@ where
             }
             state.devtools.show_bounds(&state.app, paced);
             state.devtools.inspect(&state.app, paced);
+            state.devtools.trace(&state.app, Instant::now(), paced);
         }
         let presented = presented.map(|(stats, _)| stats);
         if let Some(stats) = presented {
