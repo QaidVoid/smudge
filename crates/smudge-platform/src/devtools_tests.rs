@@ -509,3 +509,41 @@ fn a_press_that_moves_the_keys_keeps_an_unfocused_window_unfocused() {
         "the press gave the app the keys, not the focus"
     );
 }
+
+#[test]
+fn a_smaller_window_pulls_the_panel_inside() {
+    let (mut app, mut devtools, _) = apps(true);
+    devtools.dispatch(&mut app, InputEvent::PointerMoved { position: ON_PANEL });
+    devtools.dispatch(
+        &mut app,
+        InputEvent::PointerDown {
+            position: ON_PANEL,
+            button: PointerButton::Primary,
+        },
+    );
+    devtools.dispatch(
+        &mut app,
+        InputEvent::PointerMoved {
+            position: Point { x: 700.0, y: 500.0 },
+        },
+    );
+    devtools.dispatch(
+        &mut app,
+        InputEvent::PointerUp {
+            position: Point { x: 700.0, y: 500.0 },
+            button: PointerButton::Primary,
+        },
+    );
+    devtools.app.frame();
+    let small = Size {
+        width: 400.0,
+        height: 300.0,
+    };
+    devtools.set_viewport(small, 1.0);
+    devtools.app.frame();
+    let origin = panel_origin(&devtools);
+    assert!(
+        origin.x <= 400.0 - 320.0 && origin.y <= 300.0 - 32.0,
+        "{origin:?}"
+    );
+}

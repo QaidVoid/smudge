@@ -1077,7 +1077,6 @@ where
         #[cfg(feature = "_devtools")]
         state
             .devtools
-            .app
             .set_viewport(logical_size(physical, scale), scale);
         #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
         if state.scale != scale {

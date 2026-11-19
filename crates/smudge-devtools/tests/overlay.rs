@@ -1,13 +1,19 @@
 //! The devtools panel, driven through the headless harness.
 
-use smudge_core::geometry::{Point, Rect};
+use smudge_core::geometry::{Point, Rect, Size};
+use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_test::Harness;
 use smudge_text::TextSystem;
 
 /// A harness that shows the overlay in a window of 800 by 600.
 fn overlay() -> Harness {
     TextSystem::bundled_only().install();
-    let mut harness = Harness::new(800.0, 600.0, 1.0, smudge_devtools::overlay);
+    let mut harness = Harness::new(800.0, 600.0, 1.0, || {
+        smudge_devtools::overlay(|| Size {
+            width: 800.0,
+            height: 600.0,
+        })
+    });
     harness.frame();
     harness
 }
@@ -109,4 +115,52 @@ fn a_drag_past_the_top_or_left_leaves_the_title_bar_in_reach() {
         (100.0, 50.0),
         "the middle of the title bar grabs the panel again"
     );
+}
+
+#[test]
+fn the_panel_stays_inside_the_window_past_its_right_and_bottom_edges() {
+    TextSystem::bundled_only().install();
+    let viewport = RwSignal::new(Size {
+        width: 800.0,
+        height: 600.0,
+    });
+    let read = viewport.clone();
+    let mut harness = Harness::new(800.0, 600.0, 1.0, move || {
+        let read = read.clone();
+        smudge_devtools::overlay(move || read.get())
+    });
+    harness.frame();
+    let before = panel_rect(&mut harness);
+    let grab = Point {
+        x: before.x0 + 20.0,
+        y: before.y0 + 10.0,
+    };
+    harness.button_down(grab);
+    harness.move_to(Point {
+        x: 2000.0,
+        y: 2000.0,
+    });
+    harness.button_up(Point {
+        x: 2000.0,
+        y: 2000.0,
+    });
+    harness.frame();
+    let pinned = panel_rect(&mut harness);
+    assert!(pinned.x1 <= 800.0, "the right edge stays in: {pinned:?}");
+    assert!(
+        pinned.y0 <= 600.0 - 32.0,
+        "the title bar stays above the bottom: {pinned:?}"
+    );
+
+    viewport.set(Size {
+        width: 500.0,
+        height: 300.0,
+    });
+    harness.frame();
+    let shrunk = panel_rect(&mut harness);
+    assert!(
+        shrunk.x1 <= 500.0,
+        "a smaller window pulls the panel in: {shrunk:?}"
+    );
+    assert!(shrunk.y0 <= 300.0 - 32.0);
 }

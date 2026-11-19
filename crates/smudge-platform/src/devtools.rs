@@ -13,6 +13,7 @@ use std::time::Duration;
 use smudge_core::app::{App, AppConfig, RepaintMode};
 use smudge_core::geometry::{Color, Point, Rect, Size};
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
+use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::theme::Theme;
 use smudge_core::window::Cursor;
 
@@ -29,6 +30,8 @@ pub(crate) const KEY_VARIABLE: &str = "SMUDGE_DEVTOOLS_KEY";
 pub(crate) struct Devtools {
     /// The overlay's own app, which builds the devtools panel.
     pub(crate) app: App,
+    /// The window's size in logical pixels, which the panel stays inside.
+    viewport: RwSignal<Size>,
     /// Whether the panel shows.
     open: bool,
     /// Whether a primary press began over the panel, so the pointer stays
@@ -79,6 +82,8 @@ impl Devtools {
     /// Creates the devtools with the panel `open` or not and the `toggle`
     /// key, whatever the environment says.
     pub(crate) fn with(viewport: Size, scale: f32, open: bool, toggle: Shortcut) -> Devtools {
+        let size = RwSignal::new(viewport);
+        let read = size.clone();
         let mut app = App::new(
             AppConfig {
                 viewport,
@@ -86,13 +91,14 @@ impl Devtools {
                 clear_color: Color::TRANSPARENT,
                 repaint: RepaintMode::Damage,
             },
-            smudge_devtools::overlay,
+            move || smudge_devtools::overlay(move || read.get()),
         );
         app.set_theme(Theme::dark());
         // Keys start with the app, so the overlay starts unfocused.
         app.handle_event(InputEvent::WindowFocus(false));
         Devtools {
             app,
+            viewport: size,
             open,
             captured: false,
             app_pressed: false,
@@ -102,6 +108,13 @@ impl Devtools {
             toggle,
             timing: OverlayTiming::default(),
         }
+    }
+
+    /// Takes the window's new size, `viewport` logical pixels at `scale`,
+    /// which the panel stays inside.
+    pub(crate) fn set_viewport(&mut self, viewport: Size, scale: f32) {
+        self.app.set_viewport(viewport, scale);
+        self.viewport.set(viewport);
     }
 
     /// Returns whether the panel shows.

@@ -9,7 +9,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use smudge_core::element::{Element, show};
-use smudge_core::geometry::Point;
+use smudge_core::geometry::{Point, Size};
 use smudge_core::input::{Drag, Handled};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::style::{Edges, Length, Overflow, pct, px};
@@ -30,18 +30,30 @@ const BODY: f32 = 160.0;
 /// The width of the panel's border, in logical pixels.
 const BORDER: f32 = 1.0;
 
+/// How much of the panel's top stays in the window when a drag or a resize
+/// takes it toward the bottom edge, in logical pixels, so its title bar can
+/// be grabbed again.
+const KEEP: f32 = 32.0;
+
 /// Builds the devtools overlay: one panel over a root as large as the
-/// window.
+/// window, whose size in logical pixels `viewport` reads.
 ///
 /// The root takes no pointer input of its own, so wherever no panel is, the
 /// pointer reaches the app underneath. The panel moves with a drag on its
 /// title bar, and the button on the bar collapses it to the bar and opens it
-/// again.
+/// again. It stays inside the window, across a drag and a resize, as far as
+/// the window is wide and tall enough to hold its title bar.
 ///
 /// ```
-/// let overlay = smudge_devtools::overlay();
+/// use smudge_core::geometry::Size;
+///
+/// let overlay = smudge_devtools::overlay(|| Size {
+///     width: 800.0,
+///     height: 600.0,
+/// });
 /// ```
-pub fn overlay() -> Element<Panel> {
+pub fn overlay(viewport: impl Fn() -> Size + 'static) -> Element<Panel> {
+    let viewport: Rc<dyn Fn() -> Size> = Rc::new(viewport);
     let at = RwSignal::new(START);
     let open = RwSignal::new(true);
     // Where the press that grabbed the title bar landed on it, which stays
@@ -64,13 +76,16 @@ pub fn overlay() -> Element<Panel> {
         );
     let window = panel()
         .absolute()
-        .inset(move || {
-            let at = place.get();
-            Edges {
-                left: px(at.x),
-                top: px(at.y),
-                right: Length::Auto,
-                bottom: Length::Auto,
+        .inset({
+            let viewport = Rc::clone(&viewport);
+            move || {
+                let at = inside(place.get(), viewport());
+                Edges {
+                    left: px(at.x),
+                    top: px(at.y),
+                    right: Length::Auto,
+                    bottom: Length::Auto,
+                }
             }
         })
         .width(px(WIDTH))
@@ -85,17 +100,17 @@ pub fn overlay() -> Element<Panel> {
 
     // The root hears the drags that begin on the title bar, in its own
     // coordinates, which stay put while the panel moves. The title bar sits
-    // inside the border, and never leaves the window by its top or its left,
-    // so it can always be grabbed again.
+    // inside the border.
     panel()
         .width(pct(100.0))
         .height(pct(100.0))
         .on_drag(move |step| match (step, grab.get()) {
             (Drag::Moved(point), Some(grab)) => {
-                at.set(Point {
-                    x: (point.x - grab.x - BORDER).max(0.0),
-                    y: (point.y - grab.y - BORDER).max(0.0),
-                });
+                let wanted = Point {
+                    x: point.x - grab.x - BORDER,
+                    y: point.y - grab.y - BORDER,
+                };
+                at.set(inside(wanted, viewport()));
                 Handled::Yes
             }
             (Drag::Moved(_), None) => Handled::No,
@@ -105,4 +120,15 @@ pub fn overlay() -> Element<Panel> {
             }
         })
         .child(window)
+}
+
+/// Returns `at` moved as little as it takes for a panel there to stay inside
+/// a window of `viewport`: its left and top edges in the window, its right
+/// edge too while the window is wide enough, and at least [`KEEP`] of it
+/// above the bottom edge.
+fn inside(at: Point, viewport: Size) -> Point {
+    Point {
+        x: at.x.min(viewport.width - WIDTH).max(0.0),
+        y: at.y.min(viewport.height - KEEP).max(0.0),
+    }
 }
