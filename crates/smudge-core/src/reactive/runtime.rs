@@ -19,6 +19,10 @@ use slotmap::{SlotMap, new_key_type};
 
 use crate::reactive::Owner;
 
+#[cfg(feature = "devtools")]
+#[path = "trace.rs"]
+mod trace;
+
 new_key_type! {
     /// Identifies one node of the arena: a signal, a memo or an effect.
     ///
@@ -413,6 +417,9 @@ pub(crate) struct Runtime {
     current: Weak<OwnerData>,
     /// The scope of nodes and owners created with no current owner.
     default_scope: Rc<Scope>,
+    /// What the devtools record of the graph.
+    #[cfg(feature = "devtools")]
+    trace: trace::Trace,
 }
 
 thread_local! {
@@ -502,6 +509,70 @@ pub(crate) fn notify(id: NodeId) {
     fire_wakes(wakes);
 }
 
+/// Records that `id` was created at `at`, for the devtools.
+#[cfg(feature = "devtools")]
+#[inline(never)]
+pub(crate) fn trace_defined(id: NodeId, at: &'static std::panic::Location<'static>) {
+    with_runtime(|runtime| runtime.trace.define(id, at));
+}
+
+/// Marks the node `id` as changed by the write at `at`, like [`notify`],
+/// and records the write against every effect it wakes, for the devtools.
+#[cfg(feature = "devtools")]
+#[inline(never)]
+pub(crate) fn notify_written(id: NodeId, at: &'static std::panic::Location<'static>) {
+    let wakes = with_runtime(|runtime| {
+        runtime.trace.writing = Some(trace::Wake {
+            source: id,
+            written_at: at,
+        });
+        runtime.trace.last_write = Some(at);
+        let wakes = runtime.notify(id);
+        runtime.trace.writing = None;
+        wakes
+    });
+    fire_wakes(wakes);
+}
+
+/// Returns what the inspector shows of each effect `owner` holds.
+#[cfg(feature = "devtools")]
+#[inline(never)]
+pub(crate) fn bindings_of(owner: &Owner) -> Vec<crate::inspect::BindingInfo> {
+    with_runtime(|runtime| runtime.bindings_of(owner.data()))
+}
+
+/// Returns the `limit` effects of `root`'s scope that ran most.
+#[cfg(feature = "devtools")]
+#[inline(never)]
+pub(crate) fn busiest(root: &Owner, limit: usize) -> Vec<crate::inspect::EffectRuns> {
+    with_runtime(|runtime| runtime.busiest(&root.data().scope, limit))
+}
+
+/// Records that a frame of `root` stopped at its round cap.
+#[cfg(feature = "devtools")]
+#[inline(never)]
+pub(crate) fn trace_round_cycle(root: &Owner) {
+    with_runtime(|runtime| runtime.trace_round_cycle(Rc::clone(&root.data().scope)));
+}
+
+/// Returns the cycles of `root`'s scope a flush cut short.
+#[cfg(feature = "devtools")]
+#[inline(never)]
+pub(crate) fn cycles(root: &Owner) -> Vec<crate::inspect::CycleInfo> {
+    with_runtime(|runtime| runtime.cycles(&root.data().scope))
+}
+
+/// Calls `visit` with `root` and every owner under it.
+#[cfg(feature = "devtools")]
+#[inline(never)]
+pub(crate) fn visit_owners(root: &Owner, visit: &mut dyn FnMut(crate::inspect::OwnerEntry)) {
+    let mut owners = Vec::new();
+    with_runtime(|runtime| runtime.visit_owners(root.data(), 0, &mut |owner| owners.push(owner)));
+    for owner in owners {
+        visit(owner);
+    }
+}
+
 impl Runtime {
     fn new() -> Runtime {
         Runtime {
@@ -513,6 +584,8 @@ impl Runtime {
             generation: 0,
             current: Weak::default(),
             default_scope: Rc::new(Scope::new()),
+            #[cfg(feature = "devtools")]
+            trace: trace::Trace::default(),
         }
     }
 
@@ -619,6 +692,8 @@ impl Runtime {
     /// Call it through [`dispose`], which drops the node after the runtime is
     /// released.
     fn dispose_node(&mut self, id: NodeId) -> Option<Node> {
+        #[cfg(feature = "devtools")]
+        self.trace.forget(id);
         let count = self.node(id).and_then(Node::sources).map_or(0, Vec::len);
         for index in 0..count {
             let Some(source) = self
@@ -755,6 +830,8 @@ impl Runtime {
             *queued = true;
             self.queue.push_back(id);
         }
+        #[cfg(feature = "devtools")]
+        self.trace.woken(id);
         if let Some(scope) = first_wake {
             self.woken.push(scope);
         }
@@ -833,6 +910,11 @@ impl Runtime {
         };
         if runs > MAX_RUNS_PER_FLUSH {
             self.release_effect(id);
+            #[cfg(feature = "devtools")]
+            if let Some(Node::Effect { scope, .. }) = self.arena.get(id) {
+                let scope = Rc::clone(scope);
+                self.trace_cycle(id, scope);
+            }
             debug_assert!(
                 false,
                 "a binding ran {runs} times in one flush, so it is part of a \
@@ -1134,6 +1216,8 @@ fn run_effect(id: NodeId) {
 /// creation does.
 #[inline(never)]
 pub(crate) fn run_body(cell: &Rc<EffectCell>, node: NodeId) {
+    #[cfg(feature = "devtools")]
+    with_runtime(|runtime| runtime.trace.ran(node));
     let _observer = ObserverGuard::enter(Some(node));
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     let _paused = super::carry::Paused::enter();

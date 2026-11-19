@@ -121,6 +121,7 @@ impl WidgetTree {
             painted,
             ops: node.ops.len() + node.inner_ops.len(),
             semantics: self.semantics_node(id),
+            bindings: crate::reactive::runtime::bindings_of(&node.owner),
             hidden,
         })
     }

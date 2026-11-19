@@ -227,6 +227,7 @@ pub trait Update<T: 'static> {
 pub trait Set<T: 'static>: Update<T> {
     /// Replaces the value and notifies subscribers, whether or not the new
     /// value compares equal to the old one.
+    #[cfg_attr(feature = "devtools", track_caller)]
     fn set(&self, value: T) {
         self.update(|slot| *slot = value);
     }
@@ -261,9 +262,14 @@ impl<T: 'static> RwSignal<T> {
     /// hands the new signal the value of the signal the previous build
     /// created at the same place, as [`App::remount`](crate::app::App::remount)
     /// describes.
-    #[cfg_attr(all(feature = "hot-reload", target_os = "linux"), track_caller)]
+    #[cfg_attr(
+        any(all(feature = "hot-reload", target_os = "linux"), feature = "devtools"),
+        track_caller
+    )]
     pub fn new(value: T) -> RwSignal<T> {
         let node = runtime::new_signal();
+        #[cfg(feature = "devtools")]
+        runtime::trace_defined(node, std::panic::Location::caller());
         let data = Rc::new(SignalData {
             value: RefCell::new(value),
             node: Cell::new(node),
@@ -320,8 +326,12 @@ impl<T: 'static> Read<T> for RwSignal<T> {
 }
 
 impl<T: 'static> Update<T> for RwSignal<T> {
+    #[cfg_attr(feature = "devtools", track_caller)]
     fn update<U>(&self, fun: impl FnOnce(&mut T) -> U) -> U {
         let result = fun(&mut self.data.value.borrow_mut());
+        #[cfg(feature = "devtools")]
+        runtime::notify_written(self.data.node.get(), std::panic::Location::caller());
+        #[cfg(not(feature = "devtools"))]
         runtime::notify(self.data.node.get());
         result
     }
@@ -355,8 +365,12 @@ pub struct WriteSignal<T> {
 }
 
 impl<T: 'static> Update<T> for WriteSignal<T> {
+    #[cfg_attr(feature = "devtools", track_caller)]
     fn update<U>(&self, fun: impl FnOnce(&mut T) -> U) -> U {
         let result = fun(&mut self.data.value.borrow_mut());
+        #[cfg(feature = "devtools")]
+        runtime::notify_written(self.data.node.get(), std::panic::Location::caller());
+        #[cfg(not(feature = "devtools"))]
         runtime::notify(self.data.node.get());
         result
     }
@@ -390,9 +404,14 @@ impl<T: 'static> Update<T> for WriteSignal<T> {
 /// reactive::flush();
 /// assert_eq!(seen.get(), 4);
 /// ```
-#[cfg_attr(all(feature = "hot-reload", target_os = "linux"), track_caller)]
+#[cfg_attr(
+    any(all(feature = "hot-reload", target_os = "linux"), feature = "devtools"),
+    track_caller
+)]
 pub fn signal_local<T: 'static>(value: T) -> (ReadSignal<T>, WriteSignal<T>) {
     let node = runtime::new_signal();
+    #[cfg(feature = "devtools")]
+    runtime::trace_defined(node, std::panic::Location::caller());
     let data = Rc::new(SignalData {
         value: RefCell::new(value),
         node: Cell::new(node),
@@ -431,6 +450,7 @@ impl<T: 'static> Memo<T> {
     ///
     /// The value type needs [`PartialEq`] so the memo can recognize an
     /// unchanged value and stop propagation.
+    #[cfg_attr(feature = "devtools", track_caller)]
     pub fn new(compute: impl Fn() -> T + 'static) -> Memo<T>
     where
         T: PartialEq,
@@ -454,6 +474,8 @@ impl<T: 'static> Memo<T> {
             }
         });
         let node = runtime::new_memo(run);
+        #[cfg(feature = "devtools")]
+        runtime::trace_defined(node, std::panic::Location::caller());
         data.node.set(node);
         runtime::compute_new_memo(node);
         Memo { data }
@@ -512,8 +534,12 @@ impl RenderEffect {
     /// type's documentation for the lifetime rules. The body's return value
     /// is ignored. The body goes through the hot reload wrapper, so a patch
     /// of the application replaces it.
+    #[cfg_attr(feature = "devtools", track_caller)]
     pub fn new<T>(run: impl FnMut() -> T + 'static) -> RenderEffect {
-        Self::new_unwrapped(crate::hot::wrap_mut(run))
+        let effect = Self::new_unwrapped(crate::hot::wrap_mut(run));
+        #[cfg(feature = "devtools")]
+        runtime::trace_defined(effect.node, std::panic::Location::caller());
+        effect
     }
 
     /// Creates an effect whose body is the closure as it is, with no hot

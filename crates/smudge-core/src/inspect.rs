@@ -122,4 +122,87 @@ pub struct NodeDetails {
     pub semantics: Option<SemanticsNode>,
     /// Whether the node, or one of its ancestors, is hidden.
     pub hidden: bool,
+    /// The bindings and effects the node's owner holds.
+    pub bindings: Vec<BindingInfo>,
+}
+
+/// One binding or effect, as the inspector shows it.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct BindingInfo {
+    /// Where the effect was created, when its constructor passed its caller
+    /// on. Element bindings, which the library creates, have none.
+    pub defined_at: Option<&'static Location<'static>>,
+    /// How many times its body ran.
+    pub runs: u64,
+    /// The signals and memos its last run read.
+    pub sources: Vec<SourceInfo>,
+    /// The write that last woke it, or `None` when no write has since it
+    /// was created.
+    pub woken_by: Option<WriteInfo>,
+}
+
+/// A signal or memo an effect read.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SourceInfo {
+    /// Whether it is a signal or a memo.
+    pub kind: SourceKind,
+    /// Where it was created.
+    pub defined_at: Option<&'static Location<'static>>,
+}
+
+/// What an effect read.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SourceKind {
+    /// A signal.
+    Signal,
+    /// A memo.
+    Memo,
+}
+
+/// A write that woke an effect.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WriteInfo {
+    /// Where the written signal was created.
+    pub source_defined_at: Option<&'static Location<'static>>,
+    /// Where the write happened: the call of `set` or `update`.
+    pub written_at: &'static Location<'static>,
+}
+
+/// How often one effect ran, for the busiest effects list.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EffectRuns {
+    /// Where the effect was created, when known.
+    pub defined_at: Option<&'static Location<'static>>,
+    /// How many times its body ran.
+    pub runs: u64,
+}
+
+/// A cycle that a frame cut short: a binding that kept waking itself, or
+/// updates that kept waking bindings.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CycleInfo {
+    /// Where the effect that ran too often was created, when known.
+    pub effect_defined_at: Option<&'static Location<'static>>,
+    /// Where the write that last woke it happened, when known.
+    pub written_at: Option<&'static Location<'static>>,
+}
+
+/// One owner and what it holds, as the owner tree shows it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct OwnerEntry {
+    /// How deep the owner sits, with the app's root owner at zero.
+    pub depth: usize,
+    /// How many signals it holds.
+    pub signals: usize,
+    /// How many memos it holds.
+    pub memos: usize,
+    /// How many effects it holds.
+    pub effects: usize,
 }

@@ -1184,6 +1184,10 @@ impl App {
                 settled = true;
                 break;
             }
+            #[cfg(feature = "devtools")]
+            if rounds >= MAX_FLUSH_ROUNDS {
+                crate::reactive::runtime::trace_round_cycle(&self._root);
+            }
             debug_assert!(
                 rounds < MAX_FLUSH_ROUNDS,
                 "the update queue did not settle in {MAX_FLUSH_ROUNDS} rounds, \
@@ -1315,6 +1319,28 @@ impl App {
     #[cfg(feature = "devtools")]
     pub fn node_at(&self, position: Point) -> Option<WidgetId> {
         self.tree.node_at(position)
+    }
+
+    /// Returns the `limit` effects of this app that ran most, most first.
+    /// See [`crate::inspect`].
+    #[cfg(feature = "devtools")]
+    pub fn busiest_effects(&self, limit: usize) -> Vec<crate::inspect::EffectRuns> {
+        crate::reactive::runtime::busiest(&self._root, limit)
+    }
+
+    /// Returns the cycles of this app's bindings that a flush cut short,
+    /// oldest first, at most the last 32 of the thread. See
+    /// [`crate::inspect`].
+    #[cfg(feature = "devtools")]
+    pub fn cycles(&self) -> Vec<crate::inspect::CycleInfo> {
+        crate::reactive::runtime::cycles(&self._root)
+    }
+
+    /// Calls `visit` with the app's root owner and every owner under it,
+    /// parents first, with what each holds. See [`crate::inspect`].
+    #[cfg(feature = "devtools")]
+    pub fn visit_owners(&self, mut visit: impl FnMut(crate::inspect::OwnerEntry)) {
+        crate::reactive::runtime::visit_owners(&self._root, &mut visit);
     }
 
     /// Returns the display list the last frame drew, in logical pixels, for
