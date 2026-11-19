@@ -1,11 +1,12 @@
 //! The widget that shows a [`MarkdownSource`].
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use smudge_core::element::{AnyElement, Element, IntoElement, Slot, for_each};
 use smudge_core::geometry::Size;
-use smudge_core::reactive::{Memo, RwSignal, prelude::*};
-use smudge_core::semantics::Role;
+use smudge_core::reactive::{Memo, RenderEffect, RwSignal, prelude::*};
+use smudge_core::semantics::{Announcer, Politeness, Role};
 use smudge_core::style::{Align, pct, px};
 use smudge_core::theme::{ColorToken, RadiusToken};
 use smudge_core::widget::{Panel, panel};
@@ -39,6 +40,8 @@ pub struct MarkdownOptions {
     follow: Option<RwSignal<bool>>,
     /// What a click on a link runs.
     on_link: Option<LinkHandler>,
+    /// Whether a screen reader speaks each block as it completes.
+    announce: bool,
 }
 
 impl MarkdownOptions {
@@ -47,6 +50,22 @@ impl MarkdownOptions {
     /// stays in view as it grows.
     pub fn follow_end(mut self, follow: RwSignal<bool>) -> MarkdownOptions {
         self.follow = Some(follow);
+        self
+    }
+
+    /// Has a screen reader speak each block once it completes, politely, so
+    /// a reply that streams in is read as it arrives, a block at a time and
+    /// never a token at a time.
+    ///
+    /// A block completes when the next one starts, or when
+    /// [`MarkdownSource::finish`] runs, which a stream should call when it
+    /// ends so its last block is spoken too. The blocks complete before the
+    /// view mounts are not spoken, and neither is anything while the view is
+    /// hidden. A document pushed in one piece after the view mounts is
+    /// spoken whole, so leave this off for a view that shows documents
+    /// rather than streams.
+    pub fn announce_blocks(mut self) -> MarkdownOptions {
+        self.announce = true;
         self
     }
 
@@ -89,8 +108,9 @@ pub fn markdown(source: &MarkdownSource, options: MarkdownOptions) -> Element<Pa
     let keys = source.clone();
     let texts = source.clone();
     let rows = source.clone();
+    let announce = options.announce;
     let options = Rc::new(options);
-    selection_scope(
+    let view = selection_scope(
         move || keys.leaves(),
         move |leaf: &Leaf| texts.leaf_text(leaf),
         move || {
@@ -110,7 +130,33 @@ pub fn markdown(source: &MarkdownSource, options: MarkdownOptions) -> Element<Pa
                 None => column,
             }
         },
-    )
+    );
+    if announce {
+        view.announcer(&block_announcer(source))
+    } else {
+        view
+    }
+}
+
+/// An announcer that speaks each block of `source` as it completes, from
+/// the blocks complete when it is made on, and from the first block of
+/// each document after a clear.
+fn block_announcer(source: &MarkdownSource) -> Announcer {
+    let announcer = Announcer::new();
+    let speaker = announcer.clone();
+    let source = source.clone();
+    let spoken = Cell::new((source.generation(), source.complete_untracked()));
+    RenderEffect::new(move || {
+        let complete = source.complete();
+        let generation = source.generation();
+        let (seen, from) = spoken.get();
+        let from = if seen == generation { from } else { 0 };
+        for index in from..complete {
+            speaker.announce(source.block_text(index), Politeness::Polite);
+        }
+        spoken.set((generation, from.max(complete)));
+    });
+    announcer
 }
 
 /// The row of the block `key` names.

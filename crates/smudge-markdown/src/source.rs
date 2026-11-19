@@ -57,6 +57,9 @@ struct Shared {
     keys: RwSignal<Rc<[BlockKey]>>,
     /// Every selectable leaf of the document, in reading order.
     leaves: RwSignal<Rc<[Leaf]>>,
+    /// How many blocks, from the first, are complete: every closed block,
+    /// and the open one too once [`MarkdownSource::finish`] ran.
+    complete: RwSignal<usize>,
 }
 
 /// The path of each leaf of one block, by leaf.
@@ -105,13 +108,14 @@ impl MarkdownSource {
         let owner = Owner::new();
         let blocks_owner = owner.child();
         let first = blocks_owner.with(|| RwSignal::new(Rc::from([])));
-        let (keys, leaves) = owner.with(|| {
+        let (keys, leaves, complete) = owner.with(|| {
             (
                 RwSignal::new(Rc::from([BlockKey {
                     generation: 0,
                     start: 0,
                 }])),
                 RwSignal::new(Rc::from([])),
+                RwSignal::new(0),
             )
         });
         MarkdownSource {
@@ -125,6 +129,7 @@ impl MarkdownSource {
                 lookups: RefCell::new(vec![None]),
                 keys,
                 leaves,
+                complete,
             }),
         }
     }
@@ -178,6 +183,26 @@ impl MarkdownSource {
                 .collect();
             self.shared.leaves.set(all);
         }
+        if changes.opened > 0 {
+            self.complete_up_to(blocks_len(self) - 1);
+        }
+    }
+
+    /// Marks every block so far complete, the last one included, for a
+    /// view that announces blocks as they complete: call it when a streamed
+    /// reply ends, so its last block is spoken too.
+    ///
+    /// A later push continues the document as usual. Text it adds to the
+    /// block that was last when this ran is not announced again.
+    pub fn finish(&self) {
+        self.complete_up_to(blocks_len(self));
+    }
+
+    /// Raises the count of complete blocks to `count`, when it is lower.
+    fn complete_up_to(&self, count: usize) {
+        if self.shared.complete.read(|complete| *complete < count) {
+            self.shared.complete.set(count);
+        }
     }
 
     /// Empties the document, for a new one to be pushed. Every row of a
@@ -195,6 +220,7 @@ impl MarkdownSource {
         *self.shared.lookups.borrow_mut() = vec![None];
         self.shared.keys.set(Rc::from([self.key(0)]));
         self.shared.leaves.set(Rc::from([]));
+        self.shared.complete.set(0);
     }
 
     /// The document's text so far, with every line ending a line feed.
@@ -205,6 +231,41 @@ impl MarkdownSource {
     /// The key of every block, which tracks the signal the list reads.
     pub(crate) fn keys(&self) -> Rc<[BlockKey]> {
         self.shared.keys.get()
+    }
+
+    /// How many blocks, from the first, are complete, which tracks the
+    /// signal it reads.
+    pub(crate) fn complete(&self) -> usize {
+        self.shared.complete.get()
+    }
+
+    /// How many blocks are complete, without tracking.
+    pub(crate) fn complete_untracked(&self) -> usize {
+        self.shared.complete.read(|complete| *complete)
+    }
+
+    /// How many times the source was cleared, which tells one document
+    /// from the next.
+    pub(crate) fn generation(&self) -> u32 {
+        self.shared.generation.get()
+    }
+
+    /// The text of the block at `index`, its leaves joined by line feeds,
+    /// or an empty string when there is no such block.
+    pub(crate) fn block_text(&self, index: usize) -> String {
+        let leaves = self
+            .shared
+            .paths
+            .borrow()
+            .get(index)
+            .cloned()
+            .unwrap_or_default();
+        let texts: Vec<String> = leaves
+            .iter()
+            .map(|leaf| self.leaf_text(leaf))
+            .filter(|text| !text.is_empty())
+            .collect();
+        texts.join("\n")
     }
 
     /// Every selectable leaf, which tracks the signal the selection reads.
@@ -257,6 +318,11 @@ impl MarkdownSource {
                 .unwrap_or_default()
         })
     }
+}
+
+/// How many blocks the document of `source` has, the open one included.
+fn blocks_len(source: &MarkdownSource) -> usize {
+    source.shared.document.borrow().blocks().len()
 }
 
 /// The leaf at `path` in `nodes`, of the document of `generation`, or

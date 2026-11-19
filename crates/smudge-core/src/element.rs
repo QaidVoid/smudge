@@ -48,7 +48,7 @@ use crate::geometry::{Color, Corners, Point, Rect, Size};
 use crate::input::{Handled, KeyEvent};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RenderEffect, RwSignal};
-use crate::semantics::{Checked, Role, ValueRange};
+use crate::semantics::{Announcer, Checked, Role, ValueRange};
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
 };
@@ -368,6 +368,24 @@ impl Binding {
                     queue.push(Box::new(move |tree| {
                         tree.set_a11y_label(id, Some(value));
                     }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that hands what `announcer` announces to the tree.
+    fn announcer(announcer: Announcer) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let messages = announcer.take();
+                    if messages.is_empty() {
+                        return;
+                    }
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| tree.announce(id, messages)));
                 })
             }),
         }
@@ -1773,6 +1791,19 @@ impl<W: Widget> Element<W> {
     /// sets it on every heading.
     pub fn accessible_level(mut self, level: impl Into<Value<usize>>) -> Self {
         self.a11y_level = Some(level.into());
+        self
+    }
+
+    /// Has a screen reader speak what `announcer` announces, while this node
+    /// is mounted and not hidden.
+    ///
+    /// Each message is spoken once, and the messages of one politeness in
+    /// the order they were announced, even when several arrive in one
+    /// frame. Messages announced while the node is hidden or fading out are
+    /// dropped. Attach an announcer to one element: a second one takes
+    /// the messages the first would have spoken.
+    pub fn announcer(mut self, announcer: &Announcer) -> Self {
+        self.bindings.push(Binding::announcer(announcer.clone()));
         self
     }
 

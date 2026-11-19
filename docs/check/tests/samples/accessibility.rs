@@ -61,6 +61,17 @@ fn switch_and_progress() {
 }
 
 #[test]
+fn announce_saved() {
+    use smudge::core::semantics::{Announcer, Politeness};
+    
+    let announcer = Announcer::new();
+    let saved = announcer.clone();
+    let save = button("Save")
+        .announcer(&announcer)
+        .on_press(move || saved.announce("Saved", Politeness::Polite));
+}
+
+#[test]
 fn focus_ring() {
     let item = panel()
         .focusable()

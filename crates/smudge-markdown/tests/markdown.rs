@@ -480,3 +480,86 @@ fn a_document_reaches_the_accessibility_tree_as_no_list() {
         "the blocks' own semantics still reach the tree"
     );
 }
+
+/// A streaming view that announces its blocks, over `source`.
+fn announcing_view(source: &MarkdownSource) -> Harness {
+    TextSystem::bundled_only().install();
+    let shown = source.clone();
+    Harness::new(WINDOW.0, WINDOW.1, 1.0, move || {
+        markdown(&shown, MarkdownOptions::default().announce_blocks())
+            .width(pct(100.0))
+            .height(px(WINDOW.1))
+    })
+}
+
+/// The messages announced since the last call, after a frame.
+fn spoken(harness: &mut Harness) -> Vec<String> {
+    harness.frame();
+    harness
+        .app()
+        .take_a11y_changes()
+        .announcements
+        .into_iter()
+        .map(|announcement| announcement.message)
+        .collect()
+}
+
+#[test]
+fn a_streamed_reply_is_announced_a_block_at_a_time_and_never_a_token_at_a_time() {
+    let source = MarkdownSource::new();
+    source.push("Already here.\n\n");
+    let mut harness = announcing_view(&source);
+    source.push("# Answer\n");
+    assert_eq!(
+        spoken(&mut harness),
+        vec!["Already here.".to_owned()],
+        "the block the heading closed, though its text came before the view"
+    );
+    source.push("The build ");
+    assert!(spoken(&mut harness).is_empty(), "no token is spoken");
+    source.push("passed.\n");
+    assert_eq!(spoken(&mut harness), vec!["Answer".to_owned()]);
+    source.push("\n- one\n- two\n");
+    assert_eq!(spoken(&mut harness), vec!["The build passed.".to_owned()]);
+    source.push("\nDone.\n\nMore.\n");
+    assert_eq!(
+        spoken(&mut harness),
+        vec!["one\ntwo".to_owned(), "Done.".to_owned()],
+        "every block a push completes, in order"
+    );
+    source.finish();
+    assert_eq!(spoken(&mut harness), vec!["More.".to_owned()]);
+    source.finish();
+    assert!(spoken(&mut harness).is_empty(), "a block is spoken once");
+}
+
+#[test]
+fn a_cleared_source_announces_its_next_document_from_the_start() {
+    let source = MarkdownSource::new();
+    let mut harness = announcing_view(&source);
+    source.push("First.\n\nSecond.\n\n");
+    spoken(&mut harness);
+    source.clear();
+    source.push("New.\n\nNext\n");
+    assert_eq!(spoken(&mut harness), vec!["New.".to_owned()]);
+}
+
+#[test]
+fn blocks_complete_before_the_view_mounts_are_not_spoken() {
+    let source = MarkdownSource::new();
+    source.push("First.\n\nSecond.\n\n");
+    let mut harness = announcing_view(&source);
+    assert!(spoken(&mut harness).is_empty());
+    source.push("Third.\n");
+    assert_eq!(spoken(&mut harness), vec!["Second.".to_owned()]);
+}
+
+#[test]
+fn a_view_that_does_not_announce_speaks_nothing() {
+    let source = MarkdownSource::new();
+    let (mut harness, _) = view_of(&source);
+    harness.app().take_a11y_changes();
+    source.push("One.\n\nTwo.\n\n");
+    source.finish();
+    assert!(spoken(&mut harness).is_empty());
+}

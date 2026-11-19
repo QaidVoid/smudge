@@ -20,10 +20,10 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use smudge_core::app::App;
 use smudge_core::geometry::Rect;
 use smudge_core::semantics::SemanticsNode;
-use smudge_core::semantics::{Checked, Role};
+use smudge_core::semantics::{Checked, Politeness, Role};
 use smudge_core::tree::WidgetId;
 
-use accesskit::{Node, NodeId, Rect as AccessKitRect, Toggled};
+use accesskit::{Live, Node, NodeId, Rect as AccessKitRect, Toggled};
 use accesskit::{Role as AccessKitRole, TreeId, TreeInfo, TreeUpdate};
 
 /// The node id of the synthesized window root.
@@ -32,6 +32,15 @@ use accesskit::{Role as AccessKitRole, TreeId, TreeInfo, TreeUpdate};
 /// bits, with the null key alone using all ones for the index, so an id of
 /// all ones can never collide with a widget.
 const WINDOW_ROOT: NodeId = NodeId(u64::MAX);
+
+/// Returns the node id of the announcement numbered `serial`.
+///
+/// Its index is all ones, which no widget id has, and its version is
+/// `serial`, which stops short of all ones so it never names
+/// [`WINDOW_ROOT`].
+fn announcement_id(serial: u32) -> NodeId {
+    NodeId((u64::from(serial % u32::MAX) << 32) | u64::from(u32::MAX))
+}
 
 /// Builds the AccessKit tree updates for one app.
 ///
@@ -50,6 +59,11 @@ pub struct Projection {
     sent: HashMap<NodeId, Sent>,
     /// The roots the window root was last sent with.
     roots: Vec<NodeId>,
+    /// The announcement nodes the window root holds after its roots, until
+    /// the next announcements replace them.
+    announced: Vec<NodeId>,
+    /// The serial of the next announcement node.
+    serial: u32,
 }
 
 /// What the projection last sent for one node.
@@ -68,6 +82,8 @@ impl Projection {
             surface: (0.0, 0.0),
             sent: HashMap::new(),
             roots: Vec::new(),
+            announced: Vec::new(),
+            serial: 0,
         }
     }
 
@@ -78,6 +94,15 @@ impl Projection {
     /// surface size is in physical pixels and `scale` is the mapping from the
     /// logical pixels the app reports its bounds in, so the projected bounds
     /// land where the widgets are drawn.
+    ///
+    /// The announcements the app queued become at most two nodes under the
+    /// window root, one per politeness, each named by its messages joined
+    /// by line feeds in the order they were announced and live with its
+    /// politeness, which a screen reader speaks as the node arrives. A
+    /// screen reader reports the nodes one update adds in no set order, so
+    /// one node per politeness keeps the messages in order. The nodes stay
+    /// until the next announcements replace them, so a reader that asks for
+    /// a node's name after the event still finds it.
     ///
     /// The update always carries the current focus, even when nothing else
     /// changed, and it always names a node AccessKit knows, because a tree
@@ -92,7 +117,8 @@ impl Projection {
         scale: f32,
         full: bool,
     ) -> TreeUpdate {
-        let changes = app.take_a11y_changes();
+        let mut changes = app.take_a11y_changes();
+        let announcements = std::mem::take(&mut changes.announcements);
         let surface = (surface_width, surface_height);
         let mut update = if full || changes.reset {
             self.build_full(app, surface, scale)
@@ -136,6 +162,47 @@ impl Projection {
             }
         };
         self.surface = surface;
+        if full {
+            self.announced.clear();
+        }
+        let window_sent = update.nodes.iter().any(|(id, _)| *id == WINDOW_ROOT);
+        let mut fresh = false;
+        for politeness in [Politeness::Assertive, Politeness::Polite] {
+            let mut messages = announcements
+                .iter()
+                .filter(|announcement| announcement.politeness == politeness)
+                .map(|announcement| announcement.message.as_str());
+            let Some(first) = messages.next() else {
+                continue;
+            };
+            if !fresh {
+                self.announced.clear();
+                fresh = true;
+            }
+            let mut label = first.to_owned();
+            for message in messages {
+                label.push('\n');
+                label.push_str(message);
+            }
+            let id = announcement_id(self.serial);
+            self.serial = self.serial.wrapping_add(1);
+            let mut node = Node::new(AccessKitRole::Status);
+            node.set_label(label);
+            node.set_live(match politeness {
+                Politeness::Polite => Live::Polite,
+                Politeness::Assertive => Live::Assertive,
+            });
+            self.announced.push(id);
+            update.nodes.push((id, node));
+        }
+        if fresh || (window_sent && !self.announced.is_empty()) {
+            let mut children = self.roots.clone();
+            children.extend_from_slice(&self.announced);
+            update.nodes.retain(|(id, _)| *id != WINDOW_ROOT);
+            update
+                .nodes
+                .push((WINDOW_ROOT, self.window_node(children, surface)));
+        }
         update.focus = current_focus(app);
         update
     }

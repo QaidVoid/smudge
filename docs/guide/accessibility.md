@@ -79,6 +79,22 @@ A list of your own reports its rows the same way the virtual lists do: give the 
 
 A screen reader toggles a checkbox or a switch by pressing it, so its `on_press` handler is what flips the state, and one without a handler reads as read only. A progress bar without a range reads as busy, with no known progress, and so does one whose range is not finite or runs backwards. `Checked::Mixed` reports a checkbox that is neither checked nor unchecked, such as one over a list whose boxes are partly checked.
 
+## Announcing what no widget shows
+
+Some news has no widget to read it from, such as a save that finished. An `Announcer` has a screen reader speak it. Attach it to any element of the view, then announce from anywhere, such as a press handler:
+
+```rust
+use smudge::core::semantics::{Announcer, Politeness};
+
+let announcer = Announcer::new();
+let saved = announcer.clone();
+let save = button("Save")
+    .announcer(&announcer)
+    .on_press(move || saved.announce("Saved", Politeness::Polite));
+```
+
+`Politeness::Polite` waits until the reader finishes what it is saying, and `Politeness::Assertive` cuts in, for news that cannot wait. Each message is spoken once, and the messages of one politeness in the order they were announced, even when several arrive in one frame, and a message announced while the element is hidden is dropped. The markdown view announces a streamed reply a block at a time with `announce_blocks`, as the [markdown guide](./markdown#showing-a-document) shows.
+
 ## Keyboard
 
 - Tab and Shift+Tab move focus through every `focusable()` node in tree order.

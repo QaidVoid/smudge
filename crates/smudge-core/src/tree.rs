@@ -397,6 +397,8 @@ pub(crate) struct WidgetTree {
     a11y_dirty: Vec<WidgetId>,
     /// Whether the next projection must be rebuilt from scratch.
     a11y_reset: bool,
+    /// The announcements waiting for the next projection, oldest first.
+    announcements: Vec<crate::semantics::Announcement>,
     /// The time the paint pass moves springs to, the frame's time on the
     /// app's clock.
     now: Instant,
@@ -451,6 +453,7 @@ impl WidgetTree {
             theme: Theme::light(),
             a11y_dirty: Vec::new(),
             a11y_reset: false,
+            announcements: Vec::new(),
             now: Instant::now(),
             reduced_motion: false,
             transitions_mounted: false,
@@ -1224,7 +1227,7 @@ impl WidgetTree {
     /// Returns whether any projected accessibility state may have changed
     /// since the last [`WidgetTree::take_a11y_changes`].
     pub(crate) fn has_a11y_changes(&self) -> bool {
-        self.a11y_reset || !self.a11y_dirty.is_empty()
+        self.a11y_reset || !self.a11y_dirty.is_empty() || !self.announcements.is_empty()
     }
 
     /// Takes the projected nodes that changed since the last call.
@@ -1238,6 +1241,7 @@ impl WidgetTree {
     pub(crate) fn take_a11y_changes(&mut self) -> A11yChanges {
         let mut changes = A11yChanges {
             reset: std::mem::take(&mut self.a11y_reset),
+            announcements: std::mem::take(&mut self.announcements),
             ..A11yChanges::default()
         };
         let dirty = std::mem::take(&mut self.a11y_dirty);
@@ -1293,6 +1297,18 @@ impl WidgetTree {
             return;
         }
         self.a11y_dirty.push(id);
+    }
+
+    /// Queues `messages`, which the announcer attached to `id` took, for the
+    /// next projection, or drops them when `id` is gone, hidden or fading
+    /// out.
+    pub(crate) fn announce(&mut self, id: WidgetId, messages: Vec<crate::semantics::Announcement>) {
+        if !self.a11y_id_is_visible(id) {
+            return;
+        }
+        for message in messages {
+            crate::semantics::push_capped(&mut self.announcements, message);
+        }
     }
 
     /// Records `id` and its visible subtree as changed.

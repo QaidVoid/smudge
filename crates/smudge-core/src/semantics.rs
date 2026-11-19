@@ -8,12 +8,18 @@
 //! [`accessible_label`](crate::element::Element::accessible_label),
 //! [`accessible_checked`](crate::element::Element::accessible_checked) and
 //! [`accessible_range`](crate::element::Element::accessible_range) builders.
-//! An accessibility backend reads the projected tree through the app and the
-//! changes since the last frame; this module defines the vocabulary the two
-//! sides exchange. It stays backend-neutral: mapping it onto a specific
-//! accessibility protocol is a backend's job.
+//! An [`Announcer`] attached to an element has a screen reader speak
+//! messages no widget shows. An accessibility backend reads the projected
+//! tree through the app and the changes since the last frame; this module
+//! defines the vocabulary the two sides exchange. It stays backend-neutral:
+//! mapping it onto a specific accessibility protocol is a backend's job.
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::geometry::Rect;
+use crate::reactive::RwSignal;
+use crate::reactive::prelude::*;
 use crate::tree::WidgetId;
 
 /// The kind of control a projected node represents.
@@ -195,7 +201,8 @@ pub struct SemanticsNode {
     pub pressable: bool,
 }
 
-/// The projected nodes that changed since the last frame.
+/// The projected nodes that changed since the last frame, and the messages
+/// announced since then.
 ///
 /// The backend rebuilds the nodes the changed ids project; `reset` says the
 /// projection must be rebuilt from scratch instead, which happens when too
@@ -204,6 +211,7 @@ pub struct SemanticsNode {
 /// once; a widget that a frame removes or hides drops out on its own, and the
 /// change to its parent's child list is what takes it off the tree.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct A11yChanges {
     /// The widgets whose projected nodes must be rebuilt, children included.
     pub changed: Vec<WidgetId>,
@@ -212,4 +220,133 @@ pub struct A11yChanges {
     pub roots_changed: bool,
     /// Whether the whole projection must be rebuilt from scratch.
     pub reset: bool,
+    /// The messages to speak, oldest first, which arrive even with `reset`.
+    /// The newest [`ANNOUNCEMENT_CAP`] are kept when more queue between two
+    /// takes.
+    pub announcements: Vec<Announcement>,
+}
+
+/// How many announcements wait for a screen reader at most. Past it, the
+/// oldest drop, since a reader that falls this far behind could not speak
+/// them in time anyway.
+pub const ANNOUNCEMENT_CAP: usize = 32;
+
+/// How urgently a screen reader speaks an announcement.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Politeness {
+    /// Spoken once the reader finishes what it is saying, such as a reply
+    /// that streamed in or a note that a save finished.
+    Polite,
+    /// Spoken at once, cutting off what the reader is saying, such as an
+    /// error that needs attention now.
+    Assertive,
+}
+
+/// A message for a screen reader to speak.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Announcement {
+    /// What the reader speaks.
+    pub message: String,
+    /// How urgently it speaks it.
+    pub politeness: Politeness,
+}
+
+/// Has a screen reader speak messages that no widget shows, such as "Saved"
+/// or a block of a reply that just finished streaming.
+///
+/// Attach it to one element with
+/// [`Element::announcer`](crate::element::Element::announcer), then call
+/// [`Announcer::announce`] from anywhere: a press handler, an effect or a
+/// task. Each message is spoken once, and the messages of one politeness
+/// in the order they were announced, even when several arrive in one frame.
+/// Cloning the handle is cheap, and every clone queues into the same
+/// announcer.
+///
+/// Make the announcer under an owner that lives as long as the element it
+/// is attached to, such as the one the element is built under: once its
+/// owner is cleaned up, an announcement no longer wakes the element, and
+/// waits for something else to.
+///
+/// ```
+/// use smudge_core::element::Element;
+/// use smudge_core::semantics::{Announcer, Politeness};
+/// use smudge_core::widget::panel;
+///
+/// let announcer = Announcer::new();
+/// let saved = announcer.clone();
+/// let view = panel()
+///     .announcer(&announcer)
+///     .on_press(move || saved.announce("Saved", Politeness::Polite));
+/// ```
+#[derive(Clone)]
+pub struct Announcer {
+    /// The queue every clone shares.
+    shared: Rc<AnnouncerQueue>,
+}
+
+/// The messages an announcer holds until its element takes them.
+struct AnnouncerQueue {
+    /// The messages not yet taken, oldest first, at most
+    /// [`ANNOUNCEMENT_CAP`] of them.
+    messages: RefCell<Vec<Announcement>>,
+    /// Counts the announcements, which wakes the element that takes them.
+    posted: RwSignal<u64>,
+}
+
+impl Default for Announcer {
+    fn default() -> Self {
+        Announcer::new()
+    }
+}
+
+impl Announcer {
+    /// Creates an announcer with nothing queued.
+    pub fn new() -> Announcer {
+        Announcer {
+            shared: Rc::new(AnnouncerQueue {
+                messages: RefCell::new(Vec::new()),
+                posted: RwSignal::new(0),
+            }),
+        }
+    }
+
+    /// Queues `message` for a screen reader to speak with `politeness`.
+    ///
+    /// An empty message is ignored. A message announced while the element
+    /// the announcer is attached to is hidden or fading out is dropped, and
+    /// one announced before it mounts is spoken once it does. Only the
+    /// newest [`ANNOUNCEMENT_CAP`] messages wait for the element to take
+    /// them.
+    pub fn announce(&self, message: impl Into<String>, politeness: Politeness) {
+        let message = message.into();
+        if message.is_empty() {
+            return;
+        }
+        push_capped(
+            &mut self.shared.messages.borrow_mut(),
+            Announcement {
+                message,
+                politeness,
+            },
+        );
+        self.shared
+            .posted
+            .update(|count| *count = count.wrapping_add(1));
+    }
+
+    /// Takes every queued message, and subscribes the current effect to
+    /// the next.
+    pub(crate) fn take(&self) -> Vec<Announcement> {
+        self.shared.posted.with(|_| ());
+        std::mem::take(&mut *self.shared.messages.borrow_mut())
+    }
+}
+
+/// Appends `announcement` to `queue`, dropping the oldest past
+/// [`ANNOUNCEMENT_CAP`].
+pub(crate) fn push_capped(queue: &mut Vec<Announcement>, announcement: Announcement) {
+    if queue.len() >= ANNOUNCEMENT_CAP {
+        queue.remove(0);
+    }
+    queue.push(announcement);
 }

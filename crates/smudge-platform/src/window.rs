@@ -1234,6 +1234,10 @@ where
         };
         match event.window_event {
             accesskit_winit::WindowEvent::InitialTreeRequested => {
+                // The full tree that follows covers every change queued while
+                // no reader listened, and the announcements among them are
+                // stale by now.
+                let _ = state.app.take_a11y_changes();
                 state.a11y_active = true;
                 state.a11y_full = true;
                 if state.app.needs_frame() {

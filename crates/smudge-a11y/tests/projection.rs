@@ -9,7 +9,7 @@ use smudge_core::geometry::{Color, Size};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
-use smudge_core::semantics::{Checked, Role, Semantics, ValueRange};
+use smudge_core::semantics::{Announcer, Checked, Politeness, Role, Semantics, ValueRange};
 use smudge_core::style::px;
 use smudge_core::theme::ColorValue;
 use smudge_core::widget::{PaintCx, Panel, Widget};
@@ -1231,5 +1231,174 @@ fn a_split_divider_reports_where_it_sits() {
         node_with_role(&update, AccessKitRole::Splitter).numeric_value(),
         Some(30.0),
         "the divider's value follows it, whole"
+    );
+}
+
+/// The live status nodes an update carries, by message, with their ids and
+/// politeness, in the order the update carries them.
+fn announcements(update: &accesskit::TreeUpdate) -> Vec<(NodeId, String, accesskit::Live)> {
+    update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == AccessKitRole::Status)
+        .map(|(id, node)| {
+            (
+                *id,
+                node.label().unwrap_or_default().to_owned(),
+                node.live().unwrap_or(accesskit::Live::Off),
+            )
+        })
+        .collect()
+}
+
+/// The children of the window root an update carries, when it carries it.
+fn window_children(update: &accesskit::TreeUpdate) -> Option<Vec<NodeId>> {
+    update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == AccessKitRole::Window)
+        .map(|(_, node)| node.children().to_vec())
+}
+
+#[test]
+fn announcements_of_one_frame_are_spoken_in_order_and_stay_until_the_next() {
+    let announcer = Announcer::new();
+    let shown = RwSignal::new(true);
+    let attached = announcer.clone();
+    let read = shown.clone();
+    let mut app = app_with(move || {
+        Element::new(Panel)
+            .announcer(&attached)
+            .child(Element::new(Panel).role(Role::Group))
+            .child(
+                Element::new(Panel)
+                    .role(Role::Group)
+                    .hidden(move || !read.get()),
+            )
+    });
+    let mut projection = Projection::new("Smudge");
+    update_after_frame(&mut app, &mut projection, true);
+
+    announcer.announce("Block one.", Politeness::Polite);
+    announcer.announce("Disk full.", Politeness::Assertive);
+    announcer.announce("Block two.", Politeness::Polite);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let mut spoken = announcements(&update);
+    spoken.sort_by_key(|(_, message, _)| message.clone());
+    let messages: Vec<(&str, accesskit::Live)> = spoken
+        .iter()
+        .map(|(_, message, live)| (message.as_str(), *live))
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            ("Block one.\nBlock two.", accesskit::Live::Polite),
+            ("Disk full.", accesskit::Live::Assertive),
+        ],
+        "one node per politeness, its messages in the order they came"
+    );
+    let ids: Vec<NodeId> = spoken.iter().map(|(id, _, _)| *id).collect();
+    let children = window_children(&update).expect("the window root holds the announcements");
+    assert!(ids.iter().all(|id| children.contains(id)));
+
+    shown.set(false);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let children = window_children(&update).expect("the roots changed");
+    assert!(
+        ids.iter().all(|id| children.contains(id)),
+        "the announcements stay while nothing new is announced"
+    );
+
+    announcer.announce("Later.", Politeness::Polite);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let children = window_children(&update).expect("the new announcement arrives");
+    assert!(
+        ids.iter().all(|id| !children.contains(id)),
+        "the next announcements replace them"
+    );
+    assert_eq!(announcements(&update).len(), 1);
+}
+
+#[test]
+fn the_same_message_announced_again_is_spoken_again() {
+    let announcer = Announcer::new();
+    let attached = announcer.clone();
+    let mut app = app_with(move || Element::new(Panel).role(Role::Group).announcer(&attached));
+    let mut projection = Projection::new("Smudge");
+    update_after_frame(&mut app, &mut projection, true);
+
+    announcer.announce("Saved", Politeness::Polite);
+    let first = announcements(&update_after_frame(&mut app, &mut projection, false));
+    announcer.announce("Saved", Politeness::Polite);
+    let second = announcements(&update_after_frame(&mut app, &mut projection, false));
+    assert_eq!(first.len(), 1);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].1, "Saved");
+    assert_ne!(
+        first[0].0, second[0].0,
+        "a node that arrives anew, which a reader speaks again"
+    );
+}
+
+#[test]
+fn an_announcer_on_a_hidden_node_speaks_nothing() {
+    let announcer = Announcer::new();
+    let hidden = RwSignal::new(false);
+    let attached = announcer.clone();
+    let read = hidden.clone();
+    let mut app = app_with(move || {
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Panel)
+                .hidden(move || read.get())
+                .announcer(&attached),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    update_after_frame(&mut app, &mut projection, true);
+
+    hidden.set(true);
+    update_after_frame(&mut app, &mut projection, false);
+    announcer.announce("Hidden", Politeness::Polite);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    assert!(announcements(&update).is_empty());
+
+    hidden.set(false);
+    update_after_frame(&mut app, &mut projection, false);
+    announcer.announce("Shown", Politeness::Polite);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let spoken: Vec<String> = announcements(&update)
+        .into_iter()
+        .map(|(_, message, _)| message)
+        .collect();
+    assert_eq!(spoken, vec!["Shown".to_owned()]);
+}
+
+#[test]
+fn a_full_update_speaks_what_its_frame_announced() {
+    let announcer = Announcer::new();
+    let attached = announcer.clone();
+    let mut app = app_with(move || Element::new(Panel).role(Role::Group).announcer(&attached));
+    let mut projection = Projection::new("Smudge");
+    update_after_frame(&mut app, &mut projection, true);
+    announcer.announce("Old", Politeness::Polite);
+    let old = announcements(&update_after_frame(&mut app, &mut projection, false));
+
+    announcer.announce("Saved", Politeness::Polite);
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let spoken = announcements(&update);
+    assert_eq!(spoken.len(), 1);
+    assert_eq!(spoken[0].1, "Saved");
+    let children = window_children(&update).expect("a full update carries the window root");
+    assert!(children.contains(&spoken[0].0));
+    assert!(
+        !children.contains(&old[0].0),
+        "a full update starts without the old announcements"
+    );
+
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let children = window_children(&update).expect("a full update carries the window root");
+    assert!(
+        !children.contains(&spoken[0].0),
+        "a full update with nothing announced names no node it did not send"
     );
 }
