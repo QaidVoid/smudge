@@ -12,7 +12,7 @@ use taffy::{
 
 use crate::geometry::{Point, Rect, Size};
 use crate::reactive::{Read, RwSignal};
-use crate::style::{Length, Overflow, Position};
+use crate::style::{Length, Overflow, Position, bounded_or};
 use crate::widget::{AvailableSpace, MeasureInput};
 
 use super::{Dirty, PaintedBounds, WidgetId, WidgetTree};
@@ -404,10 +404,12 @@ impl WidgetTree {
     /// an internal invariant for ids the caller took from the tree.
     pub(super) fn max_scroll_offset(&self, id: WidgetId) -> Option<f32> {
         let node = self.nodes.get(id)?;
-        let layout = self
-            .taffy
-            .layout(node.taffy)
-            .expect("every node has a live layout node");
+        let layout = finite(
+            *self
+                .taffy
+                .layout(node.taffy)
+                .expect("every node has a live layout node"),
+        );
         let top = layout.border.top + layout.padding.top;
         let mut bottom = 0.0f32;
         for &child in &node.children {
@@ -415,10 +417,12 @@ impl WidgetTree {
             if child.resolved.layout.position == Position::Absolute {
                 continue;
             }
-            let child_layout = self
-                .taffy
-                .layout(child.taffy)
-                .expect("every node has a live layout node");
+            let child_layout = finite(
+                *self
+                    .taffy
+                    .layout(child.taffy)
+                    .expect("every node has a live layout node"),
+            );
             bottom = bottom.max(child_layout.location.y + child_layout.size.height);
         }
         Some((bottom - top - node.content.height()).max(0.0))
@@ -548,10 +552,12 @@ impl WidgetTree {
         let hidden = hidden || node.resolved.layout.hidden;
         let overflow = node.resolved.layout.overflow;
 
-        let layout = *self
-            .taffy
-            .layout(taffy_node)
-            .expect("every node has a live layout node");
+        let layout = finite(
+            *self
+                .taffy
+                .layout(taffy_node)
+                .expect("every node has a live layout node"),
+        );
         let clip = if hidden { Rect::default() } else { clip };
         let (paint_rect, paint_content, rect, content) = if hidden {
             Default::default()
@@ -816,6 +822,25 @@ fn inset(rect: Rect, edges: taffy::Rect<f32>) -> Rect {
         (rect.x1 - edges.right).max(x0),
         (rect.y1 - edges.bottom).max(y0),
     )
+}
+
+/// Returns `layout` with the position, size, border and padding held within
+/// [`LAYOUT_LIMIT`](crate::style::LAYOUT_LIMIT) either way, and a value that is not a number as zero, so
+/// the rectangles a node gets from it are finite whatever the engine
+/// computed from nested percentages or a widget's measured size.
+fn finite(mut layout: taffy::Layout) -> taffy::Layout {
+    let bound = |value: &mut f32| *value = bounded_or(*value, 0.0);
+    bound(&mut layout.location.x);
+    bound(&mut layout.location.y);
+    bound(&mut layout.size.width);
+    bound(&mut layout.size.height);
+    for edges in [&mut layout.border, &mut layout.padding] {
+        bound(&mut edges.left);
+        bound(&mut edges.right);
+        bound(&mut edges.top);
+        bound(&mut edges.bottom);
+    }
+    layout
 }
 
 #[cfg(test)]

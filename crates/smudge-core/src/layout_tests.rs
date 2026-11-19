@@ -1,6 +1,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use proptest::prelude::*;
+
 use crate::damage::DamageAccumulator;
 use crate::geometry::{Color, Corners, PixelRect, Point, Rect, Size};
 use crate::paint::PaintOp;
@@ -1007,4 +1009,200 @@ fn a_hidden_pinned_child_leaves_the_children_where_they_are() {
         Some(Rect::new(0.0, 50.0, 200.0, 70.0))
     );
     tree.debug_assert_consistent();
+}
+
+/// A length from the values that break arithmetic, such as a NaN, an
+/// infinity or the largest float, and ordinary ones.
+fn any_length() -> BoxedStrategy<Length> {
+    let value = prop_oneof![
+        Just(f32::NAN),
+        Just(f32::INFINITY),
+        Just(f32::NEG_INFINITY),
+        Just(f32::MAX),
+        Just(f32::MIN),
+        -100.0f32..400.0,
+    ];
+    prop_oneof![
+        value.clone().prop_map(Length::Px),
+        value.prop_map(Length::Percent),
+        Just(Length::Auto),
+    ]
+    .boxed()
+}
+
+/// A float from the same values, for the properties that take a plain
+/// number.
+fn any_number() -> BoxedStrategy<f32> {
+    prop_oneof![
+        Just(f32::NAN),
+        Just(f32::INFINITY),
+        Just(f32::NEG_INFINITY),
+        Just(f32::MAX),
+        Just(f32::MIN),
+        -10.0f32..40.0,
+    ]
+    .boxed()
+}
+
+/// A style whose every length and number may be one that breaks arithmetic.
+fn any_style() -> impl Strategy<Value = Style> {
+    (
+        (any_length(), any_length(), any_length(), any_length()),
+        (any_length(), any_length(), any_length(), any_length()),
+        (any_length(), any_length(), any_number()),
+        (any_number(), any_number(), any_number(), any_number()),
+        (any::<bool>(), any::<bool>(), any::<bool>()),
+    )
+        .prop_map(
+            |(
+                (width, height, min_width, max_height),
+                (basis, padding, margin, inset),
+                (min_height, max_width, row_gap),
+                (grow, shrink, column_gap, border),
+                (column, wrap, absolute),
+            )| {
+                let mut style = Style::default();
+                let layout = &mut style.layout;
+                layout.width = width;
+                layout.height = height;
+                layout.min_width = min_width;
+                layout.min_height = min_height;
+                layout.max_width = max_width;
+                layout.max_height = max_height;
+                layout.basis = basis;
+                layout.padding = Edges::all(padding);
+                layout.margin = Edges::all(margin);
+                layout.inset = Edges::all(inset);
+                layout.grow = grow;
+                layout.shrink = shrink;
+                layout.gap = Size {
+                    width: column_gap,
+                    height: row_gap,
+                };
+                layout.border_width = Edges::all(border);
+                layout.wrap = wrap;
+                if column {
+                    layout.direction = Direction::Column;
+                }
+                if absolute {
+                    layout.position = Position::Absolute;
+                }
+                style
+            },
+        )
+}
+
+proptest! {
+    #[test]
+    fn layout_places_every_node_at_a_finite_rectangle(
+        root in any_style(),
+        children in proptest::collection::vec(any_style(), 1..4),
+    ) {
+        let mut tree = WidgetTree::new();
+        let parent = tree.insert(None, Box::new(Empty), root);
+        let ids: Vec<WidgetId> = children
+            .into_iter()
+            .map(|style| tree.insert(Some(parent), Box::new(Fixed(10.0, 10.0)), style))
+            .collect();
+        tree.layout(Size {
+            width: 800.0,
+            height: 600.0,
+        });
+        for id in std::iter::once(parent).chain(ids) {
+            let rect = tree.rect(id).expect("the node is live");
+            prop_assert!(
+                [rect.x0, rect.y0, rect.x1, rect.y1].iter().all(|edge| edge.is_finite()),
+                "{rect:?}"
+            );
+        }
+    }
+}
+
+/// Whether every edge of `rect` is finite.
+fn is_finite(rect: Rect) -> bool {
+    [rect.x0, rect.y0, rect.x1, rect.y1]
+        .iter()
+        .all(|edge| edge.is_finite())
+}
+
+#[test]
+fn a_margin_that_is_not_a_number_lays_out_as_no_margin() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), Style::default());
+    let mut style = fixed(10.0, 10.0);
+    style.layout.margin = Edges::all(Length::px(f32::NAN));
+    let child = tree.insert(Some(root), Box::new(Empty), style);
+    tree.layout(Size {
+        width: 800.0,
+        height: 600.0,
+    });
+    assert_eq!(tree.rect(child), Some(Rect::new(0.0, 0.0, 10.0, 10.0)));
+}
+
+#[test]
+fn nested_huge_percentages_lay_out_at_finite_rectangles() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), Style::default());
+    let mut parent = root;
+    let mut nodes = vec![root];
+    for _ in 0..8 {
+        let mut style = Style::default();
+        style.layout.width = Length::pct(1.0e9);
+        style.layout.height = Length::pct(1.0e9);
+        style.layout.shrink = 0.0;
+        parent = tree.insert(Some(parent), Box::new(Empty), style);
+        nodes.push(parent);
+    }
+    tree.layout(Size {
+        width: 800.0,
+        height: 600.0,
+    });
+    for node in nodes {
+        let rect = tree.rect(node).expect("the node is live");
+        assert!(is_finite(rect), "{rect:?}");
+    }
+}
+
+#[test]
+fn a_widget_that_measures_an_unbounded_size_lays_out_finite() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), Style::default());
+    let wide = tree.insert(
+        Some(root),
+        Box::new(Fixed(f32::INFINITY, f32::NAN)),
+        Style::default(),
+    );
+    let after = tree.insert(Some(root), Box::new(Fixed(10.0, 10.0)), Style::default());
+    tree.layout(Size {
+        width: 800.0,
+        height: 600.0,
+    });
+    for node in [root, wide, after] {
+        let rect = tree.rect(node).expect("the node is live");
+        assert!(is_finite(rect), "{rect:?}");
+    }
+    let (wide, after) = (
+        tree.rect(wide).expect("the node is live"),
+        tree.rect(after).expect("the node is live"),
+    );
+    assert_eq!(after.x0, wide.x1, "the sibling still flows after it");
+}
+
+#[test]
+fn a_following_view_with_an_unbounded_child_keeps_it_finite() {
+    let mut tree = WidgetTree::new();
+    let mut style = fixed(100.0, 100.0);
+    style.layout.direction = Direction::Column;
+    style.layout.overflow = Overflow::Scroll;
+    let view = tree.insert(None, Box::new(Empty), style);
+    let mut tall = Style::default();
+    tall.layout.shrink = 0.0;
+    let child = tree.insert(Some(view), Box::new(Fixed(10.0, f32::INFINITY)), tall);
+    tree.set_follow(view, RwSignal::new(true));
+    tree.layout(Size {
+        width: 200.0,
+        height: 200.0,
+    });
+    let rect = tree.rect(child).expect("the node is live");
+    assert!(is_finite(rect), "{rect:?}");
 }

@@ -12,6 +12,14 @@ use crate::geometry::Size;
 use crate::theme::{ColorValue, CornerRadii};
 
 /// A length along one axis.
+///
+/// Layout holds every length and every number of a node's layout within a
+/// billion logical pixels either way, or a billion percent, so an infinite
+/// or huge value lays out as that limit. A value that is not a number lays
+/// out as the property's default: `auto` for a size, a bound or an inset,
+/// and zero for padding and a margin. Whatever the lengths, every node's
+/// rectangle is finite: the position and size layout gives a node are held
+/// within the same limit.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Length {
     /// A fixed length in logical pixels.
@@ -184,6 +192,11 @@ impl Overflow {
 ///
 /// Every field here reaches the layout engine, so a change to any of them
 /// requires a new layout pass. A change to [`PaintProps`] alone does not.
+///
+/// Layout holds every number here within a billion either way, as
+/// [`Length`] describes for lengths. A number that is not a number lays out
+/// as its default: zero for [`LayoutProps::grow`], the gap and the border
+/// width, and one for [`LayoutProps::shrink`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutProps {
     /// Which layout algorithm arranges this node's children.
@@ -281,7 +294,9 @@ impl LayoutProps {
     ///
     /// Percentages are divided by 100, so [`Length::pct`] with `50.0` becomes
     /// the engine's fraction `0.5`. [`Length::Auto`] in a property that has no
-    /// automatic value, which is padding and gap, becomes zero.
+    /// automatic value, which is padding and gap, becomes zero. Every length
+    /// and number is held within [`LAYOUT_LIMIT`], and one that is not a
+    /// number becomes the property's default, as [`Length`] describes.
     pub(crate) fn to_taffy(&self) -> taffy::Style {
         let overflow = match self.overflow {
             Overflow::Visible => taffy::Overflow::Visible,
@@ -303,8 +318,8 @@ impl LayoutProps {
         } else {
             taffy::FlexWrap::NoWrap
         };
-        style.flex_grow = self.grow;
-        style.flex_shrink = self.shrink;
+        style.flex_grow = bounded_or(self.grow, 0.0);
+        style.flex_shrink = bounded_or(self.shrink, 1.0);
         style.flex_basis = to_dimension(self.basis);
         style.size = taffy::Size {
             width: to_dimension(self.width),
@@ -319,10 +334,10 @@ impl LayoutProps {
             height: to_length_percentage_auto(self.max_height),
         };
         style.padding = to_taffy_edges(self.padding, to_length_percentage);
-        style.margin = to_taffy_edges(self.margin, to_length_percentage_auto);
+        style.margin = to_taffy_edges(self.margin, to_margin);
         style.gap = taffy::Size {
-            width: taffy::LengthPercentage::length(self.gap.width),
-            height: taffy::LengthPercentage::length(self.gap.height),
+            width: taffy::LengthPercentage::length(bounded_or(self.gap.width, 0.0)),
+            height: taffy::LengthPercentage::length(bounded_or(self.gap.height, 0.0)),
         };
         style.align_items = match self.align_items {
             None => taffy::AlignItems::NORMAL,
@@ -343,7 +358,9 @@ impl LayoutProps {
             Position::Absolute => taffy::Position::Absolute,
         };
         style.inset = to_taffy_edges(self.inset, to_length_percentage_auto);
-        style.border = to_taffy_edges(self.border_width, taffy::LengthPercentage::length);
+        style.border = to_taffy_edges(self.border_width, |width| {
+            taffy::LengthPercentage::length(bounded_or(width, 0.0))
+        });
         style.overflow = taffy::Point {
             x: overflow,
             y: overflow,
@@ -412,30 +429,79 @@ pub struct Style {
     pub paint: PaintProps,
 }
 
+/// The largest magnitude, in logical pixels or as a percentage or a factor,
+/// that layout gives a length or a number of a node's layout.
+///
+/// It is far beyond any window, and small enough that the sums the layout
+/// engine forms from such values stay finite. Products across nested
+/// percentages can still grow past it, which is why layout also holds the
+/// position and size it gives each node within it.
+pub(crate) const LAYOUT_LIMIT: f32 = 1.0e9;
+
+/// Returns `value` held within [`LAYOUT_LIMIT`] either way, or `None` when it
+/// is not a number.
+fn bounded(value: f32) -> Option<f32> {
+    (!value.is_nan()).then(|| value.clamp(-LAYOUT_LIMIT, LAYOUT_LIMIT))
+}
+
+/// Returns `value` as [`bounded`] holds it, or `default` when it is not a
+/// number.
+pub(crate) fn bounded_or(value: f32, default: f32) -> f32 {
+    bounded(value).unwrap_or(default)
+}
+
 /// Converts a length to a size, which accepts a percentage, a length or `auto`.
+/// A value that is not a number becomes `auto`.
 fn to_dimension(length: Length) -> taffy::Dimension {
     match length {
-        Length::Px(value) => taffy::Dimension::length(value),
-        Length::Percent(percent) => taffy::Dimension::percent(percent / 100.0),
+        Length::Px(value) => {
+            bounded(value).map_or(taffy::Dimension::auto(), taffy::Dimension::length)
+        }
+        Length::Percent(percent) => bounded(percent).map_or(taffy::Dimension::auto(), |percent| {
+            taffy::Dimension::percent(percent / 100.0)
+        }),
         Length::Auto => taffy::Dimension::auto(),
     }
 }
 
 /// Converts a length to a spacing value, which accepts a percentage or a
-/// length but not `auto`. An automatic length becomes zero.
+/// length but not `auto`. An automatic length, or a value that is not a
+/// number, becomes zero.
 fn to_length_percentage(length: Length) -> taffy::LengthPercentage {
     match length {
-        Length::Px(value) => taffy::LengthPercentage::length(value),
-        Length::Percent(percent) => taffy::LengthPercentage::percent(percent / 100.0),
+        Length::Px(value) => taffy::LengthPercentage::length(bounded_or(value, 0.0)),
+        Length::Percent(percent) => {
+            taffy::LengthPercentage::percent(bounded_or(percent, 0.0) / 100.0)
+        }
         Length::Auto => taffy::LengthPercentage::length(0.0),
     }
 }
 
-/// Converts a length to a spacing value that also accepts `auto`.
+/// Converts a length to a spacing value that also accepts `auto`. A value
+/// that is not a number becomes `auto`.
 fn to_length_percentage_auto(length: Length) -> taffy::LengthPercentageAuto {
     match length {
-        Length::Px(value) => taffy::LengthPercentageAuto::length(value),
-        Length::Percent(percent) => taffy::LengthPercentageAuto::percent(percent / 100.0),
+        Length::Px(value) => bounded(value).map_or(
+            taffy::LengthPercentageAuto::auto(),
+            taffy::LengthPercentageAuto::length,
+        ),
+        Length::Percent(percent) => bounded(percent)
+            .map_or(taffy::LengthPercentageAuto::auto(), |percent| {
+                taffy::LengthPercentageAuto::percent(percent / 100.0)
+            }),
+        Length::Auto => taffy::LengthPercentageAuto::auto(),
+    }
+}
+
+/// Converts a length to a margin, which also accepts `auto`. A value that is
+/// not a number becomes zero, the margin's default, since an automatic
+/// margin takes up free space.
+fn to_margin(length: Length) -> taffy::LengthPercentageAuto {
+    match length {
+        Length::Px(value) => taffy::LengthPercentageAuto::length(bounded_or(value, 0.0)),
+        Length::Percent(percent) => {
+            taffy::LengthPercentageAuto::percent(bounded_or(percent, 0.0) / 100.0)
+        }
         Length::Auto => taffy::LengthPercentageAuto::auto(),
     }
 }
