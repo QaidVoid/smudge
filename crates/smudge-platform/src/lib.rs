@@ -6,13 +6,23 @@
 //!
 //! Its only unsafe code is the hot reload receiver, compiled with the
 //! `hot-reload` feature on Linux, which loads the patch libraries a patch
-//! builder sends. Every other build forbids unsafe code.
+//! builder sends, and the one system call that reads the reduced-motion
+//! setting on Windows. Every other build forbids unsafe code.
 
 #![cfg_attr(
-    not(all(feature = "hot-reload", target_os = "linux")),
+    not(any(
+        all(feature = "hot-reload", target_os = "linux"),
+        target_os = "windows"
+    )),
     forbid(unsafe_code)
 )]
-#![cfg_attr(all(feature = "hot-reload", target_os = "linux"), deny(unsafe_code))]
+#![cfg_attr(
+    any(
+        all(feature = "hot-reload", target_os = "linux"),
+        target_os = "windows"
+    ),
+    deny(unsafe_code)
+)]
 
 #[cfg(not(target_arch = "wasm32"))]
 mod clipboard;
@@ -37,6 +47,10 @@ mod gpu;
 #[allow(unsafe_code)]
 mod hot;
 mod present;
+// Windows answers the reduced-motion setting only through a system call.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg_attr(target_os = "windows", allow(unsafe_code))]
+mod reduced_motion;
 mod renderer;
 mod window;
 

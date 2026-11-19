@@ -1320,6 +1320,17 @@ where
         if let Some(state) = self.state.as_mut() {
             state.adapter.process_event(&state.window, &event);
         }
+        // Windows and macOS announce no change of the reduced-motion setting
+        // to the window, so a window that comes back to the front reads it
+        // again, which is when a user who changed it returns.
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        if let WindowEvent::Focused(true) = &event
+            && let Some(state) = self.state.as_mut()
+            && state.motion_watcher_started
+            && let Some(reduced) = crate::reduced_motion::reduced()
+        {
+            state.app.set_system_reduced_motion(reduced);
+        }
         let result = match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -1830,8 +1841,10 @@ impl CpuPresenter {
 /// and whenever it changes, through `proxy`.
 ///
 /// On Linux and the other free desktops the settings portal holds it, and
-/// on the web the `prefers-reduced-motion` media query. Elsewhere nothing
-/// reports it yet, and the app keeps what it set itself.
+/// on the web the `prefers-reduced-motion` media query. Windows and macOS
+/// answer it on demand, so the window reads it here and again whenever it
+/// regains the focus. Elsewhere nothing reports it, and the app keeps what
+/// it set itself.
 fn watch_reduced_motion(proxy: &winit::event_loop::EventLoopProxy<UserEvent>) {
     #[cfg(all(
         unix,
@@ -1851,8 +1864,14 @@ fn watch_reduced_motion(proxy: &winit::event_loop::EventLoopProxy<UserEvent>) {
     }
     #[cfg(target_arch = "wasm32")]
     watch_motion_query(proxy.clone());
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    if let Some(reduced) = crate::reduced_motion::reduced() {
+        let _ = proxy.send_event(PlatformEvent::ReducedMotionChanged(reduced));
+    }
     #[cfg(not(any(
         target_arch = "wasm32",
+        target_os = "windows",
+        target_os = "macos",
         all(
             unix,
             not(any(

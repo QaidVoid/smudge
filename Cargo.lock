@@ -3116,6 +3116,7 @@ dependencies = [
  "accesskit_winit",
  "arboard",
  "futures-executor",
+ "objc2-app-kit 0.3.2",
  "rustix 1.1.5",
  "smudge-a11y",
  "smudge-core",
@@ -3131,6 +3132,7 @@ dependencies = [
  "wayland-protocols-wlr",
  "web-sys",
  "web-time",
+ "windows-sys 0.61.2",
  "winit",
 ]
 
