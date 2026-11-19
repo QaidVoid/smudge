@@ -740,6 +740,7 @@ fn body(tools: &Tools) -> Element<Panel> {
         })
         .child(
             row()
+                .wrap(true)
                 .gap(Size {
                     width: PAD,
                     height: PAD,

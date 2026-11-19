@@ -22,6 +22,11 @@ const PAGES: &[(&str, &str, &str)] = &[
         include_str!("accessibility.rs"),
     ),
     (
+        "docs/guide/devtools.md",
+        include_str!("../../../guide/devtools.md"),
+        include_str!("devtools.rs"),
+    ),
+    (
         "docs/guide/dynamic-content.md",
         include_str!("../../../guide/dynamic-content.md"),
         include_str!("dynamic_content.rs"),

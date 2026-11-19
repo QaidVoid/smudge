@@ -68,6 +68,7 @@ export default defineConfig({
             { text: 'Accessibility', link: '/guide/accessibility' },
             { text: 'Testing headless', link: '/guide/testing' },
             { text: 'Hot reload', link: '/guide/hot-reload' },
+            { text: 'Devtools', link: '/guide/devtools' },
             { text: 'Shipping a small binary', link: '/guide/small-binary' },
           ],
         },
