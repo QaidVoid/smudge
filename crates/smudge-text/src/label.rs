@@ -36,7 +36,7 @@ use smudge_core::widget::MeasureInput;
 use smudge_core::widget::PaintCx;
 use smudge_core::widget::Widget;
 
-use crate::a11y::{Hidden, text_runs};
+use crate::a11y::{Hidden, scope_selection, text_runs};
 use crate::layout::TextLayout;
 use crate::style::TextStyle;
 use crate::style::current_text_style;
@@ -195,6 +195,10 @@ impl Widget for Label {
         Some(Semantics {
             value: Some(self.text.clone()),
             text_runs,
+            text_selection: self
+                .layout
+                .selected()
+                .and_then(|range| scope_selection(range, self.text.len())),
             ..Semantics::new(Role::Label)
         })
     }

@@ -4,7 +4,7 @@
 
 use parley::{Brush, Layout};
 use smudge_core::geometry::{Point, Rect};
-use smudge_core::semantics::{TEXT_RUN_CAP, TextRun};
+use smudge_core::semantics::{TEXT_RUN_CAP, TextOffset, TextRun, TextSelection};
 
 /// One character of a line as a screen reader steps over it.
 struct Character {
@@ -157,6 +157,26 @@ pub(crate) fn text_runs<B: Brush>(
         after_hard_break = line.break_reason() == parley::BreakReason::Explicit;
     }
     runs
+}
+
+/// Returns the part of a selection scope's selection that `range` of a
+/// block's text, `len` bytes long, holds, from its start to its end, or
+/// `None` when it holds none of the text. A range that runs on past the
+/// text, as one over the whole block does, ends with it. The scope keeps
+/// no direction per block, so the focus is the end, the side a selection
+/// made downward moves.
+pub(crate) fn scope_selection(range: &std::ops::Range<usize>, len: usize) -> Option<TextSelection> {
+    let (start, end) = (range.start.min(len), range.end.min(len));
+    (start < end).then_some(TextSelection {
+        anchor: TextOffset {
+            byte: start,
+            ends_line: false,
+        },
+        focus: TextOffset {
+            byte: end,
+            ends_line: false,
+        },
+    })
 }
 
 /// Appends the characters of the cluster that covers `range` of `text` and

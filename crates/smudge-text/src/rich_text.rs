@@ -27,7 +27,7 @@ use smudge_core::tree::Dirty;
 use smudge_core::widget::{AvailableSpace, MeasureInput, PaintCx, Widget};
 use smudge_core::window::Cursor;
 
-use crate::a11y::text_runs;
+use crate::a11y::{scope_selection, text_runs};
 use crate::glyphs::rich_glyph_runs;
 use crate::layout::{RichLayout, SpanFont};
 use crate::style::{TextStyle, current_text_style};
@@ -298,6 +298,10 @@ impl Widget for RichText {
         Some(Semantics {
             value: Some(self.text.clone()),
             text_runs,
+            text_selection: self
+                .selected
+                .as_ref()
+                .and_then(|range| scope_selection(range, self.text.len())),
             ..Semantics::new(Role::Label)
         })
     }

@@ -261,6 +261,13 @@ fn a_selection_survives_its_blocks_leaving_a_virtual_list_and_coming_back() {
         Some(format!("{}\n{}\n{}", text(1), text(2), text(3)).as_str()),
         "copy reads the blocks that are not mounted"
     );
+    let gone: Vec<String> = (1..=3).map(text).collect();
+    assert!(
+        selected_parts(&mut harness)
+            .iter()
+            .all(|(shown, _)| !gone.contains(shown)),
+        "a block that is not mounted has no node for a reader"
+    );
 
     for _ in 0..12 {
         harness.event(InputEvent::Wheel {
@@ -273,6 +280,18 @@ fn a_selection_survives_its_blocks_leaving_a_virtual_list_and_coming_back() {
         harness.pixel(4, (2.0 * ROW + ROW / 2.0) as u32),
         highlighted,
         "the block that mounted again shows its part of the selection"
+    );
+    let back: Vec<Option<(usize, usize)>> = selected_parts(&mut harness)
+        .into_iter()
+        .filter(|(shown, _)| (1..=3).any(|key| text(key) == *shown))
+        .map(|(_, part)| part)
+        .collect();
+    assert_eq!(
+        back,
+        (1..=3)
+            .map(|key| Some((0, text(key).len())))
+            .collect::<Vec<_>>(),
+        "the blocks that mounted again tell a reader their parts"
     );
     harness.assert_matches_full_repaint();
 }
@@ -329,6 +348,17 @@ fn a_drag_across_rich_text_selects_and_copies_it() {
     assert_eq!(
         copy(&mut harness, &mut clipboard).as_deref(),
         Some(format!("{}\n{}\n{}", text(0), text(1), text(2)).as_str()),
+    );
+    let parts: Vec<Option<(usize, usize)>> = selected_parts(&mut harness)
+        .into_iter()
+        .map(|(_, part)| part)
+        .collect();
+    assert_eq!(
+        parts,
+        (0..3)
+            .map(|key| Some((0, text(key).len())))
+            .collect::<Vec<_>>(),
+        "each paragraph tells a reader it is selected whole"
     );
 }
 
@@ -1195,4 +1225,80 @@ fn copying_ends_that_meet_at_a_block_s_end_keeps_the_clipboard() {
         Some("kept"),
         "the end carried to the end of the first block selects nothing there"
     );
+}
+
+/// Each label's text and the part of the selection it reports, top to
+/// bottom.
+fn selected_parts(harness: &mut Harness) -> Vec<(String, Option<(usize, usize)>)> {
+    harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .filter(|node| node.role == smudge_core::semantics::Role::Label)
+        .map(|node| {
+            let text = node.value.unwrap_or_default();
+            let part = node
+                .text_selection
+                .map(|selection| (selection.anchor.byte, selection.focus.byte));
+            (text, part)
+        })
+        .collect()
+}
+
+#[test]
+fn each_block_reports_its_part_of_the_selection_to_a_reader() {
+    let (mut harness, _) = column_of(4);
+    harness.button_down(on_row(1, 1.0));
+    harness.move_to(on_row(2, 40.0));
+    harness.button_up(on_row(2, 40.0));
+    harness.frame();
+
+    let parts = selected_parts(&mut harness);
+    assert_eq!(
+        parts[0].1, None,
+        "the block above the selection has no part of it"
+    );
+    assert_eq!(
+        parts[1].1,
+        Some((0, text(1).len())),
+        "the first block is selected whole"
+    );
+    let (start, end) = parts[2]
+        .1
+        .expect("the second block holds the selection's end");
+    assert_eq!(start, 0);
+    assert!(
+        end > 0 && end < text(2).len(),
+        "the selection ends inside it: {end}"
+    );
+    assert_eq!(parts[3].1, None);
+
+    harness.app().take_a11y_changes();
+    harness.click(on_row(3, 390.0));
+    harness.frame();
+    let changes = harness.app().take_a11y_changes();
+    assert!(
+        changes.reset || changes.changed.len() >= 2,
+        "the blocks that lose the selection tell a reader"
+    );
+    assert!(
+        selected_parts(&mut harness)
+            .iter()
+            .all(|(_, part)| part.is_none())
+    );
+}
+
+#[test]
+fn a_selection_that_starts_past_a_block_s_end_leaves_that_block_out() {
+    let (mut harness, _) = column_of(4);
+    harness.button_down(on_row(1, 390.0));
+    harness.move_to(on_row(2, 40.0));
+    harness.button_up(on_row(2, 40.0));
+    harness.frame();
+    let parts = selected_parts(&mut harness);
+    assert_eq!(
+        parts[1].1, None,
+        "the selection holds none of the first block"
+    );
+    assert!(parts[2].1.is_some());
 }
