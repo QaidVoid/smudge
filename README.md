@@ -17,29 +17,20 @@
 
 ---
 
-Smudge builds your interface once as a tree of widgets and keeps it. State lives in signals, and a widget property given a closure updates when the signals it reads change. Each frame, the library works out which pixels those updates touched and redraws exactly those, so a click that changes one label repaints that label and the button you pressed.
-
-Measured on a Ryzen 7 7700 with the CPU renderer, headless, median frame:
-
-| A frame where | Damage-tracked | Full repaint |
-|---|---|---|
-| one small box changes among 600, at 1920 by 1080 | 24 µs | 3.7 ms |
-| one key is typed into a focused text field | 37 µs | 87 µs |
-
-Scrolling a thousand mixed rows costs 0.31 ms a step, because scrolled content keeps its paint and only moves.
-
-In a virtual machine without a GPU, where a software GPU renderer takes 6 to 24 ms per frame, the same CPU renderer draws a small update in a window in under 0.1 ms.
+Smudge builds your interface once as a tree of widgets and keeps it. State lives in signals, and a widget property given a closure updates when the signals it reads change. Each frame, the library works out which pixels those updates touched and redraws exactly those, so a click that changes one label repaints that label and the button you pressed, and a frame where nothing changed draws nothing at all.
 
 ## Features
 
-- **Damage-tracked repainting.** Only the rectangles that changed are rasterized and presented, and an animation frame with no change skips the present.
-- **Fine-grained signals.** Bindings are per property, so a write updates exactly what reads it. Layout runs only when a size could have changed.
-- **Two renderers.** A CPU renderer that repaints only the damage, and a GPU renderer behind the `gpu` feature. Windows start on the CPU renderer, and an app that asks for `RendererChoice::Auto` gets the GPU on real hardware and never on a software rasterizer.
-- **Scrolling without repainting.** Scrolled content keeps its paint and only moves.
-- **Text and input.** Shaped text with embedded fonts, the system's or the application's own, labels capped with an ellipsis, a single-line input and a multi-line text area with selection, undo and redo, input method composition, and the system clipboard.
-- **Widgets.** Rows, columns, stacks, buttons, labels, images, a scroll view that can follow its end, and virtual lists for very long lists, including keyed rows of varying height that stay in place while rows above them change. All are styled with theme tokens and interaction states.
-- **Application plumbing.** Messages from other threads, timers, autofocus, focus traps and app-wide key handlers, and window commands and cursors for a custom title bar.
-- **Accessibility.** The widget tree is exposed to screen readers on the desktop, with keyboard focus and activation.
+- **Damage-tracked repainting.** Only the rectangles that changed are rasterized and presented. Scrolled content keeps its paint and only moves.
+- **Fine-grained signals.** Bindings are per property, so a write updates exactly what reads it, and layout runs only when a size could have changed.
+- **Two renderers.** A CPU renderer that repaints only the damage, and a GPU renderer behind the `gpu` feature. An app can draw its own wgpu content, such as a 3D view, into the interface.
+- **Widgets.** Rows, columns, stacks, buttons, labels, images, scroll views, split panes and virtual lists with rows of any height. Checkboxes, switches, sliders, number fields and tabs. Menus, menu bars, context menus, tooltips and dropdowns, on an overlay layer that escapes every clip.
+- **Drawing.** A canvas that strokes and fills paths, with curves, arcs, joins, caps and dashes, in its own coordinates.
+- **Text.** Shaped text with variable fonts at any weight, from the bundled fonts, the system's or the app's own. Rich text with links, text that selects and copies, a text input and a text area with undo, input method composition, and the clipboard. Markdown rendered while it streams in.
+- **Motion.** Springs that move paint properties, and nodes that fade in and out as they mount and leave, following the system's reduced-motion setting.
+- **Input.** Every pointer button, pointer lock with raw motion, arrow-key navigation, focus traps, autofocus and app-wide shortcuts.
+- **Accessibility.** The widget tree reaches screen readers on the desktop with roles, names, states, values and announcements, and works from the keyboard.
+- **Hot reload and devtools.** `cargo smudge dev` patches a running app on every save. A devtools panel over the app shows what each frame cost, what repainted, why a binding reran, the focus order and the accessibility tree.
 - **Desktop and web.** One window API for the desktop, and the CPU renderer in a browser canvas.
 - **Testable headless.** An `App` runs without a window, frame by frame, and reports what each frame did.
 
@@ -83,18 +74,31 @@ fn main() -> Result<(), PlatformError> {
 
 Set `show_damage: true` to tint what each frame repaints.
 
+To start an app that hot-reloads, on x86-64 Linux:
+
+```sh
+cargo install cargo-smudge
+cargo smudge new counter
+cd counter
+cargo smudge dev
+```
+
 More examples live in [`crates/smudge/examples`](crates/smudge/examples):
 
 ```sh
-cargo run --release --example counter -p smudge
-cargo run --release --example form -p smudge
-cargo run --release --example lists -p smudge
-cargo run --release --example tour -p smudge
+cargo run --example counter -p smudge   # the example above
+cargo run --example form -p smudge      # inputs bound to a live preview
+cargo run --example lists -p smudge     # a filtered list of 100,000 rows
+cargo run --example editor -p smudge    # menus, a canvas, tabs and controls
+cargo run --example pointer -p smudge   # every pointer button and pointer lock
+cargo run --example tour -p smudge      # split panes, a log and the text widgets
 ```
+
+Add `--features devtools` and press Ctrl+Shift+D in the window for the devtools panel.
 
 ## Status
 
-Version 0.2 adds the multi-line text area, images, the keyed virtual list, a scroll view that follows its end, messages from other threads, focus traps and autofocus, label line caps, and window commands and cursors for a custom title bar. It is built and tested on Linux, and the window layer supports Windows and macOS. The API will change between minor versions while it settles, and 0.2 changes some 0.1 APIs, which the changelog marks as breaking. The [known limits](docs/reference/limits.md) list what is not there yet, such as rich text spans, horizontal scrolling and popups.
+Smudge is young. Minor versions still change the API, and the changelog marks every breaking change. It is built and tested on Linux under Wayland, and the window layer supports Windows and macOS. The [known limits](docs/reference/limits.md) list what is not there yet, such as horizontal scrolling.
 
 ## Documentation
 
@@ -106,20 +110,27 @@ bun install
 bun run dev
 ```
 
-It covers signals, layout, styling, widgets, text and input, renderers, the web build, accessibility, headless testing, and how a frame works inside. The API reference is on [docs.rs](https://docs.rs/smudge).
+It covers signals, layout, styling, widgets, text and input, rendering, markdown, the web build, accessibility, hot reload, devtools, headless testing, and how a frame works inside. The API reference is on [docs.rs](https://docs.rs/smudge).
 
 ## Crates
+
+Most apps depend on `smudge` alone, which re-exports the rest.
 
 | Crate | Purpose |
 |---|---|
 | `smudge` | The facade and prelude. Start here. |
 | `smudge-core` | Widget tree, signals, layout, paint and damage. No window or GPU dependency. |
-| `smudge-text` | Fonts, text layout, the label, the text input and the text area. |
-| `smudge-widgets` | Containers, button, image, scroll view and virtual lists. |
+| `smudge-text` | Fonts, text layout, labels, rich text, the text input and the text area. |
+| `smudge-widgets` | Containers, controls, menus, tooltips, dropdowns, tabs, the canvas and virtual lists. |
+| `smudge-markdown` | Markdown rendered from a source that grows while it shows. |
 | `smudge-cpu` | The CPU renderer. |
-| `smudge-gpu` | The GPU renderer. |
+| `smudge-gpu` | The GPU renderer, and app-drawn wgpu content. |
 | `smudge-platform` | Windows, input, presentation and the web build. |
 | `smudge-a11y` | The bridge to the platform accessibility APIs. |
+| `smudge-devtools` | The devtools panel drawn over a running app. |
+| `cargo-smudge` | `cargo smudge new` and `cargo smudge dev`, which hot-patches a running app. |
+
+[Crates](docs/reference/crates.md) in the guide shows how they fit together.
 
 ## License
 

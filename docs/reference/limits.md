@@ -9,7 +9,6 @@
 - **Markdown leaves some of itself as text.** An HTML block shows its source, an image its description, and a long line of code wraps, since a scroll view does not scroll sideways. Lists and quotes nested more than 32 deep show what they hold at the 32nd level. Math, footnotes and task lists are not recognized, so they read as the CommonMark they are: mostly plain text, though a footnote whose body is a single destination is a link definition. The parser limits how much text references may expand to, to the length of the text it reads or 100 KB, whichever is larger. A streamed document counts that limit for each block on its own, so where references expand to more than one of the two limits allows, a block can show links where the parse of the whole shows text, or text where it shows links.
 - **Vertical scrolling only.** The scroll view scrolls up and down. Content wider than the view is clipped, not scrolled.
 - **A screen reader cannot move the caret.** A reader follows the caret and the selection of a text field, but a request from it to set them is ignored, so the caret moves by the keyboard and the pointer alone.
-- **No popups that escape a clip.** There is no overlay layer yet, so a menu, tooltip or dropdown is clipped by any ancestor that clips.
 - **Undo lives in each input.** Every text input keeps its own undo history, cleared when the application replaces the text. There is no application-wide undo.
 
 ## Drawing
@@ -31,6 +30,7 @@
 ## Platforms
 
 - **Tested on Linux.** The window layer supports Windows and macOS, but Smudge is built and tested on Linux under Wayland.
+- **No window icon on Wayland.** The window system takes no icon from the window there. The desktop shows the icon of the `.desktop` file that the window's `app_id` names, so `WindowOptions::icon` and `set_icon` have no effect.
 - **No clipboard on the web.** Copy and paste work only inside the application there.
 - **No screen readers on the web.** Browsers expose their own accessibility tree, and projecting into it needs a different approach.
 - **Maximize under X11 depends on the window manager.** `toggle_maximize` and `maximized` use the standard X11 maximize request and state. A window manager that does not implement them, as some X11 bridges inside Wayland compositors do not, ignores the request, and `maximized` stays `false`. Running natively on Wayland avoids this.

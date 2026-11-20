@@ -1,6 +1,6 @@
 [package]
 name = "smudge-widgets"
-description = "The core widget set, containers and button, for the Smudge GUI library"
+description = "Containers, controls, menus, lists and the canvas for the Smudge GUI library"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
