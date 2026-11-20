@@ -1698,6 +1698,33 @@ fn a_shortcut_above_an_arrow_container_outside_an_overlay_hears_its_letter_first
 }
 
 #[test]
+fn tab_leaves_an_arrow_container_from_a_node_nested_inside_one_of_its_items() {
+    use smudge_core::style::Direction;
+    let mut harness = Harness::new(200.0, 60.0, 1.0, || {
+        panel()
+            .child(
+                panel()
+                    .navigate_with_arrows(Direction::Row)
+                    .child(item("First"))
+                    .child(panel().child(item("Inner"))),
+            )
+            .child(item("After"))
+    });
+    harness.frame();
+    harness.click(Point { x: 25.0, y: 5.0 });
+    assert_eq!(focused_name(&mut harness).as_deref(), Some("Inner"));
+
+    harness.press_key(Key::Tab);
+    assert_eq!(focused_name(&mut harness).as_deref(), Some("After"));
+    shift_tab(&mut harness);
+    assert_eq!(
+        focused_name(&mut harness).as_deref(),
+        Some("First"),
+        "coming back, with nothing selected, the stop is the first"
+    );
+}
+
+#[test]
 fn a_trap_that_navigates_with_the_arrows_takes_them_with_the_focus_outside() {
     use smudge_core::style::Direction;
     let shown = RwSignal::new(false);

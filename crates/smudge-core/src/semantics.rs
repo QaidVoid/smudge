@@ -95,6 +95,13 @@ pub enum Role {
     /// A field that holds a number in a range, which steps up and down. Its
     /// number is [`Semantics::range`].
     SpinButton,
+    /// A row of tabs, each of which shows one panel.
+    TabList,
+    /// One tab of a tab list. Whether its panel shows is
+    /// [`Semantics::selected`].
+    Tab,
+    /// The panel a tab shows.
+    TabPanel,
 }
 
 /// Whether a checkbox or a switch is checked.

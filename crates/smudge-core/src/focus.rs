@@ -499,9 +499,9 @@ impl WidgetTree {
     fn next_focusable(&self, from: Option<WidgetId>, backwards: bool) -> Option<WidgetId> {
         let mut order = Vec::new();
         if let Some(scope) = self.active_focus_trap().or(self.root) {
-            self.collect_focusable(scope, &mut order);
+            self.collect_tab_stops(scope, true, &mut order);
             for top in self.overlays_within(scope) {
-                self.collect_focusable(top, &mut order);
+                self.collect_tab_stops(top, true, &mut order);
             }
         }
         if order.is_empty() {
@@ -530,6 +530,54 @@ impl WidgetTree {
         }
         for &child in &node.children {
             self.collect_focusable(child, order);
+        }
+    }
+
+    /// Appends the nodes of the subtree that Tab stops at, in paint order.
+    ///
+    /// They are its focusable nodes, except that a container that navigates
+    /// with the arrows, other than the subtree's top when `top` is set, is
+    /// one stop: the node inside it that holds the focus, or else the one
+    /// marked selected, or else its first. Tab so enters a row of tabs at
+    /// the shown one and leaves it with the next press.
+    pub(super) fn collect_tab_stops(&self, id: WidgetId, top: bool, order: &mut Vec<WidgetId>) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if !top && node.handlers.arrows.is_some() && !node.withdrawn() {
+            let mut inside = Vec::new();
+            self.collect_focusable(id, &mut inside);
+            inside.retain(|&inner| inner != id);
+            let selected = |inner: &WidgetId| {
+                self.nodes
+                    .get(*inner)
+                    .and_then(|node| node.a11y_extra.as_ref())
+                    .and_then(|extra| extra.selected)
+                    == Some(true)
+            };
+            let stop = inside
+                .iter()
+                .find(|&&inner| Some(inner) == self.focused)
+                .or_else(|| inside.iter().find(|inner| selected(inner)))
+                .or_else(|| inside.first());
+            if node.interaction.has(Interaction::FOCUSABLE)
+                && !node.interaction.has(Interaction::DISABLED)
+            {
+                order.push(id);
+            }
+            order.extend(stop);
+            return;
+        }
+        if node.withdrawn() {
+            return;
+        }
+        if node.interaction.has(Interaction::FOCUSABLE)
+            && !node.interaction.has(Interaction::DISABLED)
+        {
+            order.push(id);
+        }
+        for &child in &node.children {
+            self.collect_tab_stops(child, false, order);
         }
     }
 

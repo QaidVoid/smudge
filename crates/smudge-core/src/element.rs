@@ -2190,6 +2190,11 @@ impl<W: Widget> Element<W> {
     /// shortcuts around its opener. Elsewhere it takes only the keys that no
     /// handler, up to the root, took.
     ///
+    /// Tab stops once inside the node: at the node that holds the focus
+    /// there, or else the one marked selected with
+    /// [`accessible_selected`](Element::accessible_selected), or else the
+    /// first, and the next Tab leaves it.
+    ///
     /// ```
     /// use smudge_core::style::{Direction, px};
     /// use smudge_core::widget::panel;

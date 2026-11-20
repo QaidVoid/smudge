@@ -703,6 +703,9 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::Tooltip => AccessKitRole::Tooltip,
         Role::Slider => AccessKitRole::Slider,
         Role::SpinButton => AccessKitRole::SpinButton,
+        Role::TabList => AccessKitRole::TabList,
+        Role::Tab => AccessKitRole::Tab,
+        Role::TabPanel => AccessKitRole::TabPanel,
         // A role added after this mapping reports as a plain group.
         _ => AccessKitRole::Group,
     }

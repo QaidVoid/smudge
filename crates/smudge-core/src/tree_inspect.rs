@@ -141,7 +141,10 @@ impl WidgetTree {
         let trap = self.active_focus_trap();
         let mut order = Vec::new();
         if let Some(scope) = trap.or(self.root) {
-            self.collect_focusable(scope, &mut order);
+            self.collect_tab_stops(scope, true, &mut order);
+            for top in self.overlays_within(scope) {
+                self.collect_tab_stops(top, true, &mut order);
+            }
         }
         let rect = |id: WidgetId| self.nodes.get(id).map(|node| node.rect);
         FocusInfo {

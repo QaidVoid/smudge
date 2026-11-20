@@ -241,6 +241,16 @@ fn controls_sample() {
         .child(number_field("Width", width, 1.0..=512.0, 1.0));
 }
 
+#[test]
+fn tabs_sample() {
+    use smudge::widgets::tabs;
+
+    let shown = RwSignal::new(0_usize);
+    let side = tabs(shown)
+        .tab("Entities", || label("Every entity of the map"))
+        .tab("Textures", || label("The texture browser"));
+}
+
 fn stat(title: &'static str, value: RwSignal<u32>) -> Element<Panel> {
     column()
         .padding(px(12.0))

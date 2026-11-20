@@ -35,6 +35,7 @@ mod marks;
 mod menu;
 mod scroll;
 mod split;
+mod tabs;
 mod virtual_list;
 mod virtual_list_keyed;
 
@@ -50,6 +51,7 @@ pub use menu::{
 };
 pub use scroll::{ScrollExt, ScrollView, scroll};
 pub use split::{Split, SplitExt, split};
+pub use tabs::{Tabs, tabs};
 pub use virtual_list::virtual_list;
 pub use virtual_list_keyed::{virtual_column_keyed, virtual_list_keyed};
 

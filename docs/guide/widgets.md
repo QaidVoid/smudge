@@ -317,6 +317,21 @@ A checkbox and a switch toggle on a press, Enter or Space. A slider sets the num
 
 A control of your own that checks its input when the user moves on uses `on_focus_within`, which hears the focus enter the node or anything inside it, and leave them all.
 
+## Tabs
+
+`tabs(selected)` builds a row of tabs over their panels, and shows the panel of the tab `selected` names by index:
+
+```rust
+use smudge::widgets::tabs;
+
+let shown = RwSignal::new(0_usize);
+let side = tabs(shown)
+    .tab("Entities", || label("Every entity of the map"))
+    .tab("Textures", || label("The texture browser"));
+```
+
+A press on a tab shows its panel, and Left and Right move along the tabs and show each panel as they reach it. Every panel is built once and stays mounted, hidden while another shows, so what it holds, such as the text of a field or where a list was scrolled to, is there again when its tab comes back. Screen readers hear a tab list, its tabs with the shown one selected, and the panels.
+
 ## Writing your own
 
 The button, the containers, the scroll view and the virtual list are composed from `panel`, `label` and the public element builders. A component of your own is the same thing, a function that returns an element:
