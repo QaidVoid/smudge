@@ -207,8 +207,16 @@ fn owners(trace: &RwSignal<Option<Rc<Trace>>>) -> Element<Panel> {
     let summary = look::read(trace, |trace| {
         let (signals, memos, effects) = trace.held;
         format!(
-            "{} owners hold {signals} signals, {memos} memos and {effects} effects.",
-            trace.owner_count
+            "{} {} {}, {} and {}.",
+            look::counted(trace.owner_count, "owner", "owners"),
+            if trace.owner_count == 1 {
+                "holds"
+            } else {
+                "hold"
+            },
+            look::counted(signals, "signal", "signals"),
+            look::counted(memos, "memo", "memos"),
+            look::counted(effects, "effect", "effects"),
         )
     });
     let count = look::read(trace, |trace| trace.owners.len());

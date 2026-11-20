@@ -1340,6 +1340,33 @@ fn the_focus_overlay_numbers_tab_stops_and_the_access_tab_warns() {
     ] {
         assert!(shown.iter().any(|shown| shown == text), "{text}: {shown:?}");
     }
+
+    let row = devtools
+        .app
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| {
+            node.role == smudge_core::semantics::Role::ListItem
+                && node.label.as_deref() == Some("Button")
+        })
+        .expect("the access tree lists the unnamed button");
+    assert!(devtools.app.request_focus(row.id), "a row takes the focus");
+    for pressed in [true, false] {
+        devtools
+            .app
+            .handle_event(InputEvent::Key(smudge_core::input::KeyEvent {
+                key: smudge_core::input::Key::Enter,
+                pressed,
+                repeat: false,
+                modifiers: smudge_core::input::Modifiers::default(),
+                text: None,
+            }));
+    }
+    devtools.app.frame();
+    assert!(
+        devtools.tools.is_inspecting() && devtools.tools.selected().is_some(),
+        "Enter on a row shows its node in the inspector"
+    );
 }
 
 #[test]

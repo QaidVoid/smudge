@@ -38,7 +38,7 @@ The card under the timeline is its legend. It names each stage in its color with
 
 Each switch draws something over the app, under the panel, in the color its swatch shows:
 
-- **Damage tint** tints in red what the last frame repainted. A still app shows none. It is the run-time form of `WindowOptions::show_damage`, and it works on the GPU renderer too.
+- **Damage tint** tints in red what the app's last frame repainted, and the tint stays until the app's next frame. It is the run-time form of `WindowOptions::show_damage`, and it works on the GPU renderer too.
 - **Paint flashing** flashes green over what each frame repainted and fades it out, so a burst of changes stays visible after it ends.
 - **Layout bounds** outlines every node, in a color for its depth. A node a scroll view or a clip hides is outlined too, where layout put it.
 - **Focus** outlines every node Tab visits, numbers it in the tab order, and marks the focused node and the trap that holds the keyboard.
@@ -77,7 +77,7 @@ The access tab counts the warnings and the nodes, then explains each warning and
 
 ![The live tab, with hot reload and the theme file](/devtools-live.png)
 
-**Hot reload** lists the last few steps of `cargo smudge dev`, newest first: a patch being built, a build that failed with the compiler's message, and a patch applied with its time and what the remount kept. **Keep tree** applies patches without remounting the root, so all state stays, and an edit to what the build creates shows at the next remount.
+**Hot reload** lists the last few steps of `cargo smudge dev`, newest first: a patch being built, a build that failed with the compiler's message, and a patch applied with its time and what the remount kept. **Keep tree** applies patches without remounting the root, so all state stays. An edit to what the build creates shows at the next remount, and a closure created after the first patch keeps that patch's code.
 
 **Theme file** says which file `watch_theme` watches, and lists the lines its last read skipped.
 

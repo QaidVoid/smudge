@@ -823,6 +823,9 @@ impl Devtools {
             self.focus_shown = None;
             self.pointer_shown = None;
             self.access_shown = None;
+            // The panel refreshes what it shows on opening again, even over
+            // an app that draws nothing.
+            self.view = None;
         }
         self.open = open;
         self.panel_buttons.clear();

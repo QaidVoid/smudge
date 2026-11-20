@@ -28,12 +28,15 @@ pub(crate) const HOVER: Color = Color::rgb(51, 51, 58);
 pub(crate) const PRESSED: Color = Color::rgb(62, 62, 70);
 /// Borders and dividers.
 pub(crate) const LINE: Color = Color::rgb(52, 52, 59);
+/// The track of a switch that is off, which stands out from a hovered row.
+pub(crate) const TRACK: Color = Color::rgb(86, 86, 96);
 /// Text.
 pub(crate) const TEXT: Color = Color::rgb(236, 236, 240);
 /// Text that explains or labels.
 pub(crate) const MUTED: Color = Color::rgb(161, 161, 170);
-/// Text that matters least, and hidden nodes.
-pub(crate) const FAINT: Color = Color::rgb(113, 113, 122);
+/// Text that matters least, and hidden nodes, still readable on every
+/// background of the panel.
+pub(crate) const FAINT: Color = Color::rgb(142, 142, 152);
 /// What is on or chosen.
 pub(crate) const ACCENT: Color = Color::rgb(129, 140, 248);
 /// The background of a chosen row.
@@ -203,7 +206,7 @@ pub(crate) fn switch_row(
         .corner_radius(9.0)
         .align_items(Align::Center)
         .justify_content(move || if knob() { Justify::End } else { Justify::Start })
-        .background(move || ColorValue::from(if track() { ACCENT } else { PRESSED }))
+        .background(move || ColorValue::from(if track() { ACCENT } else { TRACK }))
         .child(
             smudge_core::widget::panel()
                 .width(px(12.0))
@@ -232,6 +235,7 @@ pub(crate) fn switch_row(
         .focused(|p| p.border_color(ACCENT))
         .role(Role::Switch)
         .accessible_label(name)
+        .accessible_description(about)
         .accessible_checked(move || {
             if checked() {
                 Checked::True
@@ -299,12 +303,22 @@ pub(crate) fn rows<E: smudge_core::element::IntoElement>(
     .column()
 }
 
-/// Builds a gap as wide as `depth` levels of a tree's indent.
+/// The deepest level a tree's indent shows, past which deeper nodes line
+/// up, so their names stay in the panel.
+const INDENT_LEVELS: usize = 12;
+
+/// Builds a gap as wide as `depth` levels of a tree's indent, at most
+/// [`INDENT_LEVELS`].
 #[track_caller]
 pub(crate) fn indent(depth: impl Fn() -> usize + 'static) -> Element<Panel> {
     smudge_core::widget::panel()
         .shrink(0.0)
-        .width(move || px(depth() as f32 * 12.0))
+        .width(move || px(depth().min(INDENT_LEVELS) as f32 * 12.0))
+}
+
+/// Writes `count` with `one` or `many` after it, as `1 node` or `3 nodes`.
+pub(crate) fn counted(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
 }
 
 /// Returns what reads `pick` of the value `signal` holds, or the default

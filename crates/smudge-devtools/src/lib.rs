@@ -35,7 +35,7 @@ use smudge_core::inspect::{
 };
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::{Role, SemanticsNode};
-use smudge_core::style::{Align, Edges, Justify, Length, Overflow, pct, px};
+use smudge_core::style::{Align, Direction, Edges, Justify, Length, Overflow, pct, px};
 use smudge_core::theme::ColorValue;
 use smudge_core::tree::{Dirty, WidgetId};
 use smudge_core::widget::{Panel, panel};
@@ -86,17 +86,17 @@ impl HotEvent {
                 let detail = match remounted {
                     None => String::from("The tree was kept as it was."),
                     Some(remounted) => format!(
-                        "Remounted, focus {}, {} {} kept their values, {} unclaimed",
+                        "Remounted, focus {}, {} kept {}, {} unclaimed",
                         if remounted.focus_restored {
                             "restored"
                         } else {
                             "not restored"
                         },
-                        remounted.signals_kept,
+                        look::counted(remounted.signals_kept, "signal", "signals"),
                         if remounted.signals_kept == 1 {
-                            "signal"
+                            "its value"
                         } else {
-                            "signals"
+                            "their values"
                         },
                         remounted.signals_left,
                     ),
@@ -151,6 +151,8 @@ pub struct Tools {
     bounds: RwSignal<Rc<Vec<(usize, Rect)>>>,
     /// The tab the panel shows.
     tab: RwSignal<Tab>,
+    /// Whether the panel shows its body, rather than only its title bar.
+    expanded: RwSignal<bool>,
     /// What the reactive tab shows, once the window has traced the app.
     reactive: RwSignal<Option<Rc<reactive::Trace>>>,
     /// What the accessibility tab shows, once the window has audited the
@@ -240,6 +242,7 @@ impl Tools {
             flashes: RwSignal::new(Rc::new(Vec::new())),
             bounds: RwSignal::new(Rc::new(Vec::new())),
             tab: RwSignal::new(Tab::Frames),
+            expanded: RwSignal::new(true),
             reactive: RwSignal::new(None),
             access: RwSignal::new(None),
             hot: RwSignal::new(Rc::new(VecDeque::new())),
@@ -319,7 +322,7 @@ impl Tools {
     /// Returns whether the inspector tab shows, so the window hands it the
     /// app's tree and the selected node's details.
     pub fn is_inspecting(&self) -> bool {
-        self.tab.get() == Tab::Inspector
+        self.expanded.get() && self.tab.get() == Tab::Inspector
     }
 
     /// Records `event`, one step of hot reload, which the live tab shows
@@ -339,7 +342,7 @@ impl Tools {
     /// Returns whether the accessibility tab shows, so the window hands it
     /// the app's accessibility tree and warnings.
     pub fn is_auditing(&self) -> bool {
-        self.tab.get() == Tab::Access
+        self.expanded.get() && self.tab.get() == Tab::Access
     }
 
     /// Takes `nodes`, the app's accessibility tree in paint order, and
@@ -365,7 +368,7 @@ impl Tools {
     /// Returns whether the reactive tab shows, so the window hands it the
     /// app's busiest effects, cycles and owners.
     pub fn is_tracing(&self) -> bool {
-        self.tab.get() == Tab::Reactive
+        self.expanded.get() && self.tab.get() == Tab::Reactive
     }
 
     /// Takes what the reactive tab shows: `busiest`, the places effects were
@@ -499,8 +502,8 @@ impl Tools {
 ///   timeline of stacked bars, one color per stage, with a dashed line at
 ///   the budget of a frame at 60 frames a second, and breaks the hovered
 ///   frame down by stage.
-/// - Overlays turns the [`Switches`] on and off, each with a line on what
-///   it draws and in which color. The root draws what they show over the
+/// - Overlays turns the overlay's [`Switches`] on and off, each with a line
+///   on what it draws and in which color. The root draws what they show over the
 ///   app, under the panel.
 /// - Inspector picks a node, lists the tree, and shows the selected node's
 ///   source, box model, state, bindings and style.
@@ -522,7 +525,8 @@ impl Tools {
 pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyElement {
     let viewport: Rc<dyn Fn() -> Size> = Rc::new(viewport);
     let at = RwSignal::new(START);
-    let open = RwSignal::new(true);
+    let open = tools.expanded.clone();
+    let stop_picking = tools.picking.clone();
     // Where the press that grabbed the title bar landed on it, which stays
     // under the pointer while the drag moves the panel.
     let grab: Rc<Cell<Option<Point>>> = Rc::new(Cell::new(None));
@@ -548,7 +552,11 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
         .child(spacer())
         .child(
             look::action(move || String::from(if caption.get() { "Hide" } else { "Show" }))
-                .on_press(move || toggle.update(|open| *open = !*open)),
+                .on_press(move || {
+                    toggle.update(|open| *open = !*open);
+                    // A collapsed panel shows no inspector to pick for.
+                    stop_picking.set(false);
+                }),
         );
     let window = panel()
         .absolute()
@@ -564,7 +572,10 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
                 }
             }
         })
-        .width(px(WIDTH))
+        .width({
+            let viewport = Rc::clone(&viewport);
+            move || px(WIDTH.min(viewport().width))
+        })
         .column()
         .background(look::BACKGROUND)
         .border(BORDER)
@@ -762,7 +773,8 @@ fn inside(at: Point, viewport: Size) -> Point {
 /// on average, in red once that is over the budget of a frame at 60 frames a
 /// second.
 fn frame_cost(tools: &Tools) -> Element<Panel> {
-    let (text, color) = (tools.timeline.clone(), tools.timeline.clone());
+    let text = frames::summary_of(&tools.timeline);
+    let color = text.clone();
     row()
         .padding_xy(Size {
             width: 6.0,
@@ -772,7 +784,7 @@ fn frame_cost(tools: &Tools) -> Element<Panel> {
         .background(look::SUNKEN)
         .child(
             look::mono(move || {
-                let summary = text.with(|timeline| timeline.summary());
+                let summary = text.get();
                 if summary.frames == 0 {
                     String::from("app idle")
                 } else {
@@ -780,7 +792,7 @@ fn frame_cost(tools: &Tools) -> Element<Panel> {
                 }
             })
             .text_color(move || {
-                let average = color.with(|timeline| timeline.summary().average);
+                let average = color.with(|summary| summary.average);
                 ColorValue::from(if average > timeline::BUDGET {
                     look::BAD
                 } else {
@@ -883,6 +895,7 @@ fn tab_bar(tools: &Tools) -> Element<Panel> {
             tools.tab.clone(),
             tools.picking.clone(),
         );
+        let shown = tools.tab.clone();
         row()
             .grow(1.0)
             .justify_content(Justify::Center)
@@ -902,8 +915,9 @@ fn tab_bar(tools: &Tools) -> Element<Panel> {
             })
             .hover(|p| p.background(look::RAISED))
             .focused(|p| p.border_color(look::ACCENT))
-            .role(Role::Button)
+            .role(Role::Tab)
             .accessible_label(name)
+            .accessible_selected(move || shown.get() == which)
             .focusable()
             .activate_on_keys()
             .on_press(move || {
@@ -922,6 +936,8 @@ fn tab_bar(tools: &Tools) -> Element<Panel> {
     };
     TABS.iter().fold(
         row()
+            .role(Role::TabList)
+            .navigate_with_arrows(Direction::Row)
             .padding(px(3.0))
             .gap(look::gap(2.0))
             .background(look::SUNKEN)
@@ -956,7 +972,7 @@ fn overlays_tab(tools: &Tools) -> Element<Panel> {
             .child(switch(
                 tools,
                 "Damage tint",
-                "Tints what the last frame repainted. A still app shows none.",
+                "Tints what the app's last frame repainted, until its next one.",
                 Some(marks::TINT),
                 |switches| &mut switches.damage_tint,
             ))

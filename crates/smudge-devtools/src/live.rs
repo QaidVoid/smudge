@@ -32,7 +32,8 @@ fn hot_reload(tools: &Tools) -> Element<Panel> {
         tools,
         "Keep tree",
         "Apply patches without remounting, so all state stays. An edit to what the \
-         build creates shows at the next remount.",
+         build creates shows at the next remount, and a closure created after the \
+         first patch keeps that patch's code.",
         None,
         |switches: &mut Switches| &mut switches.keep_tree,
     ))

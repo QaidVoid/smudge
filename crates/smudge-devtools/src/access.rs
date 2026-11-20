@@ -9,7 +9,7 @@ use smudge_core::geometry::{Rect, Size};
 use smudge_core::inspect::{A11yWarning, A11yWarningKind};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::{Role, SemanticsNode};
-use smudge_core::style::{Align, Edges, px};
+use smudge_core::style::{Align, Direction, Edges, px};
 use smudge_core::tree::WidgetId;
 use smudge_core::widget::Panel;
 use smudge_text::label;
@@ -164,7 +164,10 @@ fn summary(audit: &RwSignal<Option<Rc<Audit>>>) -> Element<Panel> {
                 )
             }
         }))
-        .child(chip(move || format!("{} nodes", nodes()), look::MUTED))
+        .child(chip(
+            move || look::counted(nodes(), "node", "nodes"),
+            look::MUTED,
+        ))
 }
 
 /// Builds the warnings, a card each, which show only when there are some.
@@ -238,12 +241,18 @@ fn tree(tools: &Tools) -> Element<Panel> {
             .padding(px(4.0))
             .background(look::SUNKEN)
             .corner_radius(6.0)
-            .child(rows(count, move |index| node_row(&tools, &audit, index)))
+            .child(
+                rows(count, move |index| node_row(&tools, &audit, index))
+                    .role(Role::List)
+                    .accessible_label("Tree")
+                    .navigate_with_arrows(Direction::Column),
+            )
             .child(look::when(
                 move || more() > 0,
                 move || {
                     let more = shown_more.clone();
-                    note(move || format!("and {} more nodes", more())).text_color(look::FAINT)
+                    note(move || format!("and {} more", look::counted(more(), "node", "nodes")))
+                        .text_color(look::FAINT)
                 },
             )),
     )
@@ -257,8 +266,9 @@ fn node_row(tools: &Tools, audit: &RwSignal<Option<Rc<Audit>>>, index: usize) ->
         entry.clone(),
         entry.clone(),
         entry.clone(),
-        entry,
+        entry.clone(),
     );
+    let spoken = entry;
     row()
         .gap(gap(8.0))
         .align_items(Align::Center)
@@ -267,8 +277,20 @@ fn node_row(tools: &Tools, audit: &RwSignal<Option<Rc<Audit>>>, index: usize) ->
             width: 6.0,
             height: 2.0,
         })
+        .border(1.0)
+        .border_color(smudge_core::geometry::Color::TRANSPARENT)
         .hover(|p| p.background(look::HOVER))
         .pressed(|p| p.background(look::PRESSED))
+        .focused(|p| p.border_color(look::ACCENT))
+        .role(Role::ListItem)
+        .accessible_label(move || {
+            spoken().map_or_else(String::new, |node| match node.label {
+                Some(label) => format!("{:?} {label}", node.role),
+                None => format!("{:?}", node.role),
+            })
+        })
+        .focusable()
+        .activate_on_keys()
         .on_press(inspect(tools, move || id().map(|node| node.id)))
         .child(look::indent(move || indent().map_or(0, |node| node.depth)))
         .child(

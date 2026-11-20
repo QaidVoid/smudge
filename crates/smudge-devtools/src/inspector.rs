@@ -6,9 +6,9 @@ use std::rc::Rc;
 use smudge_core::element::Element;
 use smudge_core::geometry::{Color, Rect, Size};
 use smudge_core::inspect::{BindingInfo, BoxModel, NodeDetails, SourceKind};
-use smudge_core::reactive::{RwSignal, prelude::*};
+use smudge_core::reactive::{Memo, RwSignal, prelude::*};
 use smudge_core::semantics::Role;
-use smudge_core::style::{Align, Justify, px};
+use smudge_core::style::{Align, Direction, Justify, px};
 use smudge_core::theme::ColorValue;
 use smudge_core::widget::Panel;
 use smudge_text::{FontWeight, LabelExt, label};
@@ -36,7 +36,12 @@ pub(crate) fn inspector(tools: &Tools) -> Element<Panel> {
         ROW,
         move |index| tree_row(&rows_of, index),
     )
-    .height(px(TREE));
+    .role(Role::List)
+    .accessible_label("Tree")
+    .navigate_with_arrows(Direction::Column)
+    .height(px(TREE))
+    .shrink(1.0)
+    .min_height(px(3.0 * ROW));
     column()
         .padding_xy(Size {
             width: crate::PAD,
@@ -50,6 +55,8 @@ pub(crate) fn inspector(tools: &Tools) -> Element<Panel> {
                 .padding(px(4.0))
                 .background(look::SUNKEN)
                 .corner_radius(6.0)
+                .shrink(1.0)
+                .min_height(px(3.0 * ROW + 8.0))
                 .child(tree),
         )
         .child(
@@ -62,7 +69,8 @@ pub(crate) fn inspector(tools: &Tools) -> Element<Panel> {
                     .child(details(&tools.details)),
             )
             .grow(1.0)
-            .min_height(px(0.0)),
+            .basis(px(0.0))
+            .min_height(px(3.0 * ROW)),
         )
 }
 
@@ -123,7 +131,7 @@ fn toolbar(tools: &Tools) -> Element<Panel> {
         .child(copy)
         .child(spacer())
         .child(note(move || {
-            format!("{} nodes", count.with(|tree| tree.len()))
+            look::counted(count.with(|tree| tree.len()), "node", "nodes")
         }))
 }
 
@@ -158,7 +166,7 @@ fn status(tools: &Tools) -> Element<smudge_core::element::Slot> {
 
 /// Builds the row of the tree at `index`, which shows its node indented by
 /// depth with its size, muted while hidden and raised while selected, and
-/// selects it when pressed.
+/// selects it when pressed, or on Enter or Space while it holds the focus.
 fn tree_row(tools: &Tools, index: usize) -> Element<Panel> {
     let entry = {
         let tree = tools.tree.clone();
@@ -170,9 +178,14 @@ fn tree_row(tools: &Tools, index: usize) -> Element<Panel> {
         entry.clone(),
         entry.clone(),
         entry.clone(),
-        entry,
+        entry.clone(),
     );
-    let (selected, select) = (tools.selected.clone(), tools.selected.clone());
+    let (spoken, marked) = (entry.clone(), entry);
+    let (selected, select, picked) = (
+        tools.selected.clone(),
+        tools.selected.clone(),
+        tools.selected.clone(),
+    );
     row()
         .height(px(ROW))
         .gap(gap(8.0))
@@ -190,7 +203,19 @@ fn tree_row(tools: &Tools, index: usize) -> Element<Panel> {
                 Color::TRANSPARENT
             })
         })
+        .border(1.0)
+        .border_color(Color::TRANSPARENT)
         .hover(|p| p.background(look::HOVER))
+        .focused(|p| p.border_color(look::ACCENT))
+        .role(Role::ListItem)
+        .accessible_label(move || {
+            spoken().map_or_else(String::new, |entry| {
+                String::from(short_name(entry.type_name))
+            })
+        })
+        .accessible_selected(move || marked().is_some_and(|entry| picked.get() == Some(entry.id)))
+        .focusable()
+        .activate_on_keys()
         .on_press(move || {
             if let Some(entry) = pick() {
                 select.set(Some(entry.id));
@@ -516,7 +541,12 @@ fn bindings(details: &Details) -> Element<Panel> {
 
 /// Builds the card of the binding at `index`.
 fn binding(details: &Details, index: usize) -> Element<Panel> {
-    let entry = look::read(details, move |details| details.bindings.get(index).cloned());
+    let entry = {
+        let memo = Memo::new(look::read(details, move |details| {
+            details.bindings.get(index).cloned()
+        }));
+        move || memo.get()
+    };
     let (runs, at, sources, woken, has_woken) = (
         entry.clone(),
         entry.clone(),
@@ -594,14 +624,19 @@ fn binding(details: &Details, index: usize) -> Element<Panel> {
 /// Builds the node's style: the properties it was built with that differ
 /// from the default, and those its states change.
 fn style(details: &Details) -> Element<Panel> {
-    let built = look::read(details, |details| styles::style_lines(&details.base));
-    let changed = look::read(details, |details| {
-        let built = styles::style_lines(&details.base);
-        styles::style_lines(&details.resolved)
-            .into_iter()
-            .filter(|line| !built.contains(line))
-            .collect::<Vec<_>>()
-    });
+    let built = Memo::new(look::read(details, |details| {
+        styles::style_lines(&details.base)
+    }));
+    let base = built.clone();
+    let changed = Memo::new(look::read(details, move |details| {
+        let resolved = styles::style_lines(&details.resolved);
+        base.with(|built| {
+            resolved
+                .into_iter()
+                .filter(|line| !built.contains(line))
+                .collect::<Vec<_>>()
+        })
+    }));
     let any_changed = changed.clone();
     section(
         "Style",
@@ -609,7 +644,7 @@ fn style(details: &Details) -> Element<Panel> {
     )
     .child(style_list(built))
     .child(look::when(
-        move || !any_changed().is_empty(),
+        move || any_changed.with(|changed| !changed.is_empty()),
         move || {
             column()
                 .gap(gap(4.0))
@@ -619,8 +654,8 @@ fn style(details: &Details) -> Element<Panel> {
     ))
 }
 
-/// Builds the list of the style lines `lines` reads.
-fn style_list(lines: impl Fn() -> Vec<(&'static str, String)> + Clone + 'static) -> Element<Panel> {
+/// Builds the list of the style lines `lines` holds.
+fn style_list(lines: Memo<Vec<(&'static str, String)>>) -> Element<Panel> {
     let (count, none) = (lines.clone(), lines.clone());
     column()
         .padding_xy(Size {
@@ -630,20 +665,22 @@ fn style_list(lines: impl Fn() -> Vec<(&'static str, String)> + Clone + 'static)
         .background(look::SUNKEN)
         .corner_radius(6.0)
         .child(look::when(
-            move || none().is_empty(),
+            move || none.with(Vec::is_empty),
             || note("The default style.").text_color(look::FAINT),
         ))
         .child(rows(
-            move || count().len(),
+            move || count.with(Vec::len),
             move |index| {
                 let (name, value) = (lines.clone(), lines.clone());
                 row()
                     .gap(gap(8.0))
                     .child(
                         mono(move || {
-                            name()
-                                .get(index)
-                                .map_or_else(String::new, |(name, _)| String::from(*name))
+                            name.with(|lines| {
+                                lines
+                                    .get(index)
+                                    .map_or_else(String::new, |(name, _)| String::from(*name))
+                            })
                         })
                         .text_color(look::MUTED)
                         .width(px(92.0))
@@ -651,9 +688,11 @@ fn style_list(lines: impl Fn() -> Vec<(&'static str, String)> + Clone + 'static)
                     )
                     .child(
                         mono(move || {
-                            value()
-                                .get(index)
-                                .map_or_else(String::new, |(_, value)| value.clone())
+                            value.with(|lines| {
+                                lines
+                                    .get(index)
+                                    .map_or_else(String::new, |(_, value)| value.clone())
+                            })
                         })
                         .shrink(1.0)
                         .min_width(px(0.0)),

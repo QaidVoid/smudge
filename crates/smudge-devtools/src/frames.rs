@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use smudge_core::element::Element;
 use smudge_core::geometry::Size;
-use smudge_core::reactive::{RwSignal, prelude::*};
+use smudge_core::reactive::{Memo, RwSignal, prelude::*};
 use smudge_core::style::{Align, Justify, px};
 use smudge_core::theme::ColorValue;
 use smudge_core::tree::Dirty;
@@ -45,11 +45,12 @@ struct Hovered;
 /// Builds the frames tab.
 pub(crate) fn frames_tab(tools: &Tools) -> Element<Panel> {
     let hovered: RwSignal<Option<f32>> = RwSignal::new(None);
-    let idle = tools.timeline.clone();
+    let summary = summary_of(&tools.timeline);
+    let idle = summary.clone();
     look::scrolling(
         look::tab_content()
             .child(look::when(
-                move || idle.with(|timeline| timeline.summary().frames == 0),
+                move || idle.with(|summary| summary.frames == 0),
                 || {
                     card()
                         .border_edges(smudge_core::style::Edges {
@@ -67,18 +68,25 @@ pub(crate) fn frames_tab(tools: &Tools) -> Element<Panel> {
                         ))
                 },
             ))
-            .child(stats(&tools.timeline))
+            .child(stats(&summary))
             .child(timeline(&tools.timeline, &hovered))
-            .child(breakdown(&tools.timeline, &hovered)),
+            .child(breakdown(&tools.timeline, &summary, &hovered)),
     )
+}
+
+/// Returns what `timeline`'s frames cost, worked out once each time it
+/// changes, for every reader to share.
+pub(crate) fn summary_of(timeline: &RwSignal<std::rc::Rc<Timeline>>) -> Memo<Summary> {
+    let timeline = timeline.clone();
+    Memo::new(move || timeline.with(|timeline| timeline.summary()))
 }
 
 /// Builds the row of tiles that sum up the app's frames: the newest, the
 /// average, the slowest, and how many missed the budget.
-fn stats(timeline: &RwSignal<std::rc::Rc<Timeline>>) -> Element<Panel> {
+fn stats(summary: &Memo<Summary>) -> Element<Panel> {
     let tile =
         |name: &'static str, value: fn(&Summary) -> String, color: fn(&Summary) -> ColorValue| {
-            let (text, paint) = (timeline.clone(), timeline.clone());
+            let (text, paint) = (summary.clone(), summary.clone());
             column()
                 .grow(1.0)
                 .basis(px(0.0))
@@ -91,7 +99,7 @@ fn stats(timeline: &RwSignal<std::rc::Rc<Timeline>>) -> Element<Panel> {
                 .child(note(name))
                 .child(
                     mono(move || {
-                        let summary = text.with(|timeline| timeline.summary());
+                        let summary = text.get();
                         if summary.frames == 0 {
                             String::from("idle")
                         } else {
@@ -100,7 +108,7 @@ fn stats(timeline: &RwSignal<std::rc::Rc<Timeline>>) -> Element<Panel> {
                     })
                     .text_size(look::BODY + 1.0)
                     .text_color(move || {
-                        let summary = paint.with(|timeline| timeline.summary());
+                        let summary = paint.get();
                         if summary.frames == 0 {
                             ColorValue::from(look::FAINT)
                         } else {
@@ -211,6 +219,7 @@ fn timeline(
 /// stack them in.
 fn breakdown(
     timeline: &RwSignal<std::rc::Rc<Timeline>>,
+    summary: &Memo<Summary>,
     hovered: &RwSignal<Option<f32>>,
 ) -> Element<Panel> {
     let frame = {
@@ -221,10 +230,10 @@ fn breakdown(
         }
     };
     let stages = {
-        let (timeline, frame) = (timeline.clone(), frame.clone());
+        let (summary, frame) = (summary.clone(), frame.clone());
         move || -> [Duration; 8] {
             frame().map_or_else(
-                || timeline.with(|timeline| timeline.summary().stages),
+                || summary.with(|summary| summary.stages),
                 |frame| frame.stages(),
             )
         }

@@ -376,3 +376,92 @@ fn a_watched_theme_file_recolors_the_app_and_its_bad_lines_show() {
     assert!(reported, "the bad line shows in the panel");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Returns the projected node that holds the focus, if any.
+fn focused(harness: &mut Harness) -> Option<smudge_core::semantics::SemanticsNode> {
+    harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.focused)
+}
+
+#[test]
+fn the_keyboard_reaches_the_tabs_and_the_switches() {
+    TextSystem::bundled_only().install();
+    let tools = smudge_devtools::Tools::new();
+    let shown = tools.clone();
+    let mut harness = Harness::new(800.0, 600.0, 1.0, move || {
+        smudge_devtools::overlay(&shown, || Size {
+            width: 800.0,
+            height: 600.0,
+        })
+    });
+    harness.frame();
+
+    harness.press_key(smudge_core::input::Key::Tab);
+    harness.press_key(smudge_core::input::Key::Tab);
+    let tab = focused(&mut harness).expect("Tab reaches the tab bar");
+    assert_eq!(
+        (tab.role, tab.label.as_deref(), tab.selected),
+        (Role::Tab, Some("Frames"), Some(true)),
+        "at the shown tab"
+    );
+    harness.press_key(smudge_core::input::Key::ArrowRight);
+    harness.press_key(smudge_core::input::Key::Enter);
+    harness.frame();
+    assert_eq!(
+        focused(&mut harness).and_then(|node| node.label).as_deref(),
+        Some("Overlays")
+    );
+
+    let switch = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == Role::Switch && node.label.as_deref() == Some("Damage tint"))
+        .expect("Enter showed the overlays tab");
+    assert!(switch.description.is_some(), "a switch says what it does");
+    assert!(harness.app().request_focus(switch.id));
+    harness.press_key(smudge_core::input::Key::Space);
+    harness.frame();
+    assert!(tools.switches().damage_tint, "Space turns a switch on");
+}
+
+#[test]
+fn a_collapsed_panel_asks_the_window_for_no_tab_data() {
+    TextSystem::bundled_only().install();
+    let tools = smudge_devtools::Tools::new();
+    let shown = tools.clone();
+    let mut harness = Harness::new(800.0, 600.0, 1.0, move || {
+        smudge_devtools::overlay(&shown, || Size {
+            width: 800.0,
+            height: 600.0,
+        })
+    });
+    harness.frame();
+    press(&mut harness, "Inspector");
+    assert!(tools.is_inspecting());
+
+    press(&mut harness, "Hide");
+    assert!(!tools.is_inspecting(), "nothing shows the tree");
+    press(&mut harness, "Show");
+    assert!(tools.is_inspecting());
+}
+
+#[test]
+fn a_narrow_window_holds_the_whole_panel() {
+    TextSystem::bundled_only().install();
+    let mut harness = Harness::new(320.0, 360.0, 1.0, || {
+        smudge_devtools::overlay(&smudge_devtools::Tools::new(), || Size {
+            width: 320.0,
+            height: 360.0,
+        })
+    });
+    harness.frame();
+    let panel = panel_rect(&mut harness);
+    assert!(
+        panel.x0 >= 0.0 && panel.x1 <= 320.0,
+        "the panel fits the window: {panel:?}"
+    );
+}
