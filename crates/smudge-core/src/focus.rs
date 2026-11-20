@@ -1039,7 +1039,7 @@ impl WidgetTree {
             }
             let view = node.content;
             let current = node.scroll_offset;
-            let Some(max) = self.max_scroll_offset(id) else {
+            let Some(max) = self.max_scroll_offset(id).map(|max| max.y) else {
                 continue;
             };
             // A non-finite offset or extent, which a binding can hand over,

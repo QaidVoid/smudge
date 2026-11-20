@@ -11,12 +11,12 @@
 //! moves to a node inside the view by any means but a pointer press, the view
 //! scrolls to show that node, as [`Element::on_reveal`] describes.
 //!
-//! The view learns its own height and its content's height when the two
-//! paint, and writes them to signals its bindings read. A size-driven change,
+//! The view learns its own size and its content's size when the two paint,
+//! and writes them to signals its bindings read. A size-driven change,
 //! such as a thumb that follows a resize, therefore lands one frame after the
 //! resize that caused it, which keeps layout out of the paint pass. The
 //! follow pin is the one exception: the core applies it after each layout
-//! pass with the heights that pass just wrote, so a frame that grows the
+//! pass with the extent that pass just measured, so a frame that grows the
 //! content never shows the end out of view.
 
 use std::cell::{Cell, RefCell};
@@ -29,7 +29,7 @@ use smudge_core::input::{Drag, Handled};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::{Role, Semantics};
-use smudge_core::style::{Edges, Length, Overflow, px};
+use smudge_core::style::{Align, Direction, Edges, Length, Overflow, pct, px};
 use smudge_core::theme::ColorToken;
 use smudge_core::timer::{TimerHandle, every};
 use smudge_core::tree::Dirty;
@@ -61,7 +61,34 @@ const AUTO_SCROLL_REACH: f32 = 100.0;
 /// logical pixels, and still engage following.
 const FOLLOW_SLACK: f32 = 4.0;
 
-/// The heights a scroll view measures when it paints.
+/// Which way a scroll view scrolls.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum ScrollAxis {
+    /// Up and down. The content is as wide as the view and as tall as it
+    /// needs.
+    #[default]
+    Vertical,
+    /// Sideways. The content is as tall as the view and as wide as it
+    /// needs, and at least as wide as the view.
+    Horizontal,
+    /// Both ways. The content is as wide and as tall as it needs, and at
+    /// least as wide as the view.
+    Both,
+}
+
+impl ScrollAxis {
+    /// Returns whether the view scrolls up and down.
+    fn vertical(self) -> bool {
+        matches!(self, ScrollAxis::Vertical | ScrollAxis::Both)
+    }
+
+    /// Returns whether the view scrolls sideways.
+    fn horizontal(self) -> bool {
+        matches!(self, ScrollAxis::Horizontal | ScrollAxis::Both)
+    }
+}
+
+/// The sizes a scroll view measures when it paints.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Viewport {
     /// The height of the view's content box, the part of the content that
@@ -72,15 +99,30 @@ pub(crate) struct Viewport {
     /// The height of the view's whole rectangle, whose edges a drag
     /// auto-scrolls past.
     outer: f32,
+    /// The width of the view's content box.
+    visible_width: f32,
+    /// The width inside the view's border.
+    track_width: f32,
+    /// The width of the view's whole rectangle.
+    outer_width: f32,
 }
 
 /// The reactive state one scroll view shares between its widgets, its wheel
 /// handler and its bindings.
 struct ScrollChrome {
-    /// The signal whose value is the scroll offset. It starts as one the view
-    /// created itself, and [`ScrollExt::offset`] swaps in one of the user's
-    /// while the view is built.
+    /// Which way the view scrolls, which [`ScrollExt::axis`] sets while the
+    /// view is built.
+    axis: Cell<ScrollAxis>,
+    /// Whether the view is a virtual list's, which scrolls up and down only,
+    /// whatever axis it is given.
+    list: bool,
+    /// The signal whose value is the vertical scroll offset. It starts as one
+    /// the view created itself, and [`ScrollExt::offset`] swaps in one of the
+    /// user's while the view is built.
     offset: RefCell<RwSignal<f32>>,
+    /// The signal whose value is the horizontal scroll offset, which
+    /// [`ScrollExt::horizontal_offset`] swaps the same way.
+    horizontal: RefCell<RwSignal<f32>>,
     /// The signal that reports and sets whether the view follows the end of
     /// its content, when [`ScrollExt::follow_end`] set one. It sits in a
     /// signal of its own, so a list that lays its content out differently
@@ -89,11 +131,13 @@ struct ScrollChrome {
     following: RwSignal<Option<RwSignal<bool>>>,
     /// The height of the content, once the content has painted.
     content_height: RwSignal<Option<f32>>,
+    /// The width of the content, once the content has painted.
+    content_width: RwSignal<Option<f32>>,
     /// The height the content takes in the coming layout, when the view's
     /// owner knows it before the content paints. It stands in for
     /// `content_height`, which lags it by a frame.
     content_extent: Option<RwSignal<f32>>,
-    /// The heights of the view, once the view has painted.
+    /// The sizes of the view, once the view has painted.
     viewport: RwSignal<Option<Viewport>>,
     /// The visible height of the view, once the view has painted, reported to
     /// a virtual list that computes its rows from it.
@@ -101,15 +145,36 @@ struct ScrollChrome {
 }
 
 impl ScrollChrome {
-    /// Returns the current offset signal, whichever one
+    /// Returns the current vertical offset signal, whichever one
     /// [`ScrollExt::offset`] installed.
     fn signal(&self) -> RwSignal<f32> {
         self.offset.borrow().clone()
     }
 
+    /// Returns the current horizontal offset signal, whichever one
+    /// [`ScrollExt::horizontal_offset`] installed.
+    fn horizontal_signal(&self) -> RwSignal<f32> {
+        self.horizontal.borrow().clone()
+    }
+
+    /// Returns the furthest the view can scroll sideways, zero for a view
+    /// that does not scroll sideways, or `None` before both the view and its
+    /// content have painted. Reading it tracks both widths.
+    fn max_offset_x(&self) -> Option<f32> {
+        if !self.axis.get().horizontal() {
+            return Some(0.0);
+        }
+        let content = self.content_width.get()?;
+        let viewport = self.viewport.get()?;
+        Some((content - viewport.visible_width).max(0.0))
+    }
+
     /// Returns the furthest the view can scroll, or `None` before both the
     /// view and its content have painted. Reading it tracks both heights.
     fn max_offset(&self) -> Option<f32> {
+        if !self.axis.get().vertical() {
+            return Some(0.0);
+        }
         let content = self.content()?;
         let viewport = self.viewport.get()?;
         Some((content - viewport.visible).max(0.0))
@@ -135,9 +200,9 @@ impl ScrollChrome {
 /// A panel that clips its content and scrolls it with the wheel.
 ///
 /// It paints like a [`Panel`], so it takes a background and a border through
-/// the style builders. Its paint also reports the view's heights to its
-/// bindings, which is how the offset learns its range and the thumb its
-/// track.
+/// the style builders. Its paint also reports the view's sizes to its
+/// bindings, which is how the offsets learn their ranges and the thumbs
+/// their tracks.
 pub struct ScrollView {
     /// The state shared with the wheel handler and the bindings.
     chrome: Rc<ScrollChrome>,
@@ -158,6 +223,9 @@ impl Widget for ScrollView {
                 visible,
                 track: finite(cx.rect.height() - border.top - border.bottom).max(0.0),
                 outer: finite(cx.rect.height()),
+                visible_width: finite(cx.content.width()),
+                track_width: finite(cx.rect.width() - border.left - border.right).max(0.0),
+                outer_width: finite(cx.rect.width()),
             },
         );
         report(&self.chrome.visible_height, visible);
@@ -177,6 +245,7 @@ struct ScrollContent {
 impl Widget for ScrollContent {
     fn paint(&self, cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {
         report(&self.chrome.content_height, finite(cx.rect.height()));
+        report(&self.chrome.content_width, finite(cx.rect.width()));
     }
 }
 
@@ -216,6 +285,7 @@ fn clamp_offset(desired: f32, max: f32) -> f32 {
 /// Dragging the thumb scrolls the view by the content's share of each pixel
 /// it moves, held to the content's ends, and a press on the track beside the
 /// thumb scrolls one page, the height the view shows, toward the press.
+/// [`ScrollExt::axis`] makes the view scroll sideways or both ways instead.
 /// While the content overflows, the scrollbar takes the presses along the
 /// view's right edge, eight logical pixels wide, over the content there, and
 /// a press on it leaves the keyboard focus where it is.
@@ -254,7 +324,13 @@ fn clamp_offset(desired: f32, max: f32) -> f32 {
 /// lets a view mount at a remembered position.
 #[track_caller]
 pub fn scroll(content: impl IntoElement) -> Element<ScrollView> {
-    scroll_with_visible_height(content, crate::signal(None), None, crate::signal(None))
+    scroll_with_visible_height(
+        content,
+        crate::signal(None),
+        None,
+        crate::signal(None),
+        false,
+    )
 }
 
 /// Creates a view like [`scroll`] that reports the visible height of its
@@ -272,21 +348,27 @@ pub fn scroll(content: impl IntoElement) -> Element<ScrollView> {
 ///
 /// The view writes the signal [`ScrollExt::follow_end`] installs to
 /// `following`, so a list that reads the slot learns whether the view
-/// follows its end.
+/// follows its end. A view built for a virtual `list` scrolls up and down
+/// only, whatever [`ScrollExt::axis`] it is given.
 #[track_caller]
 pub(crate) fn scroll_with_visible_height(
     content: impl IntoElement,
     visible_height: RwSignal<Option<f32>>,
     content_extent: Option<RwSignal<f32>>,
     following: RwSignal<Option<RwSignal<bool>>>,
+    list: bool,
 ) -> Element<ScrollView> {
     let content_height = crate::signal(None);
+    let content_width = crate::signal(None);
     let viewport = crate::signal(None);
     // A remount after a hot patch can hand these the measurements of the
     // old build's layout, which say nothing of the new one, and would clamp
     // a carried offset before the new view measured itself.
     if content_height.read(Option::is_some) {
         content_height.set(None);
+    }
+    if content_width.read(Option::is_some) {
+        content_width.set(None);
     }
     if viewport.read(Option::is_some) {
         viewport.set(None);
@@ -300,9 +382,13 @@ pub(crate) fn scroll_with_visible_height(
         following.set(None);
     }
     let chrome = Rc::new(ScrollChrome {
+        axis: Cell::new(ScrollAxis::Vertical),
+        list,
         offset: RefCell::new(crate::signal(0.0)),
+        horizontal: RefCell::new(crate::signal(0.0)),
         following,
         content_height,
+        content_width,
         content_extent,
         viewport,
         visible_height,
@@ -314,20 +400,62 @@ pub(crate) fn scroll_with_visible_height(
     let track_chrome = Rc::clone(&chrome);
     let reveal_chrome = Rc::clone(&chrome);
     let drag_chrome = Rc::clone(&chrome);
+    let sizing_chrome = Rc::clone(&chrome);
+    let (direction_chrome, align_chrome) = (Rc::clone(&chrome), Rc::clone(&chrome));
     let auto = Rc::new(AutoScroll::default());
 
     Element::new(ScrollView {
         chrome: Rc::clone(&chrome),
     })
-    .column()
+    // A view that scrolls sideways lays its content out in a row, at the
+    // content's own width. One that scrolls both ways keeps the content's
+    // own height too, rather than stretching it to the view's and spilling
+    // the rest past it.
+    .direction(move || {
+        if direction_chrome.axis.get().horizontal() {
+            Direction::Row
+        } else {
+            Direction::Column
+        }
+    })
+    .align_items(move || {
+        if align_chrome.axis.get() == ScrollAxis::Both {
+            Align::Start
+        } else {
+            Align::Stretch
+        }
+    })
     .overflow(Overflow::Scroll)
     // The view takes every wheel event over it, even one it cannot use, so
     // a page around a view at its end does not scroll in its place.
     .on_wheel(move |delta| {
-        scroll_by(&wheel_chrome, finite(delta.y), FOLLOW_SLACK);
+        let axis = wheel_chrome.axis.get();
+        if axis.vertical() {
+            scroll_by(&wheel_chrome, finite(delta.y), FOLLOW_SLACK);
+        }
+        if axis.horizontal() {
+            scroll_x_by(&wheel_chrome, finite(delta.x));
+        }
         Handled::Yes
     })
     .scroll_offset(move || {
+        let axis = offset_chrome.axis.get();
+        let x = if axis.horizontal() {
+            let signal = offset_chrome.horizontal_signal();
+            match offset_chrome.max_offset_x() {
+                Some(max) => {
+                    let desired = signal.get();
+                    let clamped = clamp_offset(desired, max);
+                    if clamped != desired {
+                        signal.set(clamped);
+                    }
+                    clamped
+                }
+                None => finite(signal.get()).max(0.0),
+            }
+        } else {
+            0.0
+        };
         let signal = offset_chrome.signal();
         let following = offset_chrome.following().is_some_and(|signal| signal.get());
         let applied = match offset_chrome.max_offset() {
@@ -352,7 +480,7 @@ pub(crate) fn scroll_with_visible_height(
             }
             None => finite(signal.get()).max(0.0),
         };
-        Point { x: 0.0, y: applied }
+        Point { x, y: applied }
     })
     // A drag that began inside the view and is held past its top or bottom
     // edge scrolls it, faster the farther out the pointer is, until the
@@ -430,6 +558,16 @@ pub(crate) fn scroll_with_visible_height(
         })
         .column()
         .shrink(0.0)
+        // A view that scrolls sideways lays its content out in a row, at
+        // the content's own width, and at least the view's, so narrow
+        // content still fills it.
+        .min_width(move || {
+            if sizing_chrome.axis.get().horizontal() {
+                pct(100.0)
+            } else {
+                Length::Auto
+            }
+        })
         .child(content),
     )
     .child(thumb(track_chrome))
@@ -493,6 +631,20 @@ fn scroll_by(chrome: &ScrollChrome, step: f32, slack: f32) {
         } else if !following && step > 0.0 && next >= max - slack {
             signal.set(true);
         }
+    }
+}
+
+/// Scrolls the view sideways by `step` from where it is, held to its range.
+/// Does nothing before the view and its content have painted.
+fn scroll_x_by(chrome: &ScrollChrome, step: f32) {
+    let Some(max) = chrome.max_offset_x() else {
+        return;
+    };
+    let signal = chrome.horizontal_signal();
+    let current = clamp_offset(signal.read(|offset| *offset), max);
+    let next = clamp_offset(current + step, max);
+    if next != current {
+        signal.set(next);
     }
 }
 
@@ -624,6 +776,36 @@ pub trait ScrollExt: Sized {
     /// following.set(false);
     /// ```
     fn follow_end(self, signal: RwSignal<bool>) -> Self;
+
+    /// Sets which way the view scrolls: up and down, the default, sideways,
+    /// or both.
+    ///
+    /// A view that scrolls sideways lays its content out at the content's
+    /// own width, at least as wide as the view, and clips the rest, as a
+    /// vertical view does with the height. A view that scrolls only one way
+    /// keeps the other offset at zero. Following the end, with
+    /// [`ScrollExt::follow_end`], stays on the vertical axis. A virtual list
+    /// scrolls up and down only, whatever axis it is given.
+    ///
+    /// ```
+    /// use smudge_core::style::px;
+    /// use smudge_text::label;
+    /// use smudge_widgets::{ScrollAxis, ScrollExt, scroll};
+    ///
+    /// let line = scroll(label("A line far wider than the view it sits in"))
+    ///     .axis(ScrollAxis::Horizontal)
+    ///     .width(px(120.0))
+    ///     .height(px(24.0));
+    /// ```
+    fn axis(self, axis: ScrollAxis) -> Self;
+
+    /// Scrolls sideways with `signal`, as [`ScrollExt::offset`] does up and
+    /// down: the view reads the signal for its horizontal offset, clamped to
+    /// the content's width, and writes the clamped offset back to it.
+    ///
+    /// It has an effect on a view whose [`ScrollExt::axis`] scrolls
+    /// sideways, and none on a virtual list, which scrolls up and down only.
+    fn horizontal_offset(self, signal: RwSignal<f32>) -> Self;
 }
 
 /// The key of a view's offset signal binding.
@@ -631,6 +813,12 @@ struct OffsetKey;
 
 /// The key of a view's follow signal binding.
 struct FollowKey;
+
+/// The key of a view's axis binding.
+struct AxisKey;
+
+/// The key of a view's horizontal offset signal binding.
+struct HorizontalKey;
 
 impl ScrollExt for Element<ScrollView> {
     fn offset(self, signal: RwSignal<f32>) -> Self {
@@ -643,6 +831,22 @@ impl ScrollExt for Element<ScrollView> {
         // pairs the node's pin with the chrome's wheel handling.
         self.follow(signal.clone())
             .bind(FollowKey, Value::Static(signal), use_follow_signal)
+    }
+
+    fn axis(self, axis: ScrollAxis) -> Self {
+        self.bind(AxisKey, Value::Static(axis), |view, axis| {
+            if !view.chrome.list {
+                view.chrome.axis.set(axis);
+            }
+            Dirty::Clean
+        })
+    }
+
+    fn horizontal_offset(self, signal: RwSignal<f32>) -> Self {
+        self.bind(HorizontalKey, Value::Static(signal), |view, signal| {
+            *view.chrome.horizontal.borrow_mut() = signal;
+            Dirty::Clean
+        })
     }
 }
 

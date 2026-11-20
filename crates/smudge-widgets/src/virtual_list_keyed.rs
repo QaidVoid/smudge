@@ -140,7 +140,7 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// is: the effect that reconciles the list is owned by that owner and dies
 /// with it.
 ///
-/// The list owns its scroll offset; do not call
+/// The list owns its scroll offset, so do not call
 /// [`ScrollExt::offset`](crate::ScrollExt::offset) on the returned view,
 /// because the anchor would fight the signal the call installs.
 /// [`ScrollExt::follow_end`](crate::ScrollExt::follow_end) works as it does
@@ -151,6 +151,9 @@ struct KeyedList<T: 'static, K: Eq + Hash + Clone> {
 /// shows its end out of view. Rows that mount there shorter than any row
 /// the list has measured can leave the top of the viewport empty for the
 /// frame they mount in, until their measurements land.
+///
+/// The list scrolls up and down only, whatever
+/// [`ScrollExt::axis`](crate::ScrollExt::axis) it is given.
 ///
 /// Pick this list over [`virtual_list`](crate::virtual_list) when the rows
 /// differ in height or the item list edits in the middle: insertions,
@@ -616,7 +619,7 @@ fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     // The view clamps the offset with the total the content panel takes in
     // this frame's layout. The painted content height lags a frame, and a
     // re-aim that grows the list at its end would be clamped back by it.
-    scroll_with_visible_height(content, visible, Some(total), following).offset(offset)
+    scroll_with_visible_height(content, visible, Some(total), following, true).offset(offset)
 }
 
 /// Returns the most rows the window mounts for a viewport `viewport`

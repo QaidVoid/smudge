@@ -389,25 +389,27 @@ impl WidgetTree {
                 id,
                 Point {
                     x: current.x,
-                    y: max,
+                    y: max.y,
                 },
             );
         }
     }
 
-    /// Returns the furthest offset the flowing content of `id` reaches, or
-    /// `None` when `id` is stale.
+    /// Returns the furthest offset the flowing content of `id` reaches on
+    /// each axis, or `None` when `id` is stale.
     ///
-    /// The extent is measured from the content box, like the heights a
-    /// scroll view reports when it paints are, so the follow pin, a reveal
-    /// and the wheel clamp agree on where the end is. Absolutely positioned
-    /// children do not count, because a scroll offset does not move them.
+    /// The extent is measured from the content box, like the sizes a scroll
+    /// view reports when it paints are, so the follow pin, a reveal and the
+    /// wheel clamp agree on where the end is: the bottom of the lowest child
+    /// past the box's height, and the right edge of the widest child past
+    /// its width. Absolutely positioned children do not count, because a
+    /// scroll offset does not move them.
     ///
     /// # Panics
     ///
     /// Panics when a node in the subtree has no live layout node, which is
     /// an internal invariant for ids the caller took from the tree.
-    pub(super) fn max_scroll_offset(&self, id: WidgetId) -> Option<f32> {
+    pub(super) fn max_scroll_offset(&self, id: WidgetId) -> Option<Point> {
         let node = self.nodes.get(id)?;
         let layout = finite(
             *self
@@ -416,7 +418,8 @@ impl WidgetTree {
                 .expect("every node has a live layout node"),
         );
         let top = layout.border.top + layout.padding.top;
-        let mut bottom = 0.0f32;
+        let left = layout.border.left + layout.padding.left;
+        let (mut right, mut bottom) = (0.0f32, 0.0f32);
         for &child in &node.children {
             let child = &self.nodes[child];
             if child.resolved.layout.position == Position::Absolute {
@@ -429,8 +432,12 @@ impl WidgetTree {
                     .expect("every node has a live layout node"),
             );
             bottom = bottom.max(child_layout.location.y + child_layout.size.height);
+            right = right.max(child_layout.location.x + child_layout.size.width);
         }
-        Some((bottom - top - node.content.height()).max(0.0))
+        Some(Point {
+            x: (right - left - node.content.width()).max(0.0),
+            y: (bottom - top - node.content.height()).max(0.0),
+        })
     }
 
     /// Runs the layout engine once when anything needs it, and returns whether

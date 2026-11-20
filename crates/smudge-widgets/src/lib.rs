@@ -49,7 +49,7 @@ pub use menu::{
     ContextMenuExt, MenuBar, MenuItem, menu, menu_bar, menu_check_item, menu_item, menu_separator,
     submenu,
 };
-pub use scroll::{ScrollExt, ScrollView, scroll};
+pub use scroll::{ScrollAxis, ScrollExt, ScrollView, scroll};
 pub use split::{Split, SplitExt, split};
 pub use tabs::{Tabs, tabs};
 pub use virtual_list::virtual_list;

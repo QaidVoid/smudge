@@ -50,10 +50,13 @@ const OVERSCAN: usize = 4;
 /// as its place, so a screen reader can announce "item 40 of 3,000". Only
 /// the mounted rows have nodes.
 ///
-/// The list owns its scroll offset; do not call
+/// The list owns its scroll offset, so do not call
 /// [`ScrollExt::offset`](crate::ScrollExt::offset) on the returned view,
 /// because the window would follow the signal the list started with while the
 /// view scrolls by the one the call installs.
+///
+/// The list scrolls up and down only, whatever
+/// [`ScrollExt::axis`](crate::ScrollExt::axis) it is given.
 ///
 /// `row_height` must be positive and finite. Anything else mounts no rows,
 /// and a list built that way shows an empty view.
@@ -137,5 +140,5 @@ pub fn virtual_list<E: IntoElement>(
         .accessible_set_size(move || size_count())
         .child(rows);
 
-    scroll_with_visible_height(content, visible, None, crate::signal(None)).offset(offset)
+    scroll_with_visible_height(content, visible, None, crate::signal(None), true).offset(offset)
 }
