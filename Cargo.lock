@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-smudge"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "gimli",
  "libc",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "docs-check"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "smudge",
  "smudge-cpu",
@@ -3019,7 +3019,7 @@ dependencies = [
 
 [[package]]
 name = "smudge"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "smudge-core",
  "smudge-devtools",
@@ -3032,7 +3032,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-a11y"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -3044,7 +3044,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-bench"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "smudge-core",
  "smudge-cpu",
@@ -3057,7 +3057,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "insta",
@@ -3071,7 +3071,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-cpu"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "insta",
@@ -3084,7 +3084,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-devtools"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "smudge-core",
  "smudge-test",
@@ -3094,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-gpu"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures-executor",
  "parley",
@@ -3112,7 +3112,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-markdown"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "proptest",
  "pulldown-cmark",
@@ -3124,7 +3124,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-platform"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-test"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "insta",
  "proptest",
@@ -3168,7 +3168,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-text"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "fontique",
@@ -3184,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "smudge-widgets"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "insta",
  "proptest",
