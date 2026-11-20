@@ -2312,3 +2312,49 @@ fn a_reader_follows_dialogs_opening_over_each_other_and_closing_in_turn() {
         "the focus behind a dialog with nothing to focus falls back to the window"
     );
 }
+
+#[test]
+fn a_new_description_selection_or_open_state_sends_the_node_again() {
+    let (open, picked, about) = (
+        RwSignal::new(false),
+        RwSignal::new(false),
+        RwSignal::new(String::from("Opens the list")),
+    );
+    let (expanded, selected, described) = (open.clone(), picked.clone(), about.clone());
+    let mut app = app_with(move || {
+        let (expanded, selected, described) =
+            (expanded.clone(), selected.clone(), described.clone());
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Panel)
+                .role(Role::ComboBox)
+                .accessible_label("Fruit")
+                .accessible_expanded(move || expanded.get())
+                .accessible_selected(move || selected.get())
+                .accessible_description(move || described.get()),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    update_after_frame(&mut app, &mut projection, true);
+
+    open.set(true);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::ComboBox).is_expanded(),
+        Some(true),
+        "opening sends the node"
+    );
+    picked.set(true);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::ComboBox).is_selected(),
+        Some(true),
+        "picking sends it"
+    );
+    about.set(String::from("Picks a fruit"));
+    let update = update_after_frame(&mut app, &mut projection, false);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::ComboBox).description(),
+        Some("Picks a fruit"),
+        "a new description sends it"
+    );
+}

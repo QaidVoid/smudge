@@ -455,6 +455,8 @@ fn digest(node: &SemanticsNode, scale: f32) -> u64 {
         coordinate.to_bits().hash(&mut hasher);
     }
     (node.focusable, node.disabled, node.focused, node.pressable).hash(&mut hasher);
+    node.description.hash(&mut hasher);
+    (node.selected, node.expanded).hash(&mut hasher);
     hasher.finish()
 }
 
