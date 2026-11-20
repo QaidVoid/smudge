@@ -223,18 +223,23 @@ impl WidgetTree {
             }
             ancestor = node.parent;
         }
-        let (origin, clip, shift) = match parent {
-            Some(parent) => {
+        let window = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+        let overlay = self
+            .overlays
+            .iter()
+            .find(|overlay| overlay.root == id)
+            .map(|overlay| overlay.origin);
+        let (origin, clip, shift) = match (overlay, parent) {
+            (Some(origin), _) => (origin, window, Point::default()),
+            (None, Some(parent)) => {
                 let frame = self.child_frame(parent);
                 (frame.origin, frame.clip, frame.shift(position))
             }
-            None => (
-                Point::default(),
-                Rect::new(0.0, 0.0, viewport.width, viewport.height),
-                Point::default(),
-            ),
+            (None, None) => (Point::default(), window, Point::default()),
         };
-        if self.update_subtree(id, origin, clip, false, shift) {
+        // A scroll moves the hosts of the overlays inside it, which follow.
+        let moved = self.update_subtree(id, origin, clip, false, shift);
+        if self.place_overlays(false) || moved {
             // The subtree moved under a pointer that stays still, so the
             // hovered chain is rebuilt from the last pointer position, as the
             // layout pass does. A hover style can mark a node for layout,
@@ -451,64 +456,80 @@ impl WidgetTree {
             width: TaffySpace::Definite(viewport.width),
             height: TaffySpace::Definite(viewport.height),
         };
-        let WidgetTree { nodes, taffy, .. } = self;
-        let root_node = nodes[root].taffy;
-        taffy
-            .compute_layout_with_measure(
-                root_node,
-                available,
-                |inputs: LayoutInput,
-                 _node: taffy::NodeId,
-                 context: Option<&mut WidgetId>,
-                 style: &taffy::Style|
-                 -> LayoutOutput {
-                    let node = context.and_then(|id| nodes.get_mut(*id));
-                    // The leaf algorithm resolves the node's own size, limits,
-                    // padding and border before it measures, and offers the
-                    // space inside them. The sizes it treats as fixed are the
-                    // node's outer ones, so they lose the same insets here and
-                    // the widget is offered the content box on every axis. Its
-                    // result is used only for an axis the style leaves open,
-                    // but the engine calls it on the final pass regardless.
-                    let parent_width = inputs.parent_size.width;
-                    let inset = (style.padding.resolve_or_zero(parent_width, |_, _| 0.0)
-                        + style.border.resolve_or_zero(parent_width, |_, _| 0.0))
-                    .sum_axes();
-                    taffy::compute_leaf_layout(
-                        inputs,
-                        style,
-                        |_, _| 0.0,
-                        |known, available| {
-                            let measured = node.and_then(|node| {
-                                node.widget.measure(MeasureInput {
-                                    known_width: known
-                                        .width
-                                        .map(|width| (width - inset.width).max(0.0)),
-                                    known_height: known
-                                        .height
-                                        .map(|height| (height - inset.height).max(0.0)),
-                                    available_width: from_engine(available.width),
-                                    available_height: from_engine(available.height),
-                                    scale: self.scale,
-                                })
-                            });
-                            measured
-                                .map(|size| TaffySize {
-                                    width: size.width,
-                                    height: size.height,
-                                })
-                                .unwrap_or(TaffySize::ZERO)
-                        },
-                    )
-                },
+        // An overlay is laid out against no box of its own, so its size
+        // comes from its content alone.
+        let content_sized = TaffySize {
+            width: TaffySpace::MaxContent,
+            height: TaffySpace::MaxContent,
+        };
+        let roots: Vec<(taffy::NodeId, TaffySize<TaffySpace>)> = std::iter::once((root, available))
+            .chain(
+                self.overlays
+                    .iter()
+                    .map(|overlay| (overlay.root, content_sized)),
             )
-            .expect("the root is a live layout node");
+            .map(|(id, space)| (self.nodes[id].taffy, space))
+            .collect();
+        let WidgetTree { nodes, taffy, .. } = self;
+        for (layout_root, space) in roots {
+            taffy
+                .compute_layout_with_measure(
+                    layout_root,
+                    space,
+                    |inputs: LayoutInput,
+                     _node: taffy::NodeId,
+                     context: Option<&mut WidgetId>,
+                     style: &taffy::Style|
+                     -> LayoutOutput {
+                        let node = context.and_then(|id| nodes.get_mut(*id));
+                        // The leaf algorithm resolves the node's own size, limits,
+                        // padding and border before it measures, and offers the
+                        // space inside them. The sizes it treats as fixed are the
+                        // node's outer ones, so they lose the same insets here and
+                        // the widget is offered the content box on every axis. Its
+                        // result is used only for an axis the style leaves open,
+                        // but the engine calls it on the final pass regardless.
+                        let parent_width = inputs.parent_size.width;
+                        let inset = (style.padding.resolve_or_zero(parent_width, |_, _| 0.0)
+                            + style.border.resolve_or_zero(parent_width, |_, _| 0.0))
+                        .sum_axes();
+                        taffy::compute_leaf_layout(
+                            inputs,
+                            style,
+                            |_, _| 0.0,
+                            |known, available| {
+                                let measured = node.and_then(|node| {
+                                    node.widget.measure(MeasureInput {
+                                        known_width: known
+                                            .width
+                                            .map(|width| (width - inset.width).max(0.0)),
+                                        known_height: known
+                                            .height
+                                            .map(|height| (height - inset.height).max(0.0)),
+                                        available_width: from_engine(available.width),
+                                        available_height: from_engine(available.height),
+                                        scale: self.scale,
+                                    })
+                                });
+                                measured
+                                    .map(|size| TaffySize {
+                                        width: size.width,
+                                        height: size.height,
+                                    })
+                                    .unwrap_or(TaffySize::ZERO)
+                            },
+                        )
+                    },
+                )
+                .expect("the root is a live layout node");
+        }
 
         self.layout_runs += 1;
 
         let clip = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let rects_changed =
             self.update_subtree(root, Point::default(), clip, false, Point::default());
+        let rects_changed = self.place_overlays(true) || rects_changed;
 
         self.layout_dirty = false;
         for node in self.nodes.values_mut() {
@@ -640,6 +661,21 @@ impl WidgetTree {
         subtree_changed
     }
 
+    /// Lays out the subtree of the overlay whose top node is `root` with its
+    /// top left corner at `origin` in the window, clipped to `window`, or
+    /// empty while `hidden`, and returns whether any rectangle or clip in it
+    /// changed. An overlay's paint coordinates are the window's, since no
+    /// scroll view lies around it.
+    pub(super) fn update_overlay(
+        &mut self,
+        root: WidgetId,
+        origin: Point,
+        window: Rect,
+        hidden: bool,
+    ) -> bool {
+        self.update_subtree(root, origin, window, hidden, Point::default())
+    }
+
     /// Returns the area inside the border of `id` in its paint coordinates,
     /// which is what a node that clips its children clips them to.
     ///
@@ -715,9 +751,9 @@ impl WidgetTree {
         let mut inside = leaving;
         let mut next = self.hovered;
         while let Some(id) = next {
-            let Some(node) = self.nodes.get(id) else {
+            if !self.nodes.contains_key(id) {
                 break;
-            };
+            }
             if Some(id) == boundary {
                 inside = false;
             }
@@ -728,7 +764,7 @@ impl WidgetTree {
                 }
                 return;
             }
-            next = node.parent;
+            next = self.pointer_parent(id);
         }
         self.set_hover_target(target);
     }

@@ -212,6 +212,32 @@ let view = canvas(move |painter| {
 
 A `Path` is built from moves, lines, quadratic and cubic curves, arcs and closes, and `Path::line`, `Path::polyline`, `Path::polygon`, `Path::circle` and `Path::ellipse` build the common ones. `fill` covers it by the nonzero rule, and `draw` with a `PathPaint` picks the even-odd rule, which cuts a hole wherever one subpath lies inside another, or fills and strokes in one call. A `Stroke` has a width, a color, miter, round or bevel joins, butt, round or square caps, a miter limit and an optional dash. A path with a point that is not finite, or more than a million logical pixels from the origin, draws nothing. A dash pattern that would cut its path into more than a hundred thousand pieces draws the stroke solid. Both renderers draw paths, so a canvas looks the same on the CPU and the GPU to within their antialiasing.
 
+## Popups and overlays
+
+`overlay(open, placement, build)` opens the element `build` returns over the whole window while `open` reads `true`. It escapes every clip around the node it belongs to, so a popup inside a scroll view is not cut at the view's edge, and it draws over everything, the last opened on top:
+
+```rust
+use smudge::core::element::Placement;
+
+let open = RwSignal::new(false);
+let toggle = open.clone();
+let picker = button("Colors")
+    .on_press(move || toggle.update(|open| *open = !*open))
+    .overlay(open, Placement::Below, || {
+        column()
+            .padding(px(8.0))
+            .background(ColorToken::SURFACE)
+            .border(1.0)
+            .border_color(ColorToken::BORDER)
+            .child(label("Red"))
+            .child(label("Green"))
+    });
+```
+
+`Placement::Below` and `Placement::Above` open against the node's rectangle, `Placement::After` to its right, as a submenu does, and `Placement::At(point)` at a point inside it, as a context menu opens at the pointer. An overlay flips to the other side where the window has no room, shifts to stay inside the window, and follows its node as a scroll moves it. Its size comes from its content alone.
+
+Escape and a press outside the overlay write `false` to `open`, so it closes. A press on the node an overlay opens against is not outside it, so the button above closes its popup with its own press. A press over an overlay reaches the overlay and never the window under it, and keys inside it bubble on to the node that opened it and that node's ancestors, so the shortcuts around it keep working. An overlay that takes the keyboard calls `trap_focus()`, and `autofocus()` on the node that should take the focus first: Tab then stays inside it, and the focus goes back to the node that opened it when it closes, or where it was when that node cannot take the focus.
+
 ## Writing your own
 
 The button, the containers, the scroll view and the virtual list are composed from `panel`, `label` and the public element builders. A component of your own is the same thing, a function that returns an element:

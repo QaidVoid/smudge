@@ -47,13 +47,14 @@ use crate::animation::Spring;
 use crate::geometry::{Color, Corners, Point, Rect, Size};
 use crate::input::{ButtonEvent, Handled, KeyEvent};
 use crate::paint::PaintOp;
-use crate::reactive::{Owner, RenderEffect, RwSignal};
+use crate::reactive::{Owner, RenderEffect, RwSignal, prelude::Get};
 use crate::semantics::{Announcer, Checked, Role, ValueRange};
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
 };
 use crate::theme::{ColorToken, ColorValue, CornerRadii, RadiusToken, RadiusValue};
 use crate::tree::interaction::Handlers;
+pub use crate::tree::overlay::Placement;
 use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::variants::{PatchBuilder, StylePatch, Variants};
 use crate::widget::{PaintCx, Widget};
@@ -1413,8 +1414,8 @@ impl<W: Widget> Element<W> {
     /// descendant, with the button, the position relative to the top left of
     /// the node's rectangle, and the keyboard modifiers held.
     ///
-    /// The press goes to the node a primary press would target and then to
-    /// its ancestors, deepest first, until a handler returns
+    /// The press goes to the deepest node under the pointer and then to its
+    /// ancestors, deepest first, until a handler returns
     /// [`Handled::Yes`]. That node takes the press: it hears every move
     /// through [`on_button_move`](Self::on_button_move) and the release
     /// through [`on_button_up`](Self::on_button_up), wherever the pointer
@@ -2001,7 +2002,9 @@ impl<W: Widget> Element<W> {
     /// When several traps are mounted, the last one wins, and a nested trap
     /// therefore takes over from the one around it. Removing a trap, which
     /// is what unmounting a [`show`] child does, restores the trap mounted
-    /// before it, and returns the focus to the node that held it when the
+    /// before it, and returns the focus, when it was inside the trap, to the
+    /// node that opened the overlay the trap sits in, when there is one that
+    /// can take it, and otherwise to the node that held the focus when the
     /// trap became active, when that node is still mounted and can take it.
     /// A trap becomes active when it mounts visible or shows again. A trap
     /// that cannot hold the focus, because it became disabled or hidden or
@@ -2041,6 +2044,94 @@ impl<W: Widget> Element<W> {
     /// ```
     pub fn follow(mut self, signal: RwSignal<bool>) -> Self {
         self.follow_end = Some(signal);
+        self
+    }
+
+    /// Opens the element `build` returns over the whole window while `open`
+    /// reads `true`, placed against this node by `placement`, as a popup,
+    /// a menu or a tooltip opens.
+    ///
+    /// The overlay escapes every clip around this node and draws over
+    /// everything, the last opened on top, and a press over it reaches the
+    /// overlay and never the window under it. It flips to the other side of
+    /// the node where the window has no room, shifts to stay inside the
+    /// window, and follows the node as a scroll moves it. Its size comes
+    /// from its content alone.
+    ///
+    /// Escape and a press outside the overlay write `false` to `open`,
+    /// which closes it. A press on this node itself is not outside an
+    /// overlay placed against it, so a button that toggles `open` closes the
+    /// overlay with its own press. `build` runs untracked each time the
+    /// overlay opens, inside an owner of its own under this node's, so it
+    /// sees this node's context, and keys inside the overlay bubble on to
+    /// this node and its ancestors. An overlay that takes the keyboard
+    /// traps the focus with [`trap_focus`](Self::trap_focus), which gives it
+    /// back to this node when the overlay closes, or where it was when this
+    /// node cannot take it.
+    ///
+    /// The overlay is sized by its content with no box around it, so a
+    /// percentage size of its top node resolves to nothing. Give it sizes
+    /// and limits in pixels.
+    ///
+    /// ```
+    /// use smudge_core::element::Placement;
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let open = RwSignal::new(false);
+    /// let toggle = open.clone();
+    /// let button = panel()
+    ///     .width(px(24.0))
+    ///     .height(px(24.0))
+    ///     .on_press(move || toggle.update(|open| *open = !*open))
+    ///     .overlay(open, Placement::Below, || {
+    ///         panel().width(px(160.0)).height(px(120.0))
+    ///     });
+    /// ```
+    pub fn overlay<E: IntoElement>(
+        mut self,
+        open: RwSignal<bool>,
+        placement: Placement,
+        build: impl Fn() -> E + 'static,
+    ) -> Self {
+        let build = crate::hot::wrap(build);
+        let build: Rc<dyn Fn() -> AnyElement> = Rc::new(move || build().into_any());
+        self.bindings.push(Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                let mounted: Rc<RefCell<Option<(WidgetId, Owner)>>> = Rc::new(RefCell::new(None));
+                let exiting: Rc<RefCell<Option<WidgetId>>> = Rc::new(RefCell::new(None));
+                RenderEffect::new_unwrapped(move || {
+                    let visible = open.get();
+                    let child_queue = queue.clone();
+                    let (mounted, exiting) = (Rc::clone(&mounted), Rc::clone(&exiting));
+                    let (build, open) = (Rc::clone(&build), open.clone());
+                    queue.push(Box::new(move |tree| {
+                        let mut mounted = mounted.borrow_mut();
+                        let mut exiting = exiting.borrow_mut();
+                        match (visible, mounted.take()) {
+                            (true, None) => {
+                                let back = exiting.take().and_then(|top| {
+                                    tree.cancel_exit(top).map(|owner| (top, owner))
+                                });
+                                *mounted = back.or_else(|| {
+                                    mount_overlay(id, tree, &child_queue, placement, open, || {
+                                        build()
+                                    })
+                                });
+                            }
+                            (false, Some((top, owner))) => match tree.begin_exit(top, owner) {
+                                Ok(()) => *exiting = Some(top),
+                                Err(owner) => unmount_child(top, &owner, tree),
+                            },
+                            (_, unchanged) => *mounted = unchanged,
+                        }
+                    }));
+                })
+            }),
+        });
         self
     }
 
@@ -2476,7 +2567,22 @@ pub(crate) fn mount(
     queue: &UpdateQueue,
     parent: Option<WidgetId>,
 ) -> WidgetId {
-    mount_named(element, tree, queue, parent, None, None)
+    mount_named(element, tree, queue, Attach::Child(parent), None, None)
+}
+
+/// Where a mounted element's node goes.
+enum Attach {
+    /// Last among the children of the parent, or as the root without one.
+    Child(Option<WidgetId>),
+    /// As the top node of an overlay that `host` opened.
+    Overlay {
+        /// The node that opened the overlay.
+        host: WidgetId,
+        /// Where the overlay goes relative to the host.
+        placement: Placement,
+        /// The signal that keeps the overlay open.
+        open: RwSignal<bool>,
+    },
 }
 
 /// How a list row's owners stand in the key of a value carried across a
@@ -2510,7 +2616,7 @@ fn mount_named(
     element: AnyElement,
     tree: &mut WidgetTree,
     queue: &UpdateQueue,
-    parent: Option<WidgetId>,
+    attach: Attach,
     row: Option<RowKey>,
     owner: Option<&Owner>,
 ) -> WidgetId {
@@ -2543,7 +2649,14 @@ fn mount_named(
         #[cfg(feature = "devtools")]
         created_at,
     } = element;
-    let id = tree.insert_owned(parent, owner, widget, style);
+    let id = match attach {
+        Attach::Child(parent) => tree.insert_owned(parent, owner, widget, style),
+        Attach::Overlay {
+            host,
+            placement,
+            open,
+        } => tree.insert_overlay(host, owner, widget, style, placement, open),
+    };
     #[cfg(feature = "devtools")]
     tree.set_created_at(id, created_at);
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
@@ -2666,8 +2779,41 @@ fn mount_under_slot(
     // The child's nodes hang under the owner its build ran in, so what the
     // build provided as context reaches what the subtree builds later, such
     // as the rows of a list inside it.
-    let child = mount_named(element, tree, queue, Some(slot), name, Some(&owner));
+    let child = mount_named(
+        element,
+        tree,
+        queue,
+        Attach::Child(Some(slot)),
+        name,
+        Some(&owner),
+    );
     Some((child, owner))
+}
+
+/// Mounts the element that `build` returns as the top node of an overlay
+/// that `host` opened, inside an owner of its own under the host's, as
+/// [`mount_under_slot`] mounts a child. Returns `None` when `host` is a
+/// stale id.
+fn mount_overlay(
+    host: WidgetId,
+    tree: &mut WidgetTree,
+    queue: &UpdateQueue,
+    placement: Placement,
+    open: RwSignal<bool>,
+    build: impl FnOnce() -> AnyElement,
+) -> Option<(WidgetId, Owner)> {
+    let host_owner = tree.owner(host)?;
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    let _mounting = crate::reactive::carry::Mounting::enter(host_owner.data());
+    let owner = host_owner.child();
+    let element = owner.with(build);
+    let overlay = Attach::Overlay {
+        host,
+        placement,
+        open,
+    };
+    let top = mount_named(element, tree, queue, overlay, None, Some(&owner));
+    Some((top, owner))
 }
 
 /// Removes a child that [`mount_under_slot`] mounted and disposes the owner

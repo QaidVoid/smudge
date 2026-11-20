@@ -38,6 +38,9 @@ impl WidgetTree {
     /// hidden node, and a node at no opacity, contribute nothing, and
     /// neither does their subtree.
     ///
+    /// The overlays follow the main tree, in the order they opened, each
+    /// with no clip or offset around it, so they draw over everything.
+    ///
     /// The list is cleared first, which keeps its allocated capacity, and
     /// [`DisplayList::finish`] runs at the end to check that the clips and
     /// offsets balance.
@@ -45,6 +48,13 @@ impl WidgetTree {
         list.clear();
         if let Some(root) = self.root {
             self.emit(root, list);
+        }
+        // Every overlay draws over the main tree, in the order they opened,
+        // with no clip or offset around it.
+        for overlay in &self.overlays {
+            if self.overlay_shown(overlay) {
+                self.emit(overlay.root, list);
+            }
         }
         list.finish();
     }

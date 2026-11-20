@@ -1038,6 +1038,10 @@ impl App {
     /// except while a focus trap is mounted and the press lands outside it,
     /// and any press turns the keyboard navigation mode off. A wheel scroll
     /// goes to the deepest node in the hovered chain that has a wheel handler.
+    /// Every button also reaches the button handlers from the deepest node
+    /// under the pointer up, and a secondary press that none takes asks for
+    /// the context menu. Raw motion goes to the node that holds the pointer
+    /// lock, and Escape and the window losing the input focus end the lock.
     /// Key events are routed to the focused node and bubble to its ancestors
     /// until a handler takes them, starting at the root when nothing anchors
     /// the key and at the active focus trap when the key would otherwise

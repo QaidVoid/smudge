@@ -166,6 +166,25 @@ fn canvas_sample() {
     .height(px(240.0));
 }
 
+#[test]
+fn overlay_sample() {
+    use smudge::core::element::Placement;
+
+    let open = RwSignal::new(false);
+    let toggle = open.clone();
+    let picker = button("Colors")
+        .on_press(move || toggle.update(|open| *open = !*open))
+        .overlay(open, Placement::Below, || {
+            column()
+                .padding(px(8.0))
+                .background(ColorToken::SURFACE)
+                .border(1.0)
+                .border_color(ColorToken::BORDER)
+                .child(label("Red"))
+                .child(label("Green"))
+        });
+}
+
 fn stat(title: &'static str, value: RwSignal<u32>) -> Element<Panel> {
     column()
         .padding(px(12.0))

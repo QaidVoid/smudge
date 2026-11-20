@@ -35,6 +35,8 @@ pub(crate) mod focus;
 pub(crate) mod interaction;
 #[path = "layout.rs"]
 mod layout;
+#[path = "overlay.rs"]
+pub(crate) mod overlay;
 #[path = "paint_pass.rs"]
 mod paint_pass;
 #[cfg(feature = "devtools")]
@@ -324,6 +326,8 @@ pub(crate) struct WidgetTree {
     taffy: taffy::TaffyTree<WidgetId>,
     /// The root node, when the tree has one.
     root: Option<WidgetId>,
+    /// The overlays, in the order they opened.
+    overlays: Vec<overlay::Overlay>,
     /// Nodes that need painting, in the order they were first marked.
     paint_queue: Vec<WidgetId>,
     /// Whether any node needs a new layout pass.
@@ -413,6 +417,10 @@ pub(crate) struct WidgetTree {
     a11y_dirty: Vec<WidgetId>,
     /// Whether the next projection must be rebuilt from scratch.
     a11y_reset: bool,
+    /// The top nodes of the overlays that showed when the accessibility
+    /// changes were last taken, so an overlay that opened, closed, or
+    /// showed or hid with its host counts as a change of the roots.
+    a11y_overlays: Vec<WidgetId>,
     /// The announcements waiting for the next projection, oldest first.
     announcements: Vec<crate::semantics::Announcement>,
     /// The time the paint pass moves springs to, the frame's time on the
@@ -445,6 +453,7 @@ impl WidgetTree {
             nodes: SlotMap::with_key(),
             taffy: taffy::TaffyTree::new(),
             root: None,
+            overlays: Vec::new(),
             paint_queue: Vec::new(),
             layout_dirty: false,
             pending_damage: Vec::new(),
@@ -472,6 +481,7 @@ impl WidgetTree {
             theme: Theme::light(),
             a11y_dirty: Vec::new(),
             a11y_reset: false,
+            a11y_overlays: Vec::new(),
             announcements: Vec::new(),
             now: Instant::now(),
             reduced_motion: false,
@@ -530,6 +540,37 @@ impl WidgetTree {
             ),
         }
 
+        let id = self.new_node(parent, owner, widget, style);
+        let taffy = self.nodes[id].taffy;
+        match parent {
+            Some(parent) => {
+                let parent_node = self.nodes.get_mut(parent).expect("the parent id is live");
+                parent_node.children.push(id);
+                let parent_taffy = parent_node.taffy;
+                self.taffy
+                    .add_child(parent_taffy, taffy)
+                    .expect("both layout nodes are live");
+            }
+            None => self.root = Some(id),
+        }
+
+        self.mark(id, Dirty::Layout);
+        if let Some(parent) = parent {
+            self.push_a11y(parent);
+        }
+        id
+    }
+
+    /// Creates the node of `widget` with `style` and its layout node, with
+    /// `parent` as its parent and its owner under `owner`, or under the
+    /// parent's owner without one, and links it to neither parent.
+    fn new_node(
+        &mut self,
+        parent: Option<WidgetId>,
+        owner: Option<&Owner>,
+        widget: Box<dyn Widget>,
+        style: Style,
+    ) -> WidgetId {
         let taffy = self
             .taffy
             .new_leaf(style.layout.to_taffy())
@@ -588,23 +629,39 @@ impl WidgetTree {
         self.taffy
             .set_node_context(taffy, Some(id))
             .expect("the new layout node is live");
+        id
+    }
 
-        match parent {
-            Some(parent) => {
-                let parent_node = self.nodes.get_mut(parent).expect("the parent id is live");
-                parent_node.children.push(id);
-                let parent_taffy = parent_node.taffy;
-                self.taffy
-                    .add_child(parent_taffy, taffy)
-                    .expect("both layout nodes are live");
-            }
-            None => self.root = Some(id),
-        }
-
+    /// Inserts the top node of an overlay that `host` opened, placed by
+    /// `placement` and kept open by `open`, and returns its id.
+    ///
+    /// The node has `host` as its parent, so keys bubble to the host and
+    /// its owner hangs under `owner`, or the host's, but the host does not
+    /// list it among its children: it is laid out, painted and hit tested
+    /// on its own, over the main tree.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `host` is not a live node.
+    pub(crate) fn insert_overlay(
+        &mut self,
+        host: WidgetId,
+        owner: Option<&Owner>,
+        widget: Box<dyn Widget>,
+        style: Style,
+        placement: overlay::Placement,
+        open: RwSignal<bool>,
+    ) -> WidgetId {
+        assert!(self.nodes.contains_key(host), "the host id is a live node");
+        let id = self.new_node(Some(host), owner, widget, style);
+        self.overlays.push(overlay::Overlay {
+            root: id,
+            placement,
+            open,
+            origin: Point::default(),
+        });
         self.mark(id, Dirty::Layout);
-        if let Some(parent) = parent {
-            self.push_a11y(parent);
-        }
+        self.push_a11y(host);
         id
     }
 
@@ -620,6 +677,10 @@ impl WidgetTree {
             return;
         };
         let parent = node.parent;
+        // An overlay's top node is no child of its host, so the host's
+        // layout stays as it is, while what lay under the overlay may now
+        // be under the pointer.
+        let overlay = self.is_overlay_root(id);
         if self.root == Some(id) {
             self.root = None;
         }
@@ -631,12 +692,48 @@ impl WidgetTree {
 
         let mut order = Vec::new();
         let mut stack = vec![id];
-        while let Some(current) = stack.pop() {
-            order.push(current);
-            if let Some(node) = self.nodes.get(current) {
-                stack.extend(node.children.iter().copied());
+        loop {
+            while let Some(current) = stack.pop() {
+                order.push(current);
+                if let Some(node) = self.nodes.get(current) {
+                    stack.extend(node.children.iter().copied());
+                }
+            }
+            // The overlays the removed nodes opened go with them, after
+            // their hosts, so they are removed first.
+            stack.extend(
+                self.overlays
+                    .iter()
+                    .map(|overlay| overlay.root)
+                    .filter(|root| {
+                        !order.contains(root)
+                            && self
+                                .nodes
+                                .get(*root)
+                                .and_then(|node| node.parent)
+                                .is_some_and(|host| order.contains(&host))
+                    }),
+            );
+            if stack.is_empty() {
+                break;
             }
         }
+        // Where the focus goes back to is read while the removed overlays
+        // still name their hosts.
+        let restore = self
+            .focus_traps
+            .iter()
+            .find(|trap| trap.active && order.contains(&trap.node))
+            .and_then(|trap| {
+                let opener = self
+                    .trap_return(trap.node, trap.restore)
+                    .filter(|back| !order.contains(back));
+                opener.or(trap.restore)
+            })
+            .filter(|restore| !order.contains(restore));
+        self.overlays
+            .retain(|overlay| !order.contains(&overlay.root));
+        self.end_holds_of(&order);
         if self.focused.is_some_and(|focused| order.contains(&focused)) {
             self.focused = None;
         }
@@ -654,12 +751,6 @@ impl WidgetTree {
         // removed active trap became active, since every later one became
         // active inside it. A hidden trap already gave its focus back.
         self.pending_autofocus.retain(|id| !order.contains(id));
-        let restore = self
-            .focus_traps
-            .iter()
-            .find(|trap| trap.active && order.contains(&trap.node))
-            .and_then(|trap| trap.restore)
-            .filter(|restore| !order.contains(restore));
         self.focus_traps.retain(|trap| !order.contains(&trap.node));
 
         // Deepest node first, so every taffy node is still attached to a live
@@ -689,10 +780,15 @@ impl WidgetTree {
         }
 
         if let Some(parent) = parent {
-            self.mark(parent, Dirty::Layout);
+            if !overlay {
+                self.mark(parent, Dirty::Layout);
+            }
             self.push_a11y(parent);
         }
         self.drop_stale_hoisted_children(parent, &removed_taffy);
+        if overlay && self.pointer_inside && self.pressed.is_none() {
+            self.refresh_hover();
+        }
         if self.focused.is_none()
             && let Some(restore) = restore
         {
@@ -1223,6 +1319,11 @@ impl WidgetTree {
         if let Some(root) = self.root {
             self.visit_from(root, 0, visit);
         }
+        for overlay in &self.overlays {
+            if self.overlay_shown(overlay) {
+                self.visit_from(overlay.root, 0, visit);
+            }
+        }
     }
 
     /// Appends `id` and its subtree to the visit started by
@@ -1266,6 +1367,22 @@ impl WidgetTree {
             ..A11yChanges::default()
         };
         let dirty = std::mem::take(&mut self.a11y_dirty);
+        let overlays: Vec<WidgetId> = self
+            .overlays
+            .iter()
+            .filter(|overlay| {
+                self.overlay_shown(overlay)
+                    && self
+                        .nodes
+                        .get(overlay.root)
+                        .is_some_and(|node| !node.withdrawn())
+            })
+            .map(|overlay| overlay.root)
+            .collect();
+        if overlays != self.a11y_overlays {
+            self.a11y_overlays = overlays;
+            changes.roots_changed = true;
+        }
         if changes.reset {
             return changes;
         }
@@ -1470,6 +1587,11 @@ impl WidgetTree {
         if let Some(root) = self.root {
             self.project_from(root, None, &mut nodes, &mut index_of);
         }
+        for overlay in &self.overlays {
+            if self.overlay_shown(overlay) {
+                self.project_from(overlay.root, None, &mut nodes, &mut index_of);
+            }
+        }
         nodes
     }
 
@@ -1477,14 +1599,22 @@ impl WidgetTree {
     /// order.
     pub(crate) fn semantics_roots(&self) -> Vec<WidgetId> {
         let mut roots = Vec::new();
-        if let Some(root) = self.root
-            && let Some(node) = self.nodes.get(root)
-            && !node.withdrawn()
-        {
+        let overlays = self
+            .overlays
+            .iter()
+            .filter(|overlay| self.overlay_shown(overlay))
+            .map(|overlay| overlay.root);
+        for top in self.root.into_iter().chain(overlays) {
+            let Some(node) = self.nodes.get(top) else {
+                continue;
+            };
+            if node.withdrawn() {
+                continue;
+            }
             if Self::effective_role(node).is_some() {
-                roots.push(root);
+                roots.push(top);
             } else {
-                self.collect_projected_children(root, &mut roots);
+                self.collect_projected_children(top, &mut roots);
             }
         }
         roots
@@ -1518,13 +1648,15 @@ impl WidgetTree {
     /// Returns the nearest ancestor of `id` that projects, or [`None`] when
     /// every ancestor is unprojected.
     fn nearest_projected_ancestor(&self, id: WidgetId) -> Option<WidgetId> {
-        let mut next = self.nodes.get(id).and_then(|node| node.parent);
+        // The top node of an overlay projects as a root of its own, beside
+        // the main tree, as the projection walks it.
+        let mut next = self.pointer_parent(id);
         while let Some(current) = next {
             let node = self.nodes.get(current)?;
             if !node.withdrawn() && Self::effective_role(node).is_some() {
                 return Some(current);
             }
-            next = node.parent;
+            next = self.pointer_parent(current);
         }
         None
     }
@@ -1686,10 +1818,15 @@ impl WidgetTree {
                     "every child points back at its parent"
                 );
             }
+            let layout_parent = if self.is_overlay_root(id) {
+                None
+            } else {
+                node.parent.map(|parent| self.nodes[parent].taffy)
+            };
             assert_eq!(
                 self.taffy.parent(node.taffy),
-                node.parent.map(|parent| self.nodes[parent].taffy),
-                "the parent agrees"
+                layout_parent,
+                "the parent agrees, and an overlay is a layout root"
             );
             assert_eq!(
                 self.taffy.get_node_context(node.taffy),
@@ -1708,6 +1845,16 @@ impl WidgetTree {
             assert!(
                 self.nodes.contains_key(trap.node),
                 "every mounted focus trap is a live node"
+            );
+        }
+        for overlay in &self.overlays {
+            let host = self.nodes.get(overlay.root).and_then(|node| node.parent);
+            assert!(
+                host.is_some_and(|host| self
+                    .nodes
+                    .get(host)
+                    .is_some_and(|host| !host.children.contains(&overlay.root))),
+                "every overlay's top node is live, with a live host that does not list it"
             );
         }
         for id in &self.pending_autofocus {

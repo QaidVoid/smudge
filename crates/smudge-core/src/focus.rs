@@ -8,6 +8,7 @@
 
 use crate::geometry::{Point, Rect};
 use crate::input::{Handled, Key, KeyEvent};
+use crate::reactive::prelude::{Get, Set};
 use crate::style::Position;
 use crate::widget::Widget;
 
@@ -80,6 +81,9 @@ impl WidgetTree {
         if handled != Handled::Yes && self.context_menu_key(event) {
             return;
         }
+        if handled != Handled::Yes && self.dismiss_on_escape(event) {
+            return;
+        }
         match event.key {
             Key::Tab => {
                 self.set_keyboard_nav(true);
@@ -149,6 +153,20 @@ impl WidgetTree {
                 }
             });
             if handled == Handled::Yes {
+                return Handled::Yes;
+            }
+            // An Escape nothing inside an open overlay took closes it before
+            // it reaches the nodes around the overlay's host.
+            if event.pressed
+                && event.key == Key::Escape
+                && let Some(open) = self
+                    .overlays
+                    .iter()
+                    .find(|overlay| overlay.root == id)
+                    .map(|overlay| overlay.open.clone())
+                && open.get()
+            {
+                open.set(false);
                 return Handled::Yes;
             }
         }
@@ -395,6 +413,9 @@ impl WidgetTree {
         let mut order = Vec::new();
         if let Some(scope) = self.active_focus_trap().or(self.root) {
             self.collect_focusable(scope, &mut order);
+            for top in self.overlays_within(scope) {
+                self.collect_focusable(top, &mut order);
+            }
         }
         if order.is_empty() {
             return None;
@@ -543,6 +564,9 @@ impl WidgetTree {
         let trap = self.active_focus_trap();
         let mut order = Vec::new();
         self.collect_pending(root, &ready, &mut order);
+        for top in self.overlays_within(root) {
+            self.collect_pending(top, &ready, &mut order);
+        }
         for id in order.into_iter().rev() {
             if trap.is_some_and(|trap| !self.is_within(id, trap)) {
                 continue;
@@ -633,7 +657,7 @@ impl WidgetTree {
             let focus_inside = self
                 .focused
                 .is_none_or(|focused| self.is_within(focused, trap.node));
-            if focus_inside && let Some(restore) = trap.restore {
+            if focus_inside && let Some(restore) = self.trap_return(trap.node, trap.restore) {
                 self.request_focus(restore);
             }
         }
@@ -665,6 +689,45 @@ impl WidgetTree {
             next = self.nodes.get(current).and_then(|node| node.parent);
         }
         false
+    }
+
+    /// Returns where the focus goes when the trap at `node` ends: the node
+    /// that opened the overlay the trap sits in, when it can take the focus,
+    /// and otherwise `restore`, the node that held the focus when the trap
+    /// began. An overlay opened from another one, as a menu of a menu bar
+    /// opened while the one beside it closed, so goes back to its own
+    /// opener.
+    pub(super) fn trap_return(
+        &self,
+        node: WidgetId,
+        restore: Option<WidgetId>,
+    ) -> Option<WidgetId> {
+        let mut next = Some(node);
+        while let Some(id) = next {
+            if self.is_overlay_root(id) {
+                let host = self.nodes.get(id).and_then(|node| node.parent);
+                if let Some(host) =
+                    host.filter(|&host| self.focusable(host) && self.can_hold_focus(host))
+                {
+                    return Some(host);
+                }
+                break;
+            }
+            next = self.nodes.get(id).and_then(|node| node.parent);
+        }
+        restore
+    }
+
+    /// Returns the top nodes of the overlays that show and that a node inside
+    /// `scope` opened, in the order they opened, which follow the scope's
+    /// own nodes in the focus order.
+    pub(super) fn overlays_within(&self, scope: WidgetId) -> Vec<WidgetId> {
+        self.overlays
+            .iter()
+            .filter(|overlay| self.overlay_shown(overlay))
+            .map(|overlay| overlay.root)
+            .filter(|&top| top != scope && self.is_within(top, scope))
+            .collect()
     }
 
     /// Appends the nodes of `pending` that the subtree holds, in paint order.
@@ -757,10 +820,12 @@ impl WidgetTree {
     fn reveal_rect(&mut self, from: WidgetId, target: Rect) {
         let mut target = target;
         let mut child = from;
-        let mut next = self.nodes[from].parent;
+        // An overlay is not inside the views around its host, so they never
+        // scroll to bring it into view.
+        let mut next = self.pointer_parent(from);
         while let Some(id) = next {
             let node = &self.nodes[id];
-            next = node.parent;
+            next = self.pointer_parent(id);
             let flows = self.nodes[child].resolved.layout.position != Position::Absolute;
             child = id;
             if !flows || node.handlers.on_reveal.is_none() {

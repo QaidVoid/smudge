@@ -212,9 +212,7 @@ impl Handlers {
     /// [`Interaction::FOCUSABLE`] tracks. A commit handler is left out,
     /// because a commit never comes from the pointer.
     pub(crate) fn has_any(&self) -> bool {
-        self.on_button_down.is_some()
-            || self.on_context_menu.is_some()
-            || self.on_press.is_some()
+        self.on_press.is_some()
             || self.on_hover.is_some()
             || self.on_pointer_down.is_some()
             || self.on_press_outside.is_some()
@@ -230,9 +228,7 @@ impl Handlers {
     /// only scrolls, such as a scroll view, lets presses on it pass to the
     /// nearest ancestor that takes them.
     pub(crate) fn takes_press(&self) -> bool {
-        self.on_button_down.is_some()
-            || self.on_context_menu.is_some()
-            || self.on_press.is_some()
+        self.on_press.is_some()
             || self.on_hover.is_some()
             || self.on_pointer_down.is_some()
             || self.on_press_outside.is_some()
@@ -288,20 +284,25 @@ impl WidgetTree {
     /// [`keeps_focus`](crate::element::Element::keeps_focus).
     ///
     /// Before any of that, every button offers the press to the button
-    /// handlers of the target's chain, deepest first, and the first that
+    /// handlers from the deepest node under the pointer up, deepest first, and the first that
     /// takes it hears the button's moves and release. A secondary press that
     /// no button handler took asks the chain for its context menu.
     pub(crate) fn pointer_down(&mut self, position: Point, button: PointerButton) {
         self.pointer = position;
         self.pointer_inside = true;
+        self.dismiss_outside(position);
         let target = self.target(position);
         if self.pressed.is_none() || button == PointerButton::Primary {
             self.set_hover_target(self.hover_target(position));
             self.set_keyboard_nav(false);
         }
-        let taken = self.run_button_down(target, button, position);
+        // The button handlers and the context menu hear the press from the
+        // deepest node under the pointer, so a node with only those takes
+        // no primary press from a pressable node around it.
+        let deepest = self.hit_any(position, false);
+        let taken = self.run_button_down(deepest, button, position);
         if button == PointerButton::Secondary && !taken {
-            self.run_context_menu(target, position);
+            self.run_context_menu(deepest, position);
         }
         if button != PointerButton::Primary {
             return;
@@ -415,8 +416,6 @@ impl WidgetTree {
     /// Hands `delta`, the pointer's raw motion in the device's units, to the
     /// node that holds the pointer lock. Without one it does nothing.
     pub(crate) fn pointer_motion(&mut self, delta: Point) {
-        let nodes = &self.nodes;
-        self.pointer_locks.retain(|(id, _)| nodes.contains_key(*id));
         let Some((id, _)) = self.pointer_lock_holder() else {
             return;
         };
@@ -438,9 +437,7 @@ impl WidgetTree {
     /// the signal of every node that asks for it reads `false` from now on.
     /// Returns whether a node held it.
     pub(crate) fn release_pointer_lock(&mut self) -> bool {
-        let nodes = &self.nodes;
-        self.pointer_locks.retain(|(id, _)| nodes.contains_key(*id));
-        let Some((_, signal)) = self.pointer_lock_holder() else {
+        let Some(_) = self.pointer_lock_holder() else {
             return false;
         };
         // Every node that asks lets go, so the lock does not pass to the
@@ -451,6 +448,22 @@ impl WidgetTree {
             }
         }
         true
+    }
+
+    /// Delivers the release of every button held by a node of `removed`,
+    /// at the pointer, while the nodes still live, and drops the pointer
+    /// locks they asked for.
+    pub(crate) fn end_holds_of(&mut self, removed: &[WidgetId]) {
+        let held: Vec<PointerButton> = self
+            .button_holders
+            .iter()
+            .filter(|(_, id)| removed.contains(id))
+            .map(|(button, _)| *button)
+            .collect();
+        for button in held {
+            self.run_button_up(button, self.pointer);
+        }
+        self.pointer_locks.retain(|(id, _)| !removed.contains(id));
     }
 
     /// Asks for the context menu of the focused node, as the context menu
@@ -595,8 +608,7 @@ impl WidgetTree {
     /// shows the default, unless a press is held.
     pub(crate) fn cursor(&self) -> crate::window::Cursor {
         let hit = if self.pointer_inside {
-            self.root
-                .and_then(|root| self.hit(root, self.pointer, false))
+            self.hit_any(self.pointer, false)
         } else {
             None
         };
@@ -617,7 +629,7 @@ impl WidgetTree {
             {
                 return cursor;
             }
-            next = node.parent;
+            next = self.pointer_parent(id);
         }
         crate::window::Cursor::default()
     }
@@ -674,10 +686,9 @@ impl WidgetTree {
     /// lands nowhere: a disabled control swallows presses on its content
     /// rather than passing them to the nodes around it.
     fn target(&self, position: Point) -> Option<WidgetId> {
-        let root = self.root?;
-        let mut id = self.hit(root, position, false)?;
+        let mut id = self.hit_any(position, false)?;
         while !self.takes_press_at(id, position) {
-            id = self.nodes.get(id)?.parent?;
+            id = self.pointer_parent(id)?;
         }
         let disabled = self.nodes.get(id)?.interaction.has(Interaction::DISABLED);
         (!disabled).then_some(id)
@@ -687,10 +698,9 @@ impl WidgetTree {
     /// included: the deepest node under it, disabled or not, or the first
     /// ancestor of that node that takes a press.
     fn landing(&self, position: Point) -> Option<WidgetId> {
-        let root = self.root?;
-        let mut id = self.hit(root, position, true)?;
+        let mut id = self.hit_any(position, true)?;
         while !self.takes_press_at(id, position) {
-            id = self.nodes.get(id)?.parent?;
+            id = self.pointer_parent(id)?;
         }
         Some(id)
     }
@@ -702,14 +712,13 @@ impl WidgetTree {
     /// enabled one that can respond, so a container stays hovered while the
     /// pointer is over a disabled control inside it.
     pub(super) fn hover_target(&self, position: Point) -> Option<WidgetId> {
-        let root = self.root?;
-        let mut id = self.hit(root, position, false)?;
+        let mut id = self.hit_any(position, false)?;
         loop {
             let node = self.nodes.get(id)?;
             if self.can_respond_at(id, position) && !node.interaction.has(Interaction::DISABLED) {
                 return Some(id);
             }
-            id = node.parent?;
+            id = self.pointer_parent(id)?;
         }
     }
 
@@ -790,11 +799,26 @@ impl WidgetTree {
         None
     }
 
-    /// Returns `target` and its ancestors, deepest first.
+    /// Returns `target` and its ancestors as the pointer sees them,
+    /// deepest first: the chain ends at the top node of an overlay, whose
+    /// host lies elsewhere on the screen.
     ///
     /// A stale id, which a removed node can leave behind, ends the chain
     /// there.
     fn chain(&self, target: Option<WidgetId>) -> Vec<WidgetId> {
+        let mut chain = Vec::new();
+        let mut next = target;
+        while let Some(id) = next {
+            chain.push(id);
+            next = self.pointer_parent(id);
+        }
+        chain
+    }
+
+    /// Returns `target` and every ancestor, deepest first, through the
+    /// hosts of overlays, so a node inside an overlay lies inside the node
+    /// that opened it.
+    fn lineage(&self, target: Option<WidgetId>) -> Vec<WidgetId> {
         let mut chain = Vec::new();
         let mut next = target;
         while let Some(id) = next {
@@ -979,7 +1003,7 @@ impl WidgetTree {
     /// the visible area of the node under it and the nodes that observe a
     /// drag that begins inside them.
     fn start_drag(&mut self, position: Point) {
-        let origin = self.root.and_then(|root| self.hit(root, position, false));
+        let origin = self.hit_any(position, false);
         let origin_clip = origin
             .and_then(|id| self.nodes.get(id))
             .map(|node| node.clip)
@@ -1055,7 +1079,7 @@ impl WidgetTree {
             if node.resolved.layout.overflow == crate::style::Overflow::Scroll {
                 return self.children_clip(id).unwrap_or(node.clip);
             }
-            next = node.parent;
+            next = self.pointer_parent(id);
         }
         drag.origin
             .and_then(|id| self.nodes.get(id))
@@ -1111,14 +1135,14 @@ impl WidgetTree {
     /// Returns the deepest enabled node under `position` that sets
     /// `on_drag_over`.
     fn drag_over_target(&self, position: Point) -> Option<WidgetId> {
-        let mut next = self.root.and_then(|root| self.hit(root, position, false));
+        let mut next = self.hit_any(position, false);
         while let Some(id) = next {
             let node = self.nodes.get(id)?;
             if node.handlers.on_drag_over.is_some() && !node.interaction.has(Interaction::DISABLED)
             {
                 return Some(id);
             }
-            next = node.parent;
+            next = self.pointer_parent(id);
         }
         None
     }
@@ -1354,9 +1378,18 @@ impl WidgetTree {
     /// A press with no target is outside every node, so a press on the empty
     /// window closes every popup that asks.
     fn run_press_outside(&mut self, target: Option<WidgetId>) {
-        let chain = self.chain(target);
+        let chain = self.lineage(target);
         let mut outside = Vec::new();
         self.collect_press_outside(self.root, &mut outside);
+        let overlays: Vec<WidgetId> = self
+            .overlays
+            .iter()
+            .filter(|overlay| self.overlay_shown(overlay))
+            .map(|overlay| overlay.root)
+            .collect();
+        for root in overlays {
+            self.collect_press_outside(Some(root), &mut outside);
+        }
         for id in outside {
             if chain.contains(&id) {
                 continue;

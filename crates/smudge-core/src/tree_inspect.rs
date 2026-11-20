@@ -23,10 +23,15 @@ impl WidgetTree {
     }
 
     /// Calls `visit` with every node, hidden ones included, parents before
-    /// their children and children in paint order.
+    /// their children and children in paint order, the overlays after the
+    /// main tree.
     pub(crate) fn visit_tree(&self, visit: &mut dyn FnMut(TreeEntry)) {
         if let Some(root) = self.root {
             self.visit_entry(root, 0, false, visit);
+        }
+        for overlay in &self.overlays {
+            let hidden = !self.overlay_shown(overlay);
+            self.visit_entry(overlay.root, 0, hidden, visit);
         }
     }
 
@@ -58,7 +63,7 @@ impl WidgetTree {
     /// Returns the topmost node at `position`, disabled ones included, as
     /// input would find it.
     pub(crate) fn node_at(&self, position: Point) -> Option<WidgetId> {
-        self.hit(self.root?, position, true)
+        self.hit_any(position, true)
     }
 
     /// Returns a copy of what the inspector shows of `id`, or `None` for a
@@ -158,7 +163,7 @@ impl WidgetTree {
             if !node.interaction.has(Interaction::DISABLED) {
                 info.hovered.push(node.rect);
             }
-            next = node.parent;
+            next = next.and_then(|id| self.pointer_parent(id));
         }
         info.pressed = self
             .pressed
@@ -166,6 +171,11 @@ impl WidgetTree {
             .map(|node| node.rect);
         if let Some(root) = self.root {
             self.collect_pressable(root, &mut info.pressable);
+        }
+        for overlay in &self.overlays {
+            if self.overlay_shown(overlay) {
+                self.collect_pressable(overlay.root, &mut info.pressable);
+            }
         }
         info
     }
@@ -223,6 +233,11 @@ impl WidgetTree {
         let mut pressable = Vec::new();
         if let Some(root) = self.root {
             self.collect_unprojected_pressable(root, &mut pressable);
+        }
+        for overlay in &self.overlays {
+            if self.overlay_shown(overlay) {
+                self.collect_unprojected_pressable(overlay.root, &mut pressable);
+            }
         }
         warnings.extend(pressable.into_iter().map(|(id, rect)| A11yWarning {
             id,

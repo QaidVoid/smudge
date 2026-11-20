@@ -6,9 +6,10 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use smudge_core::element::IntoElement;
+use smudge_core::element::{IntoElement, show};
 use smudge_core::geometry::Point;
 use smudge_core::input::{ButtonEvent, Handled, InputEvent, Key, Modifiers, PointerButton};
+use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::style::px;
 use smudge_core::widget::panel;
 use smudge_test::Harness;
@@ -361,4 +362,71 @@ fn a_right_press_takes_no_focus() {
     );
 
     assert!(focused.borrow().is_empty());
+}
+
+#[test]
+fn a_child_with_only_a_context_menu_leaves_primary_presses_to_its_parent() {
+    let presses = Rc::new(Cell::new(0u32));
+    let menus = Rc::new(Cell::new(0u32));
+    let (pressed, asked) = (Rc::clone(&presses), Rc::clone(&menus));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        let (pressed, asked) = (Rc::clone(&pressed), Rc::clone(&asked));
+        scene(
+            panel()
+                .padding(px(5.0))
+                .on_press(move || pressed.set(pressed.get() + 1))
+                .child(
+                    panel()
+                        .width(px(20.0))
+                        .height(px(20.0))
+                        .on_context_menu(move |_| asked.set(asked.get() + 1)),
+                ),
+        )
+    });
+    harness.frame();
+    let inside = Point { x: 20.0, y: 20.0 };
+
+    harness.click(inside);
+    down(&mut harness, inside, PointerButton::Secondary);
+
+    assert_eq!(presses.get(), 1, "the parent hears the primary press");
+    assert_eq!(menus.get(), 1, "the child hears the secondary one");
+}
+
+#[test]
+fn a_node_removed_while_it_holds_a_button_hears_the_release() {
+    let present = RwSignal::new(true);
+    let releases = Rc::new(Cell::new(0u32));
+    let (here, released) = (present.clone(), Rc::clone(&releases));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        let (here, released) = (here.clone(), Rc::clone(&released));
+        scene(show(
+            move || here.get(),
+            move || {
+                let released = Rc::clone(&released);
+                panel()
+                    .width(px(40.0))
+                    .height(px(20.0))
+                    .on_button_down(|_| Handled::Yes)
+                    .on_button_up(move |_| released.set(released.get() + 1))
+            },
+        ))
+    });
+    harness.frame();
+    down(
+        &mut harness,
+        Point { x: 15.0, y: 15.0 },
+        PointerButton::Middle,
+    );
+
+    present.set(false);
+    harness.frame();
+    assert_eq!(releases.get(), 1, "the removal ends the hold");
+
+    up(
+        &mut harness,
+        Point { x: 15.0, y: 15.0 },
+        PointerButton::Middle,
+    );
+    assert_eq!(releases.get(), 1, "and the late release reaches nothing");
 }
