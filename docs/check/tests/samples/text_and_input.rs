@@ -155,6 +155,50 @@ fn form() {
 }
 
 #[test]
+fn password_form() {
+    let password = RwSignal::new(String::new());
+    let shown = RwSignal::new(false);
+    let masked = shown.clone();
+    
+    let fields = column()
+        .gap(Size { width: 0.0, height: 8.0 })
+        .child(
+            text_input(password)
+                .password(move || !masked.get())
+                .accessible_label("Password")
+                .width(px(280.0))
+                .border(1.0)
+                .border_color(ColorToken::BORDER),
+        )
+        .child(smudge::widgets::checkbox("Show password", shown));
+}
+
+#[test]
+fn invalid_field() {
+    /// The reason `text` is not a width, or nothing when it is one.
+    fn problem(text: &str) -> String {
+        match text.parse::<u32>() {
+            Ok(_) => String::new(),
+            Err(_) => String::from("Enter a whole number"),
+        }
+    }
+    
+    let width = RwSignal::new(String::from("24"));
+    let (checked, described, shown) = (width.clone(), width.clone(), width.clone());
+    
+    let field = column()
+        .child(
+            text_input(width)
+                .accessible_label("Width")
+                .border(1.0)
+                .border_color(ColorToken::BORDER)
+                .invalid(move || checked.with(|text| !problem(text).is_empty()))
+                .accessible_description(move || described.with(|text| problem(text))),
+        )
+        .child(label(move || shown.with(|text| problem(text))).text_color(ColorToken::ERROR));
+}
+
+#[test]
 fn area() {
     let draft = RwSignal::new(String::from("Dear reader,\n"));
     

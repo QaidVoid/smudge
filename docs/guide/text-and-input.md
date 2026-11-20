@@ -226,6 +226,56 @@ Copy, cut and paste use the system clipboard on the desktop. On Wayland that nee
 
 A single-line input flattens line breaks into spaces, so multi-line clipboard content, an input method commit or a write to the signal stays one line, and the input writes that line back to the signal. A paste into a text area keeps the breaks.
 
+### Passwords
+
+```rust
+let password = RwSignal::new(String::new());
+let shown = RwSignal::new(false);
+let masked = shown.clone();
+
+let fields = column()
+    .gap(Size { width: 0.0, height: 8.0 })
+    .child(
+        text_input(password)
+            .password(move || !masked.get())
+            .accessible_label("Password")
+            .width(px(280.0))
+            .border(1.0)
+            .border_color(ColorToken::BORDER),
+    )
+    .child(smudge::widgets::checkbox("Show password", shown));
+```
+
+`password` masks the field while its value reads `true`, drawing one bullet for each character typed, and bullets for an input method's composition too. The signal holds the text, and the field shows nothing else: a screen reader hears a password field and the bullets, and a copy or a cut does nothing. On Wayland the input method is also told the text is a password, so it suggests and learns nothing. On Windows and X11, which cannot tell it, the field turns the input method off and takes plain keys, as native password fields do, and accents typed with dead keys still work. macOS combines those accents only through the input method, so there it stays on, and one may show what it composes in a window of its own. Paste and undo work as usual. A word move goes to the start or the end, word deletion takes everything before or after the caret, and a double click selects it all, because a word would tell where the text breaks. A backspace takes a whole character, accent and all. Binding the mask to a toggle, as here, shows the text and hides it again with the caret and the selection where they were.
+
+### Invalid fields
+
+```rust
+/// The reason `text` is not a width, or nothing when it is one.
+fn problem(text: &str) -> String {
+    match text.parse::<u32>() {
+        Ok(_) => String::new(),
+        Err(_) => String::from("Enter a whole number"),
+    }
+}
+
+let width = RwSignal::new(String::from("24"));
+let (checked, described, shown) = (width.clone(), width.clone(), width.clone());
+
+let field = column()
+    .child(
+        text_input(width)
+            .accessible_label("Width")
+            .border(1.0)
+            .border_color(ColorToken::BORDER)
+            .invalid(move || checked.with(|text| !problem(text).is_empty()))
+            .accessible_description(move || described.with(|text| problem(text))),
+    )
+    .child(label(move || shown.with(|text| problem(text))).text_color(ColorToken::ERROR));
+```
+
+`invalid` marks a field whose value the application rejects. A bordered text input or text area turns its border the theme's `ERROR` color, and a screen reader hears the field is invalid. The description tells a screen reader why, so set one alongside, and clear it once the value is fixed. A color alone tells nobody what is wrong, so show the same reason as text too, in a label under the field as here, or wherever the form keeps its messages: the library leaves that place to the form. An empty label still keeps its line, so the form does not jump when the message comes and goes. `invalid_style` gives any element its own look for the state, which outranks the hovered look, while the focused, pressed and disabled looks outrank it, so a keyboard user still sees the focus ring on an invalid field. Changing the mark repaints the field without a layout pass.
+
 ## Text area
 
 ```rust

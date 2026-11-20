@@ -31,6 +31,7 @@
 
 - **Tested on Linux.** The window layer supports Windows and macOS, but Smudge is built and tested on Linux under Wayland.
 - **No window icon on Wayland.** The window system takes no icon from the window there. The desktop shows the icon of the `.desktop` file that the window's `app_id` names, so `WindowOptions::icon` and `set_icon` have no effect.
+- **Password fields keep the input method on macOS.** The window cannot tell the input method that a field is a password there, and turning it off would stop accents typed with dead keys. An input method that composes text, such as one for Chinese or Japanese, may show what it composes in a window of its own. The field itself and screen readers only ever get bullets. See [Text and input](/guide/text-and-input#passwords).
 - **No clipboard on the web.** Copy and paste work only inside the application there.
 - **No screen readers on the web.** Browsers expose their own accessibility tree, and projecting into it needs a different approach.
 - **Maximize under X11 depends on the window manager.** `toggle_maximize` and `maximized` use the standard X11 maximize request and state. A window manager that does not implement them, as some X11 bridges inside Wayland compositors do not, ignores the request, and `maximized` stays `false`. Running natively on Wayland avoids this.
