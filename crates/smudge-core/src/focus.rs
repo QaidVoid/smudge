@@ -13,6 +13,7 @@ use crate::style::Position;
 use crate::widget::Widget;
 
 use super::interaction::Interaction;
+use super::overlay::Layer;
 use super::{FocusTrap, WidgetId, WidgetTree};
 
 #[cfg(test)]
@@ -183,15 +184,33 @@ impl WidgetTree {
             // it reaches the nodes around the overlay's host.
             if event.pressed
                 && event.key == Key::Escape
-                && let Some(open) = self
+                && let Some(at) = self
                     .overlays
                     .iter()
-                    .find(|overlay| overlay.root == id)
-                    .map(|overlay| overlay.open.clone())
-                && open.get()
+                    .position(|overlay| overlay.root == id && overlay.dismissible())
+                && self.overlays[at].open.get()
             {
+                // A tooltip or a popup drawn above this overlay, which the
+                // focus is not in, closes first, as Escape does in the tree.
+                let open = self.overlays[at + 1..]
+                    .iter()
+                    .rev()
+                    .find(|overlay| {
+                        overlay.transient() && overlay.open.get() && self.overlay_shown(overlay)
+                    })
+                    .unwrap_or(&self.overlays[at])
+                    .open
+                    .clone();
                 open.set(false);
                 return Handled::Yes;
+            }
+            // Nothing behind a dialog hears a key the dialog left alone.
+            if self
+                .overlays
+                .iter()
+                .any(|overlay| overlay.root == id && overlay.layer == Layer::Dialog)
+            {
+                return Handled::No;
             }
         }
         if let Some((container, axis)) = deferred
@@ -925,7 +944,7 @@ impl WidgetTree {
     }
 
     /// Returns the top nodes of the overlays that show and that a node inside
-    /// `scope` opened, in the order they opened, which follow the scope's
+    /// `scope` opened, in the order they draw, which follow the scope's
     /// own nodes in the focus order.
     pub(super) fn overlays_within(&self, scope: WidgetId) -> Vec<WidgetId> {
         self.overlays

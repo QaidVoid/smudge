@@ -15,6 +15,7 @@ use crate::reactive::{Read, RwSignal};
 use crate::style::{Length, Overflow, Position, bounded_or};
 use crate::widget::{AvailableSpace, MeasureInput};
 
+use super::overlay::Placement;
 use super::{Dirty, PaintedBounds, WidgetId, WidgetTree};
 
 /// Converts the engine's space variant to the type a widget's measure sees.
@@ -469,12 +470,23 @@ impl WidgetTree {
             width: TaffySpace::MaxContent,
             height: TaffySpace::MaxContent,
         };
+        // An overlay that covers the window resolves to the window's size,
+        // which a resize changes.
+        for at in 0..self.overlays.len() {
+            if self.overlays[at].placement == Placement::Cover {
+                let cover = self.overlays[at].root;
+                self.re_resolve(cover);
+            }
+        }
         let roots: Vec<(taffy::NodeId, TaffySize<TaffySpace>)> = std::iter::once((root, available))
-            .chain(
-                self.overlays
-                    .iter()
-                    .map(|overlay| (overlay.root, content_sized)),
-            )
+            .chain(self.overlays.iter().map(|overlay| {
+                let space = if overlay.placement == Placement::Cover {
+                    available
+                } else {
+                    content_sized
+                };
+                (overlay.root, space)
+            }))
             .map(|(id, space)| (self.nodes[id].taffy, space))
             .collect();
         let WidgetTree { nodes, taffy, .. } = self;

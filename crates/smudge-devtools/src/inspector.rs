@@ -622,7 +622,7 @@ fn binding(details: &Details, index: usize) -> Element<Panel> {
 }
 
 /// Builds the node's style: the properties it was built with that differ
-/// from the default, and those its states change.
+/// from the default, and those its state or placement change.
 fn style(details: &Details) -> Element<Panel> {
     let built = Memo::new(look::read(details, |details| {
         styles::style_lines(&details.base)
@@ -648,7 +648,7 @@ fn style(details: &Details) -> Element<Panel> {
         move || {
             column()
                 .gap(gap(4.0))
-                .child(heading("Changed by its state"))
+                .child(heading("Changed by its state or placement"))
                 .child(style_list(changed.clone()))
         },
     ))

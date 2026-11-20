@@ -58,7 +58,7 @@ use crate::style::{
 use crate::theme::{ColorToken, ColorValue, CornerRadii, RadiusToken, RadiusValue};
 use crate::tree::interaction::Handlers;
 use crate::tree::overlay::Opening;
-pub use crate::tree::overlay::Placement;
+pub use crate::tree::overlay::{Layer, Placement};
 use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::variants::{PatchBuilder, StylePatch, Variants};
 use crate::widget::{PaintCx, Widget};
@@ -2218,27 +2218,30 @@ impl<W: Widget> Element<W> {
     /// a menu or a tooltip opens. The placement can be bound to a signal, as
     /// a context menu follows the point it was asked for at.
     ///
-    /// The overlay escapes every clip around this node and draws over
-    /// everything, the last opened on top, and a press over it reaches the
-    /// overlay and never the window under it. It flips to the other side of
-    /// the node where the window has no room, shifts to stay inside the
-    /// window, and follows the node as a scroll moves it. Its size comes
-    /// from its content alone.
+    /// The overlay escapes every clip around this node and draws over the
+    /// window in the popups' [`Layer`], the last opened on top, and a press
+    /// over it reaches the overlay and never the window under it. Placed
+    /// beside the node, it flips to the other side where the window has no
+    /// room, shifts to stay inside the window, and follows the node as a
+    /// scroll moves it, and its size comes from its content alone. Placed
+    /// with [`Placement::Cover`] it takes the window's size, and with
+    /// [`Placement::BottomRight`] it sits in the window's corner.
     ///
-    /// Escape and a press outside the overlay write `false` to `open`,
-    /// which closes it. A press on this node itself is not outside an
-    /// overlay placed against it, so a button that toggles `open` closes the
-    /// overlay with its own press. `build` runs untracked each time the
-    /// overlay opens, inside an owner of its own under this node's, so it
-    /// sees this node's context, and keys inside the overlay bubble on to
-    /// this node and its ancestors. An overlay that takes the keyboard
-    /// traps the focus with [`trap_focus`](Self::trap_focus), which gives it
-    /// back to this node when the overlay closes, or where it was when this
-    /// node cannot take it.
+    /// Escape, a press outside the overlay and the window losing the input
+    /// focus write `false` to `open`, which closes it. A press on this node
+    /// itself is not outside an overlay placed against it, so a button that
+    /// toggles `open` closes the overlay with its own press. `build` runs
+    /// untracked each time the overlay opens, inside an owner of its own
+    /// under this node's, so it sees this node's context, and keys inside
+    /// the overlay bubble on to this node and its ancestors, though never
+    /// past a dialog. An overlay that takes the keyboard traps the focus
+    /// with [`trap_focus`](Self::trap_focus), which gives it back to this
+    /// node when the overlay closes, or where it was when this node cannot
+    /// take it.
     ///
-    /// The overlay is sized by its content with no box around it, so a
-    /// percentage size of its top node resolves to nothing. Give it sizes
-    /// and limits in pixels.
+    /// An overlay placed beside the node is sized by its content with no
+    /// box around it, so a percentage size of its top node resolves to
+    /// nothing. Give it sizes and limits in pixels.
     ///
     /// ```
     /// use smudge_core::element::Placement;
@@ -2262,12 +2265,43 @@ impl<W: Widget> Element<W> {
         placement: impl Into<Value<Placement>>,
         build: impl Fn() -> E + 'static,
     ) -> Self {
+        self.overlay_in(Layer::Popup, open, placement, build)
+    }
+
+    /// Opens an overlay as [`overlay`](Self::overlay) does, in `layer`
+    /// rather than the popups' layer, which decides what it draws above and
+    /// below as [`Layer`] describes.
+    ///
+    /// A dialog takes [`Layer::Dialog`] with [`Placement::Cover`], so what
+    /// opens from inside it draws above it, and toasts take
+    /// [`Layer::Toast`], which draws on top of everything and which a press
+    /// outside, Escape and the window losing the input focus never close.
+    ///
+    /// ```
+    /// use smudge_core::element::{Layer, Placement};
+    /// use smudge_core::geometry::Color;
+    /// use smudge_core::reactive::RwSignal;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let open = RwSignal::new(true);
+    /// let host = panel().overlay_in(Layer::Dialog, open, Placement::Cover, || {
+    ///     panel().background(Color::rgba(0, 0, 0, 120))
+    /// });
+    /// ```
+    pub fn overlay_in<E: IntoElement>(
+        self,
+        layer: Layer,
+        open: RwSignal<bool>,
+        placement: impl Into<Value<Placement>>,
+        build: impl Fn() -> E + 'static,
+    ) -> Self {
         let build = crate::hot::wrap(build);
         self.with_overlay(
             open,
             placement.into(),
             Rc::new(move || build().into_any()),
             false,
+            layer,
         )
     }
 
@@ -2327,6 +2361,7 @@ impl<W: Widget> Element<W> {
             Value::Static(Placement::Below),
             Rc::new(move || build().into_any()),
             true,
+            Layer::Tooltip,
         )
     }
 
@@ -2339,6 +2374,7 @@ impl<W: Widget> Element<W> {
         placement: Value<Placement>,
         build: Rc<dyn Fn() -> AnyElement>,
         passes_pointer: bool,
+        layer: Layer,
     ) -> Self {
         self.bindings.push(Binding {
             key: None,
@@ -2371,6 +2407,7 @@ impl<W: Widget> Element<W> {
                                         placement,
                                         open,
                                         passes_pointer,
+                                        layer,
                                     };
                                     mount_overlay(id, tree, &child_queue, opening, || build())
                                 });

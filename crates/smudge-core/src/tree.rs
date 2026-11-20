@@ -342,8 +342,11 @@ pub(crate) struct WidgetTree {
     taffy: taffy::TaffyTree<WidgetId>,
     /// The root node, when the tree has one.
     root: Option<WidgetId>,
-    /// The overlays, in the order they opened.
+    /// The overlays, in the order they draw, bottom first, as
+    /// [`overlay::Layer`] orders them.
     overlays: Vec<overlay::Overlay>,
+    /// How many overlays opened so far, which orders them within a layer.
+    overlay_count: u64,
     /// Nodes that need painting, in the order they were first marked.
     paint_queue: Vec<WidgetId>,
     /// Whether any node needs a new layout pass.
@@ -470,6 +473,7 @@ impl WidgetTree {
             taffy: taffy::TaffyTree::new(),
             root: None,
             overlays: Vec::new(),
+            overlay_count: 0,
             paint_queue: Vec::new(),
             layout_dirty: false,
             pending_damage: Vec::new(),
@@ -670,13 +674,22 @@ impl WidgetTree {
     ) -> WidgetId {
         assert!(self.nodes.contains_key(host), "the host id is a live node");
         let id = self.new_node(Some(host), owner, widget, style);
-        self.overlays.push(overlay::Overlay {
-            root: id,
-            placement: opening.placement,
-            open: opening.open,
-            origin: Point::default(),
-            passes_pointer: opening.passes_pointer,
-        });
+        let order = self.overlay_order(host, opening.layer);
+        let at = self
+            .overlays
+            .partition_point(|overlay| overlay.order <= order);
+        self.overlays.insert(
+            at,
+            overlay::Overlay {
+                root: id,
+                placement: opening.placement,
+                open: opening.open,
+                origin: Point::default(),
+                passes_pointer: opening.passes_pointer,
+                layer: opening.layer,
+                order,
+            },
+        );
         self.mark(id, Dirty::Layout);
         self.push_a11y(host);
         id
@@ -1244,8 +1257,9 @@ impl WidgetTree {
     }
 
     /// Recomputes the node's resolved style from its base style, its variant
-    /// patches and its interaction state, and marks the node for what the
-    /// change invalidated.
+    /// patches and its interaction state, with the window's size for the top
+    /// node of an overlay that covers the window, and marks the node for
+    /// what the change invalidated.
     ///
     /// A change to the resolved layout properties updates the layout engine's
     /// style and marks the node for layout; a change to the paint properties
@@ -1260,7 +1274,19 @@ impl WidgetTree {
         };
         let empty = Variants::default();
         let variants = node.variants.as_deref().unwrap_or(&empty);
-        let resolved = resolve(&node.base, variants, node.interaction);
+        let mut resolved = resolve(&node.base, variants, node.interaction);
+        // An overlay that covers the window takes the window's size, over
+        // whatever size its base asks for, which comes back once it stops
+        // covering.
+        if let Some(viewport) = self.viewport
+            && self
+                .overlays
+                .iter()
+                .any(|overlay| overlay.root == id && overlay.placement == overlay::Placement::Cover)
+        {
+            resolved.layout.width = crate::style::Length::px(viewport.width);
+            resolved.layout.height = crate::style::Length::px(viewport.height);
+        }
         if resolved == node.resolved {
             return;
         }

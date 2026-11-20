@@ -1089,6 +1089,7 @@ impl App {
                 if !focused {
                     self.tree.ime_preedit("", None);
                     self.tree.release_pointer_lock();
+                    self.tree.close_transient_overlays();
                 }
                 crate::window::set_focused(&self.window, focused);
             }

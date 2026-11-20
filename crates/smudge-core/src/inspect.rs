@@ -105,7 +105,8 @@ pub struct NodeDetails {
     /// The style the element's builders and bindings wrote.
     pub base: Style,
     /// The style layout and paint read: the base style with the variants of
-    /// the active states applied.
+    /// the active states applied, and the window's size for the top node of
+    /// an overlay that covers the window.
     pub resolved: Style,
     /// The interaction states the node is in.
     pub states: States,

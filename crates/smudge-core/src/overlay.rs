@@ -34,13 +34,44 @@ pub enum Placement {
     /// opens up and to the left of the point where the window has no room
     /// below and to the right.
     At(Point),
+    /// Over the whole window, its top node laid out at the window's size,
+    /// as a dialog's backdrop is.
+    Cover,
+    /// In the window's bottom right corner, as toasts are. Give the top node
+    /// a margin to keep it off the edges.
+    BottomRight,
+}
+
+/// Which layer an overlay draws in, and so what it draws above and below.
+///
+/// From the bottom: the app's tree with its popups, then its tooltips,
+/// then each open dialog in the order it opened, each with its own popups
+/// and tooltips above it, and the toasts on top of everything. An overlay
+/// opened from inside a dialog joins that dialog's popups and tooltips, so
+/// a dropdown in a dialog draws above the dialog and below a dialog opened
+/// after it. Within one layer, the overlay opened last draws on top.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Layer {
+    /// A popup, a menu or a dropdown's list.
+    #[default]
+    Popup,
+    /// A tooltip.
+    Tooltip,
+    /// A dialog.
+    Dialog,
+    /// A toast.
+    Toast,
 }
 
 impl Placement {
     /// Returns whether the overlay hangs off the node's rectangle, so a
     /// press on the node itself is not a press outside the overlay.
     fn anchored_to_node(self) -> bool {
-        !matches!(self, Placement::At(_))
+        !matches!(
+            self,
+            Placement::At(_) | Placement::Cover | Placement::BottomRight
+        )
     }
 
     /// Returns the top left corner of an overlay of `size` placed this way
@@ -79,6 +110,8 @@ impl Placement {
                 };
                 (x, anchor.y0)
             }
+            Placement::Cover => (0.0, 0.0),
+            Placement::BottomRight => (viewport.width - width, viewport.height - height),
             Placement::At(at) => {
                 let (px, py) = (anchor.x0 + at.x, anchor.y0 + at.y);
                 let x = if px + width > viewport.width && px - width >= 0.0 {
@@ -111,6 +144,8 @@ pub(crate) struct Opening {
     pub(crate) open: RwSignal<bool>,
     /// Whether the pointer passes through it to what lies under it.
     pub(crate) passes_pointer: bool,
+    /// The layer it draws in.
+    pub(crate) layer: Layer,
 }
 
 /// An overlay the tree shows.
@@ -127,6 +162,27 @@ pub(crate) struct Overlay {
     /// Whether the pointer passes through it to what lies under it, as it
     /// does through a tooltip.
     pub(crate) passes_pointer: bool,
+    /// The layer it draws in.
+    pub(crate) layer: Layer,
+    /// Where it sorts among the overlays: the dialog it belongs to, by the
+    /// order the dialogs opened, zero for the app's tree and the most for a
+    /// toast, then its rank in that dialog's layers, then the order it
+    /// opened in.
+    pub(crate) order: (u64, u8, u64),
+}
+
+impl Overlay {
+    /// Returns whether Escape can close it. A toast leaves on its own.
+    pub(crate) fn dismissible(&self) -> bool {
+        self.layer != Layer::Toast
+    }
+
+    /// Returns whether a press outside it or the window losing the input
+    /// focus closes it: a popup or a tooltip does, while a dialog, which
+    /// often holds work in progress, and a toast stay.
+    pub(crate) fn transient(&self) -> bool {
+        matches!(self.layer, Layer::Popup | Layer::Tooltip)
+    }
 }
 
 impl WidgetTree {
@@ -163,9 +219,11 @@ impl WidgetTree {
     }
 
     /// Returns the deepest node `position` hits, trying the overlays first,
-    /// the last opened first, then the main tree. A point inside an overlay's
+    /// the topmost first, then the main tree. A point inside an overlay's
     /// rectangle stays there even where nothing in the overlay is hit, so the
-    /// main tree under it hears nothing.
+    /// main tree under it hears nothing. A toast overlay holds only the
+    /// points its toasts cover: its own rectangle, which spans the gaps
+    /// between them and the room beside a narrow one, lets the rest through.
     pub(crate) fn hit_any(&self, position: Point, disabled: bool) -> Option<WidgetId> {
         for overlay in self.overlays.iter().rev() {
             let fading = self
@@ -173,6 +231,15 @@ impl WidgetTree {
                 .get(overlay.root)
                 .is_none_or(|node| node.withdrawn());
             if overlay.passes_pointer || fading || !self.overlay_shown(overlay) {
+                continue;
+            }
+            if overlay.layer == Layer::Toast {
+                if let Some(hit) = self
+                    .hit(overlay.root, position, disabled)
+                    .filter(|&hit| hit != overlay.root)
+                {
+                    return Some(hit);
+                }
                 continue;
             }
             if let Some(hit) = self.hit(overlay.root, position, disabled) {
@@ -246,19 +313,23 @@ impl WidgetTree {
         };
         if overlay.placement != placement {
             overlay.placement = placement;
+            // Covering the window, or no longer covering it, changes the
+            // size the root resolves to.
+            self.re_resolve(root);
             self.place_overlays(false);
         }
     }
 
-    /// Closes the overlays a press at `position` lands outside of, the last
-    /// opened first: those whose subtree the press misses, unless it lands on
-    /// the node an overlay hangs off.
+    /// Closes the popups and tooltips a press at `position` lands outside
+    /// of, the topmost first: those whose subtree the press misses, unless it
+    /// lands on the node one hangs off.
     pub(crate) fn dismiss_outside(&mut self, position: Point) {
         let hit = self.hit_any(position, true);
         let outside: Vec<RwSignal<bool>> = self
             .overlays
             .iter()
             .rev()
+            .filter(|overlay| overlay.transient())
             .filter(|overlay| {
                 let inside = hit.is_some_and(|hit| self.is_within(hit, overlay.root));
                 let on_anchor = overlay.placement.anchored_to_node()
@@ -289,13 +360,60 @@ impl WidgetTree {
             .overlays
             .iter()
             .rev()
-            .find(|overlay| self.overlay_shown(overlay) && overlay.open.get())
+            .find(|overlay| {
+                overlay.dismissible() && self.overlay_shown(overlay) && overlay.open.get()
+            })
             .map(|overlay| overlay.open.clone())
         else {
             return false;
         };
         open.set(false);
         true
+    }
+}
+
+impl WidgetTree {
+    /// Returns where an overlay of `layer` that `host` opens sorts among
+    /// the overlays, and counts it as opened.
+    pub(crate) fn overlay_order(&mut self, host: WidgetId, layer: Layer) -> (u64, u8, u64) {
+        self.overlay_count += 1;
+        let opened = self.overlay_count;
+        let dialog = || {
+            let mut next = Some(host);
+            while let Some(id) = next {
+                if let Some(overlay) = self
+                    .overlays
+                    .iter()
+                    .find(|overlay| overlay.root == id && overlay.layer == Layer::Dialog)
+                {
+                    return overlay.order.0;
+                }
+                next = self.nodes.get(id).and_then(|node| node.parent);
+            }
+            0
+        };
+        match layer {
+            Layer::Dialog => (opened, 0, opened),
+            Layer::Tooltip => (dialog(), 2, opened),
+            Layer::Toast => (u64::MAX, 0, opened),
+            _ => (dialog(), 1, opened),
+        }
+    }
+
+    /// Closes the popups and tooltips, which the window losing the input
+    /// focus does. Dialogs and toasts stay.
+    pub(crate) fn close_transient_overlays(&mut self) {
+        let transient: Vec<RwSignal<bool>> = self
+            .overlays
+            .iter()
+            .filter(|overlay| overlay.transient())
+            .map(|overlay| overlay.open.clone())
+            .collect();
+        for open in transient {
+            if open.get() {
+                open.set(false);
+            }
+        }
     }
 }
 

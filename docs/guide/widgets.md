@@ -235,7 +235,7 @@ A `Path` is built from moves, lines, quadratic and cubic curves, arcs and closes
 
 ## Popups and overlays
 
-`overlay(open, placement, build)` opens the element `build` returns over the whole window while `open` reads `true`. It escapes every clip around the node it belongs to, so a popup inside a scroll view is not cut at the view's edge, and it draws over everything, the last opened on top:
+`overlay(open, placement, build)` opens the element `build` returns over the whole window while `open` reads `true`. It escapes every clip around the node it belongs to, so a popup inside a scroll view is not cut at the view's edge, and it draws over the window in the popups' layer, the last opened on top. `overlay_in` opens one in another layer: tooltips draw above popups, each dialog above everything opened before it, with its own popups and tooltips above it, and toasts above everything:
 
 ```rust
 use smudge::core::element::Placement;
