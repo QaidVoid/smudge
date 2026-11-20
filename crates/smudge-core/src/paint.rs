@@ -228,6 +228,80 @@ pub enum PaintOp {
     },
     /// A path filled, stroked, or both, as its paint says.
     Path(Rc<crate::path::PathPaint>),
+    /// Content the app draws itself, stretched over a rounded rectangle: a
+    /// texture the GPU renderer has the app draw, or the image the app
+    /// draws on the CPU for the CPU renderer.
+    External {
+        /// The rectangle the content covers.
+        rect: Rect,
+        /// The radius of each corner the content is rounded by.
+        radius: Corners,
+        /// What draws the content.
+        content: Rc<External>,
+    },
+}
+
+/// Content an app draws itself rather than through paint operations, as
+/// [`PaintOp::External`] carries it.
+///
+/// A renderer that can draw the content through `source` does, and draws
+/// it again whenever `generation` changes. Any other draws `fallback`, the
+/// image the app keeps up on the CPU, or nothing without one.
+#[non_exhaustive]
+pub struct External {
+    /// Tells the content apart from every other, for as long as it lives.
+    pub id: u64,
+    /// Changes whenever the content needs drawing again.
+    pub generation: u64,
+    /// The image a renderer that cannot draw `source` shows.
+    pub fallback: Option<crate::image::Image>,
+    /// What a renderer that understands it draws the content with, which
+    /// that renderer recognizes by its type.
+    pub source: Option<Rc<dyn std::any::Any>>,
+}
+
+impl External {
+    /// Creates content `id`, at `generation`, drawn by `source` where a
+    /// renderer understands it and as `fallback` elsewhere.
+    pub fn new(
+        id: u64,
+        generation: u64,
+        fallback: Option<crate::image::Image>,
+        source: Option<Rc<dyn std::any::Any>>,
+    ) -> External {
+        External {
+            id,
+            generation,
+            fallback,
+            source,
+        }
+    }
+}
+
+impl PartialEq for External {
+    /// Two contents are equal when they are the same content at the same
+    /// generation, with the same fallback image.
+    fn eq(&self, other: &External) -> bool {
+        self.id == other.id
+            && self.generation == other.generation
+            && self.fallback.as_ref().map(crate::image::Image::id)
+                == other.fallback.as_ref().map(crate::image::Image::id)
+    }
+}
+
+impl std::fmt::Debug for External {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("External")
+            .field("id", &self.id)
+            .field("generation", &self.generation)
+            .field(
+                "fallback",
+                &self.fallback.as_ref().map(crate::image::Image::id),
+            )
+            .field("source", &self.source.is_some())
+            .finish()
+    }
 }
 
 impl PaintOp {
@@ -246,6 +320,7 @@ impl PaintOp {
             PaintOp::Glyphs(run) => run.ink_bounds,
             PaintOp::Image { rect, .. } => *rect,
             PaintOp::Path(paint) => paint.bounds(),
+            PaintOp::External { rect, .. } => *rect,
         }
     }
 }

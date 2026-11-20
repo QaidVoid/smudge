@@ -11,6 +11,8 @@ use smudge_core::path::{
     FillRule, LineCap, LineJoin, Path, PathPaint, Segment, Stroke as PathStroke,
 };
 use smudge_core::style::Edges;
+
+use crate::view::Views;
 use vello::kurbo::{
     Affine, BezPath, Cap, CubicBez, Diagonal2, Join, ParamCurve, Point as KurboPoint,
     Rect as KurboRect, RoundedRect, RoundedRectRadii, Stroke as KurboStroke,
@@ -42,6 +44,8 @@ pub(crate) struct Encoder {
     /// The visible area outside each open clip, in physical pixels, reused
     /// across frames.
     clips: Vec<KurboRect>,
+    /// The textures the app's GPU views draw into.
+    views: Views,
 }
 
 impl Encoder {
@@ -59,7 +63,22 @@ impl Encoder {
             ring: BezPath::new(),
             offsets: Vec::new(),
             clips: Vec::new(),
+            views: Views::default(),
         }
+    }
+
+    /// Has the GPU views of `frames` that need it draw into their textures
+    /// with `device` and `queue`, before the frame is encoded and
+    /// `renderer` composites them.
+    pub(crate) fn prepare_views(
+        &mut self,
+        device: &vello::wgpu::Device,
+        queue: &vello::wgpu::Queue,
+        renderer: &mut vello::Renderer,
+        frames: &[&FrameOutput<'_>],
+    ) {
+        self.views
+            .prepare(device, queue, renderer, frames, self.images.max_side);
     }
 
     /// Replaces the scene's contents with `frame`'s display list, for a
@@ -107,6 +126,7 @@ impl Encoder {
                     &mut self.fonts,
                     &mut self.ring,
                     &mut self.images,
+                    &self.views,
                     transform * offset,
                     visible,
                     op,
@@ -176,11 +196,16 @@ impl Encoder {
 /// the translation of the offset scopes around the operation. `visible` is
 /// the part of the surface the clips around the operation leave, in physical
 /// pixels.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the encoder's caches are split borrows of one struct"
+)]
 fn encode_op(
     scene: &mut Scene,
     fonts: &mut HashMap<(u64, u32), Option<FontData>>,
     ring: &mut BezPath,
     images: &mut ImageCache,
+    views: &Views,
     transform: Affine,
     visible: KurboRect,
     op: &PaintOp,
@@ -272,34 +297,71 @@ fn encode_op(
             radius,
             ref image,
         } => {
-            let finite = [rect.x0, rect.y0, rect.x1, rect.y1]
-                .iter()
-                .all(|edge| edge.is_finite());
-            if !(finite && rect.width() > 0.0 && rect.height() > 0.0) {
+            if let Some(drawn) = shown(transform, visible, rect) {
+                let brush = images.brush(image, drawn.width(), drawn.height());
+                draw_brush(scene, transform, rect, radius, brush);
+            }
+        }
+        PaintOp::External {
+            rect,
+            radius,
+            ref content,
+        } => {
+            let Some(drawn) = shown(transform, visible, rect) else {
                 return;
-            }
-            let drawn = transform.transform_rect_bbox(kurbo_rect(rect));
-            let shown = drawn.intersect(visible);
-            if !(shown.width() > 0.0 && shown.height() > 0.0) {
-                return;
-            }
-            let brush = images.brush(image, drawn.width(), drawn.height());
-            let sx = f64::from(rect.width()) / f64::from(brush.image.width);
-            let sy = f64::from(rect.height()) / f64::from(brush.image.height);
-            let local = transform
-                * Affine::translate((f64::from(rect.x0), f64::from(rect.y0)))
-                * Affine::scale_non_uniform(sx, sy);
-            if radius != Corners::ZERO {
-                scene.push_clip_layer(Fill::NonZero, transform, &rounded(rect, radius));
-            }
-            scene.draw_image(brush, local);
-            if radius != Corners::ZERO {
-                scene.pop_layer();
+            };
+            if let Some(image) = views.image(content.id) {
+                draw_brush(
+                    scene,
+                    transform,
+                    rect,
+                    radius,
+                    &ImageBrush::new(image.clone()),
+                );
+            } else if let Some(image) = &content.fallback {
+                let brush = images.brush(image, drawn.width(), drawn.height());
+                draw_brush(scene, transform, rect, radius, brush);
             }
         }
         PaintOp::Path(ref paint) => draw_path(scene, ring, transform, paint),
         // An operation added after this renderer draws nothing here.
         _ => {}
+    }
+}
+
+/// Returns the physical rectangle `rect` covers under `transform`, when it
+/// has an area and some of it lies in `visible`.
+fn shown(transform: Affine, visible: KurboRect, rect: Rect) -> Option<KurboRect> {
+    let finite = [rect.x0, rect.y0, rect.x1, rect.y1]
+        .iter()
+        .all(|edge| edge.is_finite());
+    if !(finite && rect.width() > 0.0 && rect.height() > 0.0) {
+        return None;
+    }
+    let drawn = transform.transform_rect_bbox(kurbo_rect(rect));
+    let shown = drawn.intersect(visible);
+    (shown.width() > 0.0 && shown.height() > 0.0).then_some(drawn)
+}
+
+/// Draws `brush` stretched over `rect`, rounded by `radius`.
+fn draw_brush(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: Corners,
+    brush: &ImageBrush,
+) {
+    let sx = f64::from(rect.width()) / f64::from(brush.image.width);
+    let sy = f64::from(rect.height()) / f64::from(brush.image.height);
+    let local = transform
+        * Affine::translate((f64::from(rect.x0), f64::from(rect.y0)))
+        * Affine::scale_non_uniform(sx, sy);
+    if radius != Corners::ZERO {
+        scene.push_clip_layer(Fill::NonZero, transform, &rounded(rect, radius));
+    }
+    scene.draw_image(brush, local);
+    if radius != Corners::ZERO {
+        scene.pop_layer();
     }
 }
 

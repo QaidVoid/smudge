@@ -12,5 +12,5 @@ publish = false
 workspace = true
 
 [dependencies]
-smudge = { version = "0.3.0", path = "../../crates/smudge", features = ["devtools", "markdown"] }
+smudge = { version = "0.3.0", path = "../../crates/smudge", features = ["devtools", "gpu", "markdown"] }
 smudge-cpu = { path = "../../crates/smudge-cpu" }

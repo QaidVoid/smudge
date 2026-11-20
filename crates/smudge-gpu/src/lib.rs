@@ -9,9 +9,11 @@ mod encoder;
 mod pipeline_cache;
 mod renderer;
 mod surface;
+mod view;
 
 pub use renderer::{AdapterSummary, GpuRenderer, device_features, device_limits, instance};
 pub use surface::{GpuError, GpuSurface};
+pub use view::{GpuFrame, GpuView, GpuViewExt, VIEW_FORMAT, gpu_view};
 
 /// The wgpu that vello renders through, re-exported so a caller can build its
 /// instances, adapters and surfaces against the same version the renderers

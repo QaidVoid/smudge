@@ -559,6 +559,15 @@ impl Canvas<'_> {
                 ref image,
             } => self.draw_image(maybe_translated(rect, offset), radius, image, area),
             PaintOp::Path(ref paint) => self.draw_path(paint, area, offset),
+            PaintOp::External {
+                rect,
+                radius,
+                ref content,
+            } => {
+                if let Some(image) = &content.fallback {
+                    self.draw_image(maybe_translated(rect, offset), radius, image, area);
+                }
+            }
             // An operation added after this renderer draws nothing here.
             _ => {}
         }

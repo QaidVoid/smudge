@@ -53,6 +53,21 @@ fn ask_for_the_gpu() {
     };
 }
 
+fn gpu_view_sample() {
+    use smudge::gpu::{GpuViewExt, gpu_view};
+
+    let camera = RwSignal::new(0.0_f32);
+    let shown = camera.clone();
+    let view = gpu_view(move |frame| {
+        let mut encoder = frame.device.create_command_encoder(&Default::default());
+        // Record the scene's passes into `frame.target` here.
+        frame.queue.submit([encoder.finish()]);
+    })
+    .redraw_when(move || shown.get())
+    .width(px(640.0))
+    .height(px(480.0));
+}
+
 fn open_docs() {}
 #[test]
 fn pointer_cursor() {

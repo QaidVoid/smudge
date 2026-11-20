@@ -144,6 +144,27 @@ The window creates its GPU device itself. A program that renders through `smudge
 
 `GpuRenderer::headless` does all of it for an offscreen renderer.
 
+### Drawing with wgpu inside the interface
+
+A 3D view, or anything else an app renders with wgpu itself, goes in a `smudge::gpu::gpu_view`. Its closure draws with the GPU renderer's own device and queue into a texture as large as the view in physical pixels, and the renderer then composites that texture where the view is, under its clips, opacity and rounded corners, between the widgets around it:
+
+```rust
+use smudge::gpu::{GpuViewExt, gpu_view};
+
+let camera = RwSignal::new(0.0_f32);
+let shown = camera.clone();
+let view = gpu_view(move |frame| {
+    let mut encoder = frame.device.create_command_encoder(&Default::default());
+    // Record the scene's passes into `frame.target` here.
+    frame.queue.submit([encoder.finish()]);
+})
+.redraw_when(move || shown.get())
+.width(px(640.0))
+.height(px(480.0));
+```
+
+The closure runs when the view first shows, when its size changes, and when the value `redraw_when` reads changes, so the app draws at the rate it chooses, from a timer or an animation tick, and the texture keeps the last drawing in between. The texture is `smudge::gpu::VIEW_FORMAT`, eight-bit RGBA with straight alpha. The CPU renderer has no GPU, so there the view shows the image `fallback` gives, which the app draws on the CPU, or nothing without one. That path is slow, and Smudge makes no GPU device of its own for it.
+
 ::: tip Why software GPUs are avoided
 A software rasterizer pretending to be a GPU redraws the whole window on the CPU every frame. On a virtual machine without GPU passthrough, the GPU renderer on such an adapter was between 2.5 and over 200 times slower than the CPU renderer on every measured scene. `Auto` therefore never picks one.
 :::

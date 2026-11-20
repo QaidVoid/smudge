@@ -361,6 +361,10 @@ impl GpuSurface {
             target,
             ..
         } = self;
+        match over {
+            Some(over) => encoder.prepare_views(device, queue, renderer, &[frame, over]),
+            None => encoder.prepare_views(device, queue, renderer, &[frame]),
+        }
         encoder.encode(frame, params.width, params.height);
         if let Some(over) = over {
             encoder.append(over, params.width, params.height);

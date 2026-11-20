@@ -400,6 +400,7 @@ impl Renderer for GpuRenderer {
             encoder,
             ..
         } = self;
+        encoder.prepare_views(device, queue, renderer, &[frame]);
         encoder.encode(frame, params.width, params.height);
         renderer
             .render_to_texture(device, queue, encoder.scene(), view, &params)
