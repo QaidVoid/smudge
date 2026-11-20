@@ -367,7 +367,7 @@ fn entry(
         }
         Kind::Submenu(items) => {
             let (_, open) = sub_open.expect("a submenu has its signal");
-            let (press, right) = (open.clone(), open.clone());
+            let (press, right, expanded) = (open.clone(), open.clone(), open.clone());
             let inner = Level {
                 close_all: Rc::clone(&level.close_all),
                 own: Some(open.clone()),
@@ -375,6 +375,7 @@ fn entry(
                 owner: level.owner.clone(),
             };
             item.child(label("\u{203a}").text_color(ColorToken::TEXT_MUTED))
+                .accessible_expanded(move || expanded.get())
                 .on_press(move || press.set(true))
                 .on_key(move |event| {
                     // Keys from inside the open submenu bubble here too, and
@@ -417,7 +418,7 @@ pub fn menu(
     items: impl Fn() -> Vec<MenuItem> + 'static,
 ) -> Element<Panel> {
     let open = crate::signal(false);
-    title_item(title.into(), open, Rc::new(items), None)
+    title_item(title.into(), open, Rc::new(items), None).role(Role::Button)
 }
 
 /// Builds the title of a menu: an item that opens the menu of `items` below
@@ -429,7 +430,7 @@ fn title_item(
     bar: Option<Bar>,
 ) -> Element<Panel> {
     let (press, key, shown) = (open.clone(), open.clone(), open.clone());
-    let close = open.clone();
+    let (close, expanded) = (open.clone(), open.clone());
     let hover_bar = bar.clone();
     let level = Level {
         close_all: Rc::new(move || close.set(false)),
@@ -454,6 +455,7 @@ fn title_item(
         .focused(|p| p.background(ColorToken::SURFACE_HOVER))
         .role(Role::MenuItem)
         .accessible_label(title.clone())
+        .accessible_expanded(move || expanded.get())
         .focusable()
         .on_press(move || press.update(|open| *open = !*open))
         .on_key(move |event| {

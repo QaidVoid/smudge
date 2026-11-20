@@ -457,3 +457,24 @@ fn an_open_menu_keeps_its_keys_from_the_shortcuts_around_it() {
     assert!(focused(&mut harness, "Cut"));
     assert_eq!(stolen.get(), 0, "the shortcuts around the menu heard none");
 }
+
+#[test]
+fn a_menu_button_reports_a_button_that_opens_and_closes_its_menu() {
+    TextSystem::bundled_only().install();
+    let mut harness = Harness::new(400.0, 200.0, 1.0, || {
+        panel()
+            .align_items(Align::Start)
+            .child(menu("Edit", || vec![menu_item("Cut", || {})]))
+    });
+    harness.frame();
+    let button = node(&mut harness, "Edit").expect("the button shows");
+    assert_eq!(button.role, Role::Button);
+    assert_eq!(button.expanded, Some(false));
+
+    click_on(&mut harness, "Edit");
+    harness.frame();
+    assert_eq!(
+        node(&mut harness, "Edit").and_then(|node| node.expanded),
+        Some(true)
+    );
+}

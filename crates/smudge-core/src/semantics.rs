@@ -79,6 +79,16 @@ pub enum Role {
     /// A choice of a menu that is checked or not, which choosing toggles.
     /// Its state is [`Semantics::checked`].
     MenuItemCheckBox,
+    /// A field that shows one choice and opens a list of the others. Its
+    /// choice is its [`Semantics::value`].
+    ComboBox,
+    /// A list of choices to pick from.
+    ListBox,
+    /// One choice of a list box. Whether it is the one picked is
+    /// [`Semantics::selected`].
+    ListBoxOption,
+    /// A short text that describes the node it shows over.
+    Tooltip,
 }
 
 /// Whether a checkbox or a switch is checked.
@@ -162,6 +172,15 @@ pub struct Semantics {
     /// and presses through [`Widget::link_action`](crate::widget::Widget::link_action)
     /// by its index here.
     pub links: Vec<std::ops::Range<usize>>,
+    /// A longer description than the name, such as a tooltip's text, which
+    /// a screen reader announces after the name and the role, or `None`.
+    pub description: Option<String>,
+    /// Whether the node is the picked choice of the set around it, such as
+    /// an option of a list box, or `None` for a node that is no choice.
+    pub selected: Option<bool>,
+    /// Whether what the node opens, such as a menu or a list, is open, or
+    /// `None` for a node that opens nothing.
+    pub expanded: Option<bool>,
 }
 
 /// A selection in a widget's text, between two places in the text its
@@ -243,6 +262,9 @@ impl Semantics {
             text_runs: Vec::new(),
             text_selection: None,
             links: Vec::new(),
+            description: None,
+            selected: None,
+            expanded: None,
         }
     }
 }
@@ -284,6 +306,15 @@ pub struct SemanticsNode {
     pub text_selection: Option<TextSelection>,
     /// The byte range of each link in the node's text, in order.
     pub links: Vec<std::ops::Range<usize>>,
+    /// The node's description, which a screen reader announces after its
+    /// name and role.
+    pub description: Option<String>,
+    /// Whether the node is the picked choice of the set around it, or
+    /// `None` for a node that is no choice.
+    pub selected: Option<bool>,
+    /// Whether what the node opens is open, or `None` for a node that opens
+    /// nothing.
+    pub expanded: Option<bool>,
     /// The node's absolute rectangle in logical pixels, as the last layout
     /// pass left it.
     pub bounds: Rect,

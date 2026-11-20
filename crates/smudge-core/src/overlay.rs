@@ -101,6 +101,18 @@ impl Placement {
     }
 }
 
+/// How an overlay opens: where it goes, what keeps it open, and whether the
+/// pointer passes through it.
+#[derive(Clone)]
+pub(crate) struct Opening {
+    /// Where it goes relative to its host.
+    pub(crate) placement: Placement,
+    /// The signal that keeps it open.
+    pub(crate) open: RwSignal<bool>,
+    /// Whether the pointer passes through it to what lies under it.
+    pub(crate) passes_pointer: bool,
+}
+
 /// An overlay the tree shows.
 pub(crate) struct Overlay {
     /// The overlay's top node, whose parent is its host.
@@ -112,6 +124,9 @@ pub(crate) struct Overlay {
     pub(crate) open: RwSignal<bool>,
     /// The top left corner it was last placed at, in window coordinates.
     pub(crate) origin: Point,
+    /// Whether the pointer passes through it to what lies under it, as it
+    /// does through a tooltip.
+    pub(crate) passes_pointer: bool,
 }
 
 impl WidgetTree {
@@ -157,7 +172,7 @@ impl WidgetTree {
                 .nodes
                 .get(overlay.root)
                 .is_none_or(|node| node.withdrawn());
-            if fading || !self.overlay_shown(overlay) {
+            if overlay.passes_pointer || fading || !self.overlay_shown(overlay) {
                 continue;
             }
             if let Some(hit) = self.hit(overlay.root, position, disabled) {

@@ -53,7 +53,7 @@ let toggle = panel()
     .accessible_label(move || if named.get() { "Unmute" } else { "Mute" }.to_owned());
 ```
 
-The roles are `Window`, `Group`, `Button`, `Label`, `TextInput`, `MultilineTextInput`, `ScrollView`, `List`, `ListItem`, `Splitter`, `CheckBox`, `Switch`, `ProgressBar`, `Link` and `Heading`.
+The roles are `Window`, `Group`, `Button`, `Label`, `TextInput`, `MultilineTextInput`, `ScrollView`, `List`, `ListItem`, `Splitter`, `CheckBox`, `Switch`, `ProgressBar`, `Link`, `Heading`, `MenuBar`, `Menu`, `MenuItem`, `MenuItemCheckBox`, `ComboBox`, `ListBox`, `ListBoxOption` and `Tooltip`.
 
 A heading reports its level with `accessible_level`, from 1 for the top level down, so a screen reader can move between headings. A heading or a link with no `accessible_label` is named by its text. The markdown view reports its headings this way, and a split's divider reports the share its ratio asks the first pane to take as a value from 0 to 100.
 
@@ -80,6 +80,8 @@ let progress = panel()
 ```
 
 A list of your own reports its rows the same way the virtual lists do: give the list `Role::List` and `accessible_set_size(count)`, and each row `Role::ListItem` and `accessible_position(index)`, counted from zero, so a screen reader announces place 39 as "item 40 of 3,000". Both accept a closure, for a count that grows or a row whose place moves.
+
+Four more builders cover what a name and a role leave out. `accessible_value` sets what a control holds, such as the choice a combo box shows, `accessible_description` adds a longer description after the name, as a tooltip's text, `accessible_selected` marks the picked option of a list box, and `accessible_expanded` tells whether what a node opens, such as a menu or a list, is open. Each accepts a closure. The menus, the dropdown and `tooltip_text` set them for you.
 
 A screen reader toggles a checkbox or a switch by pressing it, so its `on_press` handler is what flips the state, and one without a handler reads as read only. A progress bar without a range reads as busy, with no known progress, and so does one whose range is not finite or runs backwards. `Checked::Mixed` reports a checkbox that is neither checked nor unchecked, such as one over a list whose boxes are partly checked.
 

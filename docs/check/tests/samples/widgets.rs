@@ -210,6 +210,22 @@ fn menus_sample() {
         .context_menu(|| vec![menu_item("Paste here", || {})]);
 }
 
+#[test]
+fn dropdown_sample() {
+    use smudge::widgets::{TooltipExt, dropdown};
+
+    let brush = RwSignal::new(1_usize);
+    let picker = row()
+        .child(
+            dropdown(
+                || vec![String::from("Small"), String::from("Medium"), String::from("Large")],
+                brush,
+            )
+            .accessible_label("Brush size"),
+        )
+        .child(button("Clear").tooltip_text("Clear the canvas"));
+}
+
 fn stat(title: &'static str, value: RwSignal<u32>) -> Element<Panel> {
     column()
         .padding(px(12.0))

@@ -224,6 +224,9 @@ struct Node {
     /// The checked state the element's builders set, which overrides the
     /// state the widget reports.
     a11y_checked: Option<Checked>,
+    /// The description, value and picked state the element set, which
+    /// override the widget's, boxed since few nodes set any.
+    a11y_extra: Option<Box<A11yExtra>>,
     /// The value and range the element's builders set, which override the
     /// range the widget reports. Boxed, since few nodes have one.
     a11y_range: Option<Box<ValueRange>>,
@@ -267,6 +270,19 @@ impl Node {
     fn withdrawn(&self) -> bool {
         self.resolved.layout.hidden || self.exit.is_some()
     }
+}
+
+/// The accessibility state an element sets that few nodes have.
+#[derive(Default)]
+struct A11yExtra {
+    /// The description, which overrides the widget's.
+    description: Option<String>,
+    /// The value, which overrides the widget's.
+    value: Option<String>,
+    /// Whether the node is the picked choice of its set.
+    selected: Option<bool>,
+    /// Whether what the node opens is open.
+    expanded: Option<bool>,
 }
 
 /// A node fading out of a parent that removed it.
@@ -611,6 +627,7 @@ impl WidgetTree {
             a11y_role: None,
             a11y_label: None,
             a11y_checked: None,
+            a11y_extra: None,
             a11y_range: None,
             a11y_position: None,
             a11y_set_size: None,
@@ -632,8 +649,8 @@ impl WidgetTree {
         id
     }
 
-    /// Inserts the top node of an overlay that `host` opened, placed by
-    /// `placement` and kept open by `open`, and returns its id.
+    /// Inserts the top node of an overlay that `host` opened as `opening`
+    /// says, and returns its id.
     ///
     /// The node has `host` as its parent, so keys bubble to the host and
     /// its owner hangs under `owner`, or the host's, but the host does not
@@ -649,16 +666,16 @@ impl WidgetTree {
         owner: Option<&Owner>,
         widget: Box<dyn Widget>,
         style: Style,
-        placement: overlay::Placement,
-        open: RwSignal<bool>,
+        opening: overlay::Opening,
     ) -> WidgetId {
         assert!(self.nodes.contains_key(host), "the host id is a live node");
         let id = self.new_node(Some(host), owner, widget, style);
         self.overlays.push(overlay::Overlay {
             root: id,
-            placement,
-            open,
+            placement: opening.placement,
+            open: opening.open,
             origin: Point::default(),
+            passes_pointer: opening.passes_pointer,
         });
         self.mark(id, Dirty::Layout);
         self.push_a11y(host);
@@ -1509,6 +1526,75 @@ impl WidgetTree {
         self.push_a11y(id);
     }
 
+    /// Sets the accessible description of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_description`](crate::element::Element::accessible_description)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_description(&mut self, id: WidgetId, description: Option<String>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let extra = node.a11y_extra.get_or_insert_default();
+        if extra.description == description {
+            return;
+        }
+        extra.description = description;
+        self.push_a11y(id);
+    }
+
+    /// Sets the accessible value of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_value`](crate::element::Element::accessible_value)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_value(&mut self, id: WidgetId, value: Option<String>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let extra = node.a11y_extra.get_or_insert_default();
+        if extra.value == value {
+            return;
+        }
+        extra.value = value;
+        self.push_a11y(id);
+    }
+
+    /// Sets whether `id` is the picked choice of its set and records the
+    /// change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_selected`](crate::element::Element::accessible_selected)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_selected(&mut self, id: WidgetId, selected: Option<bool>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let extra = node.a11y_extra.get_or_insert_default();
+        if extra.selected == selected {
+            return;
+        }
+        extra.selected = selected;
+        self.push_a11y(id);
+    }
+
+    /// Sets whether what `id` opens is open and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_expanded`](crate::element::Element::accessible_expanded)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_expanded(&mut self, id: WidgetId, expanded: Option<bool>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let extra = node.a11y_extra.get_or_insert_default();
+        if extra.expanded == expanded {
+            return;
+        }
+        extra.expanded = expanded;
+        self.push_a11y(id);
+    }
+
     /// Sets the accessible value and range of `id` and records the change.
     ///
     /// Called when the node mounts and again by the binding of an
@@ -1718,6 +1804,9 @@ impl WidgetTree {
             mut text_runs,
             text_selection,
             links,
+            description,
+            selected,
+            expanded,
             ..
         } = semantics;
         let content = node.content.origin();
@@ -1725,7 +1814,8 @@ impl WidgetTree {
             run.bounds = run.bounds.translated(content);
         }
         let mut label = node.a11y_label.clone().or(label);
-        let mut value = value;
+        let extra = node.a11y_extra.as_deref();
+        let mut value = extra.and_then(|extra| extra.value.clone()).or(value);
         // A screen reader announces a heading or a link by its name, so one
         // with no name of its own takes its text, and the text is no value
         // of it, which some readers would announce again or take for a
@@ -1749,6 +1839,11 @@ impl WidgetTree {
             text_runs,
             text_selection,
             links,
+            description: extra
+                .and_then(|extra| extra.description.clone())
+                .or(description),
+            selected: extra.and_then(|extra| extra.selected).or(selected),
+            expanded: extra.and_then(|extra| extra.expanded).or(expanded),
             bounds: node.rect,
             focusable: node.interaction.has(Interaction::FOCUSABLE),
             disabled: node.interaction.has(Interaction::DISABLED),

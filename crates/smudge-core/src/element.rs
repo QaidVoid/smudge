@@ -47,13 +47,17 @@ use crate::animation::Spring;
 use crate::geometry::{Color, Corners, Point, Rect, Size};
 use crate::input::{ButtonEvent, Handled, KeyEvent};
 use crate::paint::PaintOp;
-use crate::reactive::{Owner, RenderEffect, RwSignal, prelude::Get};
+use crate::reactive::{
+    Owner, RenderEffect, RwSignal,
+    prelude::{Get, Set},
+};
 use crate::semantics::{Announcer, Checked, Role, ValueRange};
 use crate::style::{
     Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
 };
 use crate::theme::{ColorToken, ColorValue, CornerRadii, RadiusToken, RadiusValue};
 use crate::tree::interaction::Handlers;
+use crate::tree::overlay::Opening;
 pub use crate::tree::overlay::Placement;
 use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::variants::{PatchBuilder, StylePatch, Variants};
@@ -393,6 +397,74 @@ impl Binding {
         }
     }
 
+    /// A binding that writes the node's accessible description.
+    fn a11y_description(get: Rc<dyn Fn() -> String>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_description(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that writes the node's accessible value.
+    fn a11y_value(get: Rc<dyn Fn() -> String>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_value(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that writes whether what the node opens is open.
+    fn a11y_expanded(get: Rc<dyn Fn() -> bool>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_expanded(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that writes whether the node is the picked choice.
+    fn a11y_selected(get: Rc<dyn Fn() -> bool>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_selected(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes the node's checked state.
     fn a11y_checked(get: Rc<dyn Fn() -> Checked>) -> Binding {
         Binding {
@@ -638,6 +710,14 @@ pub struct Element<W: Widget> {
     a11y_label: Option<Value<String>>,
     /// The checked state an element set, when it set one.
     a11y_checked: Option<Value<Checked>>,
+    /// The accessible description the element sets, when it sets one.
+    a11y_description: Option<Value<String>>,
+    /// The accessible value the element sets, when it sets one.
+    a11y_value: Option<Value<String>>,
+    /// Whether the element sets the node as the picked choice, when it does.
+    a11y_selected: Option<Value<bool>>,
+    /// Whether the element sets what the node opens as open, when it does.
+    a11y_expanded: Option<Value<bool>>,
     /// The value and range an element set, when it set one.
     a11y_range: Option<Value<ValueRange>>,
     /// The place in a set an element set, when it set one.
@@ -692,6 +772,10 @@ impl<W: Widget> Element<W> {
             a11y_role: None,
             a11y_label: None,
             a11y_checked: None,
+            a11y_description: None,
+            a11y_value: None,
+            a11y_selected: None,
+            a11y_expanded: None,
             a11y_range: None,
             a11y_position: None,
             a11y_set_size: None,
@@ -1835,6 +1919,49 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Sets a longer description of the node than its name, such as the
+    /// text of its tooltip, which a screen reader announces after the name
+    /// and the role.
+    ///
+    /// This can be bound to a signal, like the style builders. It overrides
+    /// the description the widget itself reports.
+    pub fn accessible_description(mut self, description: impl Into<Value<String>>) -> Self {
+        self.a11y_description = Some(description.into());
+        self
+    }
+
+    /// Sets whether what the node opens, such as a menu, a list or a
+    /// collapsed section, is open, which a screen reader announces with the
+    /// node's role.
+    ///
+    /// This can be bound to a signal, like the style builders. It overrides
+    /// the state the widget itself reports.
+    pub fn accessible_expanded(mut self, expanded: impl Into<Value<bool>>) -> Self {
+        self.a11y_expanded = Some(expanded.into());
+        self
+    }
+
+    /// Sets the value a screen reader announces for the node, such as the
+    /// choice a combo box shows.
+    ///
+    /// This can be bound to a signal, like the style builders. It overrides
+    /// the value the widget itself reports.
+    pub fn accessible_value(mut self, value: impl Into<Value<String>>) -> Self {
+        self.a11y_value = Some(value.into());
+        self
+    }
+
+    /// Sets whether the node is the picked choice of the set around it, such
+    /// as the option a list box shows as chosen, which a screen reader
+    /// announces with the node's role.
+    ///
+    /// This can be bound to a signal, like the style builders. It overrides
+    /// the state the widget itself reports.
+    pub fn accessible_selected(mut self, selected: impl Into<Value<bool>>) -> Self {
+        self.a11y_selected = Some(selected.into());
+        self
+    }
+
     /// Sets the number the node shows and the range it moves in, such as a
     /// progress bar's progress, which a screen reader announces with the
     /// node's role.
@@ -2122,14 +2249,89 @@ impl<W: Widget> Element<W> {
     ///     });
     /// ```
     pub fn overlay<E: IntoElement>(
-        mut self,
+        self,
         open: RwSignal<bool>,
         placement: impl Into<Value<Placement>>,
         build: impl Fn() -> E + 'static,
     ) -> Self {
-        let placement = placement.into();
         let build = crate::hot::wrap(build);
-        let build: Rc<dyn Fn() -> AnyElement> = Rc::new(move || build().into_any());
+        self.with_overlay(
+            open,
+            placement.into(),
+            Rc::new(move || build().into_any()),
+            false,
+        )
+    }
+
+    /// Shows the element `build` returns below this node once the pointer
+    /// has rested on the node for [`TOOLTIP_DELAY`], as a tooltip, and hides
+    /// it when the pointer leaves, on a press of the node, and on Escape.
+    ///
+    /// The tooltip is an overlay, so it escapes every clip around the node,
+    /// and the pointer passes through it to whatever lies under it. Give the
+    /// node an [`accessible_description`](Self::accessible_description) of
+    /// the same text, which is what a screen reader announces.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Color;
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let save = panel()
+    ///     .width(px(24.0))
+    ///     .height(px(24.0))
+    ///     .accessible_description("Save the map")
+    ///     .tooltip(|| panel().width(px(80.0)).height(px(20.0)).background(Color::BLACK));
+    /// ```
+    pub fn tooltip<E: IntoElement>(mut self, build: impl Fn() -> E + 'static) -> Self {
+        let open = RwSignal::new(false);
+        // Each enter, leave and press starts a new wait, so a timer an
+        // earlier one set opens nothing.
+        let wait = Rc::new(std::cell::Cell::new(0u64));
+        let (shows, hover_wait) = (open.clone(), Rc::clone(&wait));
+        let watchers = self.handlers.watchers.get_or_insert_default();
+        watchers.hover.push(Box::new(move |inside| {
+            hover_wait.set(hover_wait.get() + 1);
+            if !inside {
+                if shows.get() {
+                    shows.set(false);
+                }
+                return;
+            }
+            let (expected, current, opens) =
+                (hover_wait.get(), Rc::clone(&hover_wait), shows.clone());
+            crate::timer::after(TOOLTIP_DELAY, move || {
+                if current.get() == expected {
+                    opens.set(true);
+                }
+            });
+        }));
+        let hides = open.clone();
+        watchers.press.push(Box::new(move || {
+            wait.set(wait.get() + 1);
+            if hides.get() {
+                hides.set(false);
+            }
+        }));
+        let build = crate::hot::wrap(build);
+        self.with_overlay(
+            open,
+            Value::Static(Placement::Below),
+            Rc::new(move || build().into_any()),
+            true,
+        )
+    }
+
+    /// Adds the binding that mounts the overlay `build` builds while `open`
+    /// reads `true`, as [`overlay`](Self::overlay) and
+    /// [`tooltip`](Self::tooltip) describe.
+    fn with_overlay(
+        mut self,
+        open: RwSignal<bool>,
+        placement: Value<Placement>,
+        build: Rc<dyn Fn() -> AnyElement>,
+        passes_pointer: bool,
+    ) -> Self {
         self.bindings.push(Binding {
             key: None,
             install: Box::new(move |id, queue| {
@@ -2157,9 +2359,12 @@ impl<W: Widget> Element<W> {
                                     Some((top, owner))
                                 });
                                 *mounted = back.or_else(|| {
-                                    mount_overlay(id, tree, &child_queue, placement, open, || {
-                                        build()
-                                    })
+                                    let opening = Opening {
+                                        placement,
+                                        open,
+                                        passes_pointer,
+                                    };
+                                    mount_overlay(id, tree, &child_queue, opening, || build())
                                 });
                             }
                             (false, Some((top, owner))) => match tree.begin_exit(top, owner) {
@@ -2529,6 +2734,14 @@ pub struct AnyElement {
     a11y_label: Option<Value<String>>,
     /// The checked state an element set, when it set one.
     a11y_checked: Option<Value<Checked>>,
+    /// The accessible description the element sets, when it sets one.
+    a11y_description: Option<Value<String>>,
+    /// The accessible value the element sets, when it sets one.
+    a11y_value: Option<Value<String>>,
+    /// Whether the element sets the node as the picked choice, when it does.
+    a11y_selected: Option<Value<bool>>,
+    /// Whether the element sets what the node opens as open, when it does.
+    a11y_expanded: Option<Value<bool>>,
     /// The value and range an element set, when it set one.
     a11y_range: Option<Value<ValueRange>>,
     /// The place in a set an element set, when it set one.
@@ -2569,6 +2782,10 @@ impl AnyElement {
             a11y_role: element.a11y_role,
             a11y_label: element.a11y_label,
             a11y_checked: element.a11y_checked,
+            a11y_description: element.a11y_description,
+            a11y_value: element.a11y_value,
+            a11y_selected: element.a11y_selected,
+            a11y_expanded: element.a11y_expanded,
             a11y_range: element.a11y_range,
             a11y_position: element.a11y_position,
             a11y_set_size: element.a11y_set_size,
@@ -2614,6 +2831,10 @@ pub(crate) fn mount(
     mount_named(element, tree, queue, Attach::Child(parent), None, None)
 }
 
+/// How long the pointer rests on a node before its
+/// [`tooltip`](Element::tooltip) shows.
+pub const TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+
 /// Where a mounted element's node goes.
 enum Attach {
     /// Last among the children of the parent, or as the root without one.
@@ -2622,10 +2843,8 @@ enum Attach {
     Overlay {
         /// The node that opened the overlay.
         host: WidgetId,
-        /// Where the overlay goes relative to the host.
-        placement: Placement,
-        /// The signal that keeps the overlay open.
-        open: RwSignal<bool>,
+        /// How the overlay opens.
+        opening: Opening,
     },
 }
 
@@ -2684,6 +2903,10 @@ fn mount_named(
         a11y_role,
         a11y_label,
         a11y_checked,
+        a11y_description,
+        a11y_value,
+        a11y_selected,
+        a11y_expanded,
         a11y_range,
         a11y_position,
         a11y_set_size,
@@ -2695,11 +2918,9 @@ fn mount_named(
     } = element;
     let id = match attach {
         Attach::Child(parent) => tree.insert_owned(parent, owner, widget, style),
-        Attach::Overlay {
-            host,
-            placement,
-            open,
-        } => tree.insert_overlay(host, owner, widget, style, placement, open),
+        Attach::Overlay { host, opening } => {
+            tree.insert_overlay(host, owner, widget, style, opening)
+        }
     };
     #[cfg(feature = "devtools")]
     tree.set_created_at(id, created_at);
@@ -2750,6 +2971,26 @@ fn mount_named(
     match a11y_checked {
         Some(Value::Static(checked)) => tree.set_a11y_checked(id, Some(checked)),
         Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_checked(get)),
+        None => {}
+    }
+    match a11y_description {
+        Some(Value::Static(text)) => tree.set_a11y_description(id, Some(text)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_description(get)),
+        None => {}
+    }
+    match a11y_value {
+        Some(Value::Static(text)) => tree.set_a11y_value(id, Some(text)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_value(get)),
+        None => {}
+    }
+    match a11y_selected {
+        Some(Value::Static(selected)) => tree.set_a11y_selected(id, Some(selected)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_selected(get)),
+        None => {}
+    }
+    match a11y_expanded {
+        Some(Value::Static(expanded)) => tree.set_a11y_expanded(id, Some(expanded)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_expanded(get)),
         None => {}
     }
     match a11y_range {
@@ -2842,8 +3083,7 @@ fn mount_overlay(
     host: WidgetId,
     tree: &mut WidgetTree,
     queue: &UpdateQueue,
-    placement: Placement,
-    open: RwSignal<bool>,
+    opening: Opening,
     build: impl FnOnce() -> AnyElement,
 ) -> Option<(WidgetId, Owner)> {
     let host_owner = tree.owner(host)?;
@@ -2851,11 +3091,7 @@ fn mount_overlay(
     let _mounting = crate::reactive::carry::Mounting::enter(host_owner.data());
     let owner = host_owner.child();
     let element = owner.with(build);
-    let overlay = Attach::Overlay {
-        host,
-        placement,
-        open,
-    };
+    let overlay = Attach::Overlay { host, opening };
     let top = mount_named(element, tree, queue, overlay, None, Some(&owner));
     Some((top, owner))
 }

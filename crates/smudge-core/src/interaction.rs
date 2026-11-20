@@ -163,6 +163,21 @@ pub(crate) struct Handlers {
     /// The axis along which the arrow keys move the focus among the
     /// focusable nodes inside this one, when they do.
     pub(crate) arrows: Option<crate::style::Direction>,
+    /// What the library builds on the node watches of its hover and its
+    /// presses beside the app's own handlers, boxed since few nodes have
+    /// any.
+    pub(crate) watchers: Option<Box<Watchers>>,
+}
+
+/// Closures that watch a node's hover and presses beside its handlers, so
+/// what the library builds on a node leaves the app's handlers its own.
+#[derive(Default)]
+pub(crate) struct Watchers {
+    /// Run with the node's handler when it enters or leaves the hovered
+    /// chain.
+    pub(crate) hover: Vec<Box<dyn FnMut(bool)>>,
+    /// Run when a press of any button begins on the node or a descendant.
+    pub(crate) press: Vec<Box<dyn FnMut()>>,
 }
 
 /// The drag a held primary press makes, from the press until its release,
@@ -215,7 +230,10 @@ impl Handlers {
     /// [`Interaction::FOCUSABLE`] tracks. A commit handler is left out,
     /// because a commit never comes from the pointer.
     pub(crate) fn has_any(&self) -> bool {
-        self.on_press.is_some()
+        self.watchers
+            .as_ref()
+            .is_some_and(|watchers| !watchers.hover.is_empty())
+            || self.on_press.is_some()
             || self.on_hover.is_some()
             || self.on_pointer_down.is_some()
             || self.on_press_outside.is_some()
@@ -295,6 +313,7 @@ impl WidgetTree {
         self.pointer_inside = true;
         self.dismiss_outside(position);
         let target = self.target(position);
+        self.run_press_watchers(self.hit_any(position, true));
         if self.pressed.is_none() || button == PointerButton::Primary {
             self.set_hover_target(self.hover_target(position));
             self.set_keyboard_nav(false);
@@ -895,14 +914,39 @@ impl WidgetTree {
             return;
         };
         owner.with(|| {
-            if let Some(on_hover) = self
-                .nodes
-                .get_mut(id)
-                .and_then(|node| node.handlers.on_hover.as_mut())
-            {
+            let Some(handlers) = self.nodes.get_mut(id).map(|node| &mut node.handlers) else {
+                return;
+            };
+            if let Some(on_hover) = handlers.on_hover.as_mut() {
                 on_hover(hovered);
             }
+            if let Some(watchers) = handlers.watchers.as_deref_mut() {
+                for watcher in &mut watchers.hover {
+                    watcher(hovered);
+                }
+            }
         });
+    }
+
+    /// Runs the press watchers of `target` and its ancestors as the pointer
+    /// sees them, each inside its node's owner.
+    fn run_press_watchers(&mut self, target: Option<WidgetId>) {
+        for id in self.chain(target) {
+            let Some(owner) = self.owner(id).cloned() else {
+                continue;
+            };
+            owner.with(|| {
+                if let Some(watchers) = self
+                    .nodes
+                    .get_mut(id)
+                    .and_then(|node| node.handlers.watchers.as_deref_mut())
+                {
+                    for watcher in &mut watchers.press {
+                        watcher();
+                    }
+                }
+            });
+        }
     }
 
     /// Runs `on_focus` of `id` inside the node's owner.

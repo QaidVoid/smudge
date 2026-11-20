@@ -2029,6 +2029,41 @@ fn menus_report_their_roles_and_a_check_item_its_state() {
 }
 
 #[test]
+fn a_combo_box_reports_its_value_and_its_options_which_one_is_picked() {
+    let mut app = app_with(|| {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(
+                Element::new(Panel)
+                    .role(Role::ComboBox)
+                    .accessible_label("Fruit")
+                    .accessible_value("Banana")
+                    .accessible_description("The fruit to plant"),
+            )
+            .child(
+                Element::new(Panel).role(Role::ListBox).child(
+                    Element::new(Panel)
+                        .role(Role::ListBoxOption)
+                        .accessible_label("Banana")
+                        .accessible_selected(true),
+                ),
+            )
+    });
+    let mut projection = Projection::new("Smudge");
+
+    let update = update_after_frame(&mut app, &mut projection, true);
+
+    let field = node_with_role(&update, AccessKitRole::ComboBox);
+    assert_eq!(field.value(), Some("Banana"));
+    assert_eq!(field.description(), Some("The fruit to plant"));
+    node_with_role(&update, AccessKitRole::ListBox);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::ListBoxOption).is_selected(),
+        Some(true)
+    );
+}
+
+#[test]
 fn an_overlay_that_opens_and_closes_joins_and_leaves_the_window() {
     let open = RwSignal::new(false);
     let shown = open.clone();

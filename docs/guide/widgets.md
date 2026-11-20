@@ -268,9 +268,32 @@ let canvas_area = panel()
 
 `menu_item(label, on_choose)` runs its closure after the menus close, under the owner the menu's opener was built in, so the signals and timers it creates outlive the menu, `menu_check_item(label, signal)` toggles a signal and shows a check mark while it is on, `submenu(label, items)` opens another menu beside it, and `menu_separator()` draws a line between groups. `.shortcut(text)` shows a shortcut at the right of an item. It only tells the user, and the app handles the keys itself. `.disabled(value)` greys an item out.
 
-The keyboard walks every menu: Up and Down step through the items, a letter goes to the next item that starts with it, Enter and Space choose, Right opens a submenu and Left closes it, Escape closes the menu that is open, and in a menu bar Left and Right move to the next menu. A context menu also opens with the menu key, or Shift+F10, at the top left of the focused node. Screen readers hear the menu bar, menu, menu item and checked item roles.
+The keyboard walks every menu: Up and Down step through the items, a letter goes to the next item that starts with it, Enter and Space choose, Right opens a submenu and Left closes it, Escape closes the menu that is open, and in a menu bar Left and Right move to the next menu. A context menu also opens with the menu key, or Shift+F10, at the top left of the focused node. Screen readers hear the menu bar, menu, menu item and checked item roles, a lone `menu` as a button, and whether each title or submenu is open.
 
 Under them is `navigate_with_arrows(direction)`, which any container can use, so the arrow keys move the focus among the focusable nodes inside it, as a list or a toolbar does.
+
+## Tooltips and dropdowns
+
+`tooltip_text(text)` shows a short text below any element once the pointer has rested on it for a moment, and hides it when the pointer leaves, on a press, and on Escape. The pointer passes through a tooltip to whatever lies under it, and a screen reader hears the text as the element's description. `tooltip(build)`, on any element, shows an element of your own the same way.
+
+`dropdown(choices, selected)` shows the choice `selected` picks and opens the list of choices below it:
+
+```rust
+use smudge::widgets::{TooltipExt, dropdown};
+
+let brush = RwSignal::new(1_usize);
+let picker = row()
+    .child(
+        dropdown(
+            || vec![String::from("Small"), String::from("Medium"), String::from("Large")],
+            brush,
+        )
+        .accessible_label("Brush size"),
+    )
+    .child(button("Clear").tooltip_text("Clear the canvas"));
+```
+
+A press, Enter, Space or Down opens the list on the picked choice, or on the first one when `selected` names none. Up and Down walk it, a letter goes to the next choice that starts with it, and Enter or a press picks one and closes the list, while Escape or a press outside closes it unchanged. An empty list does not open, and a list whose choices change while it is open closes. A screen reader hears a combo box whose value is the picked choice, and whether its list is open.
 
 ## Writing your own
 

@@ -522,6 +522,15 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     if let Some(position) = node.position {
         out.set_position_in_set(position);
     }
+    if let Some(description) = &node.description {
+        out.set_description(description.clone());
+    }
+    if let Some(selected) = node.selected {
+        out.set_selected(selected);
+    }
+    if let Some(expanded) = node.expanded {
+        out.set_expanded(expanded);
+    }
     if let Some(size) = node.set_size {
         out.set_size_of_set(size);
     }
@@ -684,6 +693,10 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::Menu => AccessKitRole::Menu,
         Role::MenuItem => AccessKitRole::MenuItem,
         Role::MenuItemCheckBox => AccessKitRole::MenuItemCheckBox,
+        Role::ComboBox => AccessKitRole::ComboBox,
+        Role::ListBox => AccessKitRole::ListBox,
+        Role::ListBoxOption => AccessKitRole::ListBoxOption,
+        Role::Tooltip => AccessKitRole::Tooltip,
         // A role added after this mapping reports as a plain group.
         _ => AccessKitRole::Group,
     }
