@@ -30,10 +30,10 @@ use smudge_core::input::{Handled, Key, KeyEvent};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::{Role, Semantics};
-use smudge_core::style::Length;
+use smudge_core::style::{Length, px};
 use smudge_core::theme::ColorToken;
 use smudge_core::tree::Dirty;
-use smudge_core::widget::{AvailableSpace, MeasureInput, PaintCx, Panel, Widget};
+use smudge_core::widget::{AvailableSpace, MeasureInput, PaintCx, Panel, Widget, panel};
 use smudge_core::window::Cursor;
 
 use crate::chrome::{
@@ -125,9 +125,9 @@ impl Widget for TextInput {
     /// height is one line of the input's style. Neither depends on the text,
     /// so an edit repaints the input without laying it out again.
     ///
-    /// That height also rides on the min-height style the constructor sets,
-    /// because the layout engine measures childless nodes only and the input
-    /// always carries its caret child.
+    /// That height also rides on a strut child of one line's height that
+    /// the constructor adds, because the layout engine measures childless
+    /// nodes only and the input always carries its caret child.
     fn measure(&mut self, input: MeasureInput) -> Option<Size> {
         let width = match input.available_width {
             AvailableSpace::Definite(width) => width.max(0.0),
@@ -291,7 +291,6 @@ pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
     Element::new(TextInput::new(Rc::clone(&chrome)))
         .clip(true)
         .cursor(Cursor::Text)
-        .min_height(one_line)
         .bind(AmbientStyleKey, current_text_style, apply_ambient_style)
         .bind(
             ValueKey,
@@ -311,6 +310,10 @@ pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
         .on_focus(move |focused| handle_focus(&focus_chrome, focused))
         .on_ime_commit(move |text| handle_commit(&commit_chrome, text))
         .on_ime_preedit(move |text, cursor| handle_preedit(&preedit_chrome, text, cursor))
+        // An empty strut one line tall holds the content box's height, so a
+        // padded or bordered field grows around its line rather than over
+        // it.
+        .child(panel().width(px(0.0)).height(one_line).shrink(0.0))
         .child(caret_node(&caret_chrome))
 }
 

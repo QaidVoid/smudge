@@ -1888,3 +1888,31 @@ fn a_scrolled_input_reports_its_caret_inside_the_field() {
         node.bounds
     );
 }
+
+#[test]
+fn a_padded_and_bordered_field_grows_around_its_line() {
+    smudge_text::TextSystem::bundled_only().install();
+    let mut harness = Harness::new(220.0, 90.0, 1.0, || {
+        panel()
+            .column()
+            .child(text_input(RwSignal::new(String::from("24"))))
+            .child(
+                text_input(RwSignal::new(String::from("24")))
+                    .padding(px(4.0))
+                    .border(1.0),
+            )
+    });
+    harness.settle();
+    let mut heights = Vec::new();
+    harness.app().visit_nodes(|_, type_name, rect| {
+        if type_name.ends_with("TextInput") {
+            heights.push(rect.height());
+        }
+    });
+    assert_eq!(heights.len(), 2);
+    assert_eq!(
+        heights[1],
+        heights[0] + 2.0 * 4.0 + 2.0 * 1.0,
+        "the padding and the border sit around the line, not over it"
+    );
+}
