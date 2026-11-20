@@ -19,7 +19,10 @@ fn frame(micros: u64) -> FrameRecord {
 
 /// The operations `timeline` paints in a box of 300 by 96.
 fn painted(timeline: Timeline) -> Vec<PaintOp> {
-    let view = TimelineView { timeline };
+    let view = TimelineView {
+        timeline,
+        hovered: None,
+    };
     let rect = Rect::new(0.0, 0.0, 300.0, 96.0);
     let style = Style::default();
     let theme = Theme::dark();

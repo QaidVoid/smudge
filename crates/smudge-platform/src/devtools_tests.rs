@@ -31,6 +31,18 @@ const ON_BODY: Point = Point { x: 40.0, y: 120.0 };
 /// A point well away from the panel.
 const OFF_PANEL: Point = Point { x: 700.0, y: 500.0 };
 
+/// Builds a column that puts `child` at the right of the window, beside the
+/// open panel, so a press on it reaches the app.
+fn beside_panel(child: impl smudge_core::element::IntoElement) -> Element<Panel> {
+    smudge_widgets::column()
+        .padding_xy(Size {
+            width: 100.0,
+            height: 300.0,
+        })
+        .align_items(smudge_core::style::Align::End)
+        .child(child)
+}
+
 /// What the app under the overlay heard.
 #[derive(Default)]
 struct Heard {
@@ -218,7 +230,8 @@ fn the_two_trees_never_wake_each_other() {
     app.frame();
 
     let app_before = woke_app.get();
-    click(&mut devtools, &mut app, Point { x: 300.0, y: 26.0 });
+    let hide = overlay_text(&devtools, "Hide");
+    click(&mut devtools, &mut app, hide);
     devtools.app.frame();
     assert!(woke_overlay.get() > 0, "the press collapses the panel");
     assert_eq!(
@@ -546,10 +559,7 @@ fn a_smaller_window_pulls_the_panel_inside() {
     devtools.set_viewport(small, 1.0);
     devtools.app.frame();
     let origin = panel_origin(&devtools);
-    assert!(
-        origin.x <= 400.0 - 320.0 && origin.y <= 300.0 - 32.0,
-        "{origin:?}"
-    );
+    assert!(origin.x <= 0.0 && origin.y <= 300.0 - 32.0, "{origin:?}");
 }
 
 #[test]
@@ -1023,7 +1033,7 @@ fn picking_a_button_selects_it_and_names_where_it_was_built() {
             repaint: RepaintMode::Damage,
         },
         move || {
-            smudge_widgets::column().padding(px(300.0)).child(
+            beside_panel(
                 smudge_widgets::button("Save")
                     .on_press(move || counted.set(counted.get() + 1))
                     .on_pointer_up(move |_| released.set(released.get() + 1)),
@@ -1045,11 +1055,13 @@ fn picking_a_button_selects_it_and_names_where_it_was_built() {
         .into_iter()
         .find(|node| node.role == smudge_core::semantics::Role::Button)
         .expect("the app shows its button");
-    let center = Point {
-        x: (save.bounds.x0 + save.bounds.x1) / 2.0,
+    // Inside the button's padding, off its label, so the pick lands on the
+    // button itself.
+    let on_button = Point {
+        x: save.bounds.x0 + 4.0,
         y: (save.bounds.y0 + save.bounds.y1) / 2.0,
     };
-    click(&mut devtools, &mut app, center);
+    click(&mut devtools, &mut app, on_button);
     app.frame();
     assert_eq!(pressed.get(), 0, "a pick does not press the button");
     assert_eq!(lifted.get(), 0, "nor does its release reach the button");
@@ -1060,23 +1072,23 @@ fn picking_a_button_selects_it_and_names_where_it_was_built() {
     devtools.app.frame();
     let details = app.node_details(save.id).expect("the button is live");
     let padding = details.boxes.padding;
-    let shown = devtools
+    let shown: Vec<String> = devtools
         .app
         .semantics_nodes()
         .into_iter()
         .filter_map(|node| node.value)
-        .find(|text| text.starts_with("Panel (Button"))
-        .expect("the details describe the button");
-    assert!(shown.contains(&format!("{}:{line}:", file!())), "{shown}");
+        .collect();
     assert!(
-        shown.contains(&format!(
-            "padding: {}, {} {}x{}",
-            padding.x0,
-            padding.y0,
-            padding.width(),
-            padding.height()
-        )),
-        "{shown}"
+        shown
+            .iter()
+            .any(|text| text.starts_with(&format!("{}:{line}:", file!()))),
+        "the details name where the button was built: {shown:?}"
+    );
+    let border = details.boxes.border;
+    let size = format!("{} \u{d7} {}", border.width(), border.height());
+    assert!(
+        shown.contains(&size),
+        "the details give its size: {shown:?}"
     );
     let highlighted = devtools.app.frame().list.items().iter().any(
         |item| matches!(item, DisplayItem::Op(PaintOp::FillRect { rect, .. }) if *rect == padding),
@@ -1129,11 +1141,7 @@ fn copy_as_test_writes_what_a_harness_of_the_node_draws() {
             clear_color: Color::WHITE,
             repaint: RepaintMode::Damage,
         },
-        || {
-            smudge_widgets::column()
-                .padding(px(300.0))
-                .child(smudge_widgets::button("Save"))
-        },
+        || beside_panel(smudge_widgets::button("Save")),
     );
     app.frame();
     let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
@@ -1153,6 +1161,7 @@ fn copy_as_test_writes_what_a_harness_of_the_node_draws() {
         .expect("the app shows its button");
     devtools.tools.select(Some(save.id));
     devtools.inspect(&app, false, true);
+    devtools.app.frame();
     let at = overlay_text(&devtools, "Copy as test");
     click(&mut devtools, &mut app, at);
     devtools.inspect(&app, false, true);
@@ -1194,7 +1203,7 @@ fn the_reactive_tab_counts_runs_a_second_where_each_effect_was_created() {
             let count = RwSignal::new(0_u32);
             let (seen, press) = (count.clone(), count);
             std::mem::forget(smudge_core::reactive::RenderEffect::new(move || seen.get()));
-            smudge_widgets::column().padding(px(300.0)).child(
+            beside_panel(
                 smudge_widgets::button("More").on_press(move || press.update(|count| *count += 1)),
             )
         },
@@ -1208,30 +1217,45 @@ fn the_reactive_tab_counts_runs_a_second_where_each_effect_was_created() {
     let start = Instant::now();
     devtools.trace(&app, start, false);
 
-    let more = Point { x: 400.0, y: 317.0 };
+    let more = app
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == smudge_core::semantics::Role::Button)
+        .expect("the app shows its button")
+        .bounds;
+    let more = Point {
+        x: (more.x0 + more.x1) / 2.0,
+        y: (more.y0 + more.y1) / 2.0,
+    };
     for _ in 0..4 {
         click(&mut devtools, &mut app, more);
         app.frame();
     }
     devtools.trace(&app, start + Duration::from_secs(2), false);
     devtools.app.frame();
-    let text = devtools
-        .app
-        .semantics_nodes()
-        .into_iter()
-        .filter_map(|node| node.value)
-        .find(|text| text.starts_with("Busiest effects"))
-        .expect("the reactive tab shows its text");
+    let shown = devtools.app.semantics_nodes();
     let place = format!("{}:{created}:", file!());
-    let line = text
-        .lines()
-        .find(|line| line.contains(&place))
-        .unwrap_or_else(|| panic!("the effect's place is listed: {text}"));
+    let row = shown
+        .iter()
+        .find(|node| {
+            node.value
+                .as_deref()
+                .is_some_and(|text| text.starts_with(&place))
+        })
+        .unwrap_or_else(|| panic!("the effect's place is listed"))
+        .bounds;
+    let rate = shown
+        .iter()
+        .find(|node| node.bounds.y0 == row.y0 && node.bounds.x1 <= row.x0)
+        .and_then(|node| node.value.clone());
+    assert_eq!(rate.as_deref(), Some("2.0/s"), "four runs in two seconds");
     assert!(
-        line.trim_start().starts_with("2.0"),
-        "four runs in two seconds: {line}"
+        shown.iter().any(|node| node
+            .value
+            .as_deref()
+            .is_some_and(|text| text.contains(" owners hold "))),
+        "the owners are summed up"
     );
-    assert!(text.contains("Owners: "), "{text}");
 }
 
 #[test]
@@ -1249,7 +1273,7 @@ fn the_focus_overlay_numbers_tab_stops_and_the_access_tab_warns() {
         move || {
             smudge_widgets::column()
                 .padding_xy(Size {
-                    width: 360.0,
+                    width: 560.0,
                     height: 100.0,
                 })
                 .child(
@@ -1280,7 +1304,7 @@ fn the_focus_overlay_numbers_tab_stops_and_the_access_tab_warns() {
             .map(|node| node.bounds)
     };
     let first = badge(&devtools, "1").expect("the first tab stop is numbered");
-    assert_eq!((first.x0, first.y0), (360.0, 100.0), "at the icon button");
+    assert_eq!((first.x0, first.y0), (560.0, 100.0), "at the icon button");
     assert!(
         badge(&devtools, "2").is_some(),
         "the Save button is the second"
@@ -1302,20 +1326,20 @@ fn the_focus_overlay_numbers_tab_stops_and_the_access_tab_warns() {
     devtools.app.frame();
     devtools.observe(&app, false, true);
     devtools.app.frame();
-    let text = devtools
+    let shown: Vec<String> = devtools
         .app
         .semantics_nodes()
         .into_iter()
         .filter_map(|node| node.value)
-        .find(|text| text.starts_with("Warnings: "))
-        .expect("the access tab shows its text");
-    assert!(
-        text.starts_with(
-            "Warnings: 1\n  the node at 360, 100 40x40 takes the focus but has no name"
-        ),
-        "{text}"
-    );
-    assert!(text.contains("Button \"Save\""), "{text}");
+        .collect();
+    for text in [
+        "1 warning",
+        "Focusable without a name",
+        "At 560, 100, 40 \u{d7} 40",
+        "\u{201c}Save\u{201d}",
+    ] {
+        assert!(shown.iter().any(|shown| shown == text), "{text}: {shown:?}");
+    }
 }
 
 #[test]

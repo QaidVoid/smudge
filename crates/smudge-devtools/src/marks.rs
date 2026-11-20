@@ -11,14 +11,14 @@ use smudge_core::widget::{PaintCx, Widget};
 
 /// The color of the damage tint. It is the color and opacity the window's
 /// fixed damage overlay tints with, so the two match pixel for pixel.
-const TINT: Color = Color::rgba(255, 64, 64, 96);
+pub(crate) const TINT: Color = Color::rgba(255, 64, 64, 96);
 
 /// The color paint flashing draws with, before each flash's own opacity.
-const FLASH: Color = Color::rgb(70, 210, 120);
+pub(crate) const FLASH: Color = Color::rgb(70, 210, 120);
 
 /// The colors layout bounds outlines with, one per depth in the tree,
 /// starting again after the last.
-const DEPTHS: [Color; 6] = [
+pub(crate) const DEPTHS: [Color; 6] = [
     Color::rgb(255, 120, 80),
     Color::rgb(250, 200, 60),
     Color::rgb(120, 220, 90),
@@ -29,7 +29,7 @@ const DEPTHS: [Color; 6] = [
 
 /// The colors of the highlighted node's margin, border, padding and
 /// content boxes, which stack from the outside in.
-const BOXES: [Color; 4] = [
+pub(crate) const BOXES: [Color; 4] = [
     Color::rgba(246, 178, 107, 110),
     Color::rgba(255, 229, 153, 110),
     Color::rgba(147, 196, 125, 110),
@@ -37,13 +37,13 @@ const BOXES: [Color; 4] = [
 ];
 
 /// The color of the tab stops and of the focused node.
-const FOCUS: Color = Color::rgb(80, 160, 255);
+pub(crate) const FOCUS: Color = Color::rgb(80, 160, 255);
 
 /// The color of the focus trap that holds the keyboard.
 const TRAP: Color = Color::rgb(190, 110, 255);
 
 /// The color of the nodes that take a press.
-const PRESSABLE: Color = Color::rgb(90, 200, 120);
+pub(crate) const PRESSABLE: Color = Color::rgb(90, 200, 120);
 
 /// The color of the hovered node and its ancestors.
 const HOVERED: Color = Color::rgb(80, 160, 255);

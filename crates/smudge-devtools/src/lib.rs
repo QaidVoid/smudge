@@ -6,9 +6,13 @@
 //! and pixels stay its own.
 
 mod access;
+mod frames;
 mod inspector;
+mod live;
+mod look;
 mod marks;
 mod reactive;
+mod styles;
 mod theme_file;
 mod timeline;
 
@@ -20,29 +24,29 @@ use std::time::Duration;
 use marks::Marks;
 pub use theme_file::{apply_theme_file, theme_file, watch_theme};
 pub use timeline::FrameRecord;
-use timeline::{HEIGHT, Timeline, TimelineView};
+use timeline::Timeline;
 
 use smudge_core::app::Remounted;
 use smudge_core::element::{AnyElement, Element, IntoElement, Slot, for_each, show};
-use smudge_core::geometry::{Point, Rect, Size};
+use smudge_core::geometry::{Color, Point, Rect, Size};
 use smudge_core::input::{Drag, Handled};
 use smudge_core::inspect::{
     A11yWarning, BoxModel, CycleInfo, FocusInfo, NodeDetails, OwnerEntry, PointerInfo, TreeEntry,
 };
 use smudge_core::reactive::{RwSignal, prelude::*};
-use smudge_core::semantics::SemanticsNode;
-use smudge_core::style::{Edges, Length, Overflow, pct, px};
-use smudge_core::theme::ColorToken;
+use smudge_core::semantics::{Role, SemanticsNode};
+use smudge_core::style::{Align, Edges, Justify, Length, Overflow, pct, px};
+use smudge_core::theme::ColorValue;
 use smudge_core::tree::{Dirty, WidgetId};
 use smudge_core::widget::{Panel, panel};
-use smudge_text::label;
-use smudge_widgets::{button, column, row};
+use smudge_text::{LabelExt, label, provide_text_style};
+use smudge_widgets::{column, row, spacer};
 
 /// Where the panel opens, from the window's top left, in logical pixels.
 const START: Point = Point { x: 16.0, y: 16.0 };
 
-/// How many hot reload events the frames tab shows.
-const HOT_LINES: usize = 4;
+/// How many hot reload events the live tab shows.
+const HOT_LINES: usize = 6;
 
 /// One step of hot reload, as the window reports it.
 #[derive(Clone, Debug, PartialEq)]
@@ -66,44 +70,62 @@ pub enum HotEvent {
 }
 
 impl HotEvent {
-    /// Describes the event in a line or a few.
-    fn describe(&self) -> String {
+    /// Returns the color of the event's dot, a line that names it, and a
+    /// line or a few of detail, which may be empty.
+    fn parts(&self) -> (Color, String, String) {
         match self {
-            HotEvent::Building => String::from("building a patch"),
-            HotEvent::BuildFailed(reason) => format!("build failed: {}", reason.trim()),
-            HotEvent::Refused(reason) => format!("patch refused: {reason}"),
+            HotEvent::Building => (look::WARN, String::from("Building a patch"), String::new()),
+            HotEvent::BuildFailed(reason) => (
+                look::BAD,
+                String::from("Build failed"),
+                String::from(reason.trim()),
+            ),
+            HotEvent::Refused(reason) => (look::BAD, String::from("Patch refused"), reason.clone()),
             HotEvent::Applied { took, remounted } => {
-                let millis = took.as_secs_f64() * 1000.0;
-                match remounted {
-                    None => format!("patch applied in {millis:.1} ms, tree kept"),
-                    Some(remounted) => {
-                        let focus = if remounted.focus_restored {
-                            "focus restored"
+                let title = format!("Patch applied in {:.1} ms", took.as_secs_f64() * 1000.0);
+                let detail = match remounted {
+                    None => String::from("The tree was kept as it was."),
+                    Some(remounted) => format!(
+                        "Remounted, focus {}, {} {} kept their values, {} unclaimed",
+                        if remounted.focus_restored {
+                            "restored"
                         } else {
-                            "focus not restored"
-                        };
-                        format!(
-                            "patch applied in {millis:.1} ms, {focus}, {} signals kept, {} left",
-                            remounted.signals_kept, remounted.signals_left
-                        )
-                    }
-                }
+                            "not restored"
+                        },
+                        remounted.signals_kept,
+                        if remounted.signals_kept == 1 {
+                            "signal"
+                        } else {
+                            "signals"
+                        },
+                        remounted.signals_left,
+                    ),
+                };
+                (look::GOOD, title, detail)
             }
         }
     }
 }
 
 /// The width of the panel, in logical pixels.
-const WIDTH: f32 = 320.0;
+const WIDTH: f32 = 400.0;
 
 /// The width of the panel's border, in logical pixels.
 const BORDER: f32 = 1.0;
 
-/// The padding around the panel's body, in logical pixels.
-const PAD: f32 = 8.0;
+/// The padding at the sides of a tab, in logical pixels.
+const PAD: f32 = 12.0;
 
-/// The width of the timeline, in logical pixels: the panel's inside.
-const TIMELINE_WIDTH: f32 = WIDTH - 2.0 * (BORDER + PAD);
+/// The tallest the panel's body grows, in logical pixels.
+const BODY_MAX: f32 = 540.0;
+
+/// The shortest the panel's body shrinks in a small window, in logical
+/// pixels.
+const BODY_MIN: f32 = 240.0;
+
+/// The height of the title bar, in logical pixels, which the body's height
+/// leaves room for.
+const TITLE: f32 = 42.0;
 
 /// How much of the panel's top stays in the window when a drag or a resize
 /// takes it toward the bottom edge, in logical pixels, so its title bar can
@@ -129,12 +151,13 @@ pub struct Tools {
     bounds: RwSignal<Rc<Vec<(usize, Rect)>>>,
     /// The tab the panel shows.
     tab: RwSignal<Tab>,
-    /// What the reactive tab shows, as text.
-    reactive: RwSignal<String>,
-    /// What the accessibility tab shows, as text.
-    access: RwSignal<String>,
-    /// The last few hot reload events, oldest first, as text.
-    hot: RwSignal<Rc<VecDeque<String>>>,
+    /// What the reactive tab shows, once the window has traced the app.
+    reactive: RwSignal<Option<Rc<reactive::Trace>>>,
+    /// What the accessibility tab shows, once the window has audited the
+    /// app.
+    access: RwSignal<Option<Rc<access::Audit>>>,
+    /// The last few hot reload events, newest first.
+    hot: RwSignal<Rc<VecDeque<HotEvent>>>,
     /// The lines the last read of the watched theme file skipped.
     theme_skipped: RwSignal<Vec<String>>,
     /// What the last "Write theme" press wrote, or why it could not.
@@ -217,8 +240,8 @@ impl Tools {
             flashes: RwSignal::new(Rc::new(Vec::new())),
             bounds: RwSignal::new(Rc::new(Vec::new())),
             tab: RwSignal::new(Tab::Frames),
-            reactive: RwSignal::new(String::new()),
-            access: RwSignal::new(String::new()),
+            reactive: RwSignal::new(None),
+            access: RwSignal::new(None),
             hot: RwSignal::new(Rc::new(VecDeque::new())),
             focus: RwSignal::new(None),
             pointer: RwSignal::new(None),
@@ -299,16 +322,17 @@ impl Tools {
         self.tab.get() == Tab::Inspector
     }
 
-    /// Records `event`, one step of hot reload, which the frames tab shows
-    /// among the last few.
+    /// Records `event`, one step of hot reload, which the live tab shows
+    /// among the last few. An event replaces the build it ends, so a
+    /// finished build shows only how it ended.
     pub fn record_hot(&self, event: HotEvent) {
-        let line = event.describe();
-        self.hot.update(|lines| {
-            let lines = Rc::make_mut(lines);
-            if lines.len() == HOT_LINES {
-                lines.pop_front();
+        self.hot.update(|events| {
+            let events = Rc::make_mut(events);
+            if events.front() == Some(&HotEvent::Building) {
+                events.pop_front();
             }
-            lines.push_back(line);
+            events.truncate(HOT_LINES - 1);
+            events.push_front(event);
         });
     }
 
@@ -322,7 +346,8 @@ impl Tools {
     /// `warnings`, the nodes assistive technology cannot describe well, for
     /// the accessibility tab.
     pub fn show_access(&self, nodes: &[SemanticsNode], warnings: &[A11yWarning]) {
-        self.access.set(access::describe(nodes, warnings));
+        self.access
+            .set(Some(Rc::new(access::Audit::new(nodes, warnings))));
     }
 
     /// Takes where the app's focus is, or `None` when the focus overlay is
@@ -355,7 +380,7 @@ impl Tools {
         owners: &[OwnerEntry],
     ) {
         self.reactive
-            .set(reactive::describe(busiest, cycles, owners));
+            .set(Some(Rc::new(reactive::Trace::new(busiest, cycles, owners))));
     }
 
     /// Returns whether pick mode is on, so the window sends the pointer to
@@ -467,11 +492,22 @@ impl Tools {
 /// again. It stays inside the window, across a drag and a resize, as far as
 /// the window is wide and tall enough to hold its title bar.
 ///
-/// The panel shows the app's last frames as a timeline of stacked bars, one
-/// per frame and one color per stage, with a line at the budget of a frame
-/// at 60 frames a second. Hovering a bar describes its frame below. Under
-/// the timeline, buttons turn the [`Switches`] on and off, and the root
-/// draws what they show over the app, under the panel.
+/// The panel paints in colors of its own, the same over every app. Its tabs
+/// each start with a line that says what the tab is for:
+///
+/// - Frames sums up what the app's frames cost, shows the last ones as a
+///   timeline of stacked bars, one color per stage, with a dashed line at
+///   the budget of a frame at 60 frames a second, and breaks the hovered
+///   frame down by stage.
+/// - Overlays turns the [`Switches`] on and off, each with a line on what
+///   it draws and in which color. The root draws what they show over the
+///   app, under the panel.
+/// - Inspector picks a node, lists the tree, and shows the selected node's
+///   source, box model, state, bindings and style.
+/// - Reactive lists the busiest effects, the cycles and the owner tree.
+/// - Access lists the accessibility warnings and tree, and a press on
+///   either shows its node in the inspector.
+/// - Live shows hot reload's last steps and the theme file.
 ///
 /// ```
 /// use smudge_core::geometry::Size;
@@ -491,18 +527,27 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
     // under the pointer while the drag moves the panel.
     let grab: Rc<Cell<Option<Point>>> = Rc::new(Cell::new(None));
 
+    provide_text_style(look::text_style());
     let place = at.clone();
     let shown = open.clone();
     let caption = open.clone();
     let toggle = open.clone();
     let grabbed = Rc::clone(&grab);
     let title = row()
-        .padding(px(6.0))
-        .background(ColorToken::SURFACE_HOVER)
+        .padding_xy(Size {
+            width: PAD,
+            height: 8.0,
+        })
+        .gap(look::gap(8.0))
+        .align_items(Align::Center)
+        .background(look::BAR)
         .on_pointer_down(move |point| grabbed.set(Some(point)))
-        .child(label("Devtools").grow(1.0))
+        .child(look::dot(look::ACCENT))
+        .child(look::heading("Devtools"))
+        .child(frame_cost(tools))
+        .child(spacer())
         .child(
-            button(move || String::from(if caption.get() { "Collapse" } else { "Open" }))
+            look::action(move || String::from(if caption.get() { "Hide" } else { "Show" }))
                 .on_press(move || toggle.update(|open| *open = !*open)),
         );
     let window = panel()
@@ -521,15 +566,16 @@ pub fn overlay(tools: &Tools, viewport: impl Fn() -> Size + 'static) -> AnyEleme
         })
         .width(px(WIDTH))
         .column()
-        .background(ColorToken::SURFACE)
+        .background(look::BACKGROUND)
         .border(BORDER)
-        .border_color(ColorToken::BORDER)
-        .corner_radius(6.0)
+        .border_color(look::LINE)
+        .corner_radius(12.0)
         .overflow(Overflow::Clip)
         .child(title)
         .child(show(move || shown.get(), {
             let tools = tools.clone();
-            move || body(&tools)
+            let viewport = Rc::clone(&viewport);
+            move || body(&tools, Rc::clone(&viewport))
         }));
 
     // The root hears the drags that begin on the title bar, in its own
@@ -688,9 +734,15 @@ fn tab_order(focus: RwSignal<Option<Rc<FocusInfo>>>) -> Element<Slot> {
                         bottom: Length::Auto,
                     }
                 })
-                .padding(px(1.0))
-                .background(ColorToken::ACCENT)
-                .text_color(ColorToken::ACCENT_TEXT)
+                .text_size(look::SMALL)
+                .weight(smudge_text::FontWeight::BOLD)
+                .padding_xy(Size {
+                    width: 4.0,
+                    height: 0.0,
+                })
+                .corner_radius(4.0)
+                .background(marks::FOCUS)
+                .text_color(look::ON_ACCENT)
         },
     )
 }
@@ -706,202 +758,283 @@ fn inside(at: Point, viewport: Size) -> Point {
     }
 }
 
-/// The marker of the timeline's frames, which [`Element::bind`] keys on.
-struct Frames;
-
-/// Builds the panel's body: the frame timeline, and a line that describes
-/// the frame under the pointer. The line follows the bars as new frames
-/// move them, so it always describes the bar the pointer is over.
-fn body(tools: &Tools) -> Element<Panel> {
-    let tab = |name: &'static str, which: Tab| {
-        let (shown, choose, picking) =
-            (tools.tab.clone(), tools.tab.clone(), tools.picking.clone());
-        button(move || {
-            let mark = if shown.get() == which { "> " } else { "" };
-            format!("{mark}{name}")
+/// Builds the chip in the title bar that shows what the app's frames cost
+/// on average, in red once that is over the budget of a frame at 60 frames a
+/// second.
+fn frame_cost(tools: &Tools) -> Element<Panel> {
+    let (text, color) = (tools.timeline.clone(), tools.timeline.clone());
+    row()
+        .padding_xy(Size {
+            width: 6.0,
+            height: 0.0,
         })
-        .on_press(move || {
-            choose.set(which);
-            if which != Tab::Inspector {
-                picking.set(false);
-            }
-        })
-    };
-    let shown = |which: Tab, build: fn(&Tools) -> Element<Panel>| {
-        let (tab, tools) = (tools.tab.clone(), tools.clone());
-        show(move || tab.get() == which, move || build(&tools))
-    };
-    column()
-        .width(pct(100.0))
-        .padding(px(PAD))
-        .gap(Size {
-            width: PAD,
-            height: PAD,
-        })
+        .corner_radius(4.0)
+        .background(look::SUNKEN)
         .child(
-            row()
-                .wrap(true)
-                .gap(Size {
-                    width: PAD,
-                    height: PAD,
+            look::mono(move || {
+                let summary = text.with(|timeline| timeline.summary());
+                if summary.frames == 0 {
+                    String::from("app idle")
+                } else {
+                    format!("{:.1} ms a frame", summary.average.as_secs_f64() * 1000.0)
+                }
+            })
+            .text_color(move || {
+                let average = color.with(|timeline| timeline.summary().average);
+                ColorValue::from(if average > timeline::BUDGET {
+                    look::BAD
+                } else {
+                    look::MUTED
                 })
-                .child(tab("Frames", Tab::Frames))
-                .child(tab("Inspector", Tab::Inspector))
-                .child(tab("Reactive", Tab::Reactive))
-                .child(tab("Access", Tab::Access)),
+            }),
         )
-        .child(shown(Tab::Frames, frames_tab))
+}
+
+/// The tabs of the panel, in the order the tab bar shows them, with their
+/// names and the line under the bar that says what each is for.
+const TABS: [(Tab, &str, &str); 6] = [
+    (
+        Tab::Frames,
+        "Frames",
+        "What each frame of the app cost, stage by stage.",
+    ),
+    (
+        Tab::Overlays,
+        "Overlays",
+        "Draw over the app to see what it repaints, lays out and focuses.",
+    ),
+    (
+        Tab::Inspector,
+        "Inspector",
+        "Pick a node in the app, or in the tree, to see where it was built and \
+         how it was laid out.",
+    ),
+    (
+        Tab::Reactive,
+        "Reactive",
+        "Which effects run most, which updates loop, and what each owner holds.",
+    ),
+    (
+        Tab::Access,
+        "Access",
+        "What assistive technology is told about the app, and what it cannot \
+         describe.",
+    ),
+    (
+        Tab::Live,
+        "Live",
+        "Patch the code and tune the theme while the app runs.",
+    ),
+];
+
+/// Builds the panel's body: the tab bar, the line that says what the tab
+/// is for, and the tab, as tall as the window leaves room for.
+fn body(tools: &Tools, viewport: Rc<dyn Fn() -> Size>) -> Element<Panel> {
+    let shown = |which: Tab, build: fn(&Tools) -> Element<Panel>| {
+        let (tab, grown, tools) = (tools.tab.clone(), tools.tab.clone(), tools.clone());
+        show(
+            move || tab.get() == which,
+            move || build(&tools).grow(1.0).min_height(px(0.0)),
+        )
+        .column()
+        .min_height(px(0.0))
+        .grow(move || if grown.get() == which { 1.0 } else { 0.0 })
+    };
+    let about = tools.tab.clone();
+    column()
+        .height(move || px((viewport().height - 2.0 * START.y - TITLE).clamp(BODY_MIN, BODY_MAX)))
+        .border_edges(Edges {
+            top: BORDER,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
+        .border_color(look::LINE)
+        .child(
+            column()
+                .padding_xy(Size {
+                    width: PAD,
+                    height: 10.0,
+                })
+                .gap(look::gap(8.0))
+                .child(tab_bar(tools))
+                .child(look::note(move || {
+                    let tab = about.get();
+                    TABS.iter()
+                        .find(|(which, _, _)| *which == tab)
+                        .map_or_else(String::new, |(_, _, about)| String::from(*about))
+                })),
+        )
+        .child(shown(Tab::Frames, frames::frames_tab))
+        .child(shown(Tab::Overlays, overlays_tab))
         .child(shown(Tab::Inspector, inspector::inspector))
         .child(shown(Tab::Reactive, reactive::reactive_tab))
         .child(shown(Tab::Access, access::access_tab))
+        .child(shown(Tab::Live, live::live_tab))
+}
+
+/// Builds the tab bar: a segment per tab, the chosen one raised. Choosing
+/// a tab other than the inspector ends pick mode.
+fn tab_bar(tools: &Tools) -> Element<Panel> {
+    let segment = |which: Tab, name: &'static str| {
+        let (back, text, choose, picking) = (
+            tools.tab.clone(),
+            tools.tab.clone(),
+            tools.tab.clone(),
+            tools.picking.clone(),
+        );
+        row()
+            .grow(1.0)
+            .justify_content(Justify::Center)
+            .padding_xy(Size {
+                width: 6.0,
+                height: 3.0,
+            })
+            .corner_radius(6.0)
+            .border(1.0)
+            .border_color(Color::TRANSPARENT)
+            .background(move || {
+                ColorValue::from(if back.get() == which {
+                    look::HOVER
+                } else {
+                    Color::TRANSPARENT
+                })
+            })
+            .hover(|p| p.background(look::RAISED))
+            .focused(|p| p.border_color(look::ACCENT))
+            .role(Role::Button)
+            .accessible_label(name)
+            .focusable()
+            .activate_on_keys()
+            .on_press(move || {
+                choose.set(which);
+                if which != Tab::Inspector {
+                    picking.set(false);
+                }
+            })
+            .child(label(name).text_color(move || {
+                ColorValue::from(if text.get() == which {
+                    look::TEXT
+                } else {
+                    look::MUTED
+                })
+            }))
+    };
+    TABS.iter().fold(
+        row()
+            .padding(px(3.0))
+            .gap(look::gap(2.0))
+            .background(look::SUNKEN)
+            .corner_radius(8.0),
+        |bar, &(which, name, _)| bar.child(segment(which, name)),
+    )
 }
 
 /// The tabs of the panel.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Tab {
-    /// The frame timeline and the switches.
+    /// The frame timeline and what each stage cost.
     Frames,
+    /// The switches of what the overlay draws over the app.
+    Overlays,
     /// The node picker, the tree and a node's details.
     Inspector,
     /// The busiest effects, the cycles and the owner tree.
     Reactive,
     /// The accessibility tree and its warnings.
     Access,
+    /// Hot reload and the theme file.
+    Live,
 }
 
-/// Builds the frames tab: the timeline, the switches, and a line that
-/// describes the frame under the pointer.
-fn frames_tab(tools: &Tools) -> Element<Panel> {
-    let hovered: RwSignal<Option<f32>> = RwSignal::new(None);
-    let frames = tools.timeline.clone();
-    let described = tools.timeline.clone();
-    let (over, left, shown) = (hovered.clone(), hovered.clone(), hovered);
-    let timeline = Element::new(TimelineView::default())
-        .width(px(TIMELINE_WIDTH))
-        .height(px(HEIGHT))
-        .bind(
-            Frames,
-            move || frames.get(),
-            |view, timeline| {
-                view.timeline.copy_from(&timeline);
-                Dirty::Paint
-            },
-        )
-        .on_pointer_move(move |point| {
-            over.set(Some(point.x));
-        })
-        .on_hover(move |inside| {
-            if !inside {
-                left.set(None);
-            }
-        });
-    column()
-        .width(pct(100.0))
-        .gap(Size {
-            width: PAD,
-            height: PAD,
-        })
-        .child(timeline)
-        .child(
-            row()
-                .wrap(true)
-                .gap(Size {
-                    width: PAD,
-                    height: PAD,
-                })
-                .child(switch(tools, "Damage tint", |switches| {
-                    &mut switches.damage_tint
-                }))
-                .child(switch(tools, "Paint flashing", |switches| {
-                    &mut switches.paint_flashing
-                }))
-                .child(switch(tools, "Layout bounds", |switches| {
-                    &mut switches.layout_bounds
-                }))
-                .child(switch(tools, "Focus", |switches| &mut switches.focus))
-                .child(switch(tools, "Hit testing", |switches| {
-                    &mut switches.hit_testing
-                }))
-                .child(switch(tools, "Full repaint", |switches| {
-                    &mut switches.full_repaint
-                }))
-                .child(switch(tools, "Keep tree", |switches| {
-                    &mut switches.keep_tree
-                }))
-                .child({
-                    let written = tools.theme_written.clone();
-                    button("Write theme").on_press(move || written.set(Some(write_theme())))
-                }),
-        )
-        .child({
-            let (skipped, written) = (tools.theme_skipped.clone(), tools.theme_written.clone());
-            label(move || {
-                let mut text = written.get().unwrap_or_default();
-                skipped.with(|skipped| {
-                    if !skipped.is_empty() {
-                        if !text.is_empty() {
-                            text.push('\n');
-                        }
-                        text.push_str("Theme file lines skipped:");
-                        for line in skipped {
-                            text.push_str("\n  ");
-                            text.push_str(line);
-                        }
-                    }
-                });
-                text
-            })
-        })
-        .child({
-            let (hot, keeping) = (tools.hot.clone(), tools.switches.clone());
-            label(move || {
-                let mut text = String::new();
-                if keeping.get().keep_tree {
-                    text.push_str(
-                        "Keeping the tree: edits to what the build creates do not show, and \
-                         closures created after the first patch keep its code.",
-                    );
-                }
-                hot.with(|lines| {
-                    for line in lines.iter() {
-                        if !text.is_empty() {
-                            text.push('\n');
-                        }
-                        text.push_str(line);
-                    }
-                });
-                text
-            })
-        })
-        .child(label(move || {
-            let x = shown.get();
-            described.with(|timeline| {
-                x.and_then(|x| timeline.at(x, TIMELINE_WIDTH)).map_or_else(
-                    || String::from("Hover a bar to see its frame."),
-                    FrameRecord::describe,
+/// Builds the overlays tab: a switch for each mark the overlay draws over
+/// the app, in the color it draws in.
+fn overlays_tab(tools: &Tools) -> Element<Panel> {
+    look::scrolling(
+        look::tab_content()
+            .gap(look::gap(2.0))
+            .child(switch(
+                tools,
+                "Damage tint",
+                "Tints what the last frame repainted. A still app shows none.",
+                Some(marks::TINT),
+                |switches| &mut switches.damage_tint,
+            ))
+            .child(switch(
+                tools,
+                "Paint flashing",
+                "Flashes each repaint and fades it out, so a burst stays visible.",
+                Some(marks::FLASH),
+                |switches| &mut switches.paint_flashing,
+            ))
+            .child(switch(
+                tools,
+                "Layout bounds",
+                "Outlines every node, colored by its depth in the tree.",
+                Some(marks::DEPTHS[0]),
+                |switches| &mut switches.layout_bounds,
+            ))
+            .child(switch(
+                tools,
+                "Focus",
+                "Numbers the Tab order and outlines the focused node and its trap.",
+                Some(marks::FOCUS),
+                |switches| &mut switches.focus,
+            ))
+            .child(switch(
+                tools,
+                "Hit testing",
+                "Outlines what takes a press, and what the pointer is over.",
+                Some(marks::PRESSABLE),
+                |switches| &mut switches.hit_testing,
+            ))
+            .child(
+                look::note("The overlay draws under this panel and never takes the app's input.")
+                    .text_color(look::FAINT)
+                    .margin(px(8.0)),
+            )
+            .child(
+                look::section(
+                    "Rendering",
+                    "Change how the app repaints, and watch the frames tab.",
                 )
-            })
-        }))
+                .child(switch(
+                    tools,
+                    "Full repaint",
+                    "Repaint the whole window every frame instead of only what changed, \
+                         to compare what the two cost.",
+                    None,
+                    |switches| &mut switches.full_repaint,
+                )),
+            ),
+    )
 }
 
-/// Builds the button that turns the switch `field` picks on and off, named
-/// `name` and showing its state.
+/// Builds the row that turns the switch `field` picks on and off, named
+/// `name`, with `about` saying what it does and `swatch` the color it draws
+/// in.
 fn switch(
     tools: &Tools,
     name: &'static str,
+    about: &'static str,
+    swatch: Option<Color>,
     field: fn(&mut Switches) -> &mut bool,
 ) -> Element<Panel> {
     let read = tools.switches.clone();
     let write = tools.clone();
-    button(move || {
-        let mut switches = read.get();
-        let state = if *field(&mut switches) { "on" } else { "off" };
-        format!("{name}: {state}")
-    })
-    .on_press(move || {
-        let mut switches = write.switches();
-        let on = field(&mut switches);
-        *on = !*on;
-        write.set_switches(switches);
-    })
+    look::switch_row(
+        name,
+        about,
+        swatch,
+        move || {
+            let mut switches = read.get();
+            *field(&mut switches)
+        },
+        move || {
+            let mut switches = write.switches();
+            let on = field(&mut switches);
+            *on = !*on;
+            write.set_switches(switches);
+        },
+    )
 }

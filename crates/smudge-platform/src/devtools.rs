@@ -670,7 +670,7 @@ impl Devtools {
         self.tools.switches().keep_tree
     }
 
-    /// Records one step of hot reload for the frames tab.
+    /// Records one step of hot reload for the live tab.
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
     pub(crate) fn record_hot(&self, event: smudge_devtools::HotEvent) {
         self.tools.record_hot(event);

@@ -2,6 +2,7 @@
 
 use smudge_core::geometry::{Point, Rect, Size};
 use smudge_core::reactive::{RwSignal, prelude::*};
+use smudge_core::semantics::{Checked, Role};
 use smudge_test::Harness;
 use smudge_text::TextSystem;
 
@@ -204,7 +205,7 @@ fn hovering_a_bar_describes_its_frame() {
         .semantics_nodes()
         .into_iter()
         .filter_map(|node| node.value)
-        .any(|text| text.contains("7 painted"));
+        .any(|text| text.starts_with("7 nodes painted"));
     assert!(described, "the newest frame is described");
 
     tools.record(smudge_devtools::FrameRecord {
@@ -218,7 +219,7 @@ fn hovering_a_bar_describes_its_frame() {
         .semantics_nodes()
         .into_iter()
         .filter_map(|node| node.value)
-        .any(|text| text.contains("11 painted"));
+        .any(|text| text.starts_with("11 nodes painted"));
     assert!(followed, "a new frame under the still pointer is described");
 }
 
@@ -235,8 +236,26 @@ fn text_at(harness: &mut Harness, text: &str) -> Option<Point> {
         })
 }
 
+/// Whether the switch named `name` reads as on.
+fn switch_on(harness: &mut Harness, name: &str) -> bool {
+    let node = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == Role::Switch && node.label.as_deref() == Some(name))
+        .unwrap_or_else(|| panic!("the panel shows the {name} switch"));
+    node.checked == Some(Checked::True)
+}
+
+/// Presses the overlay's text that reads `text`.
+fn press(harness: &mut Harness, text: &str) {
+    let at = text_at(harness, text).unwrap_or_else(|| panic!("the panel shows {text:?}"));
+    harness.click(at);
+    harness.frame();
+}
+
 #[test]
-fn the_panels_buttons_turn_the_switches_on_and_off() {
+fn the_panels_switches_turn_on_and_off_and_say_so() {
     TextSystem::bundled_only().install();
     let tools = smudge_devtools::Tools::new();
     let shown = tools.clone();
@@ -247,17 +266,14 @@ fn the_panels_buttons_turn_the_switches_on_and_off() {
         })
     });
     harness.frame();
-    for (off, on) in [
-        ("Damage tint: off", "Damage tint: on"),
-        ("Paint flashing: off", "Paint flashing: on"),
-        ("Layout bounds: off", "Layout bounds: on"),
-        ("Full repaint: off", "Full repaint: on"),
-    ] {
-        let button = text_at(&mut harness, off).expect("the switch shows off");
-        harness.click(button);
-        harness.frame();
-        assert!(text_at(&mut harness, on).is_some(), "{on}");
+    press(&mut harness, "Overlays");
+    for name in ["Damage tint", "Paint flashing", "Layout bounds"] {
+        assert!(!switch_on(&mut harness, name), "{name} starts off");
+        press(&mut harness, name);
+        assert!(switch_on(&mut harness, name), "{name} reads as on");
     }
+    press(&mut harness, "Full repaint");
+    assert!(switch_on(&mut harness, "Full repaint"));
     let switches = tools.switches();
     assert!(
         switches.damage_tint
@@ -266,14 +282,13 @@ fn the_panels_buttons_turn_the_switches_on_and_off() {
             && switches.full_repaint
     );
 
-    let button = text_at(&mut harness, "Damage tint: on").expect("still shown");
-    harness.click(button);
-    harness.frame();
+    press(&mut harness, "Damage tint");
     assert!(!tools.switches().damage_tint);
+    assert!(!switch_on(&mut harness, "Damage tint"));
 }
 
 #[test]
-fn the_frames_tab_shows_a_build_failure_and_a_patch_outcome() {
+fn the_live_tab_shows_a_build_failure_and_a_patch_outcome() {
     TextSystem::bundled_only().install();
     let tools = smudge_devtools::Tools::new();
     let shown = tools.clone();
@@ -284,28 +299,40 @@ fn the_frames_tab_shows_a_build_failure_and_a_patch_outcome() {
         })
     });
     harness.frame();
+    press(&mut harness, "Live");
+    tools.record_hot(smudge_devtools::HotEvent::Building);
     tools.record_hot(smudge_devtools::HotEvent::BuildFailed(String::from(
         "error[E0308]: mismatched types",
     )));
+    tools.record_hot(smudge_devtools::HotEvent::Building);
     tools.record_hot(smudge_devtools::HotEvent::Applied {
         took: std::time::Duration::from_millis(12),
         remounted: Some(smudge_core::app::Remounted::default()),
     });
     harness.frame();
-    let text = harness
+    let texts: Vec<String> = harness
         .app()
         .semantics_nodes()
         .into_iter()
         .filter_map(|node| node.value)
-        .find(|text| text.contains("build failed"))
-        .expect("the frames tab shows the hot reload steps");
+        .collect();
+    let at = |text: &str| texts.iter().position(|shown| shown == text);
+    let applied = at("Patch applied in 12.0 ms").expect("the patch shows");
+    let failed = at("Build failed").expect("the failure shows");
+    assert!(applied < failed, "the newest step comes first: {texts:?}");
     assert!(
-        text.contains("build failed: error[E0308]: mismatched types"),
-        "{text}"
+        at("error[E0308]: mismatched types").is_some(),
+        "the compiler's message shows: {texts:?}"
     );
     assert!(
-        text.contains("patch applied in 12.0 ms, focus not restored"),
-        "{text}"
+        texts
+            .iter()
+            .any(|text| text.starts_with("Remounted, focus not restored")),
+        "{texts:?}"
+    );
+    assert!(
+        at("Building a patch").is_none(),
+        "a finished build shows how it ended: {texts:?}"
     );
 }
 
@@ -332,6 +359,7 @@ fn a_watched_theme_file_recolors_the_app_and_its_bad_lines_show() {
         })
     });
     harness.frame();
+    press(&mut harness, "Live");
     harness.advance(std::time::Duration::from_millis(300));
     harness.frame();
     assert_eq!(
@@ -344,7 +372,7 @@ fn a_watched_theme_file_recolors_the_app_and_its_bad_lines_show() {
         .semantics_nodes()
         .into_iter()
         .filter_map(|node| node.value)
-        .any(|text| text.contains("line 2: the theme has no token `glow`"));
+        .any(|text| text == "line 2: the theme has no token `glow`");
     assert!(reported, "the bad line shows in the panel");
     let _ = std::fs::remove_dir_all(&dir);
 }

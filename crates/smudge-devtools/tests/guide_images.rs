@@ -7,19 +7,19 @@
 
 use std::time::Duration;
 
-use smudge_core::app::{App, AppConfig, RepaintMode};
+use smudge_core::app::{App, AppConfig, Remounted, RepaintMode};
 use smudge_core::geometry::{Color, Point, Size};
 use smudge_core::semantics::Role;
 use smudge_core::style::px;
 use smudge_core::widget::panel;
-use smudge_devtools::{FrameRecord, Tools};
+use smudge_devtools::{FrameRecord, HotEvent, Tools};
 use smudge_test::Harness;
 use smudge_text::TextSystem;
 
 /// The size of each image, in logical pixels.
 const SIZE: Size = Size {
-    width: 352.0,
-    height: 470.0,
+    width: 432.0,
+    height: 630.0,
 };
 
 /// Builds a harness that shows the panel of `tools`.
@@ -46,6 +46,7 @@ fn press(harness: &mut Harness, text: &str) {
         x: (bounds.x0 + bounds.x1) / 2.0,
         y: (bounds.y0 + bounds.y1) / 2.0,
     });
+    harness.frame();
     harness.frame();
 }
 
@@ -74,7 +75,23 @@ fn render_the_guide_images() {
         });
     }
     let mut harness = panel_of(&tools);
+    let timeline = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.value.as_deref() == Some("Timeline"))
+        .expect("the frames tab shows the timeline")
+        .bounds;
+    harness.move_to(Point {
+        x: SIZE.width - 60.0,
+        y: timeline.y1 + 60.0,
+    });
+    harness.frame();
     save(&harness, "devtools-frames.png");
+    press(&mut harness, "Overlays");
+    press(&mut harness, "Layout bounds");
+    press(&mut harness, "Focus");
+    save(&harness, "devtools-overlays.png");
 
     let mut app = App::new(
         AppConfig {
@@ -123,4 +140,24 @@ fn render_the_guide_images() {
     tools.show_access(&app.semantics_nodes(), &app.accessibility_warnings());
     press(&mut harness, "Access");
     save(&harness, "devtools-access.png");
+
+    tools.show_reactive(
+        &[(Some(std::panic::Location::caller()), 12.0), (None, 4.0)],
+        &[],
+        &[],
+    );
+    press(&mut harness, "Reactive");
+    save(&harness, "devtools-reactive.png");
+
+    tools.record_hot(HotEvent::Building);
+    tools.record_hot(HotEvent::BuildFailed(String::from(
+        "error[E0308]: mismatched types\n  --> src/main.rs:12:9",
+    )));
+    tools.record_hot(HotEvent::Building);
+    tools.record_hot(HotEvent::Applied {
+        took: Duration::from_micros(8_400),
+        remounted: Some(Remounted::default()),
+    });
+    press(&mut harness, "Live");
+    save(&harness, "devtools-live.png");
 }
