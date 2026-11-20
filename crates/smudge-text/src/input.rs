@@ -31,6 +31,7 @@ use crate::layout::TextLayout;
 use crate::line_breaks::flatten_line_breaks;
 use crate::style::TextStyle;
 use crate::system::TextSystem;
+use icu_segmenter::GraphemeClusterSegmenter;
 
 /// How many bytes the undo and redo steps of one editor may hold together.
 /// Older undo steps are forgotten past this, but the newest one is always
@@ -101,14 +102,51 @@ pub struct Editor {
     /// Whether the editor holds one line, turning every line break that
     /// reaches it into a space.
     single_line: bool,
+    /// The text while the editor masks it, when it does. The buffer then
+    /// holds one [`MASK`] per grapheme of it instead, which every layout,
+    /// caret, selection and accessibility text runs on, so nothing but the
+    /// bound signal sees the text.
+    secret: RefCell<Option<String>>,
+}
+
+/// The character a masked editor shows in place of each grapheme.
+const MASK: char = '\u{2022}';
+
+/// Returns one [`MASK`] for each grapheme of `text`.
+fn mask_of(text: &str) -> String {
+    let count = GraphemeClusterSegmenter::new()
+        .segment_str(text)
+        .count()
+        .saturating_sub(1);
+    std::iter::repeat_n(MASK, count).collect()
+}
+
+/// Returns the byte offset in `text` where its grapheme `index` starts, or
+/// the end of `text` past its last grapheme.
+fn grapheme_offset(text: &str, index: usize) -> usize {
+    GraphemeClusterSegmenter::new()
+        .segment_str(text)
+        .nth(index)
+        .unwrap_or(text.len())
+}
+
+/// Returns how many graphemes of `text` start before `byte`.
+fn grapheme_index(text: &str, byte: usize) -> usize {
+    GraphemeClusterSegmenter::new()
+        .segment_str(text)
+        .take_while(|&boundary| boundary < byte)
+        .count()
 }
 
 /// The text and selection of an editor at one moment.
 struct Snapshot {
-    /// The text, without any composing preedit.
+    /// The text, without any composing preedit, unmasked.
     text: String,
     /// The selection, as the engine keeps it.
     selection: Selection,
+    /// Whether the editor masked its text, which tells whether the
+    /// selection counts bytes of the mask or of the text.
+    masked: bool,
 }
 
 /// What kind of change an edit made, which decides the edits it groups with.
@@ -425,6 +463,77 @@ impl Editor {
             width: Cell::new(None),
             builds: Cell::new(0),
             single_line,
+            secret: RefCell::new(None),
+        }
+    }
+
+    /// Masks the text, showing one bullet per grapheme in its place, or
+    /// shows it again, keeping the caret and the selection on the same
+    /// graphemes.
+    ///
+    /// While masked, the layout, the caret, the selection and the
+    /// accessibility text all hold the bullets alone, and only
+    /// [`Editor::text`] and the bound signal hold the text. Copying finds
+    /// nothing to copy, a word step goes to the start or the end, and word
+    /// deletion takes everything before or after the caret, since a word
+    /// would tell where the text breaks, and a paste and undo
+    /// work as before, though a backspace takes a whole grapheme, accent and
+    /// all, as there is nothing to show which part it took. A composing
+    /// preedit shows as bullets too. Switching ends the open undo step, as a
+    /// caret move does. A multi-line editor ignores this.
+    pub fn set_masked(&self, masked: bool) {
+        if !self.single_line || self.is_masked() == masked {
+            return;
+        }
+        self.cancel_compose();
+        let text = self.text();
+        let (anchor, focus) = {
+            let selection = self.selection.borrow();
+            (selection.anchor, selection.focus)
+        };
+        let shown = if masked { mask_of(&text) } else { text.clone() };
+        let convert = |anchor: Anchor| {
+            let index = if masked {
+                grapheme_index(&text, anchor.index) * MASK.len_utf8()
+            } else {
+                grapheme_offset(&text, anchor.index / MASK.len_utf8())
+            };
+            Anchor { index, ..anchor }
+        };
+        let (anchor, focus) = (convert(anchor), convert(focus));
+        *self.secret.borrow_mut() = masked.then_some(text);
+        self.session(|session| {
+            session.buffer.clear();
+            session.buffer.push_str(&shown);
+            session.table.rebuild(session.buffer);
+            session.selection.anchor = anchor;
+            session.selection.focus = focus;
+            session.selection.h_pos = None;
+        });
+        self.history.borrow_mut().open = None;
+    }
+
+    /// Returns whether the editor masks its text.
+    pub fn is_masked(&self) -> bool {
+        self.secret.borrow().is_some()
+    }
+
+    /// Returns the text as the editor shows it, without any composing
+    /// preedit: the mask while it masks, and the text otherwise.
+    pub fn shown_text(&self) -> String {
+        if self.is_masked() {
+            let buffer = self.buffer.borrow();
+            match self.compose.borrow().as_ref() {
+                Some(compose) => {
+                    let mut text = String::new();
+                    text.push_str(&buffer[..compose.range.start]);
+                    text.push_str(&buffer[compose.range.end..]);
+                    text
+                }
+                None => buffer.clone(),
+            }
+        } else {
+            self.text()
         }
     }
 
@@ -468,6 +577,9 @@ impl Editor {
 
     /// Returns the text of the editor, without any composing preedit.
     pub fn text(&self) -> String {
+        if let Some(secret) = self.secret.borrow().as_ref() {
+            return secret.clone();
+        }
         let buffer = self.buffer.borrow();
         let compose = self.compose.borrow();
         match compose.as_ref() {
@@ -493,6 +605,9 @@ impl Editor {
 
     /// Returns whether the editor holds exactly `text`.
     pub fn has_text(&self, text: &str) -> bool {
+        if let Some(secret) = self.secret.borrow().as_ref() {
+            return secret == text;
+        }
         let buffer = self.buffer.borrow();
         match self.compose.borrow().as_ref() {
             Some(compose) => {
@@ -505,7 +620,9 @@ impl Editor {
         }
     }
 
-    /// Returns the text of the editor, including any composing preedit.
+    /// Returns the text the editor lays out, including any composing
+    /// preedit: its text, or its bullets while it
+    /// [masks](Editor::set_masked) them.
     pub fn raw_text(&self) -> String {
         self.buffer.borrow().clone()
     }
@@ -670,9 +787,15 @@ impl Editor {
     pub fn set_text(&self, text: &str) {
         let text = self.incoming(text);
         let text = text.as_ref();
+        let shown = if self.is_masked() {
+            *self.secret.borrow_mut() = Some(text.to_owned());
+            Cow::Owned(mask_of(text))
+        } else {
+            Cow::Borrowed(text)
+        };
         self.session(|session| {
             session.buffer.clear();
-            session.buffer.push_str(text);
+            session.buffer.push_str(&shown);
             session.table.rebuild(session.buffer);
             let end = session.document_end();
             session.selection = Selection {
@@ -750,10 +873,12 @@ impl Editor {
         });
     }
 
-    /// Returns the selected text, or `None` when the selection is collapsed.
+    /// Returns the selected text, or `None` when the selection is collapsed
+    /// or the editor masks its text, so a copy or a cut of a masked field
+    /// finds nothing.
     pub fn selected_text(&self) -> Option<String> {
         let range = self.selection();
-        if range.is_empty() {
+        if range.is_empty() || self.is_masked() {
             return None;
         }
         Some(self.buffer.borrow()[range].to_owned())
@@ -792,6 +917,18 @@ impl Editor {
         }
         let cursor =
             cursor.map(|(anchor, focus)| (char_boundary(text, anchor), char_boundary(text, focus)));
+        // A masked editor shows the preedit as bullets too, one for each of
+        // its graphemes, with the cursor on the bullet of its grapheme.
+        let (text, cursor) = if self.is_masked() {
+            let bullets = |byte| grapheme_index(text, byte) * MASK.len_utf8();
+            (
+                Cow::Owned(mask_of(text)),
+                cursor.map(|(anchor, focus)| (bullets(anchor), bullets(focus))),
+            )
+        } else {
+            (Cow::Borrowed(text), cursor)
+        };
+        let text = text.as_ref();
         self.session(|session| {
             let (replaced, start) = if let Some(previous) = self.compose.borrow_mut().as_ref() {
                 let range = previous.range.clone();
@@ -1462,7 +1599,11 @@ impl Editor {
         }
         let mut history = self.history.borrow_mut();
         if let Some(text) = before {
-            history.push_undo(Snapshot { text, selection });
+            history.push_undo(Snapshot {
+                text,
+                selection,
+                masked: self.is_masked(),
+            });
         }
         history.clear_redo();
         history.open = (grouping != Grouping::Alone).then(|| (kind, self.selection()));
@@ -1474,9 +1615,13 @@ impl Editor {
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             // A snapshot only happens outside compositions, where the
-            // buffer is the committed text.
-            text: copy_for_undo(&self.buffer.borrow()),
+            // buffer is the committed text, or its mask.
+            text: match self.secret.borrow().as_ref() {
+                Some(secret) => copy_for_undo(secret),
+                None => copy_for_undo(&self.buffer.borrow()),
+            },
             selection: *self.selection.borrow(),
+            masked: self.is_masked(),
         }
     }
 
@@ -1487,15 +1632,39 @@ impl Editor {
     /// texts are replaced, so the paragraphs outside them keep their
     /// layouts and an undo in a large document lays out what it changed.
     fn restore(&self, snapshot: Snapshot) {
+        let masked = self.is_masked();
+        let shown = if masked {
+            mask_of(&snapshot.text)
+        } else {
+            snapshot.text.clone()
+        };
+        // A step taken before the mask was switched counts its selection in
+        // the other text, which maps over by grapheme.
+        let convert = |anchor: Anchor| {
+            let index = match (snapshot.masked, masked) {
+                (false, true) => grapheme_index(&snapshot.text, anchor.index) * MASK.len_utf8(),
+                (true, false) => grapheme_offset(&snapshot.text, anchor.index / MASK.len_utf8()),
+                _ => anchor.index,
+            };
+            Anchor { index, ..anchor }
+        };
+        let selection = Selection {
+            anchor: convert(snapshot.selection.anchor),
+            focus: convert(snapshot.selection.focus),
+            ..snapshot.selection
+        };
+        if masked {
+            *self.secret.borrow_mut() = Some(snapshot.text);
+        }
         self.session(|session| {
-            let range = changed_range(session.buffer, &snapshot.text);
+            let range = changed_range(session.buffer, &shown);
             let kept_end = session.buffer.len() - range.end;
-            let replacement = &snapshot.text[range.start..snapshot.text.len() - kept_end];
+            let replacement = &shown[range.start..shown.len() - kept_end];
             if !range.is_empty() || !replacement.is_empty() {
                 session.buffer.replace_range(range.clone(), replacement);
                 session.table.splice(range, replacement);
             }
-            session.selection = snapshot.selection;
+            session.selection = selection;
         });
         self.sync_text();
     }
@@ -1519,7 +1688,9 @@ impl Editor {
         let mut buffer = self.buffer.borrow_mut();
         let mut table = self.paragraphs.borrow_mut();
         let style = self.style.borrow();
+        let mut secret = self.secret.borrow_mut();
         let mut session = Session {
+            secret: secret.as_mut(),
             buffer: &mut buffer,
             table: &mut table,
             style: &style,
@@ -1608,7 +1779,10 @@ impl EditorParagraph<'_> {
 /// a change when the operation says it edited the text or the selection's
 /// ends moved.
 struct Session<'a> {
-    /// The editor's text, including any composing preedit.
+    /// The text while the editor masks it, which [`Session::replace`] edits
+    /// alongside the mask in the buffer.
+    secret: Option<&'a mut String>,
+    /// The editor's text, including any composing preedit, or its mask.
     buffer: &'a mut String,
     /// The paragraphs the buffer is cut into, with their layout caches.
     table: &'a mut ParagraphTable,
@@ -1883,6 +2057,51 @@ impl Session<'_> {
         caret_byte: usize,
         upstream: bool,
     ) -> bool {
+        if let Some(secret) = self.secret.as_deref_mut() {
+            // The buffer holds the mask: the range counts bullets, which map
+            // to the text's graphemes one for one, and the text goes in as
+            // bullets too. This is the one place the two meet.
+            let bullet = MASK.len_utf8();
+            let real = grapheme_offset(secret, range.start / bullet)
+                ..grapheme_offset(secret, range.end / bullet);
+            let real_caret = if caret_byte > range.start {
+                real.start + text.len()
+            } else {
+                real.start
+            };
+            if secret[real.clone()] == *text {
+                let caret = grapheme_index(secret, real_caret) * bullet;
+                let caret = self.anchor_at(caret, upstream);
+                self.selection = Selection {
+                    anchor: caret,
+                    focus: caret,
+                    base: Base::Cluster,
+                    h_pos: None,
+                };
+                return false;
+            }
+            if self.keep_before && self.before.is_none() {
+                self.before = Some(copy_for_undo(secret));
+            }
+            secret.replace_range(real, text);
+            // An edit can join graphemes or split them, as a combining mark
+            // typed on its own does, so the mask is counted again from the
+            // whole text. The editor holds one line, which lays out again
+            // after any edit anyway.
+            let shown = mask_of(secret);
+            let caret = grapheme_index(secret, real_caret) * bullet;
+            let all = 0..self.buffer.len();
+            self.buffer.replace_range(all.clone(), &shown);
+            self.table.splice(all, &shown);
+            let caret = self.anchor_at(caret, upstream);
+            self.selection = Selection {
+                anchor: caret,
+                focus: caret,
+                base: Base::Cluster,
+                h_pos: None,
+            };
+            return true;
+        }
         let changed = self.buffer[range.clone()] != *text;
         if changed {
             if self.keep_before && self.before.is_none() {
@@ -2044,6 +2263,13 @@ impl Session<'_> {
 
     /// Moves the focus one word left or right, in visual order.
     fn move_word(&mut self, forward: bool, extend: bool) {
+        if self.secret.is_some() {
+            // A masked text is one word, so a step tells nothing of where
+            // its words break.
+            let end = if forward { self.document_end() } else { START };
+            self.set_focus(end, extend);
+            return;
+        }
         let focus = self.selection.focus;
         // The word step crosses the line break that ends or begins the
         // focus's paragraph, which no layout holds.
@@ -2089,6 +2315,9 @@ impl Session<'_> {
     /// The offset is global, so the caller can delete it against the buffer
     /// directly.
     fn word_before(&mut self, focus: Anchor) -> Option<usize> {
+        if self.secret.is_some() {
+            return (self.table.global(focus) > 0).then_some(0);
+        }
         let start = self.table.paragraphs[focus.paragraph].start;
         if focus.index == 0 {
             if focus.paragraph == 0 {
@@ -2114,6 +2343,10 @@ impl Session<'_> {
     /// The offset is global, so the caller can delete it against the buffer
     /// directly.
     fn word_after(&mut self, focus: Anchor) -> Option<usize> {
+        if self.secret.is_some() {
+            let end = self.buffer.len();
+            return (self.table.global(focus) < end).then_some(end);
+        }
         let start = self.table.paragraphs[focus.paragraph].start;
         if focus.index >= self.table.paragraphs[focus.paragraph].len {
             if focus.paragraph + 1 >= self.table.paragraphs.len() {
@@ -2313,6 +2546,9 @@ impl Session<'_> {
     /// The two ends of the word under the point, collapsed to the point's
     /// paragraph end when the paragraph holds no words.
     fn word_at_point(&mut self, x: f32, y: f32) -> (Anchor, Anchor) {
+        if self.secret.is_some() {
+            return (START, self.document_end());
+        }
         let (paragraph, offset) = self.paragraph_at_y(y);
         let word = self.with_layout(paragraph, |layout| {
             let layout = &layout.layout;

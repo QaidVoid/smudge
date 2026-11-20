@@ -505,6 +505,26 @@ impl WidgetTree {
         })
     }
 
+    /// Returns what the focused widget's text is for, as
+    /// [`WidgetTree::ime_area`] gates it: ordinary text when no widget that
+    /// takes keys holds the focus.
+    pub(crate) fn ime_purpose(&self) -> crate::input::ImePurpose {
+        let Some(focused) = self.focused.filter(|&id| self.can_hold_focus(id)) else {
+            return crate::input::ImePurpose::Normal;
+        };
+        if self
+            .active_focus_trap()
+            .is_some_and(|trap| !self.is_within(focused, trap))
+        {
+            return crate::input::ImePurpose::Normal;
+        }
+        self.nodes
+            .get(focused)
+            .map_or(crate::input::ImePurpose::Normal, |node| {
+                node.widget.ime_purpose()
+            })
+    }
+
     /// Returns the next focusable node in tree order after `from`, or the
     /// previous one when `backwards` is set, wrapping at both ends.
     ///

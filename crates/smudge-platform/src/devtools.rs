@@ -876,15 +876,16 @@ impl Devtools {
         }
     }
 
-    /// Returns the area the input method anchors to: the overlay's while
-    /// the keys go to it, and `app`'s otherwise, so composed text reaches
-    /// the side that hears the keys.
-    pub(crate) fn ime_area(&self, app: &App) -> Option<Rect> {
-        if self.open && self.keys {
-            self.app.ime_area()
+    /// Returns the area the input method anchors to, and what the text it
+    /// takes is for: the overlay's while the keys go to it, and `app`'s
+    /// otherwise, so composed text reaches the side that hears the keys.
+    pub(crate) fn ime_state(&self, app: &App) -> (Option<Rect>, smudge_core::input::ImePurpose) {
+        let side = if self.open && self.keys {
+            &self.app
         } else {
-            app.ime_area()
-        }
+            app
+        };
+        (side.ime_area(), side.ime_purpose())
     }
 
     /// Returns the overlay when `overlay` holds, and `app` otherwise.

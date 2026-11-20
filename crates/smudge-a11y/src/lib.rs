@@ -692,6 +692,7 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::Button => AccessKitRole::Button,
         Role::Label => AccessKitRole::Label,
         Role::TextInput => AccessKitRole::TextInput,
+        Role::PasswordInput => AccessKitRole::PasswordInput,
         Role::MultilineTextInput => AccessKitRole::MultilineTextInput,
         Role::ScrollView => AccessKitRole::ScrollView,
         Role::List => AccessKitRole::List,

@@ -341,6 +341,28 @@ fn an_unnamed_icon_button_and_an_unprojected_pressable_node_are_warned_about() {
 }
 
 #[test]
+fn an_unnamed_password_field_is_warned_about_as_a_text_input_is() {
+    let mut harness = Harness::new(300.0, 100.0, 1.0, || {
+        panel().child(
+            panel()
+                .width(px(30.0))
+                .height(px(30.0))
+                .role(Role::PasswordInput)
+                .accessible_value("\u{2022}")
+                .focusable(),
+        )
+    });
+    harness.frame();
+    let kinds: Vec<A11yWarningKind> = harness
+        .app()
+        .accessibility_warnings()
+        .into_iter()
+        .map(|warning| warning.kind)
+        .collect();
+    assert_eq!(kinds, [A11yWarningKind::TextInputWithoutName]);
+}
+
+#[test]
 fn the_pointer_view_follows_hover_and_a_held_press() {
     let mut harness = Harness::new(200.0, 100.0, 1.0, || {
         panel().child(panel().width(px(60.0)).height(px(40.0)).on_press(|| {}))

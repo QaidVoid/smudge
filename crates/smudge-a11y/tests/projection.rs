@@ -158,6 +158,29 @@ impl Widget for Field {
 }
 
 #[test]
+fn a_password_field_projects_as_a_password_input_a_reader_keeps_quiet_about() {
+    let mut app = app_with(|| {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(Element::new(Field(Role::PasswordInput, "\u{2022}\u{2022}")))
+    });
+    let mut projection = Projection::new("Smudge");
+
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let field = node_with_role(&update, AccessKitRole::PasswordInput);
+    assert_eq!(field.value(), Some("\u{2022}\u{2022}"));
+    let tree = Tree::new(update, true);
+    let group = tree
+        .state()
+        .root()
+        .children()
+        .next()
+        .expect("the window holds the group");
+    let password = group.children().next().expect("the group holds the field");
+    assert!(password.is_text_input() && password.is_password_input());
+}
+
+#[test]
 fn a_multi_line_text_field_projects_as_a_multi_line_input() {
     let mut app = app_with(|| {
         Element::new(Panel)

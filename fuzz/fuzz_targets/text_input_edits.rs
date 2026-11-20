@@ -12,7 +12,9 @@
 //! edits or the single-line input's. The input's editor is a single-line
 //! one, which turns every line break of a paste, a commit, a typed text or
 //! an outside write into a space, so the input's text must never hold one,
-//! and the input sends no vertical moves, no line breaks and no wrap.
+//! and the input sends no vertical moves, no line breaks and no wrap. The
+//! input can mask its text as a password field does, and while it does, the
+//! editor shows bullets alone, a composition's too, and copies nothing.
 
 #![no_main]
 
@@ -105,6 +107,8 @@ enum Op {
     Undo,
     /// Redoes the last undone step.
     Redo,
+    /// Masks the text as a password field does, or shows it again.
+    Mask(bool),
 }
 
 /// Decodes the input bytes into a sequence of edits.
@@ -116,7 +120,7 @@ fn decode(bytes: &[u8]) -> Vec<Op> {
     let mut rest = bytes;
     while let Some((&command, tail)) = rest.split_first() {
         rest = tail;
-        let op = match command % 36 {
+        let op = match command % 37 {
             0 => Op::Insert(take_text(&mut rest)),
             1 => Op::Enter,
             2 => Op::Backspace,
@@ -152,6 +156,7 @@ fn decode(bytes: &[u8]) -> Vec<Op> {
             32 => Op::Commit(take_multiline(&mut rest)),
             33 => Op::LineStart,
             34 => Op::LineEnd,
+            35 => Op::Mask(take_flag(&mut rest)),
             _ => Op::Paste(take_multiline(&mut rest)),
         };
         ops.push(op);
@@ -306,6 +311,7 @@ fn apply(editor: &Editor, value: &RwSignal<String>, op: &Op) {
         Op::Paste(text) => editor.paste(text),
         Op::Undo => editor.undo(),
         Op::Redo => editor.redo(),
+        Op::Mask(on) => editor.set_masked(*on),
     }
 }
 
@@ -365,6 +371,14 @@ fuzz_target!(|data: &[u8]| {
         }
 
         let raw = editor.raw_text();
+        if editor.is_masked() {
+            assert!(is_single_line, "a multi-line editor masked its text");
+            assert!(
+                raw.chars().all(|character| character == '\u{2022}'),
+                "the masked text shows more than bullets: {raw:?}, after {op:?}"
+            );
+            assert_eq!(editor.selected_text(), None, "a masked selection copies");
+        }
         let Range { start, end } = editor.selection();
         assert!(
             raw.is_char_boundary(start),

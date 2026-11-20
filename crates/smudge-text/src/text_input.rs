@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use smudge_core::element::{Element, Value};
 use smudge_core::geometry::{Color, Corners, Point, Rect, Size};
-use smudge_core::input::{Handled, Key, KeyEvent};
+use smudge_core::input::{Handled, ImePurpose, Key, KeyEvent};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::{Role, Semantics};
@@ -84,9 +84,22 @@ impl TextInput {
     }
 }
 
+impl TextInput {
+    /// Returns the role the field reports: a password field's while it
+    /// masks its text.
+    fn role_now(&self) -> Role {
+        if self.chrome.editor.is_masked() {
+            Role::PasswordInput
+        } else {
+            Role::TextInput
+        }
+    }
+}
+
 impl Widget for TextInput {
     /// Reports the field's placeholder as the accessible name and its text
-    /// as the accessible value.
+    /// as the accessible value, or, while it masks its text, the bullets as
+    /// the value and the role of a password field.
     ///
     /// An input with no placeholder reports no name, which leaves the
     /// announcement to the field's surroundings.
@@ -106,15 +119,25 @@ impl Widget for TextInput {
         let (text_runs, selection) = self.chrome.editor.accessible_text(scroll);
         Some(Semantics {
             label,
-            value: Some(self.chrome.editor.text()),
+            value: Some(self.chrome.editor.shown_text()),
             text_runs,
             text_selection: Some(selection),
-            ..Semantics::new(Role::TextInput)
+            ..Semantics::new(self.role_now())
         })
     }
 
     fn role(&self) -> Option<Role> {
-        Some(Role::TextInput)
+        Some(self.role_now())
+    }
+
+    /// Asks the input method for no suggestions and no learning while the
+    /// field masks its text.
+    fn ime_purpose(&self) -> ImePurpose {
+        if self.chrome.editor.is_masked() {
+            ImePurpose::Password
+        } else {
+            ImePurpose::Normal
+        }
     }
 
     /// Returns the size of one line of text.
@@ -335,6 +358,34 @@ pub trait TextInputExt: Sized {
     /// The placeholder paints in the theme's muted text color, so a theme
     /// switch repaints it.
     fn placeholder(self, text: impl Into<Value<String>>) -> Self;
+
+    /// Masks the field while `masked` reads `true`, showing one bullet per
+    /// character typed in place of the text, as a password field does.
+    ///
+    /// The bound signal holds the text, and nothing else sees it: the drawn
+    /// text, an input method's composing text included, shows bullets, a
+    /// screen reader hears a password field and the bullets, and a copy or
+    /// a cut does nothing. A paste and undo still work. A word step goes to
+    /// the start or the end, word deletion takes everything before or after
+    /// the caret, a double click selects the whole text, and a backspace
+    /// takes a whole character, accent and all. On Wayland the input method
+    /// is told the text is a password, so it suggests and learns nothing.
+    /// On Windows and X11 the field turns the input method off and takes
+    /// plain keys, as native password fields do. On macOS it stays on, and
+    /// one there may show what it composes in a window of its own. Bind
+    /// it to a "show password" toggle to show the text again, which keeps
+    /// the caret and the selection where they were.
+    ///
+    /// ```
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_text::{TextInputExt, text_input};
+    ///
+    /// let shown = RwSignal::new(false);
+    /// let password = text_input(RwSignal::new(String::new()))
+    ///     .password(move || !shown.get())
+    ///     .placeholder("Password");
+    /// ```
+    fn password(self, masked: impl Into<Value<bool>>) -> Self;
 }
 
 /// The key of the input's ambient text style binding.
@@ -356,6 +407,23 @@ impl TextInputExt for Element<TextInput> {
     fn placeholder(self, text: impl Into<Value<String>>) -> Self {
         self.bind(PlaceholderKey, text, set_placeholder)
     }
+
+    fn password(self, masked: impl Into<Value<bool>>) -> Self {
+        self.bind(PasswordKey, masked, set_masked)
+    }
+}
+
+/// The key of the input's mask binding.
+struct PasswordKey;
+
+/// Masks the input's text or shows it again.
+fn set_masked(input: &mut TextInput, masked: bool) -> Dirty {
+    if input.chrome.editor.is_masked() == masked {
+        return Dirty::Clean;
+    }
+    input.chrome.editor.set_masked(masked);
+    *input.runs.borrow_mut() = None;
+    Dirty::Layout
 }
 
 /// Returns the height of one line of the ambient text style.

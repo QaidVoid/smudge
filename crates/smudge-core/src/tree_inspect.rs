@@ -213,7 +213,7 @@ impl WidgetTree {
                 .is_some_and(|label| !label.trim().is_empty())
                 || !node.text_runs.is_empty();
             let kind = match node.role {
-                Role::TextInput | Role::MultilineTextInput
+                Role::TextInput | Role::MultilineTextInput | Role::PasswordInput
                     if node
                         .label
                         .as_deref()

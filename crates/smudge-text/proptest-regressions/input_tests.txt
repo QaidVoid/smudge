@@ -1,0 +1,13 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 09e7825c741975a20e229b465045814d4af8fc00199ef016642b5d5ff4063862 # shrinks to ops = [Insert("a")]
+cc 761b625e5ff3f08f37ad67fe62cb086d5201b7ae8e14311e57c44238e5cbee99 # shrinks to ops = [Toggle, Toggle, Toggle, Insert("a"), Insert("a"), Toggle, Undo, Insert("👍🏽"), Paste("א"), Delete, Left]
+cc 766976dc4222ad899c1a27b775d88f8fac2399a9965e02d905fe32d1993e8713 # shrinks to ops = [Paste("🇳"), ExtendLeft, Paste("🇳")]
+cc bd493b9a0396f762192b5d8c9ec8a4f16bd657d0daf21e5d43f452caabf68540 # shrinks to ops = [Insert("a"), BackspaceWord, Undo]
+cc 6fcfe185f267ab540feddd48854e776916a8c0edc2155393237567ff66c42ac5 # shrinks to ops = [Insert("a"), Toggle, Insert("é"), Undo]
+cc a49a9d5e01bb8ae8a8633298a1e24469b8766eebb2a40e8814a9ac60ddb9cbdd # shrinks to ops = [Toggle, Paste("👩"), BackspaceWord, Toggle, Undo]
+cc 0c11a9da1d2af2c674720c1596e15039c47a7039fd33c844ad1ff2e48b7722b0 # shrinks to ops = [Toggle, Insert("a"), Insert(" "), Toggle, Undo]

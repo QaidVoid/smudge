@@ -40,6 +40,9 @@ pub enum Role {
     Label,
     /// A single-line editable text field.
     TextInput,
+    /// A single-line field for a password, whose value and text show one
+    /// bullet per character typed.
+    PasswordInput,
     /// A multi-line editable text field.
     MultilineTextInput,
     /// A viewport that clips and scrolls its content.

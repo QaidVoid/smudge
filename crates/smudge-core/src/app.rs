@@ -1165,6 +1165,14 @@ impl App {
         self.tree.ime_area()
     }
 
+    /// Returns what the text the focused widget takes is for, as its
+    /// [`Widget::ime_purpose`](crate::widget::Widget::ime_purpose) says, or
+    /// ordinary text when no widget that takes keys holds the focus. A
+    /// window passes it to the input method with the area.
+    pub fn ime_purpose(&self) -> crate::input::ImePurpose {
+        self.tree.ime_purpose()
+    }
+
     /// Returns whether the input method has to start over, and clears the
     /// request.
     ///

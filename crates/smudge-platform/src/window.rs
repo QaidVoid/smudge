@@ -790,6 +790,11 @@ struct WindowState {
     /// turns the area into physical pixels with the scale of the moment, so
     /// an unchanged logical area is reported again after a scale change.
     ime_scale: f32,
+    /// What the text the window last reported to the input method was for.
+    ime_purpose: smudge_core::input::ImePurpose,
+    /// Whether the window system ignores the purpose of the text, so a
+    /// password field keeps the input method off instead.
+    ime_off_for_passwords: bool,
     /// Whether the window currently accepts input method input.
     ime_allowed: bool,
     /// Whether the input method stays off until the next frame, after a
@@ -1060,6 +1065,8 @@ where
             physical: (physical.width, physical.height),
             ime_area: None,
             ime_scale: scale,
+            ime_purpose: smudge_core::input::ImePurpose::Normal,
+            ime_off_for_passwords: ime_off_for_passwords(event_loop),
             ime_allowed: false,
             ime_held: false,
             cursor: CursorIcon::Default,
@@ -1869,9 +1876,22 @@ impl WindowState {
             self.ime_held = false;
         }
         #[cfg(feature = "_devtools")]
-        let area = self.devtools.ime_area(&self.app);
+        let (area, purpose) = self.devtools.ime_state(&self.app);
         #[cfg(not(feature = "_devtools"))]
-        let area = self.app.ime_area();
+        let (area, purpose) = (self.app.ime_area(), self.app.ime_purpose());
+        if purpose != self.ime_purpose {
+            self.ime_purpose = purpose;
+            self.window.set_ime_purpose(match purpose {
+                smudge_core::input::ImePurpose::Password => winit::window::ImePurpose::Password,
+                _ => winit::window::ImePurpose::Normal,
+            });
+        }
+        // Where the input method cannot be told the text is a password, a
+        // password field takes plain keys, as native password fields do,
+        // so no composition window ever sees what is typed.
+        let area = area.filter(|_| {
+            !(self.ime_off_for_passwords && purpose == smudge_core::input::ImePurpose::Password)
+        });
         if area == self.ime_area && self.scale == self.ime_scale {
             return;
         }
@@ -2360,6 +2380,44 @@ fn with_app_name(attributes: WindowAttributes, app_id: String) -> WindowAttribut
         use winit::platform::x11::WindowAttributesExtX11 as _;
         attributes.with_name(app_id.clone(), app_id)
     }
+}
+
+/// Returns whether a password field turns the input method off: always on
+/// Windows, which ignores the purpose of the text and still combines dead
+/// keys without the input method.
+#[cfg(target_os = "windows")]
+fn ime_off_for_passwords(_event_loop: &ActiveEventLoop) -> bool {
+    true
+}
+
+/// Returns whether a password field turns the input method off: under X11,
+/// which ignores the purpose of the text and still combines dead keys
+/// without the input method, and not under Wayland, which takes the purpose.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+fn ime_off_for_passwords(event_loop: &ActiveEventLoop) -> bool {
+    use winit::platform::x11::ActiveEventLoopExtX11 as _;
+    event_loop.is_x11()
+}
+
+/// Returns whether a password field turns the input method off: never on
+/// the other platforms, such as macOS, which combines dead keys only
+/// through the input method, or the web, which has none.
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+)))]
+fn ime_off_for_passwords(_event_loop: &ActiveEventLoop) -> bool {
+    false
 }
 
 /// Returns how far apart to start the frames of an app that keeps itself

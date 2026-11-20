@@ -8,6 +8,7 @@ use std::any::Any;
 
 use crate::element::Element;
 use crate::geometry::{Rect, Size};
+use crate::input::ImePurpose;
 use crate::paint::PaintOp;
 use crate::semantics::{Role, Semantics};
 use crate::style::Style;
@@ -123,6 +124,15 @@ pub trait Widget: Any + type_name::TypeName {
     /// [`None`], which suits a widget that takes no text.
     fn ime_area(&self) -> Option<Rect> {
         None
+    }
+
+    /// Returns what the text this widget takes is for, which the window
+    /// passes to the input method while the widget holds the focus. The
+    /// default is [`ImePurpose::Normal`], and a password field answers
+    /// [`ImePurpose::Password`], which turns the input method off on
+    /// platforms that cannot pass the purpose on, as [`ImePurpose`] says.
+    fn ime_purpose(&self) -> ImePurpose {
+        ImePurpose::Normal
     }
 
     /// Returns the accessibility description that places this widget in the

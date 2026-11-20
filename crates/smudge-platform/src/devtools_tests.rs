@@ -503,12 +503,12 @@ fn the_input_method_follows_the_keys() {
     let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
     devtools.app.frame();
     assert!(
-        devtools.ime_area(&app).is_some(),
+        devtools.ime_state(&app).0.is_some(),
         "the app's focused field anchors the input method"
     );
     click(&mut devtools, &mut app, ON_BODY);
     assert_eq!(
-        devtools.ime_area(&app),
+        devtools.ime_state(&app).0,
         None,
         "with the keys on the panel, which has no field, the input method rests"
     );

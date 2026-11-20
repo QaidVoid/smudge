@@ -146,6 +146,25 @@ pub struct KeyEvent {
     pub text: Option<String>,
 }
 
+/// What the text the focused widget takes is for, which the window passes
+/// on to the input method, so a password field gets no suggestions and no
+/// learning.
+///
+/// Wayland takes the hint. Windows and X11 cannot, so there a password
+/// field turns the input method off and takes plain keys, as native
+/// password fields do. macOS cannot either, but combines accents only
+/// through the input method, so it keeps it on.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ImePurpose {
+    /// Ordinary text.
+    #[default]
+    Normal,
+    /// A password, which the input method should neither suggest nor
+    /// learn.
+    Password,
+}
+
 /// A key on the keyboard, by meaning rather than by position.
 ///
 /// A printable key arrives as [`Key::Character`]. Everything the platform
