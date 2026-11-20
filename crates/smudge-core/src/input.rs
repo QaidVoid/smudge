@@ -36,6 +36,15 @@ pub enum InputEvent {
         /// The button that was released.
         button: PointerButton,
     },
+    /// The pointer moved by this much while a node held the pointer lock, in
+    /// the device's own units, which the platforms report unscaled and
+    /// about a pixel each on most of them, not clamped to the window and
+    /// not moving the pointer's position. Scale it to the sensitivity the
+    /// view wants.
+    PointerMotion {
+        /// How far the pointer moved, positive to the right and down.
+        delta: Point,
+    },
     /// The mouse wheel or touchpad scrolled.
     ///
     /// The delta is in logical pixels, positive for scrolling right and down.

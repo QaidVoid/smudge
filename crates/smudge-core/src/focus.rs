@@ -48,6 +48,9 @@ impl WidgetTree {
     /// must not activate from the keyboard. The key still bubbles from it to
     /// the ancestors that can hear it, so shortcuts above it keep working.
     pub(crate) fn key(&mut self, event: &KeyEvent) {
+        if event.pressed && event.key == Key::Escape && self.release_pointer_lock() {
+            return;
+        }
         // A node that lost the focus by becoming disabled or hidden still
         // anchors the next key, so shortcuts above it keep working. The key
         // starts at its parent: the node itself no longer holds the focus,

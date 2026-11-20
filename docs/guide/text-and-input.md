@@ -324,6 +324,10 @@ let view = panel()
 
 A right press that no button handler takes asks the nearest `on_context_menu` in the chain for its menu, at the pointer. The context menu key and Shift+F10 ask the focused node's chain, at the focused node's top left corner, when no key handler took the key.
 
+### Locking the pointer
+
+A view that flies a camera, or drags a value past the window's edge, locks the pointer with `lock_pointer(signal)`. While the signal reads `true`, the pointer hides and stays where it was, and its raw motion reaches the node's `on_pointer_motion` as a delta in the device's own units, about a pixel each on most platforms, not clamped to the window. Escape and the window losing the focus end the lock and write `false` to the signal, so the app sees it end, and that Escape reaches no key handler. Where the window system cannot hold the pointer still, it keeps it inside the window, hidden, and the motion still arrives. A browser grants the lock only during a user gesture, so turn the signal on from a press handler, as the `pointer` example does with a held right button.
+
 ### Keyboard focus
 
 Three builders cover the focus an application drives itself:

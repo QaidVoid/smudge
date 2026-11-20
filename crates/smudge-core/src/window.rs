@@ -152,6 +152,8 @@ pub enum Cursor {
     ColumnResize,
     /// A divider between two rows, which a drag moves up and down.
     RowResize,
+    /// No cursor at all, while the pointer is over the node.
+    Hidden,
 }
 
 /// Queues a command to start an interactive move of the window.

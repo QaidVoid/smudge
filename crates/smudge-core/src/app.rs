@@ -1064,12 +1064,14 @@ impl App {
             }
             InputEvent::ImeCommit { text } => self.tree.ime_commit(&text),
             InputEvent::ImePreedit { text, cursor } => self.tree.ime_preedit(&text, cursor),
+            InputEvent::PointerMotion { delta } => self.tree.pointer_motion(delta),
             InputEvent::WindowFocus(focused) => {
                 // A window that loses the input focus drops its input method
                 // context, so a composition must not outlive the focus. The
-                // empty preedit is the clear.
+                // empty preedit is the clear. It frees the pointer too.
                 if !focused {
                     self.tree.ime_preedit("", None);
+                    self.tree.release_pointer_lock();
                 }
                 crate::window::set_focused(&self.window, focused);
             }
@@ -1084,6 +1086,17 @@ impl App {
     /// arrives.
     pub fn pointer_position(&self) -> Point {
         self.pointer
+    }
+
+    /// Returns whether a node holds the pointer lock, so the windowing layer
+    /// hides the pointer, keeps it in place and hands the app its raw motion
+    /// as [`InputEvent::PointerMotion`].
+    ///
+    /// A node holds it while the signal it passed to
+    /// [`Element::lock_pointer`](crate::element::Element::lock_pointer)
+    /// reads `true` and the node is neither disabled nor hidden.
+    pub fn pointer_locked(&self) -> bool {
+        self.tree.pointer_lock_holder().is_some()
     }
 
     /// Returns the keyboard modifiers the last key or modifiers event

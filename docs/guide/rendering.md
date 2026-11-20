@@ -88,7 +88,7 @@ let link = label("Open the docs")
     .on_press(open_docs);
 ```
 
-The cursor of the deepest enabled node under the pointer that sets one wins, and the platform default applies when none does. Setting a cursor does not change where a press lands: a press on a node that only sets a cursor reaches the nearest ancestor with a handler. `Cursor::Resize(edge)` names the direction a handle would resize in, with an edge from `smudge::commands::ResizeEdge`, so an edge handle shows the same look the window system uses for that edge.
+The cursor of the deepest enabled node under the pointer that sets one wins, and the platform default applies when none does. Setting a cursor does not change where a press lands: a press on a node that only sets a cursor reaches the nearest ancestor with a handler. `Cursor::Resize(edge)` names the direction a handle would resize in, with an edge from `smudge::commands::ResizeEdge`, so an edge handle shows the same look the window system uses for that edge. `Cursor::Hidden` shows no cursor over the node.
 
 ## The two renderers
 

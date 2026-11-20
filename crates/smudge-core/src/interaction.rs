@@ -12,6 +12,7 @@
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::input::{ButtonEvent, Drag, Handled, Key, KeyEvent, PointerButton};
+use crate::reactive::{RwSignal, prelude::*};
 
 use super::{WidgetId, WidgetTree};
 
@@ -147,6 +148,9 @@ pub(crate) struct Handlers {
     /// Runs when the button of a press the node took is released, wherever
     /// the pointer is.
     pub(crate) on_button_up: Option<Box<dyn FnMut(ButtonEvent)>>,
+    /// Runs with the pointer's raw motion while the node holds the pointer
+    /// lock.
+    pub(crate) on_pointer_motion: Option<Box<dyn FnMut(Point)>>,
     /// Runs when the node's context menu is asked for: by a secondary press
     /// in its chain that no button handler took, or by the context menu key
     /// or Shift+F10 while it or a descendant holds the focus. It hears the
@@ -388,6 +392,65 @@ impl WidgetTree {
             self.run_press(captured);
         }
         self.run_pointer_up(captured, position);
+    }
+
+    /// Records that `id` locks the pointer while `signal` reads `true`.
+    ///
+    /// Called once, while the node is being mounted.
+    pub(crate) fn add_pointer_lock(&mut self, id: WidgetId, signal: RwSignal<bool>) {
+        self.pointer_locks.push((id, signal));
+    }
+
+    /// Returns the node that holds the pointer lock, with its signal: the
+    /// last mounted live node whose signal reads `true` and that is neither
+    /// disabled nor hidden.
+    pub(crate) fn pointer_lock_holder(&self) -> Option<(WidgetId, RwSignal<bool>)> {
+        self.pointer_locks
+            .iter()
+            .rev()
+            .find(|(id, signal)| self.hears(*id) && signal.get())
+            .cloned()
+    }
+
+    /// Hands `delta`, the pointer's raw motion in the device's units, to the
+    /// node that holds the pointer lock. Without one it does nothing.
+    pub(crate) fn pointer_motion(&mut self, delta: Point) {
+        let nodes = &self.nodes;
+        self.pointer_locks.retain(|(id, _)| nodes.contains_key(*id));
+        let Some((id, _)) = self.pointer_lock_holder() else {
+            return;
+        };
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        owner.with(|| {
+            if let Some(on_pointer_motion) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.on_pointer_motion.as_mut())
+            {
+                on_pointer_motion(delta);
+            }
+        });
+    }
+
+    /// Ends the pointer lock, as Escape and the window losing the focus do:
+    /// the signal of every node that asks for it reads `false` from now on.
+    /// Returns whether a node held it.
+    pub(crate) fn release_pointer_lock(&mut self) -> bool {
+        let nodes = &self.nodes;
+        self.pointer_locks.retain(|(id, _)| nodes.contains_key(*id));
+        let Some((_, signal)) = self.pointer_lock_holder() else {
+            return false;
+        };
+        // Every node that asks lets go, so the lock does not pass to the
+        // next one.
+        for (_, signal) in &self.pointer_locks {
+            if signal.get() {
+                signal.set(false);
+            }
+        }
+        true
     }
 
     /// Asks for the context menu of the focused node, as the context menu

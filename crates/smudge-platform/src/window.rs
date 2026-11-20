@@ -16,7 +16,7 @@ use std::time::Duration;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
-use winit::event::{Ime, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, Ime, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
@@ -29,7 +29,7 @@ use winit::raw_window_handle::{
     target_os = "openbsd"
 ))]
 use winit::window::WindowAttributes;
-use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
+use winit::window::{CursorGrabMode, CursorIcon, ResizeDirection, Window, WindowId};
 
 use crate::error::PlatformError;
 use crate::events::EventTranslator;
@@ -789,6 +789,10 @@ struct WindowState {
     /// only when it changes, so a hover that crosses nodes which show the
     /// same look costs no call into the window system.
     cursor: CursorIcon,
+    /// Whether the window last showed the cursor.
+    cursor_visible: bool,
+    /// Whether the window last locked the pointer for the app.
+    pointer_locked: bool,
     /// The devtools overlay, its app, and where input goes.
     #[cfg(feature = "_devtools")]
     devtools: crate::devtools::Devtools,
@@ -1048,6 +1052,8 @@ where
             ime_allowed: false,
             ime_held: false,
             cursor: CursorIcon::Default,
+            cursor_visible: true,
+            pointer_locked: false,
             #[cfg(feature = "_devtools")]
             devtools,
             #[cfg(feature = "_devtools")]
@@ -1593,6 +1599,36 @@ where
         }
     }
 
+    /// Hands the pointer's raw motion to the app while a node of it holds
+    /// the pointer lock, in the device's units, which the platforms do not
+    /// agree on, so it passes them on unscaled.
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        let DeviceEvent::MouseMotion { delta: (x, y) } = event else {
+            return;
+        };
+        if !state.pointer_locked {
+            return;
+        }
+        state.dispatch(InputEvent::PointerMotion {
+            delta: smudge_core::geometry::Point {
+                x: x as f32,
+                y: y as f32,
+            },
+        });
+        if state.needs_frame() {
+            state.window.request_redraw();
+        }
+        state.update_cursor();
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.wait_for_timers(event_loop);
         // A command from a timer or a channel handler runs here, so an idle
@@ -1728,15 +1764,35 @@ impl WindowState {
         );
     }
 
-    /// Shows the cursor the app asks for, when it changed.
+    /// Shows the cursor the app asks for, and locks or frees the pointer as
+    /// the app asks, when either changed.
     ///
     /// The caller runs this after every event and every frame, because both
-    /// can move the hover or change a bound cursor without a pixel changing.
+    /// can move the hover, change a bound cursor or end a lock without a
+    /// pixel changing. A locked pointer stays where it was, or inside the
+    /// window where the window system cannot hold it still, and hides.
     fn update_cursor(&mut self) {
         #[cfg(feature = "_devtools")]
         let cursor = self.devtools.cursor(&self.app);
         #[cfg(not(feature = "_devtools"))]
         let cursor = self.app.cursor();
+        let locked = self.app.pointer_locked();
+        if locked != self.pointer_locked {
+            self.pointer_locked = locked;
+            if locked {
+                let _ = self
+                    .window
+                    .set_cursor_grab(CursorGrabMode::Locked)
+                    .or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Confined));
+            } else {
+                let _ = self.window.set_cursor_grab(CursorGrabMode::None);
+            }
+        }
+        let visible = !locked && cursor != Cursor::Hidden;
+        if visible != self.cursor_visible {
+            self.cursor_visible = visible;
+            self.window.set_cursor_visible(visible);
+        }
         let icon = cursor_icon(cursor);
         if icon != self.cursor {
             self.cursor = icon;

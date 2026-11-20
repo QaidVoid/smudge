@@ -618,6 +618,8 @@ pub struct Element<W: Widget> {
     /// The signal that pins the node's scroll offset to the end of its
     /// content while it reads `true`.
     follow_end: Option<RwSignal<bool>>,
+    /// The signal that locks the pointer to the node while it reads `true`.
+    pointer_lock: Option<RwSignal<bool>>,
     /// The spring the node's paint props move under, when the element asked
     /// for a transition.
     transition: Option<Spring>,
@@ -681,6 +683,7 @@ impl<W: Widget> Element<W> {
             autofocus: false,
             trap_focus: false,
             follow_end: None,
+            pointer_lock: None,
             transition: None,
             enter: None,
             exit: None,
@@ -2041,6 +2044,58 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Locks the pointer to the window while `locked` reads `true`, for a
+    /// view that flies a camera or drags a value past the window's edge.
+    ///
+    /// While the node holds the lock, the windowing layer hides the pointer
+    /// and keeps it where it was, and the pointer's raw motion reaches the
+    /// node's [`on_pointer_motion`](Self::on_pointer_motion), not clamped to
+    /// the window. Escape and the window losing the input focus end the
+    /// lock and write `false` to `locked`, so the app hears it, and Escape
+    /// then reaches no key handler. A disabled or hidden node holds no lock
+    /// while it stays so. When several nodes ask, the one mounted last
+    /// holds it.
+    ///
+    /// Where the window system cannot keep the pointer in place, it keeps it
+    /// inside the window, hidden, and the raw motion still arrives. On the
+    /// web the browser grants the lock only during a user gesture, so turn
+    /// the signal on from a press handler.
+    ///
+    /// ```
+    /// use smudge_core::input::{Handled, PointerButton};
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let flying = RwSignal::new(false);
+    /// let (start, stop) = (flying.clone(), flying.clone());
+    /// let view = panel()
+    ///     .lock_pointer(flying)
+    ///     .on_button_down(move |event| {
+    ///         if event.button != PointerButton::Secondary {
+    ///             return Handled::No;
+    ///         }
+    ///         start.set(true);
+    ///         Handled::Yes
+    ///     })
+    ///     .on_button_up(move |_| stop.set(false))
+    ///     .on_pointer_motion(|delta| {
+    ///         let _ = (delta.x, delta.y);
+    ///     });
+    /// ```
+    pub fn lock_pointer(mut self, locked: RwSignal<bool>) -> Self {
+        self.pointer_lock = Some(locked);
+        self
+    }
+
+    /// Runs `handler` with the pointer's raw motion while the node holds the
+    /// pointer lock that [`lock_pointer`](Self::lock_pointer) asks for, in
+    /// the device's own units, about a pixel each on most platforms, so a
+    /// view scales it to the sensitivity it wants.
+    pub fn on_pointer_motion(mut self, handler: impl FnMut(Point) + 'static) -> Self {
+        self.handlers.on_pointer_motion = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
     /// Runs `handler` when a key event reaches the node while the node or one
     /// of its descendants holds the keyboard focus.
     ///
@@ -2321,6 +2376,8 @@ pub struct AnyElement {
     /// The signal that pins the node's scroll offset to the end of its
     /// content while it reads `true`.
     follow_end: Option<RwSignal<bool>>,
+    /// The signal that locks the pointer to the node while it reads `true`.
+    pointer_lock: Option<RwSignal<bool>>,
     /// The spring the node's paint props move under, when the element asked
     /// for a transition.
     transition: Option<Spring>,
@@ -2370,6 +2427,7 @@ impl AnyElement {
             autofocus: element.autofocus,
             trap_focus: element.trap_focus,
             follow_end: element.follow_end,
+            pointer_lock: element.pointer_lock,
             transition: element.transition,
             enter: element.enter,
             exit: element.exit,
@@ -2469,6 +2527,7 @@ fn mount_named(
         autofocus,
         trap_focus,
         follow_end,
+        pointer_lock,
         transition,
         enter,
         exit,
@@ -2508,6 +2567,9 @@ fn mount_named(
     }
     if let Some(signal) = follow_end {
         tree.set_follow(id, signal);
+    }
+    if let Some(signal) = pointer_lock {
+        tree.add_pointer_lock(id, signal);
     }
     if let Some(spring) = transition {
         tree.set_transition(id, spring);

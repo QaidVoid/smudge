@@ -356,6 +356,10 @@ pub(crate) struct WidgetTree {
     /// The keyboard modifiers the last key or modifiers event reported,
     /// which the button handlers hear.
     pub(crate) modifiers: crate::input::Modifiers,
+    /// The nodes that asked for the pointer lock, in mount order, each with
+    /// the signal that says whether it wants it now. Removed nodes are
+    /// dropped lazily.
+    pointer_locks: Vec<(WidgetId, RwSignal<bool>)>,
     /// The drag the held press makes, while it is held.
     drag: Option<interaction::DragState>,
     /// Whether a press was released without its release, so a primary
@@ -453,6 +457,7 @@ impl WidgetTree {
             pressed: None,
             button_holders: Vec::new(),
             modifiers: crate::input::Modifiers::default(),
+            pointer_locks: Vec::new(),
             drag: None,
             released_early: false,
             focused: None,
