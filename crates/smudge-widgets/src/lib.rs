@@ -37,6 +37,7 @@ mod modal;
 mod scroll;
 mod split;
 mod tabs;
+mod toasts;
 mod virtual_list;
 mod virtual_list_keyed;
 
@@ -54,6 +55,7 @@ pub use modal::{Modal, modal};
 pub use scroll::{ScrollAxis, ScrollExt, ScrollView, scroll};
 pub use split::{Split, SplitExt, split};
 pub use tabs::{Tabs, tabs};
+pub use toasts::{MAX_TOASTS, TOAST_DURATION, Toasts, toast_host};
 pub use virtual_list::virtual_list;
 pub use virtual_list_keyed::{virtual_column_keyed, virtual_list_keyed};
 
