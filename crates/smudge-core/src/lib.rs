@@ -24,6 +24,7 @@ pub mod input;
 #[cfg(feature = "devtools")]
 pub mod inspect;
 pub mod paint;
+pub mod path;
 pub mod reactive;
 pub mod renderer;
 pub mod semantics;

@@ -25,6 +25,7 @@
 //! ```
 
 mod button;
+mod canvas;
 mod containers;
 mod height_index;
 mod image;
@@ -34,6 +35,7 @@ mod virtual_list;
 mod virtual_list_keyed;
 
 pub use button::{ButtonExt, button};
+pub use canvas::{Canvas, Painter, canvas};
 pub use containers::{column, row, spacer, stack};
 pub use image::{ImageView, image};
 pub use scroll::{ScrollExt, ScrollView, scroll};

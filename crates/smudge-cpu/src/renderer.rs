@@ -73,6 +73,9 @@ pub(crate) struct Painter {
     plan: RasterPlan,
     /// The layers groups draw into, with their buffers reused between frames.
     layers: Layers,
+    /// The pixels a path is rasterized into before it blends, reused
+    /// between paths and frames.
+    paths: Vec<u8>,
 }
 
 impl Painter {
@@ -82,6 +85,7 @@ impl Painter {
             glyphs: GlyphCache::new(),
             plan: RasterPlan::new(),
             layers: Layers::new(),
+            paths: Vec::new(),
         }
     }
 
@@ -119,8 +123,10 @@ impl Painter {
             width,
             left: 0,
             top: 0,
+            surface: (width, height),
             scale: frame.scale,
             glyphs: &mut self.glyphs,
+            paths: &mut self.paths,
         };
         // A group needs the pixels all its operations cover before it can
         // draw, which only the plan collects.

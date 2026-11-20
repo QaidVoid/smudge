@@ -226,6 +226,8 @@ pub enum PaintOp {
         /// The pixels to draw, shared with the element that shows them.
         image: crate::image::Image,
     },
+    /// A path filled, stroked, or both, as its paint says.
+    Path(Rc<crate::path::PathPaint>),
 }
 
 impl PaintOp {
@@ -243,6 +245,7 @@ impl PaintOp {
             | PaintOp::StrokeSides { rect, .. } => *rect,
             PaintOp::Glyphs(run) => run.ink_bounds,
             PaintOp::Image { rect, .. } => *rect,
+            PaintOp::Path(paint) => paint.bounds(),
         }
     }
 }

@@ -223,6 +223,20 @@ const TOLERANCES: &[Tolerance] = &[
         max: 212,
         over_eight: 0.0527,
     },
+    Tolerance {
+        scene: "paths",
+        scale: 1.0,
+        mean: 0.97,
+        max: 206,
+        over_eight: 0.039,
+    },
+    Tolerance {
+        scene: "paths",
+        scale: 2.0,
+        mean: 0.55,
+        max: 152,
+        over_eight: 0.017,
+    },
 ];
 
 /// The mean, maximum and over-8 difference of one channel over one image.
@@ -1147,7 +1161,66 @@ fn scenes() -> &'static [Scene] {
         ("images", images),
         ("groups", groups),
         ("variable text", variable_text),
+        ("paths", paths),
     ]
+}
+
+/// A canvas that fills by both rules, strokes with every join and cap, and
+/// draws a dashed circle, an arc and curves.
+fn paths() -> Element<Panel> {
+    use smudge_core::geometry::Point;
+    use smudge_core::path::{Dash, FillRule, LineCap, LineJoin, Path, PathPaint, Stroke};
+
+    let point = |x: f32, y: f32| Point { x, y };
+    let canvas = smudge_widgets::canvas(move |painter| {
+        let star = |cx: f32, cy: f32| {
+            Path::polygon((0..5).map(|index| {
+                let angle =
+                    -std::f32::consts::FRAC_PI_2 + index as f32 * 4.0 * std::f32::consts::PI / 5.0;
+                point(cx + 26.0 * angle.cos(), cy + 26.0 * angle.sin())
+            }))
+        };
+        painter.fill(&star(34.0, 34.0), Color::rgb(230, 160, 40));
+        painter.draw(
+            PathPaint::filled(star(96.0, 34.0), Color::rgb(60, 140, 220))
+                .with_fill_rule(FillRule::EvenOdd)
+                .with_stroke(Stroke::new(2.0, Color::rgb(20, 40, 80))),
+        );
+        let joins = [LineJoin::Miter, LineJoin::Round, LineJoin::Bevel];
+        for (index, join) in joins.into_iter().enumerate() {
+            let x = 128.0 + index as f32 * 22.0;
+            let zigzag =
+                Path::polyline([point(x, 60.0), point(x + 8.0, 12.0), point(x + 16.0, 60.0)]);
+            painter.stroke(
+                &zigzag,
+                Stroke::new(6.0, Color::rgb(40, 40, 40)).with_join(join),
+            );
+        }
+        let caps = [LineCap::Butt, LineCap::Round, LineCap::Square];
+        for (index, cap) in caps.into_iter().enumerate() {
+            let y = 84.0 + index as f32 * 14.0;
+            let line = Path::line(point(12.0, y), point(60.0, y));
+            painter.stroke(
+                &line,
+                Stroke::new(8.0, Color::rgb(200, 60, 60)).with_cap(cap),
+            );
+        }
+        let dashed = Stroke::new(3.0, Color::rgb(40, 150, 90)).with_dash(Dash::new([10.0, 5.0]));
+        painter.stroke(&Path::circle(point(100.0, 104.0), 22.0), dashed);
+        let arc = Path::new().arc(point(160.0, 104.0), point(24.0, 18.0), 0.0, 4.0);
+        let rounded = Stroke::new(4.0, Color::rgb(130, 70, 190)).with_cap(LineCap::Round);
+        painter.stroke(&arc, rounded);
+        let curve = Path::new()
+            .move_to(point(6.0, 142.0))
+            .quad_to(point(50.0, 120.0), point(96.0, 142.0))
+            .cubic_to(
+                point(126.0, 160.0),
+                point(160.0, 120.0),
+                point(194.0, 142.0),
+            );
+        painter.stroke(&curve, Stroke::new(3.0, Color::rgb(30, 110, 200)));
+    });
+    panel().child(at(0.0, 0.0, 200.0, 150.0).child(canvas.width(px(200.0)).height(px(150.0))))
 }
 
 /// A small deterministic generator for the grid scene's box colors.

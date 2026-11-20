@@ -1,0 +1,7 @@
+---
+source: crates/smudge-cpu/tests/snapshots.rs
+assertion_line: 792
+expression: "render_list(&path_scene(), 128, 84, 1.0)"
+extension: png
+snapshot_kind: binary
+---

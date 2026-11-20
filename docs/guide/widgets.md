@@ -174,6 +174,44 @@ Pick the fixed `virtual_list` when every row is the same height and the items ar
 
 Both tell a screen reader that they hold a list, with how many items it has. Content that is not a list, such as the blocks of a long document, wants `virtual_column_keyed`, which takes the same arguments and behaves the same way but reports no list, so a reader reads the content as it is.
 
+## Canvas
+
+`canvas(draw)` draws whatever its closure paints: lines, curves and shapes, rectangles and text, in its own coordinates, with the origin at the top left of its content box. The closure runs again when a signal it read changes, or when the canvas moves or resizes, so a selection box, a grid or a gizmo follows its state. `painter.theme()` gives the window's theme, so a canvas can draw in its tokens' colors, and a canvas that asked for it draws again when the theme changes:
+
+```rust
+use smudge::core::path::{Dash, LineCap};
+
+let selection = RwSignal::new(Rect::new(20.0, 16.0, 120.0, 72.0));
+let shown = selection.clone();
+let view = canvas(move |painter| {
+    let size = painter.size();
+    for x in (0..size.width as u32).step_by(16) {
+        let x = x as f32;
+        painter.stroke(
+            &Path::line(Point { x, y: 0.0 }, Point { x, y: size.height }),
+            Stroke::new(1.0, Color::rgb(60, 64, 72)),
+        );
+    }
+    let area = shown.get();
+    painter.fill_rect(area, Corners::ZERO, Color::rgba(80, 150, 255, 40));
+    painter.stroke(
+        &Path::polygon([
+            Point { x: area.x0, y: area.y0 },
+            Point { x: area.x1, y: area.y0 },
+            Point { x: area.x1, y: area.y1 },
+            Point { x: area.x0, y: area.y1 },
+        ]),
+        Stroke::new(1.5, Color::rgb(80, 150, 255))
+            .with_cap(LineCap::Square)
+            .with_dash(Dash::new([6.0, 4.0])),
+    );
+    painter.text("selection", Point { x: area.x0, y: area.y1 + 4.0 }, 12.0, Color::WHITE);
+})
+.height(px(240.0));
+```
+
+A `Path` is built from moves, lines, quadratic and cubic curves, arcs and closes, and `Path::line`, `Path::polyline`, `Path::polygon`, `Path::circle` and `Path::ellipse` build the common ones. `fill` covers it by the nonzero rule, and `draw` with a `PathPaint` picks the even-odd rule, which cuts a hole wherever one subpath lies inside another, or fills and strokes in one call. A `Stroke` has a width, a color, miter, round or bevel joins, butt, round or square caps, a miter limit and an optional dash. A path with a point that is not finite, or more than a million logical pixels from the origin, draws nothing. A dash pattern that would cut its path into more than a hundred thousand pieces draws the stroke solid. Both renderers draw paths, so a canvas looks the same on the CPU and the GPU to within their antialiasing.
+
 ## Writing your own
 
 The button, the containers, the scroll view and the virtual list are composed from `panel`, `label` and the public element builders. A component of your own is the same thing, a function that returns an element:

@@ -727,3 +727,76 @@ fn a_pill_with_a_bottom_border_leaves_its_top_corners_blank() {
         }
     }
 }
+
+/// Fills by both rules, strokes with every join and cap, a dashed circle, an
+/// arc, and quadratic and cubic curves.
+fn path_scene() -> DisplayList {
+    use smudge_core::path::{Dash, FillRule, LineCap, LineJoin, Path, PathPaint, Stroke};
+
+    let point = |x: f32, y: f32| Point { x, y };
+    let mut list = DisplayList::new();
+    let mut push = |paint: PathPaint| list.push_op(PaintOp::Path(Rc::new(paint)));
+    let star = |cx: f32, cy: f32| {
+        Path::polygon((0..5).map(|index| {
+            let angle =
+                -std::f32::consts::FRAC_PI_2 + index as f32 * 4.0 * std::f32::consts::PI / 5.0;
+            point(cx + 14.0 * angle.cos(), cy + 14.0 * angle.sin())
+        }))
+    };
+    push(PathPaint::filled(
+        star(18.0, 18.0),
+        Color::rgb(230, 160, 40),
+    ));
+    push(
+        PathPaint::filled(star(52.0, 18.0), Color::rgb(60, 140, 220))
+            .with_fill_rule(FillRule::EvenOdd)
+            .with_stroke(Stroke::new(1.5, Color::rgb(20, 40, 80))),
+    );
+    for (index, join) in [LineJoin::Miter, LineJoin::Round, LineJoin::Bevel]
+        .into_iter()
+        .enumerate()
+    {
+        let x = 74.0 + index as f32 * 16.0;
+        push(PathPaint::stroked(
+            Path::polyline([point(x, 30.0), point(x + 6.0, 8.0), point(x + 12.0, 30.0)]),
+            Stroke::new(4.0, Color::rgb(40, 40, 40)).with_join(join),
+        ));
+    }
+    for (index, cap) in [LineCap::Butt, LineCap::Round, LineCap::Square]
+        .into_iter()
+        .enumerate()
+    {
+        let y = 44.0 + index as f32 * 10.0;
+        push(PathPaint::stroked(
+            Path::line(point(10.0, y), point(40.0, y)),
+            Stroke::new(6.0, Color::rgb(200, 60, 60)).with_cap(cap),
+        ));
+    }
+    push(PathPaint::stroked(
+        Path::circle(point(66.0, 56.0), 14.0),
+        Stroke::new(2.0, Color::rgb(40, 150, 90)).with_dash(Dash::new([6.0, 3.0])),
+    ));
+    push(PathPaint::stroked(
+        Path::new().arc(point(102.0, 56.0), point(14.0, 10.0), 0.0, 4.0),
+        Stroke::new(3.0, Color::rgb(130, 70, 190)).with_cap(LineCap::Round),
+    ));
+    push(PathPaint::stroked(
+        Path::new()
+            .move_to(point(4.0, 76.0))
+            .quad_to(point(30.0, 60.0), point(56.0, 76.0))
+            .cubic_to(point(70.0, 90.0), point(90.0, 60.0), point(124.0, 76.0)),
+        Stroke::new(2.0, Color::rgb(30, 110, 200)),
+    ));
+    list.finish();
+    list
+}
+
+#[test]
+fn paths_at_scale_one() {
+    assert_binary_snapshot!(".png", render_list(&path_scene(), 128, 84, 1.0));
+}
+
+#[test]
+fn paths_at_scale_one_and_a_half() {
+    assert_binary_snapshot!(".png", render_list(&path_scene(), 192, 126, 1.5));
+}

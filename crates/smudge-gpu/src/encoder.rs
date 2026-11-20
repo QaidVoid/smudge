@@ -7,10 +7,13 @@ use std::sync::Arc;
 use smudge_core::app::FrameOutput;
 use smudge_core::geometry::{Color, Corners, Rect};
 use smudge_core::paint::{DisplayItem, EMBOLDEN_MITER_LIMIT, FontBlob, PaintOp};
+use smudge_core::path::{
+    FillRule, LineCap, LineJoin, Path, PathPaint, Segment, Stroke as PathStroke,
+};
 use smudge_core::style::Edges;
 use vello::kurbo::{
-    Affine, BezPath, CubicBez, Diagonal2, ParamCurve, Point as KurboPoint, Rect as KurboRect,
-    RoundedRect, RoundedRectRadii,
+    Affine, BezPath, Cap, CubicBez, Diagonal2, Join, ParamCurve, Point as KurboPoint,
+    Rect as KurboRect, RoundedRect, RoundedRectRadii, Stroke as KurboStroke,
 };
 use vello::peniko::{
     BlendMode, Blob, Color as PenikoColor, Fill, FontData, ImageAlphaType, ImageBrush, ImageData,
@@ -31,7 +34,8 @@ pub(crate) struct Encoder {
     fonts: HashMap<(u64, u32), Option<FontData>>,
     /// The images handed to vello.
     images: ImageCache,
-    /// Scratch for the outline of a border ring, reused across operations.
+    /// Scratch for the outline of a border ring or a path, reused across
+    /// operations.
     ring: BezPath,
     /// The transform of each open offset scope, reused across frames.
     offsets: Vec<Affine>,
@@ -293,9 +297,78 @@ fn encode_op(
                 scene.pop_layer();
             }
         }
+        PaintOp::Path(ref paint) => draw_path(scene, ring, transform, paint),
         // An operation added after this renderer draws nothing here.
         _ => {}
     }
+}
+
+/// Fills and strokes `paint`, the fill first.
+fn draw_path(scene: &mut Scene, path: &mut BezPath, transform: Affine, paint: &PathPaint) {
+    if !paint.path.is_drawable() {
+        return;
+    }
+    kurbo_path(&paint.path, path);
+    let path = &*path;
+    if let Some(color) = paint.fill {
+        let rule = match paint.fill_rule {
+            FillRule::EvenOdd => Fill::EvenOdd,
+            _ => Fill::NonZero,
+        };
+        scene.fill(rule, transform, peniko_color(color), None, path);
+    }
+    if let Some(stroke) = paint.stroke.as_ref().filter(|stroke| stroke.draws()) {
+        scene.stroke(
+            &kurbo_stroke(stroke, &paint.path),
+            transform,
+            peniko_color(stroke.color),
+            None,
+            path,
+        );
+    }
+}
+
+/// Writes `path` into `bez` as kurbo's path type, replacing what it held.
+fn kurbo_path(path: &Path, bez: &mut BezPath) {
+    let point = |point: smudge_core::geometry::Point| {
+        KurboPoint::new(f64::from(point.x), f64::from(point.y))
+    };
+    bez.truncate(0);
+    for segment in path.segments() {
+        match *segment {
+            Segment::MoveTo(to) => bez.move_to(point(to)),
+            Segment::LineTo(to) => bez.line_to(point(to)),
+            Segment::QuadTo(control, to) => bez.quad_to(point(control), point(to)),
+            Segment::CubicTo(first, second, to) => {
+                bez.curve_to(point(first), point(second), point(to));
+            }
+            Segment::Close => bez.close_path(),
+            // A segment added after this renderer draws nothing here.
+            _ => {}
+        }
+    }
+}
+
+/// Converts a stroke to kurbo's stroke style.
+fn kurbo_stroke(stroke: &PathStroke, path: &Path) -> KurboStroke {
+    let mut style = KurboStroke::new(f64::from(stroke.width))
+        .with_miter_limit(f64::from(stroke.effective_miter_limit()))
+        .with_join(match stroke.join {
+            LineJoin::Round => Join::Round,
+            LineJoin::Bevel => Join::Bevel,
+            _ => Join::Miter,
+        })
+        .with_caps(match stroke.cap {
+            LineCap::Round => Cap::Round,
+            LineCap::Square => Cap::Square,
+            _ => Cap::Butt,
+        });
+    if let Some(dash) = &stroke.dash
+        && let Some(pattern) = dash.pattern(path)
+    {
+        style = style.with_dashes(f64::from(dash.start()), pattern.map(f64::from));
+    }
+    style
 }
 
 /// Returns `rect` with `radius` as kurbo's rounded rectangle.

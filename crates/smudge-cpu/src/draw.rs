@@ -11,6 +11,7 @@ use std::ops::Range;
 
 use smudge_core::geometry::{Color, Corners, PixelRect, Point, Rect};
 use smudge_core::paint::{DisplayItem, GlyphRun, PaintOp};
+use smudge_core::path::{FillRule, LineCap, LineJoin, Path, PathPaint, Segment, Stroke};
 use smudge_core::style::Edges;
 
 use crate::glyph_cache::{GlyphCache, MAX_GLYPH_SIZE, MaskKey};
@@ -411,8 +412,10 @@ impl Layers {
             width: region.width,
             left: region.x,
             top: region.y,
+            surface: base.surface,
             scale: base.scale,
             glyphs: base.glyphs,
+            paths: base.paths,
         };
         canvas.draw(op, area, offset);
     }
@@ -458,10 +461,14 @@ pub(crate) struct Canvas<'a> {
     pub(crate) left: u32,
     /// The surface row of the pixels' first row.
     pub(crate) top: u32,
+    /// The width and height of the whole surface, which the pixels lie in.
+    pub(crate) surface: (u32, u32),
     /// Physical pixels per logical pixel.
     pub(crate) scale: f32,
     /// The cache of rasterized glyph masks, shared across frames.
     pub(crate) glyphs: &'a mut GlyphCache,
+    /// The pixels a path is rasterized into, shared across frames.
+    pub(crate) paths: &'a mut Vec<u8>,
 }
 
 impl Canvas<'_> {
@@ -551,8 +558,91 @@ impl Canvas<'_> {
                 radius,
                 ref image,
             } => self.draw_image(maybe_translated(rect, offset), radius, image, area),
+            PaintOp::Path(ref paint) => self.draw_path(paint, area, offset),
             // An operation added after this renderer draws nothing here.
             _ => {}
+        }
+    }
+
+    /// Draws `paint`, moved by the logical `offset`, into `area`.
+    ///
+    /// The path is rasterized with tiny-skia into a scratch buffer that
+    /// covers the paint's bounds on the surface, and the part of it inside
+    /// `area` blends over the pixels. The buffer's place depends on the
+    /// paint and the surface alone, never on `area`, so a damaged repaint
+    /// gives the same bytes as a full one: rasterizing just the area would
+    /// move the path by the area's corner, which rounds its coordinates
+    /// differently.
+    fn draw_path(&mut self, paint: &PathPaint, area: PixelRect, offset: Point) {
+        if !paint.path.is_drawable() {
+            return;
+        }
+        let scale = self.scale;
+        let bounds = maybe_translated(paint.bounds(), offset);
+        let (surface_width, surface_height) = self.surface;
+        let x0 = ((bounds.x0 * scale).floor().max(0.0) as u32).min(surface_width);
+        let y0 = ((bounds.y0 * scale).floor().max(0.0) as u32).min(surface_height);
+        let x1 = ((bounds.x1 * scale).ceil().max(0.0) as u32).min(surface_width);
+        let y1 = ((bounds.y1 * scale).ceil().max(0.0) as u32).min(surface_height);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let Some(path) = skia_path(&paint.path) else {
+            return;
+        };
+        let (width, height) = (x1 - x0, y1 - y0);
+        self.paths.clear();
+        self.paths.resize(width as usize * height as usize * 4, 0);
+        let Some(mut pixmap) = tiny_skia::PixmapMut::from_bytes(self.paths, width, height) else {
+            return;
+        };
+        let transform = tiny_skia::Transform::from_row(
+            scale,
+            0.0,
+            0.0,
+            scale,
+            offset.x * scale - x0 as f32,
+            offset.y * scale - y0 as f32,
+        );
+        if let Some(color) = paint.fill {
+            let rule = match paint.fill_rule {
+                FillRule::EvenOdd => tiny_skia::FillRule::EvenOdd,
+                _ => tiny_skia::FillRule::Winding,
+            };
+            pixmap.fill_path(&path, &skia_paint(color), rule, transform, None);
+        }
+        if let Some(stroke) = paint.stroke.as_ref().filter(|stroke| stroke.draws()) {
+            pixmap.stroke_path(
+                &path,
+                &skia_paint(stroke.color),
+                &skia_stroke(stroke, &paint.path),
+                transform,
+                None,
+            );
+        }
+        let Some(area) = area.intersect(PixelRect {
+            x: x0,
+            y: y0,
+            width,
+            height,
+        }) else {
+            return;
+        };
+        let source = self.paths.as_chunks::<4>().0;
+        for y in area.y..area.y + area.height {
+            let from = ((y - y0) * width + (area.x - x0)) as usize;
+            let start = self.index(area.x, y);
+            let row = &mut self.pixels[start..start + area.width as usize * 4];
+            for (target, pixel) in row
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(&source[from..from + area.width as usize])
+            {
+                if pixel[3] != 0 {
+                    blend_image(target, *pixel, 255);
+                }
+            }
         }
     }
 
@@ -648,6 +738,7 @@ impl Canvas<'_> {
             top,
             scale,
             glyphs,
+            ..
         } = self;
         let scale = *scale;
         let shift_x = offset.x * scale;
@@ -1109,4 +1200,52 @@ fn blend_image(target: &mut [u8; 4], sample: [u8; 4], alpha: u32) {
 /// Returns `channel` multiplied by `alpha` out of 255, rounded.
 fn premultiply(channel: u8, alpha: u32) -> u8 {
     ((u32::from(channel) * alpha + 127) / 255) as u8
+}
+/// Builds a tiny-skia path from `path`, or `None` when it has no segment
+/// tiny-skia can draw.
+fn skia_path(path: &Path) -> Option<tiny_skia::Path> {
+    let mut builder = tiny_skia::PathBuilder::new();
+    for segment in path.segments() {
+        match *segment {
+            Segment::MoveTo(to) => builder.move_to(to.x, to.y),
+            Segment::LineTo(to) => builder.line_to(to.x, to.y),
+            Segment::QuadTo(control, to) => builder.quad_to(control.x, control.y, to.x, to.y),
+            Segment::CubicTo(first, second, to) => {
+                builder.cubic_to(first.x, first.y, second.x, second.y, to.x, to.y);
+            }
+            Segment::Close => builder.close(),
+            // A segment added after this renderer draws nothing here.
+            _ => {}
+        }
+    }
+    builder.finish()
+}
+
+/// Builds an antialiased tiny-skia paint of `color`.
+fn skia_paint(color: Color) -> tiny_skia::Paint<'static> {
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+    paint.anti_alias = true;
+    paint
+}
+
+/// Builds the tiny-skia stroke `stroke` describes.
+fn skia_stroke(stroke: &Stroke, path: &Path) -> tiny_skia::Stroke {
+    tiny_skia::Stroke {
+        width: stroke.width,
+        miter_limit: stroke.effective_miter_limit(),
+        line_cap: match stroke.cap {
+            LineCap::Round => tiny_skia::LineCap::Round,
+            LineCap::Square => tiny_skia::LineCap::Square,
+            _ => tiny_skia::LineCap::Butt,
+        },
+        line_join: match stroke.join {
+            LineJoin::Round => tiny_skia::LineJoin::Round,
+            LineJoin::Bevel => tiny_skia::LineJoin::Bevel,
+            _ => tiny_skia::LineJoin::Miter,
+        },
+        dash: stroke.dash.as_ref().and_then(|dash| {
+            tiny_skia::StrokeDash::new(dash.pattern(path)?.collect(), dash.start())
+        }),
+    }
 }

@@ -12,6 +12,7 @@
 pub use smudge_core::animation::Spring;
 pub use smudge_core::element::{AnyElement, Element, IntoElement, for_each, show};
 pub use smudge_core::geometry::{Color, Corners, Point, Rect, Size};
+pub use smudge_core::path::{Path, PathPaint, Stroke};
 pub use smudge_core::reactive::prelude::*;
 pub use smudge_core::reactive::{Memo, Owner, ReadSignal, RenderEffect, RwSignal, WriteSignal};
 pub use smudge_core::style::{Align, Direction, Justify, Length, Overflow, pct, px};
@@ -24,8 +25,8 @@ pub use smudge_text::{
     provide_text_style, rich_text, selection_scope, text_area, text_input,
 };
 pub use smudge_widgets::{
-    ButtonExt, ScrollView, Split, SplitExt, button, column, image, row, scroll, spacer, split,
-    stack, virtual_list,
+    ButtonExt, Painter, ScrollView, Split, SplitExt, button, canvas, column, image, row, scroll,
+    spacer, split, stack, virtual_list,
 };
 
 #[cfg(feature = "window")]

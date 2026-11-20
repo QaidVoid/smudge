@@ -133,6 +133,39 @@ fn keyed() {
     .height(px(420.0));
 }
 
+#[test]
+fn canvas_sample() {
+    use smudge::core::path::{Dash, LineCap};
+
+    let selection = RwSignal::new(Rect::new(20.0, 16.0, 120.0, 72.0));
+    let shown = selection.clone();
+    let view = canvas(move |painter| {
+        let size = painter.size();
+        for x in (0..size.width as u32).step_by(16) {
+            let x = x as f32;
+            painter.stroke(
+                &Path::line(Point { x, y: 0.0 }, Point { x, y: size.height }),
+                Stroke::new(1.0, Color::rgb(60, 64, 72)),
+            );
+        }
+        let area = shown.get();
+        painter.fill_rect(area, Corners::ZERO, Color::rgba(80, 150, 255, 40));
+        painter.stroke(
+            &Path::polygon([
+                Point { x: area.x0, y: area.y0 },
+                Point { x: area.x1, y: area.y0 },
+                Point { x: area.x1, y: area.y1 },
+                Point { x: area.x0, y: area.y1 },
+            ]),
+            Stroke::new(1.5, Color::rgb(80, 150, 255))
+                .with_cap(LineCap::Square)
+                .with_dash(Dash::new([6.0, 4.0])),
+        );
+        painter.text("selection", Point { x: area.x0, y: area.y1 + 4.0 }, 12.0, Color::WHITE);
+    })
+    .height(px(240.0));
+}
+
 fn stat(title: &'static str, value: RwSignal<u32>) -> Element<Panel> {
     column()
         .padding(px(12.0))
