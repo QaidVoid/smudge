@@ -411,6 +411,143 @@ fn a_view_at_its_end_passes_the_wheel_on_and_one_that_moves_keeps_it() {
     );
 }
 
+/// A row of `count` focusable cells, each `width` wide and 30 tall.
+fn focusable_strip(count: usize, width: f32) -> Element<Panel> {
+    (0..count).fold(row(), |strip, index| {
+        strip.child(
+            panel()
+                .width(px(width))
+                .height(px(30.0))
+                .shrink(0.0)
+                .focusable()
+                .role(smudge_core::semantics::Role::Button)
+                .accessible_label(format!("Cell {index}"))
+                .background(Color::rgb((index * 20) as u8, 120, 160)),
+        )
+    })
+}
+
+/// The rectangle of the focused node, as the window shows it.
+fn focused_rect(harness: &mut Harness) -> Rect {
+    harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.focused)
+        .expect("a node holds the focus")
+        .bounds
+}
+
+#[test]
+fn tabbing_to_a_cell_past_the_right_edge_scrolls_it_into_view() {
+    let (mut harness, _, across) = view(ScrollAxis::Horizontal, || focusable_strip(10, 60.0));
+
+    for _ in 0..5 {
+        harness.press_key(smudge_core::input::Key::Tab);
+    }
+    harness.settle();
+
+    let cell = focused_rect(&mut harness);
+    assert_eq!(across.get(), 100.0, "the fifth cell ends 100 past the view");
+    assert!(cell.x0 >= 0.0 && cell.x1 <= 200.0, "{cell:?} is in view");
+}
+
+#[test]
+fn tabbing_to_a_cell_past_both_edges_scrolls_both_axes() {
+    let (mut harness, down, across) = view(ScrollAxis::Both, || {
+        column()
+            .child(panel().height(px(200.0)).width(px(10.0)))
+            .child(focusable_strip(10, 60.0))
+    });
+
+    for _ in 0..6 {
+        harness.press_key(smudge_core::input::Key::Tab);
+    }
+    harness.settle();
+
+    let cell = focused_rect(&mut harness);
+    assert_eq!(
+        (across.get(), down.get()),
+        (160.0, 130.0),
+        "the sixth cell, at 300 to 360 across and 200 to 230 down"
+    );
+    assert!(cell.x1 <= 200.0 && cell.y1 <= 100.0, "{cell:?} is in view");
+}
+
+#[test]
+fn a_drag_held_past_the_right_edge_scrolls_sideways_until_the_end() {
+    let across = RwSignal::new(0.0f32);
+    let offset = across.clone();
+    let mut harness = Harness::new(300.0, 200.0, 1.0, move || {
+        column().on_press(|| {}).child(
+            scroll(strip(20, 30.0, 60.0))
+                .axis(ScrollAxis::Horizontal)
+                .horizontal_offset(offset.clone())
+                .width(px(200.0))
+                .height(px(100.0)),
+        )
+    });
+    harness.settle();
+
+    harness.button_down(Point { x: 100.0, y: 50.0 });
+    harness.move_to(Point { x: 260.0, y: 50.0 });
+    for _ in 0..10 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    let scrolled = across.get();
+    assert!(scrolled > 0.0, "the drag past the right edge scrolled");
+
+    for _ in 0..200 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    assert_eq!(across.get(), 400.0, "and stops at the end");
+    harness.button_up(Point { x: 260.0, y: 50.0 });
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn a_drag_held_past_an_inner_view_at_its_end_scrolls_the_view_around_it() {
+    let (inner, outer) = (RwSignal::new(0.0f32), RwSignal::new(0.0f32));
+    let (inner_offset, outer_offset) = (inner.clone(), outer.clone());
+    let mut harness = Harness::new(300.0, 200.0, 1.0, move || {
+        column().on_press(|| {}).child(
+            scroll(
+                row()
+                    .child(
+                        scroll(strip(20, 30.0, 60.0))
+                            .axis(ScrollAxis::Horizontal)
+                            .horizontal_offset(inner_offset.clone())
+                            .width(px(150.0))
+                            .shrink(0.0),
+                    )
+                    .child(panel().width(px(600.0)).height(px(60.0)).shrink(0.0)),
+            )
+            .axis(ScrollAxis::Horizontal)
+            .horizontal_offset(outer_offset.clone())
+            .width(px(200.0))
+            .height(px(100.0)),
+        )
+    });
+    harness.settle();
+
+    harness.button_down(Point { x: 50.0, y: 30.0 });
+    harness.move_to(Point { x: 280.0, y: 30.0 });
+    for _ in 0..400 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    assert_eq!(inner.get(), 450.0, "the inner view reached its end");
+    assert_eq!(outer.get(), 0.0);
+
+    // The next move finds the inner view at its end, so the view around it
+    // takes the drag.
+    harness.move_to(Point { x: 282.0, y: 30.0 });
+    for _ in 0..10 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    harness.button_up(Point { x: 282.0, y: 30.0 });
+    assert!(outer.get() > 0.0, "and the view around it took over");
+}
+
 #[test]
 fn a_virtual_list_given_a_sideways_axis_keeps_scrolling_up_and_down() {
     let (down, across) = (RwSignal::new(0.0f32), RwSignal::new(0.0f32));
@@ -587,6 +724,67 @@ fn a_step_down_at_the_end_follows_again_and_leaves_the_event_to_the_page() {
 }
 
 #[test]
+fn a_drag_past_a_strip_and_below_the_page_scrolls_both() {
+    let (page, across) = (RwSignal::new(0.0f32), RwSignal::new(0.0f32));
+    let (outer, inner) = (page.clone(), across.clone());
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        panel().column().on_press(|| {}).child(
+            scroll(
+                column()
+                    .child(
+                        scroll(strip(20, 30.0, 60.0))
+                            .axis(ScrollAxis::Horizontal)
+                            .horizontal_offset(inner.clone())
+                            .height(px(60.0)),
+                    )
+                    .child(panel().height(px(600.0))),
+            )
+            .offset(outer.clone())
+            .height(px(200.0)),
+        )
+    });
+    harness.settle();
+
+    harness.button_down(Point { x: 50.0, y: 30.0 });
+    harness.move_to(Point { x: 260.0, y: 260.0 });
+    for _ in 0..20 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    harness.button_up(Point { x: 260.0, y: 260.0 });
+    assert!(across.get() > 0.0, "the strip scrolled across");
+    assert!(page.get() > 0.0, "and the page scrolled down with it");
+}
+
+#[test]
+fn a_reveal_leaves_a_view_that_does_not_scroll_sideways_at_its_left() {
+    // An app's own alignment lets the content run wider than the view.
+    let mut harness = Harness::new(300.0, 200.0, 1.0, || {
+        panel().child(
+            scroll(focusable_strip(10, 60.0))
+                .align_items(smudge_core::style::Align::Start)
+                .width(px(200.0))
+                .height(px(100.0)),
+        )
+    });
+    harness.settle();
+    for _ in 0..6 {
+        harness.press_key(smudge_core::input::Key::Tab);
+    }
+    harness.settle();
+    let mut lefts = Vec::new();
+    harness.app().visit_nodes(|_, type_name, rect: Rect| {
+        if type_name.ends_with("Panel") && rect.width() == 60.0 && rect.height() == 30.0 {
+            lefts.push(rect.x0);
+        }
+    });
+    assert_eq!(
+        lefts.first(),
+        Some(&0.0),
+        "the content stays at the view's left"
+    );
+}
+
+#[test]
 fn a_keyed_list_given_a_sideways_axis_keeps_scrolling_up_and_down() {
     let (down, across) = (RwSignal::new(0.0f32), RwSignal::new(0.0f32));
     let (vertical, horizontal) = (down.clone(), across.clone());
@@ -651,6 +849,39 @@ fn a_mostly_sideways_swipe_over_a_list_scrolls_a_sideways_page_around_it() {
     wheel(&mut harness, 9.0, 1.5);
     harness.frame();
     assert_eq!((page.get(), list.get()), (9.0, 0.0));
+}
+
+#[test]
+fn a_drag_out_of_a_list_past_its_side_scrolls_the_list_and_not_the_page_around_it() {
+    let (page, list) = (RwSignal::new(0.0f32), RwSignal::new(0.0f32));
+    let (outer, inner) = (page.clone(), list.clone());
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        panel().column().on_press(|| {}).child(
+            scroll(
+                row()
+                    .child(panel().width(px(100.0)).height(px(600.0)).shrink(0.0))
+                    .child(
+                        scroll(column().child(panel().height(px(900.0)).width(px(100.0))))
+                            .offset(inner.clone())
+                            .width(px(100.0))
+                            .height(px(150.0))
+                            .shrink(0.0),
+                    ),
+            )
+            .offset(outer.clone())
+            .height(px(150.0)),
+        )
+    });
+    harness.settle();
+
+    harness.button_down(Point { x: 150.0, y: 20.0 });
+    harness.move_to(Point { x: 20.0, y: 190.0 });
+    for _ in 0..20 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    harness.button_up(Point { x: 20.0, y: 190.0 });
+    assert!(list.get() > 0.0, "the list scrolled down");
+    assert_eq!(page.get(), 0.0, "and the page left that axis to it");
 }
 
 #[test]
@@ -758,6 +989,88 @@ fn a_sideways_swipe_over_a_following_log_that_scrolls_both_ways_keeps_it_followi
     wheel(&mut harness, 9.0, 0.5);
     harness.settle();
     assert!(!follow.get(), "and does not pin it near the end either");
+}
+
+#[test]
+fn a_drag_above_a_page_and_a_list_scrolls_the_list_first() {
+    let (page, list) = (RwSignal::new(0.0f32), RwSignal::new(f32::MAX));
+    let (outer, inner) = (page.clone(), list.clone());
+    let mut harness = Harness::new(200.0, 300.0, 1.0, move || {
+        panel().column().padding(px(50.0)).on_press(|| {}).child(
+            scroll(
+                column()
+                    .child(panel().height(px(40.0)))
+                    .child(
+                        scroll(column().child(panel().height(px(400.0)).width(px(100.0))))
+                            .offset(inner.clone())
+                            .height(px(100.0)),
+                    )
+                    .child(panel().height(px(600.0))),
+            )
+            .offset(outer.clone())
+            .height(px(200.0)),
+        )
+    });
+    harness.settle();
+    let list_end = list.get();
+
+    harness.button_down(Point { x: 100.0, y: 120.0 });
+    harness.move_to(Point { x: 100.0, y: 290.0 });
+    for _ in 0..5 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    assert!(page.get() > 0.0, "below both, the page scrolls down");
+    assert_eq!(list.get(), list_end, "past the list's end");
+
+    let page_then = page.get();
+    harness.move_to(Point { x: 100.0, y: 10.0 });
+    for _ in 0..5 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    harness.button_up(Point { x: 100.0, y: 10.0 });
+    assert!(
+        list.get() < list_end,
+        "above both, the list scrolls up first"
+    );
+    assert_eq!(page.get(), page_then, "and the page waits");
+}
+
+#[test]
+fn a_drag_past_a_grid_at_its_right_end_scrolls_the_sideways_page_around_it() {
+    let (page, across) = (RwSignal::new(0.0f32), RwSignal::new(f32::MAX));
+    let (outer, inner) = (page.clone(), across.clone());
+    let mut harness = Harness::new(300.0, 200.0, 1.0, move || {
+        column().on_press(|| {}).child(
+            scroll(
+                row()
+                    .child(
+                        scroll(grid())
+                            .axis(ScrollAxis::Both)
+                            .horizontal_offset(inner.clone())
+                            .width(px(150.0))
+                            .height(px(100.0))
+                            .shrink(0.0),
+                    )
+                    .child(panel().width(px(500.0)).height(px(100.0)).shrink(0.0)),
+            )
+            .axis(ScrollAxis::Horizontal)
+            .horizontal_offset(outer.clone())
+            .width(px(200.0))
+            .height(px(100.0)),
+        )
+    });
+    harness.settle();
+
+    harness.button_down(Point { x: 50.0, y: 50.0 });
+    harness.move_to(Point { x: 260.0, y: 150.0 });
+    for _ in 0..10 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    harness.button_up(Point { x: 260.0, y: 150.0 });
+    assert!(
+        page.get() > 0.0,
+        "the grid at its right end left that axis to the page"
+    );
 }
 
 #[test]

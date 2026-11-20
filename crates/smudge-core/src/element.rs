@@ -2585,11 +2585,12 @@ impl<W: Widget> Element<W> {
     /// focus, the next layout scrolls every ancestor of the focused node that
     /// set this handler, deepest first. An ancestor whose child on the way to
     /// the focused node is absolutely positioned does not scroll, because its
-    /// offset never moves that child. Each one moves its vertical offset by
-    /// the least that brings the focused node inside its content box, or
-    /// aligns the node's top with the top of the content box when the node
-    /// is taller than it. The offset stays between zero and the furthest its
-    /// flowing content reaches, and the horizontal offset is left alone. An
+    /// offset never moves that child. Each one moves its offset on each axis
+    /// by the least that brings the focused node inside its content box, or
+    /// aligns the node's top or left with the content box's when the node is
+    /// taller or wider than it. Each coordinate stays between zero and the
+    /// furthest its flowing content reaches on that axis, so a node whose
+    /// content is no wider than its box never moves sideways. An
     /// ancestor further up reveals the part of the node that the one inside
     /// it shows, so nested views each scroll. A node already in view moves
     /// nothing, and the handler then does not run. A pointer press that

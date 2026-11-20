@@ -1519,3 +1519,152 @@ fn shift_turns_a_vertical_wheel_sideways_and_leaves_a_diagonal_one_alone() {
         ]
     );
 }
+
+#[test]
+fn a_drag_out_of_a_sideways_strip_past_the_page_falls_back_to_the_page() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let (_, on_press) = press_counter();
+    let strip = drag_over_log(&log, "strip");
+    let page = drag_over_log(&log, "page");
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(200.0))
+                .height(px(150.0))
+                .overflow(Overflow::Scroll)
+                .on_press(on_press)
+                .child(
+                    panel()
+                        .row()
+                        .width(px(200.0))
+                        .height(px(50.0))
+                        .shrink(0.0)
+                        .overflow(Overflow::Scroll)
+                        .child(
+                            panel()
+                                .width(px(600.0))
+                                .height(px(50.0))
+                                .shrink(0.0)
+                                .on_drag_over(strip),
+                        ),
+                )
+                .child(
+                    panel()
+                        .width(px(200.0))
+                        .height(px(350.0))
+                        .shrink(0.0)
+                        .on_drag_over(page),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 20.0, y: 20.0 });
+    harness.move_to(Point { x: 100.0, y: 190.0 });
+    harness.button_up(Point { x: 100.0, y: 190.0 });
+
+    let heard = log.borrow();
+    let last = heard.last().expect("the drag reached a node");
+    assert_eq!(
+        last.0, "page",
+        "the strip cannot scroll down, so the page it sits in takes the drag: {heard:?}"
+    );
+}
+
+#[test]
+fn a_drag_out_of_a_list_past_its_side_and_bottom_stays_with_the_list() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let (_, on_press) = press_counter();
+    let row = drag_over_log(&log, "row");
+    let page = drag_over_log(&log, "page");
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        scene(
+            panel()
+                .row()
+                .width(px(200.0))
+                .height(px(150.0))
+                .overflow(Overflow::Scroll)
+                .on_press(on_press)
+                .child(
+                    panel()
+                        .width(px(100.0))
+                        .height(px(400.0))
+                        .shrink(0.0)
+                        .on_drag_over(page),
+                )
+                .child(
+                    panel()
+                        .column()
+                        .width(px(100.0))
+                        .height(px(150.0))
+                        .shrink(0.0)
+                        .overflow(Overflow::Scroll)
+                        .child(
+                            panel()
+                                .width(px(100.0))
+                                .height(px(600.0))
+                                .shrink(0.0)
+                                .on_drag_over(row),
+                        ),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 150.0, y: 20.0 });
+    harness.move_to(Point { x: 120.0, y: 190.0 });
+    harness.move_to(Point { x: 20.0, y: 195.0 });
+    harness.button_up(Point { x: 20.0, y: 195.0 });
+
+    let heard = log.borrow();
+    let last = heard.last().expect("the drag reached a node");
+    assert_eq!(
+        last.0, "row",
+        "the list can still scroll down, so its bottom row takes the drag: {heard:?}"
+    );
+}
+
+#[test]
+fn a_drag_beside_a_list_inside_a_page_stays_with_the_list() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let (_, on_press) = press_counter();
+    let row = drag_over_log(&log, "row");
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        scene(
+            panel()
+                .row()
+                .width(px(200.0))
+                .height(px(150.0))
+                .overflow(Overflow::Scroll)
+                .on_press(on_press)
+                .child(panel().width(px(100.0)).height(px(400.0)).shrink(0.0))
+                .child(
+                    panel()
+                        .column()
+                        .width(px(100.0))
+                        .height(px(150.0))
+                        .shrink(0.0)
+                        .overflow(Overflow::Scroll)
+                        .child(
+                            panel()
+                                .width(px(100.0))
+                                .height(px(600.0))
+                                .shrink(0.0)
+                                .on_drag_over(row),
+                        ),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 150.0, y: 20.0 });
+    harness.move_to(Point { x: 40.0, y: 80.0 });
+    harness.button_up(Point { x: 40.0, y: 80.0 });
+
+    assert_eq!(
+        log.borrow().last(),
+        Some(&("row", Point { x: 0.0, y: 80.0 })),
+        "the pointer beside the list reaches the list at its edge"
+    );
+}

@@ -973,13 +973,13 @@ impl WidgetTree {
     ///
     /// The walk goes up from the focused node. Every ancestor with an
     /// `on_reveal` handler that the node flows in, rather than sits in
-    /// absolutely positioned, moves its vertical offset by the least that
-    /// brings the target inside its content box, or aligns the target's top
-    /// with the box's top when the target is taller, clamped to the range
-    /// its flowing content scrolls. The target starts as the focused node's
-    /// rectangle, and after each such ancestor it becomes the part of the
-    /// moved target that ancestor shows, so the ancestor around it reveals
-    /// that. An ancestor whose offset changes hears its handler with the new
+    /// absolutely positioned, moves its offset on each axis by the least
+    /// that brings the target inside its content box, or aligns the
+    /// target's top or left with the box's when the target is taller or
+    /// wider, clamped to the range its flowing content scrolls. The target
+    /// starts as the focused node's rectangle, and after each such ancestor
+    /// it becomes the part of the moved target that ancestor shows, so the
+    /// ancestor around it reveals that. An ancestor whose offset changes hears its handler with the new
     /// offset, in its owner. An ancestor that does not move hears nothing.
     ///
     /// A focused node that cannot hold the focus, because it or an ancestor
@@ -1039,37 +1039,38 @@ impl WidgetTree {
             }
             let view = node.content;
             let current = node.scroll_offset;
-            let Some(max) = self.max_scroll_offset(id).map(|max| max.y) else {
+            let Some(max) = self.max_scroll_offset(id) else {
                 continue;
             };
             // A non-finite offset or extent, which a binding can hand over,
             // leaves this ancestor where it is rather than panicking in the
             // clamps below.
-            if !(view.y0.is_finite()
-                && view.y1.is_finite()
-                && current.y.is_finite()
-                && max.is_finite())
+            if ![
+                view.x0, view.x1, view.y0, view.y1, current.x, current.y, max.x, max.y,
+            ]
+            .iter()
+            .all(|value| value.is_finite())
             {
                 continue;
             }
-            let delta = reveal_delta(target, view);
-            let wanted = (current.y + delta).clamp(0.0, max.max(0.0));
-            if delta != 0.0 && wanted.is_finite() && wanted != current.y {
-                let offset = Point {
-                    x: current.x,
-                    y: wanted,
-                };
-                self.set_scroll_offset(id, offset);
-                self.run_reveal(id, offset);
+            let wanted = Point {
+                x: (current.x + reveal_delta(target.x0, target.x1, view.x0, view.x1))
+                    .clamp(0.0, max.x.max(0.0)),
+                y: (current.y + reveal_delta(target.y0, target.y1, view.y0, view.y1))
+                    .clamp(0.0, max.y.max(0.0)),
+            };
+            if wanted != current && wanted.x.is_finite() && wanted.y.is_finite() {
+                self.set_scroll_offset(id, wanted);
+                self.run_reveal(id, wanted);
                 target = target.translated(Point {
-                    x: 0.0,
-                    y: current.y - wanted,
+                    x: current.x - wanted.x,
+                    y: current.y - wanted.y,
                 });
             }
             target = Rect::new(
-                target.x0,
+                target.x0.max(view.x0).min(view.x1),
                 target.y0.max(view.y0).min(view.y1),
-                target.x1,
+                target.x1.max(view.x0).min(view.x1),
                 target.y1.max(view.y0).min(view.y1),
             );
         }
@@ -1093,16 +1094,19 @@ impl WidgetTree {
     }
 }
 
-/// Returns how far a view whose visible area is `view` scrolls down to show
-/// `target`, both in window coordinates, negative to scroll up.
+/// Returns how far a view whose visible span along one axis runs from
+/// `view_start` to `view_end` scrolls forward to show a target spanning
+/// `start` to `end` on that axis, all in window coordinates, negative to
+/// scroll back.
 ///
-/// A target that fits is brought in by the nearest edge, and one taller than
-/// the view is aligned with its top. A target already inside needs nothing.
-fn reveal_delta(target: Rect, view: Rect) -> f32 {
-    if target.y0 < view.y0 || target.height() > view.height() {
-        target.y0 - view.y0
-    } else if target.y1 > view.y1 {
-        target.y1 - view.y1
+/// A target that fits is brought in by the nearest edge, and one longer than
+/// the view is aligned with its start, its top or its left. A target already
+/// inside needs nothing.
+fn reveal_delta(start: f32, end: f32, view_start: f32, view_end: f32) -> f32 {
+    if start < view_start || end - start > view_end - view_start {
+        start - view_start
+    } else if end > view_end {
+        end - view_end
     } else {
         0.0
     }

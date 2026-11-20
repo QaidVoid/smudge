@@ -1122,22 +1122,44 @@ impl WidgetTree {
         }
     }
 
-    /// Returns the area a drag-over falls back to: the visible area of the
-    /// nearest scrolling ancestor of the node the press began over, as it is
-    /// now, so a drag past a scroll view's edge reaches the row at that edge
-    /// while the view scrolls. Without one, it is the visible area of that
-    /// node, and once that node is gone, the area it had when the press
-    /// began.
+    /// Returns the area a drag-over falls back to, as it is now, so a drag
+    /// past a scroll view's edge reaches the row at that edge while the view
+    /// scrolls: the visible area of the nearest scrolling ancestor of the
+    /// node the press began over whose content reaches past it on an axis
+    /// the pointer left it by. A view that has no room that way, such as a
+    /// strip that scrolls only sideways when the pointer left it downward,
+    /// gives way to one around it, until one holds the pointer, where the
+    /// nearest scrolling ancestor's area is used, as it is when none
+    /// qualifies. Without one, it
+    /// is the visible area of that node, and once that node is gone, the area
+    /// it had when the press began.
     fn drag_fallback_area(&self, drag: &DragState) -> Rect {
+        let pointer = self.pointer;
+        let mut nearest = None;
         let mut next = drag.origin;
         while let Some(id) = next {
             let Some(node) = self.nodes.get(id) else {
                 break;
             };
             if node.resolved.layout.overflow == crate::style::Overflow::Scroll {
-                return self.children_clip(id).unwrap_or(node.clip);
+                let area = self.children_clip(id).unwrap_or(node.clip);
+                let max = self.max_scroll_offset(id).unwrap_or_default();
+                let beyond_x = pointer.x < area.x0 || pointer.x > area.x1;
+                let beyond_y = pointer.y < area.y0 || pointer.y > area.y1;
+                // Once a view holds the pointer, the nearest view clamps it,
+                // so a drag beside a list inside a page stays with the list.
+                if !beyond_x && !beyond_y {
+                    return nearest.unwrap_or(area);
+                }
+                if (beyond_x && max.x > 0.0) || (beyond_y && max.y > 0.0) {
+                    return area;
+                }
+                nearest.get_or_insert(area);
             }
             next = self.pointer_parent(id);
+        }
+        if let Some(area) = nearest {
+            return area;
         }
         drag.origin
             .and_then(|id| self.nodes.get(id))

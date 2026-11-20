@@ -143,6 +143,9 @@ struct ScrollChrome {
     content_extent: Option<RwSignal<f32>>,
     /// The sizes of the view, once the view has painted.
     viewport: RwSignal<Option<Viewport>>,
+    /// A count whose change runs the offset binding again, after a reveal
+    /// moved a view sideways that does not scroll that way.
+    realign: RwSignal<u32>,
     /// The visible height of the view, once the view has painted, reported to
     /// a virtual list that computes its rows from it.
     visible_height: RwSignal<Option<f32>>,
@@ -304,7 +307,8 @@ fn clamp_offset(desired: f32, max: f32) -> f32 {
 /// When the keyboard focus moves to a node inside the view that is out of
 /// view, the view scrolls to show it, for every move that
 /// [`Element::on_reveal`] lists: the least it takes to bring the node to its
-/// nearest edge, or to align its top when the node is taller than the view.
+/// nearest edge, or to align its top or left when the node is taller or
+/// wider than the view.
 /// Nested views each scroll. A pointer press that focuses a node scrolls
 /// nothing.
 ///
@@ -395,6 +399,7 @@ pub(crate) fn scroll_with_visible_height(
     let chrome = Rc::new(ScrollChrome {
         axis: Cell::new(ScrollAxis::Vertical),
         list,
+        realign: crate::signal(0),
         offset: RefCell::new(crate::signal(0.0)),
         horizontal: RefCell::new(crate::signal(0.0)),
         following,
@@ -489,6 +494,7 @@ pub(crate) fn scroll_with_visible_height(
         Handled::Yes
     })
     .scroll_offset(move || {
+        let _ = offset_chrome.realign.get();
         let axis = offset_chrome.axis.get();
         let x = if axis.horizontal() {
             let signal = offset_chrome.horizontal_signal();
@@ -532,33 +538,63 @@ pub(crate) fn scroll_with_visible_height(
         };
         Point { x, y: applied }
     })
-    // A drag that began inside the view and is held past its top or bottom
-    // edge scrolls it, faster the farther out the pointer is, until the
+    // A drag that began inside the view and is held past an edge it scrolls
+    // toward scrolls it, faster the farther out the pointer is, until the
     // pointer comes back or the press ends. The content that scrolls under
     // the pointer hears the drag again, so a selection follows it. The view
     // takes the move only while it can still scroll that way, so a view
     // around it takes over once it reaches its end.
     .on_drag(move |step| match step {
         Drag::Moved(at) => {
-            let Some(height) = drag_chrome
+            let Some((height, width)) = drag_chrome
                 .viewport
-                .read(|viewport| viewport.map(|v| v.outer))
+                .read(|viewport| viewport.map(|v| (v.outer, v.outer_width)))
             else {
                 return Handled::No;
             };
-            let past = if at.y < 0.0 {
-                at.y
-            } else if at.y > height {
-                at.y - height
-            } else {
-                0.0
+            let beyond = |at: f32, size: f32| {
+                if at < 0.0 {
+                    at
+                } else if at > size {
+                    at - size
+                } else {
+                    0.0
+                }
             };
-            if past == 0.0 || !can_scroll(&drag_chrome, past) {
+            let axis = drag_chrome.axis.get();
+            let reach = Point {
+                x: beyond(at.x, width),
+                y: beyond(at.y, height),
+            };
+            let past = auto.unclaimed(Point {
+                x: if axis.horizontal() && reach.x != 0.0 && can_scroll_x(&drag_chrome, reach.x) {
+                    reach.x
+                } else {
+                    0.0
+                },
+                y: if axis.vertical() && reach.y != 0.0 && can_scroll(&drag_chrome, reach.y) {
+                    reach.y
+                } else {
+                    0.0
+                },
+            });
+            // Past an edge the view cannot scroll toward, because it does not
+            // scroll that way or already reached that end, the views around
+            // it hear the move as well, so a page scrolls down while a
+            // sideways strip the drag began in scrolls across. The view
+            // claims the axes it scrolls meanwhile, and they leave those to
+            // it.
+            let elsewhere = (reach.x != 0.0 && past.x == 0.0) || (reach.y != 0.0 && past.y == 0.0);
+            if past == Point::default() {
                 auto.stop();
                 return Handled::No;
             }
-            auto.past
-                .set(past.clamp(-AUTO_SCROLL_REACH, AUTO_SCROLL_REACH));
+            auto.claim(if elsewhere { past } else { Point::default() });
+            let handled = if elsewhere { Handled::No } else { Handled::Yes };
+            auto.past.set(Point {
+                x: past.x.clamp(-AUTO_SCROLL_REACH, AUTO_SCROLL_REACH),
+                y: past.y.clamp(-AUTO_SCROLL_REACH, AUTO_SCROLL_REACH),
+            });
             if auto.timer.borrow().is_none() {
                 auto.last.set(Some(smudge_core::timer::now()));
                 let chrome = Rc::clone(&drag_chrome);
@@ -576,11 +612,17 @@ pub(crate) fn scroll_with_visible_height(
                         .map_or(AUTO_SCROLL_PERIOD, |last| now.duration_since(last))
                         .min(AUTO_SCROLL_PERIOD * 6);
                     let ticks = elapsed.as_secs_f32() / AUTO_SCROLL_PERIOD.as_secs_f32();
-                    auto_scroll(&chrome, state.past.get() * AUTO_SCROLL_RATE * ticks);
+                    let past = state.past.get();
+                    if past.y != 0.0 {
+                        auto_scroll(&chrome, past.y * AUTO_SCROLL_RATE * ticks);
+                    }
+                    if past.x != 0.0 {
+                        scroll_x_by(&chrome, past.x * AUTO_SCROLL_RATE * ticks);
+                    }
                 });
                 *auto.timer.borrow_mut() = Some(timer);
             }
-            Handled::Yes
+            handled
         }
         _ => {
             auto.stop();
@@ -595,6 +637,19 @@ pub(crate) fn scroll_with_visible_height(
         let signal = reveal_chrome.signal();
         if signal.read(|offset| *offset != revealed.y) {
             signal.set(revealed.y);
+        }
+        let sideways = reveal_chrome.horizontal_signal();
+        if reveal_chrome.axis.get().horizontal() {
+            if sideways.read(|offset| *offset != revealed.x) {
+                sideways.set(revealed.x);
+            }
+        } else if revealed.x != 0.0 {
+            // Content wider than a view that does not scroll sideways, as
+            // under an app's own alignment, can still lead the core to move
+            // it sideways. The offset binding runs again and puts it back.
+            reveal_chrome
+                .realign
+                .update(|count| *count = count.wrapping_add(1));
         }
         if let Some(following) = reveal_chrome.following()
             && following.read(|active| *active)
@@ -627,9 +682,9 @@ pub(crate) fn scroll_with_visible_height(
 /// The auto-scroll of one scroll view while a drag is held past its edge.
 #[derive(Default)]
 struct AutoScroll {
-    /// How far past the edge the pointer is, negative above the top, capped
-    /// at the reach.
-    past: Cell<f32>,
+    /// How far past the edges the pointer is on each axis, negative above
+    /// the top and left of the left edge, each capped at the reach.
+    past: Cell<Point>,
     /// When the last step scrolled, so a step covers the time since then
     /// whatever the frame rate.
     last: Cell<Option<web_time::Instant>>,
@@ -638,12 +693,56 @@ struct AutoScroll {
 }
 
 impl AutoScroll {
-    /// Stops scrolling.
+    /// Stops scrolling, and gives up the axes it scrolled.
     fn stop(&self) {
         self.timer.borrow_mut().take();
-        self.past.set(0.0);
+        self.past.set(Point::default());
         self.last.set(None);
+        self.claim(Point::default());
     }
+
+    /// Records the axes this view auto-scrolls, those `past` is not zero on,
+    /// for the views around it to leave alone.
+    fn claim(&self, past: Point) {
+        let key = std::ptr::from_ref(self) as usize;
+        CLAIMED.with(|claimed| {
+            let mut claimed = claimed.borrow_mut();
+            claimed.retain(|(owner, _, _)| *owner != key);
+            if past.x != 0.0 || past.y != 0.0 {
+                claimed.push((key, past.x != 0.0, past.y != 0.0));
+            }
+        });
+    }
+
+    /// Returns `past` without the axes another view auto-scrolls.
+    fn unclaimed(&self, past: Point) -> Point {
+        let key = std::ptr::from_ref(self) as usize;
+        CLAIMED.with(|claimed| {
+            claimed
+                .borrow()
+                .iter()
+                .filter(|(owner, _, _)| *owner != key)
+                .fold(past, |past, (_, x, y)| Point {
+                    x: if *x { 0.0 } else { past.x },
+                    y: if *y { 0.0 } else { past.y },
+                })
+        })
+    }
+}
+
+impl Drop for AutoScroll {
+    fn drop(&mut self) {
+        self.claim(Point::default());
+    }
+}
+
+thread_local! {
+    /// The axes each view that hands a drag on to the views around it
+    /// auto-scrolls meanwhile, by the address of its state, so those views
+    /// move only the axes it leaves, and two nested views never scroll the
+    /// same axis at once. A view claims only while it hands the drag on, so
+    /// a drag no view hands on leaves nothing here.
+    static CLAIMED: RefCell<Vec<(usize, bool, bool)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Scrolls the view by `step` from where it is, held to its range, as a
