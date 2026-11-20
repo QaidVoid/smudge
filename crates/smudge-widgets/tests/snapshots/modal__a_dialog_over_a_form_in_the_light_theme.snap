@@ -1,0 +1,6 @@
+---
+source: crates/smudge-widgets/tests/modal.rs
+expression: "dialog_over_form(Theme::light()).png()"
+extension: png
+snapshot_kind: binary
+---

@@ -51,6 +51,7 @@ let surface = panel()
 | `TEXT`, `TEXT_MUTED` | `MEDIUM` |
 | `ACCENT`, `ACCENT_HOVER`, `ACCENT_PRESSED`, `ACCENT_TEXT` | `LARGE` |
 | `BORDER`, `FOCUS_RING` | |
+| `BACKDROP` | |
 
 The built-in widgets use tokens throughout, so they follow the theme with no extra code. `Theme::light()` and `Theme::dark()` are the two built-in themes.
 

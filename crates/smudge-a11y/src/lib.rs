@@ -552,6 +552,9 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     if node.disabled {
         out.set_disabled();
     }
+    if node.role == Role::Dialog {
+        out.set_modal();
+    }
     if node.pressable {
         out.add_action(accesskit::Action::Click);
     }
@@ -706,6 +709,7 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::TabList => AccessKitRole::TabList,
         Role::Tab => AccessKitRole::Tab,
         Role::TabPanel => AccessKitRole::TabPanel,
+        Role::Dialog => AccessKitRole::Dialog,
         // A role added after this mapping reports as a plain group.
         _ => AccessKitRole::Group,
     }

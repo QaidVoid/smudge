@@ -686,6 +686,9 @@ pub struct Element<W: Widget> {
     /// Whether the node requests the focus on the first frame after it is
     /// laid out.
     autofocus: bool,
+    /// Whether the node gives the focus to the first focusable node inside
+    /// it once it is laid out visible.
+    autofocus_first: bool,
     /// Whether the node keeps Tab movement inside its subtree while it is
     /// mounted.
     trap_focus: bool,
@@ -763,6 +766,7 @@ impl<W: Widget> Element<W> {
             focusable: false,
             keeps_focus: false,
             autofocus: false,
+            autofocus_first: false,
             trap_focus: false,
             follow_end: None,
             pointer_lock: None,
@@ -2111,6 +2115,19 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Gives the keyboard focus to the first node inside this one that can
+    /// take it, in Tab order, on the first frame the node is laid out
+    /// visible, unless the focus is already inside it, as a dialog does as
+    /// it opens.
+    ///
+    /// The [`autofocus`](Self::autofocus) requests of the frame resolve
+    /// first, so a node inside that asks for the focus itself keeps it. The
+    /// request runs once per mount.
+    pub fn autofocus_first(mut self) -> Self {
+        self.autofocus_first = true;
+        self
+    }
+
     /// Keeps Tab and Shift+Tab cycling among the focusable nodes inside the
     /// node's subtree, for as long as the node is mounted and not hidden.
     ///
@@ -2399,6 +2416,7 @@ impl<W: Widget> Element<W> {
                             (true, None) => {
                                 let back = exiting.take().and_then(|top| {
                                     let owner = tree.cancel_exit(top)?;
+                                    tree.reopen_overlay(top);
                                     tree.set_overlay_placement(top, placement);
                                     Some((top, owner))
                                 });
@@ -2778,6 +2796,9 @@ pub struct AnyElement {
     /// Whether the node requests the focus on the first frame after it is
     /// laid out.
     autofocus: bool,
+    /// Whether the node gives the focus to the first focusable node inside
+    /// it once it is laid out visible.
+    autofocus_first: bool,
     /// Whether the node keeps Tab movement inside its subtree while it is
     /// mounted.
     trap_focus: bool,
@@ -2841,6 +2862,7 @@ impl AnyElement {
             focusable: element.focusable,
             keeps_focus: element.keeps_focus,
             autofocus: element.autofocus,
+            autofocus_first: element.autofocus_first,
             trap_focus: element.trap_focus,
             follow_end: element.follow_end,
             pointer_lock: element.pointer_lock,
@@ -2962,6 +2984,7 @@ fn mount_named(
         focusable,
         keeps_focus,
         autofocus,
+        autofocus_first,
         trap_focus,
         follow_end,
         pointer_lock,
@@ -3007,6 +3030,9 @@ fn mount_named(
     tree.set_keeps_focus(id, keeps_focus);
     if autofocus {
         tree.queue_autofocus(id);
+    }
+    if autofocus_first {
+        tree.queue_focus_first(id);
     }
     if trap_focus {
         tree.push_focus_trap(id);

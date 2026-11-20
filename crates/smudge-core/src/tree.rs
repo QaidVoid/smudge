@@ -404,6 +404,15 @@ pub(crate) struct WidgetTree {
     /// The autofocus requests that mounted nodes queued and no layout pass
     /// has resolved yet.
     pending_autofocus: Vec<WidgetId>,
+    /// The nodes waiting to give the focus to the first focusable node
+    /// inside them.
+    pending_focus_first: Vec<WidgetId>,
+    /// Every live node that asked to give the focus to the first focusable
+    /// node inside it, so an overlay that shows again asks again.
+    focus_first: Vec<WidgetId>,
+    /// Every live node that asked for the focus when it mounted, so an
+    /// overlay that shows again asks again.
+    autofocused: Vec<WidgetId>,
     /// Whether a focus move asked the next frame to scroll the focused node
     /// into view. The layout of that frame resolves it and clears it.
     reveal_focus: bool,
@@ -436,10 +445,11 @@ pub(crate) struct WidgetTree {
     a11y_dirty: Vec<WidgetId>,
     /// Whether the next projection must be rebuilt from scratch.
     a11y_reset: bool,
-    /// The top nodes of the overlays that showed when the accessibility
-    /// changes were last taken, so an overlay that opened, closed, or
-    /// showed or hid with its host counts as a change of the roots.
-    a11y_overlays: Vec<WidgetId>,
+    /// The top nodes a screen reader reached when the accessibility changes
+    /// were last taken, as [`WidgetTree::a11y_tops`] gives them, so an
+    /// overlay that opened, closed, or showed or hid with its host counts as
+    /// a change of the roots.
+    a11y_tops: Vec<WidgetId>,
     /// The announcements waiting for the next projection, oldest first.
     announcements: Vec<crate::semantics::Announcement>,
     /// The time the paint pass moves springs to, the frame's time on the
@@ -493,6 +503,9 @@ impl WidgetTree {
             stale_focus: None,
             keyboard_nav: false,
             pending_autofocus: Vec::new(),
+            pending_focus_first: Vec::new(),
+            focus_first: Vec::new(),
+            autofocused: Vec::new(),
             reveal_focus: false,
             reveal_request: None,
             focus_traps: Vec::new(),
@@ -501,7 +514,7 @@ impl WidgetTree {
             theme: Theme::light(),
             a11y_dirty: Vec::new(),
             a11y_reset: false,
-            a11y_overlays: Vec::new(),
+            a11y_tops: Vec::new(),
             announcements: Vec::new(),
             now: Instant::now(),
             reduced_motion: false,
@@ -749,11 +762,14 @@ impl WidgetTree {
             }
         }
         // Where the focus goes back to is read while the removed overlays
-        // still name their hosts.
+        // still name their hosts. A trap enabled again since the last
+        // layout pass counts as active, since only that pass records it.
         let restore = self
             .focus_traps
             .iter()
-            .find(|trap| trap.active && order.contains(&trap.node))
+            .find(|trap| {
+                order.contains(&trap.node) && (trap.active || self.can_hold_focus(trap.node))
+            })
             .and_then(|trap| {
                 let opener = self
                     .trap_return(trap.node, trap.restore)
@@ -780,8 +796,13 @@ impl WidgetTree {
         // the request is dropped, and the trap mounted before it, if any,
         // takes over. The focus goes back to where it was when the oldest
         // removed active trap became active, since every later one became
-        // active inside it. A hidden trap already gave its focus back.
+        // active inside it. A hidden trap already gave its focus back,
+        // unless a dialog that still shows held it back. Then nothing gets
+        // it back, since that would put the focus behind the dialog.
         self.pending_autofocus.retain(|id| !order.contains(id));
+        self.pending_focus_first.retain(|id| !order.contains(id));
+        self.focus_first.retain(|id| !order.contains(id));
+        self.autofocused.retain(|id| !order.contains(id));
         self.focus_traps.retain(|trap| !order.contains(&trap.node));
 
         // Deepest node first, so every taffy node is still attached to a live
@@ -821,7 +842,7 @@ impl WidgetTree {
             self.refresh_hover();
         }
         if self.focused.is_none()
-            && let Some(restore) = restore
+            && let Some(restore) = restore.filter(|&restore| !self.behind_trap(restore))
         {
             self.request_focus(restore);
         }
@@ -1411,20 +1432,17 @@ impl WidgetTree {
             ..A11yChanges::default()
         };
         let dirty = std::mem::take(&mut self.a11y_dirty);
-        let overlays: Vec<WidgetId> = self
-            .overlays
-            .iter()
-            .filter(|overlay| {
-                self.overlay_shown(overlay)
-                    && self
-                        .nodes
-                        .get(overlay.root)
-                        .is_some_and(|node| !node.withdrawn())
-            })
-            .map(|overlay| overlay.root)
-            .collect();
-        if overlays != self.a11y_overlays {
-            self.a11y_overlays = overlays;
+        if !self.a11y_tops().eq(self.a11y_tops.iter().copied()) {
+            // A dialog opening or closing moves where the reader's reach
+            // starts. What it hid comes back with nodes the projection
+            // forgot, and what it now hides drops out, so the projection
+            // builds everything anew. Overlays opening or closing above the
+            // same start only change the roots.
+            if self.a11y_tops().next() != self.a11y_tops.first().copied() {
+                changes.reset = true;
+            }
+            let tops: Vec<WidgetId> = self.a11y_tops().collect();
+            self.a11y_tops = tops;
             changes.roots_changed = true;
         }
         if changes.reset {
@@ -1432,7 +1450,10 @@ impl WidgetTree {
         }
         let mut seen = HashSet::new();
         for id in dirty {
-            if !seen.insert(id) || !self.a11y_id_is_visible(id) {
+            if !seen.insert(id)
+                || !self.a11y_id_is_visible(id)
+                || !self.a11y_tops.contains(&self.a11y_top_of(id))
+            {
                 continue;
             }
             let projected = if self.nodes.get(id).and_then(Self::effective_role).is_some() {
@@ -1697,27 +1718,61 @@ impl WidgetTree {
     pub(crate) fn semantics_nodes(&self) -> Vec<SemanticsNode> {
         let mut nodes = Vec::new();
         let mut index_of = HashMap::new();
-        if let Some(root) = self.root {
-            self.project_from(root, None, &mut nodes, &mut index_of);
-        }
-        for overlay in &self.overlays {
-            if self.overlay_shown(overlay) {
-                self.project_from(overlay.root, None, &mut nodes, &mut index_of);
-            }
+        for top in self.a11y_tops() {
+            self.project_from(top, None, &mut nodes, &mut index_of);
         }
         nodes
+    }
+
+    /// Returns the top nodes a screen reader reaches, in paint order: the
+    /// main tree's root and the top nodes of the overlays that show and are
+    /// not fading out. While a dialog shows, they start at the topmost one,
+    /// so a reader stays inside the dialog and never meets the tree behind
+    /// it.
+    pub(crate) fn a11y_tops(&self) -> impl Iterator<Item = WidgetId> + '_ {
+        let shown = |overlay: &&overlay::Overlay| {
+            self.overlay_shown(overlay)
+                && self
+                    .nodes
+                    .get(overlay.root)
+                    .is_some_and(|node| !node.withdrawn())
+        };
+        let dialog = self
+            .overlays
+            .iter()
+            .rposition(|overlay| overlay.layer == overlay::Layer::Dialog && shown(&overlay));
+        let root = if dialog.is_some() { None } else { self.root };
+        root.into_iter().chain(
+            self.overlays[dialog.unwrap_or(0)..]
+                .iter()
+                .filter(shown)
+                .map(|overlay| overlay.root),
+        )
+    }
+
+    /// Returns whether a screen reader and the keyboard reach `id`: whether
+    /// the top node it hangs from is one of [`WidgetTree::a11y_tops`], so no
+    /// dialog drawn above it hides it.
+    pub(crate) fn within_reach(&self, id: WidgetId) -> bool {
+        let top = self.a11y_top_of(id);
+        self.a11y_tops().any(|reached| reached == top)
+    }
+
+    /// Returns the top node `id` hangs from: the main tree's root, or the
+    /// top node of the overlay it sits in.
+    fn a11y_top_of(&self, id: WidgetId) -> WidgetId {
+        let mut top = id;
+        while let Some(parent) = self.pointer_parent(top) {
+            top = parent;
+        }
+        top
     }
 
     /// Returns the projected nodes that no projected ancestor holds, in paint
     /// order.
     pub(crate) fn semantics_roots(&self) -> Vec<WidgetId> {
         let mut roots = Vec::new();
-        let overlays = self
-            .overlays
-            .iter()
-            .filter(|overlay| self.overlay_shown(overlay))
-            .map(|overlay| overlay.root);
-        for top in self.root.into_iter().chain(overlays) {
+        for top in self.a11y_tops() {
             let Some(node) = self.nodes.get(top) else {
                 continue;
             };
@@ -1734,9 +1789,11 @@ impl WidgetTree {
     }
 
     /// Returns whether `id` projects: it is live, nothing above or at it is
-    /// hidden, and it reports a role. Builds no description.
+    /// hidden, no dialog hides it, and it reports a role. Builds no
+    /// description.
     pub(crate) fn is_projected(&self, id: WidgetId) -> bool {
         self.a11y_id_is_visible(id)
+            && self.within_reach(id)
             && self
                 .nodes
                 .get(id)

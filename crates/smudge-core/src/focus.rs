@@ -604,7 +604,7 @@ impl WidgetTree {
     /// neither it nor any ancestor is hidden.
     ///
     /// A node only clipped out of view, for example scrolled away, keeps it.
-    fn can_hold_focus(&self, id: WidgetId) -> bool {
+    pub(super) fn can_hold_focus(&self, id: WidgetId) -> bool {
         let Some(node) = self.nodes.get(id) else {
             return false;
         };
@@ -681,6 +681,69 @@ impl WidgetTree {
     /// visible, and a later frame never asks again.
     pub(crate) fn queue_autofocus(&mut self, id: WidgetId) {
         self.pending_autofocus.push(id);
+        self.autofocused.push(id);
+    }
+
+    /// Queues a request to focus the first focusable node inside `id`, as
+    /// [`Element::autofocus_first`](crate::element::Element::autofocus_first)
+    /// asks, to resolve once a layout pass has laid it out visible.
+    pub(crate) fn queue_focus_first(&mut self, id: WidgetId) {
+        self.pending_focus_first.push(id);
+        self.focus_first.push(id);
+    }
+
+    /// Asks again for the focus every node inside `top` asked for when it
+    /// mounted, for itself or for the first focusable node inside it, as an
+    /// overlay that shows again after it began to fade out does.
+    pub(crate) fn requeue_focus_first(&mut self, top: WidgetId) {
+        for at in 0..self.autofocused.len() {
+            let id = self.autofocused[at];
+            if self.is_within(id, top) && !self.pending_autofocus.contains(&id) {
+                self.pending_autofocus.push(id);
+            }
+        }
+        for at in 0..self.focus_first.len() {
+            let id = self.focus_first[at];
+            if self.is_within(id, top) && !self.pending_focus_first.contains(&id) {
+                self.pending_focus_first.push(id);
+            }
+        }
+    }
+
+    /// Focuses the first focusable node inside each node that asked for it
+    /// and has been laid out visible, unless the focus is already inside
+    /// it. It runs after the autofocus requests of the frame, so a node
+    /// that asked for the focus itself keeps it.
+    fn resolve_focus_first(&mut self) {
+        if self.pending_focus_first.is_empty() {
+            return;
+        }
+        let mut pending = std::mem::take(&mut self.pending_focus_first);
+        let mut ready = Vec::new();
+        pending.retain(|&id| {
+            let hidden = self.hidden_in_tree(id);
+            if !hidden {
+                ready.push(id);
+            }
+            hidden
+        });
+        self.pending_focus_first = pending;
+        for id in ready {
+            if self
+                .focused
+                .is_some_and(|focused| self.is_within(focused, id))
+            {
+                continue;
+            }
+            let mut order = Vec::new();
+            self.collect_tab_stops(id, true, &mut order);
+            for top in self.overlays_within(id) {
+                self.collect_tab_stops(top, true, &mut order);
+            }
+            if let Some(&first) = order.iter().find(|&&node| node != id) {
+                self.request_focus(first);
+            }
+        }
     }
 
     /// Focuses the node that mounted with autofocus and has been laid out
@@ -696,6 +759,13 @@ impl WidgetTree {
     /// is disabled, is skipped and an earlier node then wins; a skipped
     /// request is dropped and never asked again.
     pub(super) fn resolve_autofocus(&mut self) {
+        self.resolve_requested_autofocus();
+        self.resolve_focus_first();
+    }
+
+    /// Resolves the autofocus requests, as
+    /// [`WidgetTree::resolve_autofocus`] describes.
+    fn resolve_requested_autofocus(&mut self) {
         if self.pending_autofocus.is_empty() {
             return;
         }
@@ -793,9 +863,11 @@ impl WidgetTree {
     /// longer keeps it from the focus, records the node that holds the focus
     /// now. A trap that hides, or becomes disabled, returns the focus to the
     /// node it recorded, when the focus sits inside the trap or nowhere and
-    /// that node can still take it. The layout pass calls this, because that
-    /// is where a hidden state lands, before an autofocus request inside a
-    /// trap that just showed moves the focus in.
+    /// that node can still take it, except behind a dialog that still
+    /// shows: then it waits, so the focus goes back once the dialog closes.
+    /// The layout pass calls this, because that is where a hidden state
+    /// lands, before an autofocus request inside a trap that just showed
+    /// moves the focus in.
     pub(super) fn resolve_focus_traps(&mut self) {
         for at in 0..self.focus_traps.len() {
             let trap = self.focus_traps[at];
@@ -803,16 +875,26 @@ impl WidgetTree {
             if active == trap.active {
                 continue;
             }
-            self.focus_traps[at].active = active;
-            if active {
-                self.focus_traps[at].restore = self.focused;
-                continue;
-            }
             let focus_inside = self
                 .focused
                 .is_none_or(|focused| self.is_within(focused, trap.node));
-            if focus_inside && let Some(restore) = self.trap_return(trap.node, trap.restore) {
-                self.request_focus(restore);
+            if active {
+                self.focus_traps[at].active = true;
+                self.focus_traps[at].restore = self.focused;
+                continue;
+            }
+            let back = self
+                .trap_return(trap.node, trap.restore)
+                .filter(|_| focus_inside);
+            // A trap that turned disabled under a dialog still showing gives
+            // nothing back behind the dialog: it stays active, so the focus
+            // goes back once the dialog closes.
+            if back.is_some_and(|back| self.behind_trap(back)) {
+                continue;
+            }
+            self.focus_traps[at].active = false;
+            if let Some(back) = back {
+                self.request_focus(back);
             }
         }
     }
@@ -822,15 +904,22 @@ impl WidgetTree {
     ///
     /// The last mounted trap wins. A trap that cannot hold the focus,
     /// because it became disabled or hidden or sits under a hidden ancestor,
-    /// yields to the one mounted before it; without one, movement ranges the
-    /// whole tree, and the hidden trap's own subtree is out of reach either
-    /// way.
+    /// yields to the one mounted before it, and so does one that a dialog
+    /// drawn above it hides. Without one, the topmost dialog that shows
+    /// confines movement, as one whose content is disabled does, and with
+    /// no dialog either, movement ranges the whole tree. The hidden trap's
+    /// own subtree is out of reach either way.
     pub(super) fn active_focus_trap(&self) -> Option<WidgetId> {
         self.focus_traps
             .iter()
             .rev()
             .map(|trap| trap.node)
-            .find(|&trap| self.can_hold_focus(trap))
+            .find(|&trap| self.can_hold_focus(trap) && self.within_reach(trap))
+            .or_else(|| {
+                self.a11y_tops()
+                    .next()
+                    .filter(|&top| Some(top) != self.root)
+            })
     }
 
     /// Returns whether `id` is `ancestor` or one of its descendants.

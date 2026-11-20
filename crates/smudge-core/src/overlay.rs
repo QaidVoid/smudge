@@ -400,6 +400,25 @@ impl WidgetTree {
         }
     }
 
+    /// Draws the overlay `top`, and every overlay opened inside it, above
+    /// the overlays of their layers opened since, as a fresh open would, and
+    /// asks again for the focus its nodes asked for when they mounted. An
+    /// overlay that shows again after it began to fade out reopens this way.
+    pub(crate) fn reopen_overlay(&mut self, top: WidgetId) {
+        for at in 0..self.overlays.len() {
+            let (root, layer) = (self.overlays[at].root, self.overlays[at].layer);
+            if !self.is_within(root, top) {
+                continue;
+            }
+            let Some(host) = self.nodes.get(root).and_then(|node| node.parent) else {
+                continue;
+            };
+            self.overlays[at].order = self.overlay_order(host, layer);
+        }
+        self.overlays.sort_by_key(|overlay| overlay.order);
+        self.requeue_focus_first(top);
+    }
+
     /// Closes the popups and tooltips, which the window losing the input
     /// focus does. Dialogs and toasts stay.
     pub(crate) fn close_transient_overlays(&mut self) {

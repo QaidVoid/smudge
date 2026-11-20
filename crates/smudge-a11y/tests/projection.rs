@@ -2141,3 +2141,174 @@ fn a_slider_offers_increment_and_decrement_while_it_can_take_the_focus() {
     let slider = node_with_role(&update, AccessKitRole::Slider);
     assert!(!slider.supports_action(Action::Increment));
 }
+
+#[test]
+fn a_dialog_reports_as_modal_and_hides_the_tree_behind_it_until_it_closes() {
+    let open = RwSignal::new(false);
+    let shown = open.clone();
+    let mut app = app_with(move || {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(
+                Element::new(Panel)
+                    .role(Role::Button)
+                    .accessible_label("Behind")
+                    .on_press(|| {}),
+            )
+            .child(Element::new(Panel).overlay_in(
+                smudge_core::element::Layer::Dialog,
+                shown.clone(),
+                smudge_core::element::Placement::Cover,
+                || {
+                    Element::new(Panel)
+                        .role(Role::Dialog)
+                        .accessible_label("Confirm")
+                        .child(
+                            Element::new(Panel)
+                                .role(Role::Button)
+                                .accessible_label("Yes")
+                                .on_press(|| {}),
+                        )
+                },
+            ))
+    });
+    let mut projection = Projection::new("Smudge");
+    update_after_frame(&mut app, &mut projection, true);
+
+    open.set(true);
+    let opened = update_after_frame(&mut app, &mut projection, false);
+    let dialog = node_with_role(&opened, AccessKitRole::Dialog);
+    assert!(dialog.is_modal(), "the dialog reports as modal");
+    let names: Vec<&str> = opened
+        .nodes
+        .iter()
+        .filter_map(|(_, node)| node.label())
+        .collect();
+    assert!(names.contains(&"Yes"), "{names:?}");
+    assert!(
+        !names.contains(&"Behind"),
+        "the tree behind is out of reach: {names:?}"
+    );
+
+    open.set(false);
+    let closed = update_after_frame(&mut app, &mut projection, false);
+    let names: Vec<&str> = closed
+        .nodes
+        .iter()
+        .filter_map(|(_, node)| node.label())
+        .collect();
+    assert!(
+        names.contains(&"Behind"),
+        "the tree comes back whole: {names:?}"
+    );
+}
+
+/// A dialog named `name` over the whole window while `open` reads `true`,
+/// holding a button named `button` that takes the focus, or no focusable
+/// node at all when `button` is `None`.
+fn reader_dialog(
+    open: RwSignal<bool>,
+    name: &'static str,
+    button: Option<&'static str>,
+) -> Element<Panel> {
+    Element::new(Panel).overlay_in(
+        smudge_core::element::Layer::Dialog,
+        open,
+        smudge_core::element::Placement::Cover,
+        move || {
+            let dialog = Element::new(Panel)
+                .role(Role::Dialog)
+                .accessible_label(name)
+                .trap_focus()
+                .autofocus_first();
+            match button {
+                Some(button) => dialog.child(
+                    Element::new(Panel)
+                        .role(Role::Button)
+                        .accessible_label(button)
+                        .focusable()
+                        .on_press(|| {}),
+                ),
+                None => dialog.child(
+                    Element::new(Panel)
+                        .role(Role::Label)
+                        .accessible_label("Saving"),
+                ),
+            }
+        },
+    )
+}
+
+#[test]
+fn a_reader_follows_dialogs_opening_over_each_other_and_closing_in_turn() {
+    let (first, second, empty) = (
+        RwSignal::new(false),
+        RwSignal::new(false),
+        RwSignal::new(false),
+    );
+    let (a, b, c) = (first.clone(), second.clone(), empty.clone());
+    let mut app = app_with(move || {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(
+                Element::new(Panel)
+                    .role(Role::Button)
+                    .accessible_label("Behind")
+                    .focusable()
+                    .autofocus()
+                    .on_press(|| {}),
+            )
+            .child(reader_dialog(a.clone(), "First", Some("Keep")))
+            .child(reader_dialog(b.clone(), "Second", Some("Yes")))
+            .child(reader_dialog(c.clone(), "Busy", None))
+    });
+    let mut projection = Projection::new("Smudge");
+    let mut tree = Tree::new(update_after_frame(&mut app, &mut projection, true), true);
+    let mut step = |app: &mut App, tree: &mut Tree| {
+        let update = update_after_frame(app, &mut projection, false);
+        tree.update_and_process_changes(update, &mut Ignore);
+        let state = tree.state();
+        let names: Vec<String> = reachable(tree)
+            .0
+            .values()
+            .filter_map(|node| node.label().map(str::to_owned))
+            .collect();
+        let focus = state.focus().and_then(|node| node.label());
+        (names, focus)
+    };
+
+    first.set(true);
+    let (names, focus) = step(&mut app, &mut tree);
+    assert!(names.contains(&String::from("Keep")) && !names.contains(&String::from("Behind")));
+    assert_eq!(focus.as_deref(), Some("Keep"));
+
+    second.set(true);
+    let (names, focus) = step(&mut app, &mut tree);
+    assert!(names.contains(&String::from("Yes")) && !names.contains(&String::from("Keep")));
+    assert_eq!(focus.as_deref(), Some("Yes"));
+
+    second.set(false);
+    let (names, focus) = step(&mut app, &mut tree);
+    assert!(
+        names.contains(&String::from("Keep")) && !names.contains(&String::from("Yes")),
+        "the first dialog comes back whole: {names:?}"
+    );
+    assert_eq!(focus.as_deref(), Some("Keep"));
+
+    first.set(false);
+    let (names, focus) = step(&mut app, &mut tree);
+    assert!(names.contains(&String::from("Behind")), "{names:?}");
+    assert_eq!(focus.as_deref(), Some("Behind"));
+
+    empty.set(true);
+    let (names, focus) = step(&mut app, &mut tree);
+    assert!(
+        names.contains(&String::from("Saving")) && !names.contains(&String::from("Behind")),
+        "{names:?}"
+    );
+    assert_eq!(
+        focus.as_deref(),
+        Some("Smudge"),
+        "the focus behind a dialog with nothing to focus falls back to the window"
+    );
+}

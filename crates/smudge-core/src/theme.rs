@@ -66,6 +66,8 @@ impl ColorToken {
     pub const BORDER: ColorToken = ColorToken("border");
     /// The color of the ring around the keyboard-focused control.
     pub const FOCUS_RING: ColorToken = ColorToken("focus_ring");
+    /// The translucent color that dims the window behind a modal dialog.
+    pub const BACKDROP: ColorToken = ColorToken("backdrop");
 }
 
 /// Whether the system would rather show light or dark colors.
@@ -337,6 +339,7 @@ impl Theme {
                 (ColorToken::ACCENT_TEXT, Color::WHITE),
                 (ColorToken::BORDER, Color::rgb(204, 204, 204)),
                 (ColorToken::FOCUS_RING, Color::rgb(0, 120, 215)),
+                (ColorToken::BACKDROP, Color::rgba(0, 0, 0, 100)),
             ],
             [
                 (RadiusToken::SMALL, 2.0),
@@ -361,6 +364,7 @@ impl Theme {
                 (ColorToken::ACCENT_TEXT, Color::rgb(11, 11, 11)),
                 (ColorToken::BORDER, Color::rgb(68, 68, 68)),
                 (ColorToken::FOCUS_RING, Color::rgb(77, 163, 255)),
+                (ColorToken::BACKDROP, Color::rgba(0, 0, 0, 150)),
             ],
             [
                 (RadiusToken::SMALL, 2.0),

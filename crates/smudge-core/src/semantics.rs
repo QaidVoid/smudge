@@ -102,6 +102,10 @@ pub enum Role {
     Tab,
     /// The panel a tab shows.
     TabPanel,
+    /// A dialog that holds the keyboard over the rest of the window. It
+    /// reports as modal, and while it shows a screen reader reaches nothing
+    /// behind it.
+    Dialog,
 }
 
 /// Whether a checkbox or a switch is checked.

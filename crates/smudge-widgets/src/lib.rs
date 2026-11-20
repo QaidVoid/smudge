@@ -33,6 +33,7 @@ mod height_index;
 mod image;
 mod marks;
 mod menu;
+mod modal;
 mod scroll;
 mod split;
 mod tabs;
@@ -49,6 +50,7 @@ pub use menu::{
     ContextMenuExt, MenuBar, MenuItem, menu, menu_bar, menu_check_item, menu_item, menu_separator,
     submenu,
 };
+pub use modal::{Modal, modal};
 pub use scroll::{ScrollAxis, ScrollExt, ScrollView, scroll};
 pub use split::{Split, SplitExt, split};
 pub use tabs::{Tabs, tabs};

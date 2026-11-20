@@ -503,7 +503,10 @@ impl WidgetTree {
                 Key::Function(10) => event.modifiers.shift,
                 _ => false,
             };
-        let Some(focused) = self.focused.filter(|_| asks) else {
+        let Some(focused) = self
+            .focused
+            .filter(|&focused| asks && !self.behind_trap(focused))
+        else {
             return false;
         };
         let corner = self

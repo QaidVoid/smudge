@@ -235,29 +235,30 @@ fn a_screen_reader_meets_the_overlays_after_the_tree_in_the_order_they_draw() {
     harness.frame();
     scene.toast.set(true);
     harness.frame();
-    scene.dialog.set(true);
-    harness.frame();
-    scene.dialog_popup.set(true);
     scene.app_popup.set(true);
     scene.tooltip.set(true);
     harness.frame();
-
-    let names: Vec<String> = harness
-        .app()
-        .semantics_nodes()
-        .into_iter()
-        .filter_map(|node| node.label)
-        .collect();
+    let names = |harness: &mut Harness| -> Vec<String> {
+        harness
+            .app()
+            .semantics_nodes()
+            .into_iter()
+            .filter_map(|node| node.label)
+            .collect()
+    };
     assert_eq!(
-        names,
-        [
-            "Tree",
-            "App popup",
-            "Tooltip",
-            "Dialog",
-            "Dialog popup",
-            "Toast"
-        ]
+        names(&mut harness),
+        ["Tree", "App popup", "Tooltip", "Toast"]
+    );
+
+    scene.dialog.set(true);
+    harness.frame();
+    scene.dialog_popup.set(true);
+    harness.frame();
+    assert_eq!(
+        names(&mut harness),
+        ["Dialog", "Dialog popup", "Toast"],
+        "a dialog keeps a reader from everything under it"
     );
 }
 
@@ -449,6 +450,36 @@ fn escape_leaves_a_toast_that_holds_the_focus() {
 }
 
 #[test]
+fn the_context_menu_key_ignores_a_focused_node_a_dialog_hides() {
+    let dialog = RwSignal::new(false);
+    let menus: Count = Rc::new(Cell::new(0));
+    let (d, opened) = (dialog.clone(), Rc::clone(&menus));
+    let mut harness = Harness::new(200.0, 120.0, 1.0, move || {
+        let opened = Rc::clone(&opened);
+        panel()
+            .child(
+                counted("Row", Rc::new(Cell::new(0)))
+                    .autofocus()
+                    .on_context_menu(move |_| opened.set(opened.get() + 1)),
+            )
+            .child(
+                panel().overlay_in(Layer::Dialog, d.clone(), Placement::Cover, || {
+                    panel().role(Role::Group).accessible_label("Please wait")
+                }),
+            )
+    });
+    harness.frame();
+    harness.frame();
+    harness.press_key(Key::ContextMenu);
+    assert_eq!(menus.get(), 1, "the row's menu opens with no dialog");
+
+    dialog.set(true);
+    harness.frame();
+    harness.press_key(Key::ContextMenu);
+    assert_eq!(menus.get(), 1, "and not while a dialog hides the row");
+}
+
+#[test]
 fn an_overlay_switched_to_cover_the_window_and_back_takes_each_size_and_keeps_its_own() {
     let placement = RwSignal::new(Placement::Below);
     let p = placement.clone();
@@ -493,5 +524,64 @@ fn an_overlay_switched_to_cover_the_window_and_back_takes_each_size_and_keeps_it
         size(&mut harness),
         (150.0, 30.0),
         "and the size it asks for again after"
+    );
+}
+
+#[test]
+fn a_menu_that_fades_out_under_a_new_dialog_leaves_the_focus_off_its_button() {
+    let (menu, dialog) = (RwSignal::new(true), RwSignal::new(false));
+    let (m, d) = (menu.clone(), dialog.clone());
+    let mut harness = Harness::new(200.0, 120.0, 1.0, move || {
+        panel()
+            .child(counted("Menu", Rc::new(Cell::new(0))).overlay(
+                m.clone(),
+                Placement::Below,
+                || {
+                    panel()
+                        .trap_focus()
+                        .exit(smudge_core::animation::Spring::SMOOTH)
+                        .child(counted("Item", Rc::new(Cell::new(0))).autofocus())
+                },
+            ))
+            .child(
+                panel().overlay_in(Layer::Dialog, d.clone(), Placement::Cover, || {
+                    panel().role(Role::Group).accessible_label("Saving")
+                }),
+            )
+    });
+    harness.settle();
+    let name = |harness: &mut Harness, id| {
+        harness
+            .app()
+            .semantics_nodes()
+            .into_iter()
+            .find(|node| Some(node.id) == id)
+            .and_then(|node| node.label)
+    };
+    let focused = harness.app().focused();
+    assert_eq!(name(&mut harness, focused).as_deref(), Some("Item"));
+    let button = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.label.as_deref() == Some("Menu"))
+        .expect("the button shows")
+        .id;
+
+    dialog.set(true);
+    menu.set(false);
+    for _ in 0..60 {
+        harness.advance(std::time::Duration::from_millis(50));
+        harness.frame();
+    }
+    assert!(
+        name(&mut harness, Some(button)).is_none(),
+        "the dialog hides the button"
+    );
+
+    assert_ne!(
+        harness.app().focused(),
+        Some(button),
+        "the focus never lands behind the dialog"
     );
 }
