@@ -1469,3 +1469,53 @@ fn a_press_on_a_node_that_only_scrolls_reaches_its_parent() {
     assert_eq!(presses.get(), 1, "the press passed the wheel-only node");
     assert_eq!(wheels.get(), 1, "and the node still takes the wheel");
 }
+
+#[test]
+fn shift_turns_a_vertical_wheel_sideways_and_leaves_a_diagonal_one_alone() {
+    let heard = Rc::new(RefCell::new(Vec::new()));
+    let log = Rc::clone(&heard);
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        let log = Rc::clone(&log);
+        scene(
+            panel()
+                .width(px(80.0))
+                .height(px(40.0))
+                .on_wheel(move |delta| {
+                    log.borrow_mut().push(delta);
+                    Handled::Yes
+                }),
+        )
+    });
+    harness.frame();
+    harness.move_to(Point { x: 10.0, y: 10.0 });
+    let shift = |harness: &mut Harness, held: bool| {
+        harness.event(InputEvent::ModifiersChanged(
+            smudge_core::input::Modifiers {
+                shift: held,
+                ..smudge_core::input::Modifiers::default()
+            },
+        ));
+    };
+    let wheel = |harness: &mut Harness, x: f32, y: f32| {
+        harness.event(InputEvent::Wheel {
+            delta: Point { x, y },
+        });
+    };
+
+    wheel(&mut harness, 0.0, 30.0);
+    shift(&mut harness, true);
+    wheel(&mut harness, 0.0, 30.0);
+    wheel(&mut harness, 5.0, 20.0);
+    shift(&mut harness, false);
+    wheel(&mut harness, 0.0, 30.0);
+
+    assert_eq!(
+        *heard.borrow(),
+        [
+            Point { x: 0.0, y: 30.0 },
+            Point { x: 30.0, y: 0.0 },
+            Point { x: 5.0, y: 20.0 },
+            Point { x: 0.0, y: 30.0 },
+        ]
+    );
+}

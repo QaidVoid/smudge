@@ -303,6 +303,114 @@ fn a_view_that_scrolls_both_ways_draws_both_thumbs() {
     insta::assert_binary_snapshot!(".png", harness.png());
 }
 
+/// A page 200 by 200 that scrolls up and down, with an inner view of
+/// `inner` 100 tall at its top scrolling along `axis`, and 400 pixels of
+/// filler below it. The pointer rests over the inner view. Returns the
+/// harness, the page's offset, and the inner view's vertical and horizontal
+/// offsets.
+fn page_around(
+    axis: ScrollAxis,
+    inner: impl Fn() -> Element<Panel> + 'static,
+) -> (Harness, RwSignal<f32>, RwSignal<f32>, RwSignal<f32>) {
+    let (page, down, across) = (RwSignal::new(0.0), RwSignal::new(0.0), RwSignal::new(0.0));
+    let (outer, vertical, horizontal) = (page.clone(), down.clone(), across.clone());
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        panel().column().child(
+            scroll(
+                column()
+                    .child(
+                        scroll(inner())
+                            .axis(axis)
+                            .offset(vertical.clone())
+                            .horizontal_offset(horizontal.clone())
+                            .height(px(100.0)),
+                    )
+                    .child(panel().height(px(400.0)).background(Color::rgb(90, 90, 90))),
+            )
+            .offset(outer.clone())
+            .height(px(200.0)),
+        )
+    });
+    harness.settle();
+    harness.move_to(Point { x: 100.0, y: 50.0 });
+    (harness, page, down, across)
+}
+
+/// Sets whether Shift is held.
+fn shift(harness: &mut Harness, held: bool) {
+    harness.event(InputEvent::ModifiersChanged(
+        smudge_core::input::Modifiers {
+            shift: held,
+            ..smudge_core::input::Modifiers::default()
+        },
+    ));
+}
+
+#[test]
+fn shift_turns_the_wheel_sideways_over_a_horizontal_strip() {
+    let (mut harness, page, _, across) =
+        page_around(ScrollAxis::Horizontal, || strip(20, 30.0, 60.0));
+
+    shift(&mut harness, true);
+    wheel(&mut harness, 0.0, 40.0);
+    harness.frame();
+    assert_eq!(across.get(), 40.0, "the strip scrolls sideways");
+    assert_eq!(page.get(), 0.0, "and the page stays");
+
+    shift(&mut harness, false);
+    wheel(&mut harness, 0.0, 40.0);
+    harness.frame();
+    assert_eq!(
+        page.get(),
+        40.0,
+        "without Shift the strip passes it to the page"
+    );
+    assert_eq!(across.get(), 40.0);
+}
+
+#[test]
+fn a_view_at_its_end_passes_the_wheel_on_and_one_that_moves_keeps_it() {
+    let (mut harness, page, down, _) = page_around(ScrollAxis::Vertical, || {
+        column().child(
+            panel()
+                .height(px(160.0))
+                .background(Color::rgb(30, 120, 200)),
+        )
+    });
+
+    wheel(&mut harness, 0.0, 50.0);
+    harness.frame();
+    assert_eq!(
+        (down.get(), page.get()),
+        (50.0, 0.0),
+        "the inner view moves"
+    );
+
+    wheel(&mut harness, 0.0, 50.0);
+    harness.frame();
+    assert_eq!(
+        (down.get(), page.get()),
+        (60.0, 0.0),
+        "a step that reaches the end is the inner view's whole"
+    );
+
+    wheel(&mut harness, 0.0, 30.0);
+    harness.frame();
+    assert_eq!(
+        (down.get(), page.get()),
+        (60.0, 30.0),
+        "at its end it passes on"
+    );
+
+    wheel(&mut harness, 0.0, -20.0);
+    harness.frame();
+    assert_eq!(
+        (down.get(), page.get()),
+        (40.0, 30.0),
+        "a step back the inner view can take is its own again"
+    );
+}
+
 #[test]
 fn a_virtual_list_given_a_sideways_axis_keeps_scrolling_up_and_down() {
     let (down, across) = (RwSignal::new(0.0f32), RwSignal::new(0.0f32));
@@ -430,6 +538,55 @@ fn a_padded_and_bordered_sideways_view_scrolls_its_content_box() {
 }
 
 #[test]
+fn a_touchpad_swipe_that_mostly_goes_down_scrolls_the_page_over_a_strip() {
+    let (mut harness, page, _, across) =
+        page_around(ScrollAxis::Horizontal, || strip(20, 30.0, 60.0));
+
+    wheel(&mut harness, 0.4, 6.0);
+    harness.frame();
+    assert_eq!((page.get(), across.get()), (6.0, 0.0));
+
+    wheel(&mut harness, 9.0, 1.5);
+    harness.frame();
+    assert_eq!(
+        (page.get(), across.get()),
+        (6.0, 9.0),
+        "a swipe that mostly goes sideways is the strip's"
+    );
+}
+
+#[test]
+fn a_step_down_at_the_end_follows_again_and_leaves_the_event_to_the_page() {
+    let follow = RwSignal::new(false);
+    let pinned = follow.clone();
+    let page = RwSignal::new(0.0f32);
+    let outer = page.clone();
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        panel().column().child(
+            scroll(
+                column()
+                    .child(
+                        scroll(column().child(panel().height(px(160.0))))
+                            .offset(RwSignal::new(f32::MAX))
+                            .follow_end(pinned.clone())
+                            .height(px(100.0)),
+                    )
+                    .child(panel().height(px(400.0))),
+            )
+            .offset(outer.clone())
+            .height(px(200.0)),
+        )
+    });
+    harness.settle();
+    harness.move_to(Point { x: 100.0, y: 50.0 });
+
+    wheel(&mut harness, 0.0, 30.0);
+    harness.frame();
+    assert!(follow.get(), "the step at the end engaged following");
+    assert_eq!(page.get(), 30.0, "and the page took the step");
+}
+
+#[test]
 fn a_keyed_list_given_a_sideways_axis_keeps_scrolling_up_and_down() {
     let (down, across) = (RwSignal::new(0.0f32), RwSignal::new(0.0f32));
     let (vertical, horizontal) = (down.clone(), across.clone());
@@ -466,6 +623,80 @@ fn a_keyed_list_given_a_sideways_axis_keeps_scrolling_up_and_down() {
 }
 
 #[test]
+fn a_mostly_sideways_swipe_over_a_list_scrolls_a_sideways_page_around_it() {
+    let (page, list) = (RwSignal::new(0.0f32), RwSignal::new(0.0f32));
+    let (outer, inner) = (page.clone(), list.clone());
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        panel().child(
+            scroll(
+                row()
+                    .child(
+                        scroll(column().child(panel().height(px(600.0)).width(px(150.0))))
+                            .offset(inner.clone())
+                            .width(px(150.0))
+                            .height(px(150.0))
+                            .shrink(0.0),
+                    )
+                    .child(panel().width(px(500.0)).height(px(150.0)).shrink(0.0)),
+            )
+            .axis(ScrollAxis::Horizontal)
+            .horizontal_offset(outer.clone())
+            .width(px(200.0))
+            .height(px(150.0)),
+        )
+    });
+    harness.settle();
+    harness.move_to(Point { x: 50.0, y: 50.0 });
+
+    wheel(&mut harness, 9.0, 1.5);
+    harness.frame();
+    assert_eq!((page.get(), list.get()), (9.0, 0.0));
+}
+
+#[test]
+fn a_view_that_scrolls_both_ways_at_its_end_leaves_a_downward_swipe_to_the_page() {
+    let (mut harness, page, down, across) = page_around(ScrollAxis::Both, grid);
+    down.set(f32::MAX);
+    harness.settle();
+
+    wheel(&mut harness, 0.4, 6.0);
+    harness.frame();
+    assert_eq!(page.get(), 6.0, "the page scrolled");
+    assert_eq!(across.get(), 0.0, "and the grid did not drift sideways");
+}
+
+#[test]
+fn a_mostly_sideways_swipe_over_a_log_at_its_end_does_not_follow_it() {
+    let follow = RwSignal::new(false);
+    let pinned = follow.clone();
+    let mut harness = Harness::new(200.0, 200.0, 1.0, move || {
+        panel().child(
+            scroll(
+                row()
+                    .child(
+                        scroll(column().child(panel().height(px(600.0)).width(px(150.0))))
+                            .offset(RwSignal::new(f32::MAX))
+                            .follow_end(pinned.clone())
+                            .width(px(150.0))
+                            .height(px(150.0))
+                            .shrink(0.0),
+                    )
+                    .child(panel().width(px(500.0)).height(px(150.0)).shrink(0.0)),
+            )
+            .axis(ScrollAxis::Horizontal)
+            .width(px(200.0))
+            .height(px(150.0)),
+        )
+    });
+    harness.settle();
+    harness.move_to(Point { x: 50.0, y: 50.0 });
+
+    wheel(&mut harness, 9.0, 1.5);
+    harness.frame();
+    assert!(!follow.get(), "the swipe was the page's, not a step down");
+}
+
+#[test]
 fn the_vertical_track_makes_room_for_the_corner_once_the_horizontal_one_shows() {
     let width = RwSignal::new(150.0f32);
     let wide = width.clone();
@@ -496,4 +727,43 @@ fn the_vertical_track_makes_room_for_the_corner_once_the_horizontal_one_shows() 
         92.0,
         "with the other bar, it stops at the corner"
     );
+}
+
+#[test]
+fn a_sideways_swipe_over_a_following_log_that_scrolls_both_ways_keeps_it_following() {
+    let follow = RwSignal::new(true);
+    let (pinned, vertical) = (follow.clone(), RwSignal::new(0.0f32));
+    let down = vertical.clone();
+    let mut harness = Harness::new(300.0, 200.0, 1.0, move || {
+        panel().child(
+            scroll(grid())
+                .axis(ScrollAxis::Both)
+                .offset(vertical.clone())
+                .follow_end(pinned.clone())
+                .width(px(200.0))
+                .height(px(100.0)),
+        )
+    });
+    harness.settle();
+    harness.move_to(Point { x: 100.0, y: 50.0 });
+
+    wheel(&mut harness, 9.0, -0.5);
+    harness.settle();
+    assert!(follow.get(), "a mostly sideways swipe leaves it following");
+    assert_eq!(down.get(), 500.0);
+
+    follow.set(false);
+    down.set(497.0);
+    harness.settle();
+    wheel(&mut harness, 9.0, 0.5);
+    harness.settle();
+    assert!(!follow.get(), "and does not pin it near the end either");
+}
+
+#[test]
+fn an_exact_diagonal_scrolls_a_strip_that_scrolls_only_sideways() {
+    let (mut harness, _, across) = view(ScrollAxis::Horizontal, || strip(20, 30.0, 60.0));
+    wheel(&mut harness, 10.0, 10.0);
+    harness.frame();
+    assert_eq!(across.get(), 10.0);
 }

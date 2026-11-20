@@ -285,7 +285,11 @@ fn clamp_offset(desired: f32, max: f32) -> f32 {
 /// full height, however tall that is. A wheel scroll moves the content up
 /// while the pointer is over the view, clamped so the content's bottom edge
 /// never rises above the bottom of the view's content box, and a thin thumb
-/// at the right edge shows the position while the content overflows.
+/// at the right edge shows the position while the content overflows. The
+/// view decides by the axis a wheel event mostly goes: an event it cannot
+/// move by that way, because it already reached that end or does not scroll
+/// that way, goes on to the views around it, so a page scrolls on past a
+/// view inside it.
 /// Dragging the thumb scrolls the view by the content's share of each pixel
 /// it moves, held to the content's ends, and a press on the track beside the
 /// thumb scrolls one page, the height the view shows, toward the press.
@@ -433,15 +437,54 @@ pub(crate) fn scroll_with_visible_height(
         }
     })
     .overflow(Overflow::Scroll)
-    // The view takes every wheel event over it, even one it cannot use, so
-    // a page around a view at its end does not scroll in its place.
+    // The view takes a wheel event it can move by along the axis the event
+    // mostly goes, the whole of it, and leaves one it cannot to the views
+    // around it: a delta along an axis it does not scroll, or toward an end
+    // it already reached.
     .on_wheel(move |delta| {
         let axis = wheel_chrome.axis.get();
-        if axis.vertical() {
-            scroll_by(&wheel_chrome, finite(delta.y), FOLLOW_SLACK);
+        let (down, across) = (finite(delta.y), finite(delta.x));
+        // A view takes only an event it can move by along the way the event
+        // mostly goes, so the small sideways part of a touchpad's vertical
+        // swipe never stalls a page over a strip or a canvas. Once it takes
+        // one, it moves along every axis it can.
+        let mostly_down = down.abs() >= across.abs();
+        let moves_down = axis.vertical() && down != 0.0 && can_scroll(&wheel_chrome, down);
+        let moves_across =
+            axis.horizontal() && across != 0.0 && can_scroll_x(&wheel_chrome, across);
+        // A step that mostly goes down at the end engages following, as a
+        // step that lands there does, though the page around takes it.
+        if axis.vertical()
+            && down > 0.0
+            && mostly_down
+            && !moves_down
+            && let Some(following) = wheel_chrome.following()
+            && following.read(|on| !*on)
+            && current_offset(&wheel_chrome)
+                .zip(wheel_chrome.max_offset())
+                .is_some_and(|(current, max)| current >= max - FOLLOW_SLACK)
+        {
+            following.set(true);
         }
-        if axis.horizontal() {
-            scroll_x_by(&wheel_chrome, finite(delta.x));
+        let takes = if down.abs() > across.abs() {
+            moves_down
+        } else if across.abs() > down.abs() {
+            moves_across
+        } else {
+            moves_down || moves_across
+        };
+        if !takes {
+            return Handled::No;
+        }
+        if moves_down {
+            if mostly_down {
+                scroll_by(&wheel_chrome, down, FOLLOW_SLACK);
+            } else {
+                scroll_aside(&wheel_chrome, down);
+            }
+        }
+        if moves_across {
+            scroll_x_by(&wheel_chrome, across);
         }
         Handled::Yes
     })
@@ -642,6 +685,28 @@ fn scroll_by(chrome: &ScrollChrome, step: f32, slack: f32) {
     }
 }
 
+/// Scrolls the view up or down by `step`, the small vertical part of an
+/// event that mostly goes sideways, without changing whether it follows its
+/// end: a view that follows stays there, and one that does not is not
+/// pinned by landing near the end.
+fn scroll_aside(chrome: &ScrollChrome, step: f32) {
+    let Some(max) = chrome.max_offset() else {
+        return;
+    };
+    if chrome
+        .following()
+        .is_some_and(|signal| signal.read(|on| *on))
+    {
+        return;
+    }
+    let signal = chrome.signal();
+    let current = clamp_offset(signal.read(|offset| *offset), max);
+    let next = clamp_offset(current + step, max);
+    if next != current {
+        signal.set(next);
+    }
+}
+
 /// Scrolls the view sideways by `step` from where it is, held to its range.
 /// Does nothing before the view and its content have painted.
 fn scroll_x_by(chrome: &ScrollChrome, step: f32) {
@@ -675,6 +740,21 @@ fn current_offset(chrome: &ScrollChrome) -> Option<f32> {
 /// to it.
 fn can_scroll(chrome: &ScrollChrome, past: f32) -> bool {
     let (Some(max), Some(current)) = (chrome.max_offset(), current_offset(chrome)) else {
+        return false;
+    };
+    if past < 0.0 {
+        current > 0.0
+    } else {
+        current < max
+    }
+}
+
+/// Returns whether the view of `chrome` can scroll sideways toward `past`:
+/// left while it is right of its start, and right while it is left of its
+/// end.
+fn can_scroll_x(chrome: &ScrollChrome, past: f32) -> bool {
+    let (Some(max), Some(current)) = (chrome.max_offset_x(), current_along(chrome, Along::X))
+    else {
         return false;
     };
     if past < 0.0 {
@@ -754,7 +834,9 @@ pub trait ScrollExt: Sized {
     /// writes `false`, and so does a focus move that scrolls the view up to
     /// show the focused node, while a wheel step down that lands within four
     /// logical pixels of the end, or a drag or a page that reaches it,
-    /// writes `true`. Writing `true` from the application jumps to the end.
+    /// writes `true`, as does a wheel step down while the view sits at the
+    /// end, which the views around it then scroll by. Writing `true` from
+    /// the application jumps to the end.
     /// A view that starts following with content shorter than itself stays
     /// at offset zero until the content grows past it.
     ///

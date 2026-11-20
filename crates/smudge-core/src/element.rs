@@ -1670,6 +1670,9 @@ impl<W: Widget> Element<W> {
     /// of its descendants.
     ///
     /// The delta is in logical pixels, positive for scrolling right and down.
+    /// While Shift is held, a delta with no horizontal part arrives turned
+    /// sideways, as its x part, so a handler that gives Shift and the wheel
+    /// another meaning, such as a zoom, reads the x part then.
     /// The handlers run from the deepest node in the hovered chain outward,
     /// and the first that returns [`Handled::Yes`] takes the whole event, so
     /// of two nested scroll views the one under the pointer scrolls and the

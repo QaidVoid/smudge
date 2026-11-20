@@ -557,9 +557,17 @@ impl WidgetTree {
     /// a handler that returns [`Handled::No`] lets the event bubble on. A
     /// disabled or hidden node's handler never runs, and the event keeps
     /// bubbling past it, as key routing does.
+    ///
+    /// While Shift is held, a delta with no horizontal part reaches the
+    /// handlers turned sideways, so a plain mouse wheel scrolls a wide view.
     pub(crate) fn wheel(&mut self, delta: Point) {
         let Some(target) = self.hover_target(self.pointer) else {
             return;
+        };
+        let delta = if self.modifiers.shift && delta.x == 0.0 {
+            Point { x: delta.y, y: 0.0 }
+        } else {
+            delta
         };
         for id in self.chain(Some(target)) {
             if self

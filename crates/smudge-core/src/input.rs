@@ -48,6 +48,9 @@ pub enum InputEvent {
     /// The mouse wheel or touchpad scrolled.
     ///
     /// The delta is in logical pixels, positive for scrolling right and down.
+    /// While Shift is held, a delta with no horizontal part reaches the
+    /// wheel handlers as a horizontal one, so a plain mouse wheel scrolls
+    /// sideways.
     Wheel {
         /// How far the content scrolls, in logical pixels.
         delta: Point,
