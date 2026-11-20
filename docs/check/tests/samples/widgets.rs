@@ -239,6 +239,38 @@ fn dropdown_sample() {
 }
 
 #[test]
+fn dialog_sample() {
+    use smudge::widgets::modal;
+    
+    let open = RwSignal::new(false);
+    let (ask, close) = (open.clone(), open.clone());
+    
+    let page = column()
+        .child(button("Delete").on_press(move || ask.set(true)))
+        .child(modal(open, move || {
+            let close = close.clone();
+            column()
+                .padding(px(16.0))
+                .background(ColorToken::SURFACE)
+                .accessible_label("Delete the map?")
+                .child(label("Delete the map?"))
+                .child(button("Cancel").on_press(move || close.set(false)))
+        }));
+}
+
+#[test]
+fn toast_sample() {
+    use smudge::widgets::{Toasts, toast_host};
+    
+    let toasts = Toasts::new();
+    let saved = toasts.clone();
+    
+    let page = column()
+        .child(button("Save").on_press(move || saved.show("Saved")))
+        .child(toast_host(&toasts));
+}
+
+#[test]
 fn controls_sample() {
     use smudge::widgets::{checkbox, number_field, slider, switch};
 

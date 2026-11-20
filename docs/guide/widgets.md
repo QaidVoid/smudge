@@ -316,6 +316,48 @@ let picker = row()
 
 A press, Enter, Space or Down opens the list on the picked choice, or on the first one when `selected` names none. Up and Down walk it, a letter goes to the next choice that starts with it, and Enter or a press picks one and closes the list, while Escape or a press outside closes it unchanged. An empty list does not open, and a list whose choices change while it is open closes. A screen reader hears a combo box whose value is the picked choice, and whether its list is open.
 
+## Dialogs and toasts
+
+`modal(open, content)` shows the element `content` builds as a dialog, centered over the window on a dimmed backdrop, while `open` reads `true`:
+
+```rust
+use smudge::widgets::modal;
+
+let open = RwSignal::new(false);
+let (ask, close) = (open.clone(), open.clone());
+
+let page = column()
+    .child(button("Delete").on_press(move || ask.set(true)))
+    .child(modal(open, move || {
+        let close = close.clone();
+        column()
+            .padding(px(16.0))
+            .background(ColorToken::SURFACE)
+            .accessible_label("Delete the map?")
+            .child(label("Delete the map?"))
+            .child(button("Cancel").on_press(move || close.set(false)))
+    }));
+```
+
+The dialog covers the whole window wherever it sits in the tree, so one opened from inside a scroll view is never cut at the view's edge. While it shows, the backdrop takes every press and the dialog holds the keyboard: Tab stays inside it, and its first focusable node takes the focus as it opens, unless a node inside asks for it with `autofocus()`. Escape closes it by writing `false` to `open`, and the focus goes back to the node that held it before. A press on the backdrop does not close it, since a dialog often holds work in progress. The content's own element is the dialog: give it a look, a surface and padding, and a name with `accessible_label`. A screen reader hears a modal dialog and reaches nothing behind it. `.fade(spring)` fades the dialog and its backdrop in and out.
+
+`Toasts` shows short notices in the window's bottom right corner, which `toast_host` draws. Mount the host once and keep a clone of the handle wherever a notice starts:
+
+```rust
+use smudge::widgets::{Toasts, toast_host};
+
+let toasts = Toasts::new();
+let saved = toasts.clone();
+
+let page = column()
+    .child(button("Save").on_press(move || saved.show("Saved")))
+    .child(toast_host(&toasts));
+```
+
+A toast shows for four seconds, `show_for` sets another time, and a press closes it sooner. Its timer pauses while the pointer is over it. At most four show at once, the newest at the bottom, and a fifth closes the oldest. A toast never takes the focus: a screen reader hears it through the host's announcer, politely, or at once with `show_urgent`. Call `show` on the window's thread, from a handler or from the handler of a message a worker sent.
+
+Every popup, menu, tooltip, dialog and toast draws in a layer of its own kind: the app's popups and then its tooltips, then each dialog in the order it opened, with what opens from inside it above it, and the toasts above everything. Losing the window's input focus closes popups and tooltips, and leaves dialogs and toasts open.
+
 ## Form controls
 
 `checkbox`, `switch`, `slider` and `number_field` bind to signals, draw in the theme's colors, and work from the keyboard:
