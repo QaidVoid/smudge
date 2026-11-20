@@ -350,4 +350,4 @@ let dialog = panel()
     });
 ```
 
-Whenever Tab, `autofocus()`, a focus restored after a remount, a focus trap handing the focus back, or `App::request_focus` moves the focus to a node outside the visible part of a scroll view, the view scrolls just far enough to show it, or shows its top when the node is taller than the view.
+Whenever Tab, `autofocus()`, a focus restored after a remount, a focus trap handing the focus back, or `App::request_focus` moves the focus to a node outside the visible part of a scroll view, the view scrolls just far enough to show it, or shows its top or its left when the node is taller or wider than the view.

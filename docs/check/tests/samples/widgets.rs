@@ -88,6 +88,18 @@ fn follow() {
 }
 
 #[test]
+fn sideways() {
+    use smudge::widgets::{ScrollAxis, ScrollExt};
+    
+    let across = RwSignal::new(0.0_f32);
+    
+    let timeline = scroll(row().children((0..48).map(|slot| label(format!("Slot {slot}")).width(px(80.0)))))
+        .axis(ScrollAxis::Horizontal)
+        .horizontal_offset(across.clone())
+        .height(px(40.0));
+}
+
+#[test]
 fn split_panes() {
     use smudge::prelude::*;
     

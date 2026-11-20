@@ -27,7 +27,7 @@ When a real GPU is present, the optional GPU renderer takes over automatically, 
 
 ## What is in it
 
-- Containers (`row`, `column`, `stack`, `spacer`), a button, a label that can end in an ellipsis, an image, a single-line text input, a multi-line text area, a vertical scroll view that can follow its end, and virtual lists for very long lists, with fixed or varying row heights.
+- Containers (`row`, `column`, `stack`, `spacer`), a button, a label that can end in an ellipsis, an image, a single-line text input, a multi-line text area, a scroll view that scrolls up and down, sideways or both ways and can follow its end, and virtual lists for very long lists, with fixed or varying row heights.
 - Flexbox and block layout, with lengths in pixels or percent.
 - Styling with colors, borders, corner radii, theme tokens, and hover, focus, pressed and disabled variants.
 - Keyboard focus with autofocus and focus traps, app-wide key handlers, pointer and wheel input, input methods for composing languages, and the system clipboard on the desktop.

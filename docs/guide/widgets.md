@@ -77,9 +77,9 @@ let log = scroll(
 .height(px(300.0));
 ```
 
-`scroll(content)` clips its content to its own box and scrolls it vertically with the wheel or touchpad, and shows a thumb along its right edge while the content does not fit. Dragging the thumb scrolls the view, and a press on the track beside it scrolls one page toward the press. The scrollbar takes presses along the view's right edge, eight logical pixels wide, and leaves the keyboard focus where it was, so dragging it does not take the focus out of a field. Scrolling does not repaint the content: the rows keep their paint and only move, so a scroll frame through a thousand rows stays well under a millisecond on the CPU renderer.
+`scroll(content)` clips its content to its own box and scrolls it vertically with the wheel or touchpad, and shows a thumb along its right edge while the content does not fit. Dragging the thumb scrolls the view, and a press on the track beside it scrolls one page toward the press. The scrollbar takes presses along the view's right edge, eight logical pixels wide, and leaves the keyboard focus where it was, so dragging it does not take the focus out of a field. Scrolling does not repaint the content: the rows keep their paint and only move, so a scroll stays cheap however many rows it moves.
 
-When Tab, `autofocus()`, a focus restored after a remount, a focus trap handing the focus back, or `App::request_focus` moves the keyboard focus to a node the view hides, the view scrolls just far enough to show that node at its nearest edge, and every scroll view around it does the same. A node taller than the view is shown from its top. A click that focuses a node scrolls nothing, because the node is already under the pointer.
+When Tab, `autofocus()`, a focus restored after a remount, a focus trap handing the focus back, or `App::request_focus` moves the keyboard focus to a node the view hides, the view scrolls just far enough to show that node at its nearest edge, and every scroll view around it does the same. A node taller or wider than the view is shown from its top or its left. A click that focuses a node scrolls nothing, because the node is already under the pointer.
 
 To control the position from your own state, bind it to a signal with `ScrollExt::offset`:
 
@@ -107,7 +107,28 @@ let follow = RwSignal::new(true);
 let log = scroll(output_lines).follow_end(follow).height(px(300.0));
 ```
 
-While the signal is true, the view shows the end of the content and stays there as lines arrive, which is what an output log wants. Scrolling up writes false, so the reader can look back in peace; scrolling back to the end or setting the signal to true pins it again. A focus move that scrolls the view up to show the focused node writes false too.
+While the signal is true, the view shows the end of the content and stays there as lines arrive, which is what an output log wants. Scrolling up writes false, so the reader can look back in peace. Scrolling back to the end or setting the signal to true pins it again. A focus move that scrolls the view up to show the focused node writes false too.
+
+### Scrolling sideways
+
+`ScrollExt::axis` makes a view scroll sideways, for timelines, wide tables or code that does not wrap, or both ways, for a canvas or a grid:
+
+```rust
+use smudge::widgets::{ScrollAxis, ScrollExt};
+
+let across = RwSignal::new(0.0_f32);
+
+let timeline = scroll(row().children((0..48).map(|slot| label(format!("Slot {slot}")).width(px(80.0)))))
+    .axis(ScrollAxis::Horizontal)
+    .horizontal_offset(across.clone())
+    .height(px(40.0));
+```
+
+A view that scrolls sideways lays its content out at the content's own width, and at least the view's, so narrow content still fills it, and shows a second thumb along its bottom edge that drags and pages like the first. `ScrollAxis::Both` scrolls both ways, and its two scrollbars stop short of the corner where they would meet. `offset` binds the vertical position, as before, and `horizontal_offset` binds the horizontal one. Following the end stays vertical.
+
+A touchpad's sideways swipe scrolls the view, and so does the mouse wheel while Shift is held: while Shift is down, a wheel event with no sideways part reaches every `on_wheel` handler turned sideways. A handler of your own that gives Shift and the wheel another meaning, such as a zoom, reads the sideways part then.
+
+A view decides by the direction a wheel event mostly goes, so the slight sideways drift of a touchpad's vertical swipe counts as vertical. It takes the event only when it can move that way. One that already reached its end, or that does not scroll that way, passes the event to the view around it, so a page keeps scrolling over a sideways strip inside it and past a list scrolled to its end. A focus move reveals the focused node on both axes, and a drag held past any edge a view scrolls toward scrolls it.
 
 ## Split panes
 
@@ -145,7 +166,7 @@ let list = virtual_list(
 
 `virtual_list(count, row_height, row)` mounts only the rows near the viewport, so a hundred thousand rows cost the tree and the layout about as much as the twenty on screen. `row` receives the row's index and builds that row the first time it scrolls into view; the row stays mounted, with its state, until the view moves past it. Content that changes while a row is visible must come from signals the row reads. Every row must be exactly `row_height` tall. The count is a binding: when the signals it reads change, the list updates its window of rows.
 
-The list owns its scroll position, so do not call `.offset(...)` on it.
+The list owns its scroll position, so do not call `.offset(...)` on it. A virtual list scrolls up and down only, whatever `axis` it is given.
 
 ### Rows of their own height
 
