@@ -2262,6 +2262,36 @@ fn reader_dialog(
     )
 }
 
+/// A widget that reports an empty description of its own.
+struct EmptyDescription;
+
+impl Widget for EmptyDescription {
+    fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+
+    fn semantics(&self) -> Option<Semantics> {
+        Some(Semantics {
+            label: Some(String::from("Plain")),
+            description: Some(String::new()),
+            ..Semantics::new(Role::Button)
+        })
+    }
+}
+
+#[test]
+fn an_empty_description_a_widget_reports_is_none() {
+    let mut app = app_with(|| {
+        Element::new(Panel)
+            .role(Role::Group)
+            .child(Element::new(EmptyDescription))
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::Button).description(),
+        None
+    );
+}
+
 #[test]
 fn a_reader_follows_dialogs_opening_over_each_other_and_closing_in_turn() {
     let (first, second, empty) = (
@@ -2373,6 +2403,13 @@ fn an_invalid_field_reports_it_with_its_reason_and_a_new_reason_sends_it_again()
         Some("Use letters only"),
         "a new reason sends the node again"
     );
+
+    wrong.set(false);
+    reason.set(String::new());
+    let fixed = update_after_frame(&mut app, &mut projection, false);
+    let field = node_with_role(&fixed, AccessKitRole::TextInput);
+    assert_eq!(field.invalid(), None);
+    assert_eq!(field.description(), None, "an empty reason is none");
 }
 
 #[test]

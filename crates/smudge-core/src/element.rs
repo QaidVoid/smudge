@@ -1997,7 +1997,10 @@ impl<W: Widget> Element<W> {
     /// and the role.
     ///
     /// This can be bound to a signal, like the style builders. It overrides
-    /// the description the widget itself reports.
+    /// the description the widget itself reports, except while it is empty,
+    /// when the widget's own description, if any, shows instead. An empty
+    /// description is none, so a binding clears it by writing an empty
+    /// string.
     pub fn accessible_description(mut self, description: impl Into<Value<String>>) -> Self {
         self.a11y_description = Some(description.into());
         self

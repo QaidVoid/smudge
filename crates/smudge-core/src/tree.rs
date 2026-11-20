@@ -1578,11 +1578,13 @@ impl WidgetTree {
     ///
     /// Called when the node mounts and again by the binding of an
     /// [`accessible_description`](crate::element::Element::accessible_description)
-    /// builder value. A stale id does nothing.
+    /// builder value. An empty description is none. A stale id does
+    /// nothing.
     pub(crate) fn set_a11y_description(&mut self, id: WidgetId, description: Option<String>) {
         let Some(node) = self.nodes.get_mut(id) else {
             return;
         };
+        let description = description.filter(|text| !text.is_empty());
         let extra = node.a11y_extra.get_or_insert_default();
         if extra.description == description {
             return;
@@ -1926,7 +1928,8 @@ impl WidgetTree {
             links,
             description: extra
                 .and_then(|extra| extra.description.clone())
-                .or(description),
+                .or(description)
+                .filter(|description| !description.is_empty()),
             selected: extra.and_then(|extra| extra.selected).or(selected),
             expanded: extra.and_then(|extra| extra.expanded).or(expanded),
             bounds: node.rect,
