@@ -68,6 +68,9 @@ impl ColorToken {
     pub const FOCUS_RING: ColorToken = ColorToken("focus_ring");
     /// The translucent color that dims the window behind a modal dialog.
     pub const BACKDROP: ColorToken = ColorToken("backdrop");
+    /// The color that marks a value the app rejects, as the border of an
+    /// invalid field.
+    pub const ERROR: ColorToken = ColorToken("error");
 }
 
 /// Whether the system would rather show light or dark colors.
@@ -340,6 +343,7 @@ impl Theme {
                 (ColorToken::BORDER, Color::rgb(204, 204, 204)),
                 (ColorToken::FOCUS_RING, Color::rgb(0, 120, 215)),
                 (ColorToken::BACKDROP, Color::rgba(0, 0, 0, 100)),
+                (ColorToken::ERROR, Color::rgb(196, 30, 58)),
             ],
             [
                 (RadiusToken::SMALL, 2.0),
@@ -365,6 +369,7 @@ impl Theme {
                 (ColorToken::BORDER, Color::rgb(68, 68, 68)),
                 (ColorToken::FOCUS_RING, Color::rgb(77, 163, 255)),
                 (ColorToken::BACKDROP, Color::rgba(0, 0, 0, 150)),
+                (ColorToken::ERROR, Color::rgb(255, 107, 120)),
             ],
             [
                 (RadiusToken::SMALL, 2.0),

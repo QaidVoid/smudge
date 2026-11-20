@@ -297,6 +297,7 @@ enum Prop {
     Opacity,
     ScrollOffset,
     Disabled,
+    Invalid,
     Cursor,
     Pin,
     Reveal,
@@ -356,6 +357,23 @@ impl Binding {
                     let queue = queue.clone();
                     queue.push(Box::new(move |tree| {
                         tree.set_disabled(id, value);
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that writes whether the node holds a value the app rejects.
+    fn invalid(get: Rc<dyn Fn() -> bool>) -> Binding {
+        Binding {
+            key: Some(Key::Style(Prop::Invalid)),
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_invalid(id, value);
                     }));
                 })
             }),
@@ -676,6 +694,8 @@ pub struct Element<W: Widget> {
     handlers: Handlers,
     /// Whether the node starts disabled.
     disabled: bool,
+    /// Whether the node starts invalid.
+    invalid: bool,
     /// The cursor the node sets for the pointer over it, when its element
     /// set a static one.
     cursor: Option<crate::window::Cursor>,
@@ -762,6 +782,7 @@ impl<W: Widget> Element<W> {
             variants: None,
             handlers: Handlers::default(),
             disabled: false,
+            invalid: false,
             cursor: None,
             focusable: false,
             keeps_focus: false,
@@ -1420,6 +1441,32 @@ impl<W: Widget> Element<W> {
         self.variant(|variants| &mut variants.disabled, patch)
     }
 
+    /// Declares how the node looks while it holds a value the app rejects,
+    /// as [`invalid`](Self::invalid) sets.
+    ///
+    /// The patch applies over the hovered one, so an invalid field keeps its
+    /// error look while the pointer is over it, and under the focused,
+    /// pressed and disabled ones, so a focus ring still shows on it for a
+    /// keyboard user and a disabled field looks disabled. A later
+    /// call replaces an earlier one, as a widget's own look is replaced by
+    /// the app's.
+    ///
+    /// ```
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_core::theme::ColorToken;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let wrong = RwSignal::new(true);
+    /// let field = panel()
+    ///     .border(1.0)
+    ///     .border_color(ColorToken::BORDER)
+    ///     .invalid(move || wrong.get())
+    ///     .invalid_style(|p| p.border_color(ColorToken::ERROR));
+    /// ```
+    pub fn invalid_style(self, patch: impl FnOnce(PatchBuilder) -> PatchBuilder) -> Self {
+        self.variant(|variants| &mut variants.invalid, patch)
+    }
+
     /// Runs `handler` when the primary button is released over the node after
     /// a press that started on it.
     ///
@@ -1751,6 +1798,25 @@ impl<W: Widget> Element<W> {
         handler: impl FnMut(&str, Option<(usize, usize)>) + 'static,
     ) -> Self {
         self.handlers.on_ime_preedit = Some(Box::new(crate::hot::wrap2_ref_mut(handler)));
+        self
+    }
+
+    /// Marks the node as holding a value the app rejects, or clears the
+    /// mark, as a form field whose text does not parse is.
+    ///
+    /// An invalid node takes on its [`invalid_style`](Self::invalid_style),
+    /// and a screen reader hears it as invalid. Give the reason with
+    /// [`accessible_description`](Self::accessible_description), which a
+    /// reader speaks after the node's name and value, and show the same text
+    /// in a label near it. The node otherwise behaves as before: it still
+    /// takes presses and the focus. This can be bound to a signal, like the
+    /// style builders.
+    pub fn invalid(mut self, invalid: impl Into<Value<bool>>) -> Self {
+        self.replace_binding(Prop::Invalid);
+        match invalid.into() {
+            Value::Static(invalid) => self.invalid = invalid,
+            Value::Dynamic(get) => self.bindings.push(Binding::invalid(get)),
+        }
         self
     }
 
@@ -2786,6 +2852,8 @@ pub struct AnyElement {
     handlers: Handlers,
     /// Whether the node starts disabled.
     disabled: bool,
+    /// Whether the node starts invalid.
+    invalid: bool,
     /// The cursor the node sets for the pointer over it, when its element
     /// set a static one.
     cursor: Option<crate::window::Cursor>,
@@ -2858,6 +2926,7 @@ impl AnyElement {
             variants: element.variants,
             handlers: element.handlers,
             disabled: element.disabled,
+            invalid: element.invalid,
             cursor: element.cursor,
             focusable: element.focusable,
             keeps_focus: element.keeps_focus,
@@ -2980,6 +3049,7 @@ fn mount_named(
         variants,
         handlers,
         disabled,
+        invalid,
         cursor,
         focusable,
         keeps_focus,
@@ -3025,6 +3095,7 @@ fn mount_named(
     let _ = row;
     tree.set_variants(id, variants.map(Rc::new));
     tree.set_disabled(id, disabled);
+    tree.set_invalid(id, invalid);
     tree.set_cursor(id, cursor);
     tree.set_focusable(id, focusable);
     tree.set_keeps_focus(id, keeps_focus);

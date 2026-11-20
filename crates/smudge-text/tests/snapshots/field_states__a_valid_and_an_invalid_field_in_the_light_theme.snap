@@ -1,0 +1,6 @@
+---
+source: crates/smudge-text/tests/field_states.rs
+expression: "valid_and_invalid(Theme::light()).png()"
+extension: png
+snapshot_kind: binary
+---

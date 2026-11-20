@@ -475,6 +475,7 @@ fn state(details: &Details) -> Element<Panel> {
             (states.pressed, "pressed"),
             (states.focused, "focused"),
             (states.disabled, "disabled"),
+            (states.invalid, "invalid"),
         ]
         .into_iter()
         .filter_map(|(on, name)| on.then_some(name))

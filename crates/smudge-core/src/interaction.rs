@@ -49,6 +49,9 @@ impl Interaction {
     /// A press on the node leaves the keyboard focus where it is.
     pub(crate) const KEEPS_FOCUS: u8 = 1 << 6;
 
+    /// The node holds a value the app rejects.
+    pub(crate) const INVALID: u8 = 1 << 7;
+
     /// Returns whether `bit` is set.
     pub(crate) fn has(self, bit: u8) -> bool {
         self.0 & bit != 0
@@ -694,6 +697,19 @@ impl WidgetTree {
         {
             let target = self.hover_target(self.pointer);
             self.set_hover_target(target);
+        }
+    }
+
+    /// Sets whether the node holds a value the app rejects, which restyles it
+    /// and tells a screen reader. A stale id does nothing.
+    pub(crate) fn set_invalid(&mut self, id: WidgetId, invalid: bool) {
+        let was = self
+            .nodes
+            .get(id)
+            .is_some_and(|node| node.interaction.has(Interaction::INVALID));
+        if was != invalid {
+            self.set_bit(id, Interaction::INVALID, invalid);
+            self.push_a11y(id);
         }
     }
 

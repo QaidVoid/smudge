@@ -457,6 +457,7 @@ fn digest(node: &SemanticsNode, scale: f32) -> u64 {
     (node.focusable, node.disabled, node.focused, node.pressable).hash(&mut hasher);
     node.description.hash(&mut hasher);
     (node.selected, node.expanded).hash(&mut hasher);
+    node.invalid.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -556,6 +557,9 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     }
     if node.role == Role::Dialog {
         out.set_modal();
+    }
+    if node.invalid {
+        out.set_invalid(accesskit::Invalid::True);
     }
     if node.pressable {
         out.add_action(accesskit::Action::Click);

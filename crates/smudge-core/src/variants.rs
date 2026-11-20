@@ -1,5 +1,5 @@
 //! Style variants: patches the base style takes on while a node is hovered,
-//! keyboard focused, pressed or disabled.
+//! keyboard focused, pressed, invalid or disabled.
 //!
 //! Every node carries one complete base [`Style`]. An
 //! element can declare a patch per interaction state, and the tree keeps the
@@ -7,11 +7,14 @@
 //! base style, and layout and paint read the resolved style, which the tree
 //! recomputes whenever the base style or the interaction bits change.
 //!
-//! The patches apply in one fixed order: base, then hovered, then focused,
-//! then pressed, then disabled. A patch overrides exactly the fields its
-//! setters wrote, so a hovered background leaves the base width alone. The
-//! focused state applies only while the focus last moved by keyboard
-//! navigation, so a focus ring follows Tab and not a mouse click.
+//! The patches apply in one fixed order: base, then hovered, then invalid,
+//! then focused, then pressed, then disabled, so an invalid field keeps its
+//! error look while it is hovered, a focus ring still shows on it for a
+//! keyboard user, and a disabled one looks disabled whatever it holds. A
+//! patch overrides exactly the fields its setters wrote, so a hovered
+//! background leaves the base width alone. The focused state applies only
+//! while the focus last moved by keyboard navigation, so a focus ring
+//! follows Tab and not a mouse click.
 //!
 //! A patch holds static values only. There are no reactive values inside a
 //! patch, and the setters of [`PatchBuilder`] take plain values, so a closure
@@ -296,7 +299,8 @@ impl PatchBuilder {
 /// An element builds this through its
 /// [`hover`](crate::element::Element::hover),
 /// [`focused`](crate::element::Element::focused),
-/// [`pressed`](crate::element::Element::pressed) and
+/// [`pressed`](crate::element::Element::pressed),
+/// [`invalid_style`](crate::element::Element::invalid_style) and
 /// [`disabled_style`](crate::element::Element::disabled_style) methods. A node
 /// without any patch never changes its style with its interaction state.
 pub struct Variants {
@@ -307,6 +311,9 @@ pub struct Variants {
     pub focused: Option<StylePatch>,
     /// Applied while a primary press is held on the node.
     pub pressed: Option<StylePatch>,
+    /// Applied while the node holds a value the app rejects, as
+    /// [`invalid`](crate::element::Element::invalid) sets.
+    pub invalid: Option<StylePatch>,
     /// Applied while the node is disabled.
     pub disabled: Option<StylePatch>,
 }
@@ -319,6 +326,7 @@ impl Default for Variants {
             hovered: None,
             focused: None,
             pressed: None,
+            invalid: None,
             disabled: None,
         }
     }
@@ -330,6 +338,7 @@ impl Variants {
         self.hovered.is_none()
             && self.focused.is_none()
             && self.pressed.is_none()
+            && self.invalid.is_none()
             && self.disabled.is_none()
     }
 }
@@ -337,14 +346,19 @@ impl Variants {
 /// Resolves the style of a node from its base style, its patches and its
 /// interaction state.
 ///
-/// The base style comes first, then the hovered patch, then the focused one,
-/// then the pressed one, then the disabled one. Each patch overrides the
-/// fields its setters wrote; a later patch wins over an earlier one for the
-/// same field. The base style is not modified.
+/// The base style comes first, then the hovered patch, then the invalid
+/// one, then the focused one, then the pressed one, then the disabled one.
+/// Each patch overrides the fields its setters wrote; a later patch wins
+/// over an earlier one for the same field. The base style is not modified.
 pub(crate) fn resolve(base: &Style, variants: &Variants, interaction: Interaction) -> Style {
     let mut style = base.clone();
     if interaction.has(Interaction::HOVERED)
         && let Some(patch) = &variants.hovered
+    {
+        patch.apply(&mut style);
+    }
+    if interaction.has(Interaction::INVALID)
+        && let Some(patch) = &variants.invalid
     {
         patch.apply(&mut style);
     }

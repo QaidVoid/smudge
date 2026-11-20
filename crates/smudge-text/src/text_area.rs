@@ -321,6 +321,7 @@ pub fn text_area(value: RwSignal<String>) -> Element<TextArea> {
         .cursor(Cursor::Text)
         .column()
         .min_height(|| line_floor(Value::Static(1)))
+        .invalid_style(|patch| patch.border_color(ColorToken::ERROR))
         .bind(AmbientStyleKey, current_text_style, apply_ambient_style)
         .bind(
             ValueKey,

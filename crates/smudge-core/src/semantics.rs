@@ -198,6 +198,8 @@ pub struct Semantics {
     /// Whether what the node opens, such as a menu or a list, is open, or
     /// `None` for a node that opens nothing.
     pub expanded: Option<bool>,
+    /// Whether the node holds a value the app rejects.
+    pub invalid: bool,
 }
 
 /// A selection in a widget's text, between two places in the text its
@@ -282,6 +284,7 @@ impl Semantics {
             description: None,
             selected: None,
             expanded: None,
+            invalid: false,
         }
     }
 }
@@ -339,6 +342,10 @@ pub struct SemanticsNode {
     pub focusable: bool,
     /// Whether the node is disabled.
     pub disabled: bool,
+    /// Whether the node holds a value the app rejects, which
+    /// [`Element::invalid`](crate::element::Element::invalid) or its widget
+    /// says.
+    pub invalid: bool,
     /// Whether the node holds the keyboard focus.
     pub focused: bool,
     /// Whether a press on the node runs a handler, so the backend can offer

@@ -36,6 +36,7 @@ fn every_patch() -> Variants {
         hovered: Some(background_patch(Color::rgb(10, 0, 0))),
         focused: Some(background_patch(Color::rgb(20, 0, 0))),
         pressed: Some(background_patch(Color::rgb(30, 0, 0))),
+        invalid: Some(background_patch(Color::rgb(35, 0, 0))),
         disabled: Some(background_patch(Color::rgb(40, 0, 0))),
     }
 }
@@ -66,6 +67,32 @@ fn patches_apply_in_a_fixed_order_and_pressed_overrides_hovered() {
         resolve(&base(), &variants, pressed).paint.background,
         Some(Color::rgb(30, 0, 0).into()),
         "pressed overrides hovered and focused for the same field"
+    );
+    let invalid = interaction(&[Interaction::HOVERED, Interaction::INVALID]);
+    assert_eq!(
+        resolve(&base(), &variants, invalid).paint.background,
+        Some(Color::rgb(35, 0, 0).into()),
+        "invalid overrides hovered"
+    );
+    let invalid_and_focused = interaction(&[
+        Interaction::HOVERED,
+        Interaction::INVALID,
+        Interaction::KEYBOARD_FOCUS,
+    ]);
+    assert_eq!(
+        resolve(&base(), &variants, invalid_and_focused)
+            .paint
+            .background,
+        Some(Color::rgb(20, 0, 0).into()),
+        "a keyboard focus ring shows over the invalid look"
+    );
+    let invalid_and_disabled = interaction(&[Interaction::INVALID, Interaction::DISABLED]);
+    assert_eq!(
+        resolve(&base(), &variants, invalid_and_disabled)
+            .paint
+            .background,
+        Some(Color::rgb(40, 0, 0).into()),
+        "and disabled overrides invalid"
     );
     assert_eq!(
         resolve(&base(), &variants, focused).paint.background,

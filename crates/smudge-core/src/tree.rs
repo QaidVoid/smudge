@@ -1891,6 +1891,7 @@ impl WidgetTree {
             description,
             selected,
             expanded,
+            invalid,
             ..
         } = semantics;
         let content = node.content.origin();
@@ -1931,6 +1932,7 @@ impl WidgetTree {
             bounds: node.rect,
             focusable: node.interaction.has(Interaction::FOCUSABLE),
             disabled: node.interaction.has(Interaction::DISABLED),
+            invalid: invalid || node.interaction.has(Interaction::INVALID),
             focused: node.interaction.has(Interaction::FOCUSED),
             pressable: node.handlers.on_press.is_some(),
         }

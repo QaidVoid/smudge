@@ -119,6 +119,7 @@ impl WidgetTree {
                 pressed: node.interaction.has(Interaction::PRESSED),
                 focused: node.interaction.has(Interaction::FOCUSED),
                 disabled: node.interaction.has(Interaction::DISABLED),
+                invalid: node.interaction.has(Interaction::INVALID),
             },
             dirty: node.dirty,
             boxes: BoxModel {

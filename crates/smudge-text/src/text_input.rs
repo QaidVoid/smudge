@@ -291,6 +291,7 @@ pub fn text_input(value: RwSignal<String>) -> Element<TextInput> {
     Element::new(TextInput::new(Rc::clone(&chrome)))
         .clip(true)
         .cursor(Cursor::Text)
+        .invalid_style(|patch| patch.border_color(ColorToken::ERROR))
         .bind(AmbientStyleKey, current_text_style, apply_ambient_style)
         .bind(
             ValueKey,

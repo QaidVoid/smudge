@@ -70,6 +70,8 @@ pub struct States {
     pub focused: bool,
     /// Whether the node is disabled.
     pub disabled: bool,
+    /// Whether the node holds a value the app rejects.
+    pub invalid: bool,
 }
 
 /// A node's four boxes from the last layout pass, in logical pixels in

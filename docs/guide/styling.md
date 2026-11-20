@@ -51,7 +51,7 @@ let surface = panel()
 | `TEXT`, `TEXT_MUTED` | `MEDIUM` |
 | `ACCENT`, `ACCENT_HOVER`, `ACCENT_PRESSED`, `ACCENT_TEXT` | `LARGE` |
 | `BORDER`, `FOCUS_RING` | |
-| `BACKDROP` | |
+| `ERROR`, `BACKDROP` | |
 
 The built-in widgets use tokens throughout, so they follow the theme with no extra code. `Theme::light()` and `Theme::dark()` are the two built-in themes.
 
@@ -78,7 +78,7 @@ run_with(
 
 ## Interaction states
 
-`hover`, `pressed`, `focused` and `disabled_style` take a patch: a few properties that apply only while the node is in that state.
+`hover`, `pressed`, `focused`, `invalid_style` and `disabled_style` take a patch: a few properties that apply only while the node is in that state. `invalid_style` pairs with `invalid`, which marks a value the application rejects.
 
 ```rust
 let row_item = panel()
@@ -90,7 +90,7 @@ let row_item = panel()
     .on_press(|| println!("opened"));
 ```
 
-Patches apply in a fixed order: base, hovered, focused, pressed, then disabled. A pressed button that is also hovered therefore shows its pressed color. A patch overrides only the properties it sets, and a state change re-resolves the node's style alone, repainting it when the patch sets paint properties. The `focused` patch applies only while focus last moved by keyboard, so a focus ring follows Tab and not a mouse click.
+Patches apply in a fixed order: base, hovered, invalid, focused, pressed, then disabled. A pressed button that is also hovered therefore shows its pressed color, and a focus ring shows on an invalid field. A patch overrides only the properties it sets, and a state change re-resolves the node's style alone, repainting it when the patch sets paint properties. The `focused` patch applies only while focus last moved by keyboard, so a focus ring follows Tab and not a mouse click.
 
 Patches hold fixed values. For a value that changes with your own state, bind the base property to a closure and let the patches override it while their state is active.
 

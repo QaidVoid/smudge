@@ -2314,6 +2314,45 @@ fn a_reader_follows_dialogs_opening_over_each_other_and_closing_in_turn() {
 }
 
 #[test]
+fn an_invalid_field_reports_it_with_its_reason_and_a_new_reason_sends_it_again() {
+    let (wrong, reason) = (
+        RwSignal::new(false),
+        RwSignal::new(String::from("Too long")),
+    );
+    let (invalid, described) = (wrong.clone(), reason.clone());
+    let mut app = app_with(move || {
+        let (invalid, described) = (invalid.clone(), described.clone());
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Panel)
+                .role(Role::TextInput)
+                .accessible_label("Name")
+                .invalid(move || invalid.get())
+                .accessible_description(move || described.get()),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    let first = update_after_frame(&mut app, &mut projection, true);
+    assert_eq!(
+        node_with_role(&first, AccessKitRole::TextInput).invalid(),
+        None
+    );
+
+    wrong.set(true);
+    let flagged = update_after_frame(&mut app, &mut projection, false);
+    let field = node_with_role(&flagged, AccessKitRole::TextInput);
+    assert_eq!(field.invalid(), Some(accesskit::Invalid::True));
+    assert_eq!(field.description(), Some("Too long"));
+
+    reason.set(String::from("Use letters only"));
+    let renamed = update_after_frame(&mut app, &mut projection, false);
+    assert_eq!(
+        node_with_role(&renamed, AccessKitRole::TextInput).description(),
+        Some("Use letters only"),
+        "a new reason sends the node again"
+    );
+}
+
+#[test]
 fn a_new_description_selection_or_open_state_sends_the_node_again() {
     let (open, picked, about) = (
         RwSignal::new(false),
