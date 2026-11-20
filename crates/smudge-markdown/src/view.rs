@@ -14,7 +14,7 @@ use smudge_text::{
     FontWeight, RichText, RichTextExt, SelectableExt, Span, SpanStyle, current_text_style, label,
     rich_text, selection_scope,
 };
-use smudge_widgets::{ScrollExt, row, virtual_column_keyed};
+use smudge_widgets::{ScrollAxis, ScrollExt, row, scroll, virtual_column_keyed};
 
 use crate::model::{Inline, Node};
 use crate::source::{
@@ -263,12 +263,26 @@ impl View {
             Node::Paragraph { .. } | Node::Text { .. } | Node::Html { .. } => {
                 self.leaf(path).into_any()
             }
+            // A long line of code scrolls sideways rather than wrapping,
+            // and a vertical wheel over it scrolls the document on. The
+            // top and bottom padding sit inside the view, where its
+            // scrollbar runs below the text rather than over the last line.
             Node::Code { .. } => panel()
                 .width(pct(100.0))
-                .padding(px(8.0))
+                .padding_xy(Size {
+                    width: 8.0,
+                    height: 0.0,
+                })
                 .corner_radius(RadiusToken::MEDIUM)
                 .background(ColorToken::SURFACE_HOVER)
-                .child(self.leaf(path))
+                .child(
+                    scroll(self.leaf(path))
+                        .axis(ScrollAxis::Horizontal)
+                        .padding_xy(Size {
+                            width: 0.0,
+                            height: 8.0,
+                        }),
+                )
                 .into_any(),
             Node::Rule => panel()
                 .width(pct(100.0))

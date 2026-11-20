@@ -595,3 +595,206 @@ fn a_link_with_styles_inside_it_is_one_link_to_a_reader() {
         "one link however it is styled, and two links to the same place stay two"
     );
 }
+
+/// The rectangles of the paragraphs the window shows, in window
+/// coordinates after every scroll, top to bottom.
+fn shown_paragraphs(harness: &mut Harness) -> Vec<smudge_core::geometry::Rect> {
+    let mut rects = Vec::new();
+    harness.app().visit_nodes(|_, type_name, rect| {
+        if type_name.ends_with("RichText") {
+            rects.push(rect);
+        }
+    });
+    rects
+}
+
+#[test]
+fn a_long_line_of_code_scrolls_sideways_and_a_vertical_wheel_scrolls_the_document() {
+    let source = MarkdownSource::new();
+    let line = "let value = compute(1, 2); ".repeat(15);
+    let mut text = format!("Intro\n\n```\n{line}\n```\n\n");
+    for index in 0..40 {
+        text.push_str(&format!("Paragraph {index}.\n\n"));
+    }
+    source.push(&text);
+    let (mut harness, _) = view_of(&source);
+
+    let rects = shown_paragraphs(&mut harness);
+    let (intro, code) = (rects[0], rects[1]);
+    assert!(
+        code.height() < 2.0 * intro.height(),
+        "the code is one line tall, not wrapped: {code:?}"
+    );
+    assert!(code.width() > WINDOW.0, "and wider than the window");
+
+    let over_code = Point {
+        x: 100.0,
+        y: (code.y0 + code.y1) / 2.0,
+    };
+    harness.move_to(over_code);
+    harness.event(smudge_core::input::InputEvent::Wheel {
+        delta: Point { x: 120.0, y: 0.0 },
+    });
+    harness.settle();
+    let moved = shown_paragraphs(&mut harness);
+    assert_eq!(moved[1].x0, code.x0 - 120.0, "the code scrolls sideways");
+    assert_eq!(moved[0], intro, "and the document stays");
+
+    harness.event(smudge_core::input::InputEvent::Wheel {
+        delta: Point { x: 0.0, y: 50.0 },
+    });
+    harness.settle();
+    let scrolled = shown_paragraphs(&mut harness);
+    assert_eq!(
+        scrolled[0].y0,
+        intro.y0 - 50.0,
+        "a vertical wheel scrolls the document"
+    );
+    harness.assert_matches_full_repaint();
+}
+
+/// A document of an intro, a code block with one line far wider than the
+/// window, and forty short paragraphs.
+fn wide_code_document() -> MarkdownSource {
+    let source = MarkdownSource::new();
+    let line = "let value = compute(1, 2); ".repeat(15);
+    let mut text = format!("Intro\n\n```\n{line}\n```\n\n");
+    for index in 0..40 {
+        text.push_str(&format!("Paragraph {index}.\n\n"));
+    }
+    source.push(&text);
+    source
+}
+
+#[test]
+fn a_touchpad_swipe_with_a_little_sideways_over_a_code_block_scrolls_the_document() {
+    let source = wide_code_document();
+    let (mut harness, _) = view_of(&source);
+    let rects = shown_paragraphs(&mut harness);
+    let (intro, code) = (rects[0], rects[1]);
+    harness.move_to(Point {
+        x: 100.0,
+        y: (code.y0 + code.y1) / 2.0,
+    });
+
+    harness.event(smudge_core::input::InputEvent::Wheel {
+        delta: Point { x: 0.4, y: 6.0 },
+    });
+    harness.settle();
+
+    let moved = shown_paragraphs(&mut harness);
+    assert_eq!(moved[0].y0, intro.y0 - 6.0, "the document scrolled");
+    assert_eq!(moved[1].x0, code.x0, "and the code did not drift");
+}
+
+#[test]
+fn a_selection_drag_that_starts_in_a_code_block_runs_past_it_and_down_the_document() {
+    let source = wide_code_document();
+    let (mut harness, mut clipboard) = view_of(&source);
+    let code = shown_paragraphs(&mut harness)[1];
+
+    harness.button_down(Point {
+        x: code.x0 + 2.0,
+        y: (code.y0 + code.y1) / 2.0,
+    });
+    harness.frame();
+    harness.move_to(Point {
+        x: 200.0,
+        y: WINDOW.1 + 40.0,
+    });
+    for _ in 0..40 {
+        harness.advance(std::time::Duration::from_millis(16));
+    }
+    harness.button_up(Point {
+        x: 200.0,
+        y: WINDOW.1 + 40.0,
+    });
+    harness.frame();
+    harness.press_key_with(Key::Character(String::from("c")), command());
+    harness.frame();
+
+    let copied = clipboard.get().expect("the drag selected something");
+    assert!(copied.starts_with("let value"), "{copied:?}");
+    assert!(
+        copied.contains("Paragraph 5."),
+        "the selection ran on past the block: {copied:?}"
+    );
+}
+
+#[test]
+fn a_code_block_in_a_list_item_or_a_quote_keeps_its_line_whole() {
+    let source = MarkdownSource::new();
+    let line = "call(one, two, three); ".repeat(15);
+    source.push(&format!(
+        "- item\n\n  ```\n  {line}\n  ```\n\n> quoted\n>\n> ```\n> {line}\n> ```\n"
+    ));
+    let (mut harness, _) = view_of(&source);
+    let rects = shown_paragraphs(&mut harness);
+    let line_height = rects[0].height();
+    let wide: Vec<_> = rects
+        .iter()
+        .filter(|rect| rect.width() > WINDOW.0)
+        .collect();
+    assert_eq!(
+        wide.len(),
+        2,
+        "both blocks keep their line whole: {rects:?}"
+    );
+    assert!(
+        wide.iter().all(|rect| rect.height() < 2.0 * line_height),
+        "on one line each"
+    );
+}
+
+#[test]
+fn a_code_block_s_scrollbar_runs_below_its_text() {
+    let source = wide_code_document();
+    let (mut harness, _) = view_of(&source);
+    let code = shown_paragraphs(&mut harness)[1];
+    let mut thumb = None;
+    harness.app().visit_nodes(|_, type_name, rect| {
+        if type_name.ends_with("Panel") && rect.height() == 4.0 && rect.width() > 4.0 {
+            thumb = Some(rect);
+        }
+    });
+    let thumb = thumb.expect("the code block's thumb shows");
+    assert!(
+        thumb.y0 >= code.y1,
+        "the thumb {thumb:?} sits below the text {code:?}"
+    );
+}
+
+#[test]
+fn a_selection_drag_from_a_code_block_holds_its_end_over_the_gap_between_paragraphs() {
+    let source = wide_code_document();
+    let (mut harness, mut clipboard) = view_of(&source);
+    let rects = shown_paragraphs(&mut harness);
+    let (code, fifth) = (rects[1], rects[7]);
+
+    harness.button_down(Point {
+        x: code.x0 + 2.0,
+        y: (code.y0 + code.y1) / 2.0,
+    });
+    harness.frame();
+    harness.move_to(Point {
+        x: fifth.x0 + 40.0,
+        y: (fifth.y0 + fifth.y1) / 2.0,
+    });
+    harness.frame();
+    let gap = Point {
+        x: fifth.x0 + 40.0,
+        y: fifth.y1 + 2.0,
+    };
+    harness.move_to(gap);
+    harness.frame();
+    harness.button_up(gap);
+    harness.frame();
+    harness.press_key_with(Key::Character(String::from("c")), command());
+    harness.frame();
+
+    let copied = clipboard.get().expect("the drag selected something");
+    assert!(
+        copied.contains("Paragraph 4."),
+        "the end stayed down in the document: {copied:?}"
+    );
+}
