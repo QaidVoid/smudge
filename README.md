@@ -91,6 +91,7 @@ cargo run --example form -p smudge      # inputs bound to a live preview
 cargo run --example lists -p smudge     # a filtered list of 100,000 rows
 cargo run --example editor -p smudge    # menus, a canvas, tabs and controls
 cargo run --example pointer -p smudge   # every pointer button and pointer lock
+cargo run --example scrolling -p smudge # views that scroll sideways and both ways
 cargo run --example tour -p smudge      # split panes, a log and the text widgets
 ```
 
