@@ -184,6 +184,32 @@ fn canvas() {
 }
 
 #[test]
+fn middle_drag() {
+    use smudge::core::input::{Handled, PointerButton};
+
+    let offset = RwSignal::new(Point::default());
+    let (grab, pan) = (RwSignal::new(Point::default()), offset.clone());
+    let start = grab.clone();
+    let view = panel()
+        .size(Size { width: 320.0, height: 200.0 })
+        .on_button_down(move |event| {
+            if event.button != PointerButton::Middle {
+                return Handled::No;
+            }
+            start.set(event.position);
+            Handled::Yes
+        })
+        .on_button_move(move |event| {
+            let from = grab.get();
+            pan.update(|offset| {
+                offset.x += event.position.x - from.x;
+                offset.y += event.position.y - from.y;
+            });
+            grab.set(event.position);
+        });
+}
+
+#[test]
 fn dialog() {
     use smudge::core::input::{Handled, Key};
     

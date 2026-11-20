@@ -53,7 +53,7 @@ impl EventTranslator {
             }
             WindowEvent::CursorLeft { .. } => Some(InputEvent::PointerLeft),
             WindowEvent::MouseInput { state, button, .. } => {
-                let button = pointer_button(*button)?;
+                let button = pointer_button(*button);
                 let position = self.position?;
                 Some(match state {
                     ElementState::Pressed => InputEvent::PointerDown { position, button },
@@ -122,13 +122,15 @@ fn wheel_delta(delta: MouseScrollDelta, scale: f32) -> Point {
     }
 }
 
-/// Converts a mouse button, or `None` for one with no variant of its own.
-fn pointer_button(button: MouseButton) -> Option<PointerButton> {
+/// Converts a mouse button.
+fn pointer_button(button: MouseButton) -> PointerButton {
     match button {
-        MouseButton::Left => Some(PointerButton::Primary),
-        MouseButton::Right => Some(PointerButton::Secondary),
-        MouseButton::Middle => Some(PointerButton::Middle),
-        MouseButton::Other(_) | MouseButton::Back | MouseButton::Forward => None,
+        MouseButton::Left => PointerButton::Primary,
+        MouseButton::Right => PointerButton::Secondary,
+        MouseButton::Middle => PointerButton::Middle,
+        MouseButton::Back => PointerButton::Back,
+        MouseButton::Forward => PointerButton::Forward,
+        MouseButton::Other(number) => PointerButton::Other(number),
     }
 }
 
@@ -151,6 +153,31 @@ fn key_name(key: &WinitKey) -> Key {
             NamedKey::PageUp => Key::PageUp,
             NamedKey::PageDown => Key::PageDown,
             NamedKey::Space => Key::Space,
+            NamedKey::ContextMenu => Key::ContextMenu,
+            NamedKey::F1 => Key::Function(1),
+            NamedKey::F2 => Key::Function(2),
+            NamedKey::F3 => Key::Function(3),
+            NamedKey::F4 => Key::Function(4),
+            NamedKey::F5 => Key::Function(5),
+            NamedKey::F6 => Key::Function(6),
+            NamedKey::F7 => Key::Function(7),
+            NamedKey::F8 => Key::Function(8),
+            NamedKey::F9 => Key::Function(9),
+            NamedKey::F10 => Key::Function(10),
+            NamedKey::F11 => Key::Function(11),
+            NamedKey::F12 => Key::Function(12),
+            NamedKey::F13 => Key::Function(13),
+            NamedKey::F14 => Key::Function(14),
+            NamedKey::F15 => Key::Function(15),
+            NamedKey::F16 => Key::Function(16),
+            NamedKey::F17 => Key::Function(17),
+            NamedKey::F18 => Key::Function(18),
+            NamedKey::F19 => Key::Function(19),
+            NamedKey::F20 => Key::Function(20),
+            NamedKey::F21 => Key::Function(21),
+            NamedKey::F22 => Key::Function(22),
+            NamedKey::F23 => Key::Function(23),
+            NamedKey::F24 => Key::Function(24),
             _ => Key::Other,
         },
         WinitKey::Dead(_) | WinitKey::Unidentified(_) => Key::Other,

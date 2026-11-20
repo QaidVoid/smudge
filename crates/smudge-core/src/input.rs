@@ -10,7 +10,10 @@ use crate::geometry::Point;
 
 /// One input event, translated from the windowing system or injected by a
 /// test.
+///
+/// More kinds of input may be added, so a match on it needs a wildcard arm.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum InputEvent {
     /// The pointer moved to a new position in logical pixels.
     PointerMoved {
@@ -78,7 +81,10 @@ pub enum InputEvent {
 }
 
 /// One of the pointer buttons an event can refer to.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+///
+/// More buttons may be named, so a match on it needs a wildcard arm.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PointerButton {
     /// The main button, the left button on a right-handed mouse.
     Primary,
@@ -86,6 +92,31 @@ pub enum PointerButton {
     Secondary,
     /// The middle button.
     Middle,
+    /// The back button, which goes back in a history.
+    Back,
+    /// The forward button, which goes forward in a history.
+    Forward,
+    /// Another button, by the number the platform gives it.
+    Other(
+        /// The platform's number for the button.
+        u16,
+    ),
+}
+
+/// A pointer button pressed, moved while held or released, as a node hears
+/// it through [`Element::on_button_down`](crate::element::Element::on_button_down)
+/// and the handlers beside it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct ButtonEvent {
+    /// The button.
+    pub button: PointerButton,
+    /// Where the pointer is, in logical pixels relative to the top left of
+    /// the node's rectangle. It can lie outside the node while the button is
+    /// held.
+    pub position: Point,
+    /// The keyboard modifiers held at the time.
+    pub modifiers: Modifiers,
 }
 
 /// A keyboard key that was pressed or released.
@@ -106,8 +137,10 @@ pub struct KeyEvent {
 /// A key on the keyboard, by meaning rather than by position.
 ///
 /// A printable key arrives as [`Key::Character`]. Everything the platform
-/// reports that has no variant here arrives as [`Key::Other`].
+/// reports that has no variant here arrives as [`Key::Other`]. More keys may
+/// be named, so a match on it needs a wildcard arm.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Key {
     /// A character key, already affected by the keyboard layout, such as `a`
     /// or `?`.
@@ -140,6 +173,13 @@ pub enum Key {
     PageDown,
     /// The space bar.
     Space,
+    /// The context menu key, which opens the focused node's context menu.
+    ContextMenu,
+    /// A function key, F1 and up, by its number.
+    Function(
+        /// The key's number, 1 for F1.
+        u8,
+    ),
     /// A key with no variant of its own.
     Other,
 }

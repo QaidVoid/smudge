@@ -120,12 +120,12 @@ pub(crate) struct Devtools {
     quiet: Rc<Cell<bool>>,
     /// Whether the panel shows.
     open: bool,
-    /// Whether a primary press began over the panel, so the pointer stays
-    /// with the overlay until the press ends.
-    captured: bool,
-    /// Whether a primary press began on the app, so the pointer stays with
-    /// the app until the press ends, over the panel too.
-    app_pressed: bool,
+    /// The buttons whose press began over the panel, so the pointer stays
+    /// with the overlay until they are all released.
+    panel_buttons: Vec<PointerButton>,
+    /// The buttons whose press began on the app, so the pointer stays with
+    /// the app until they are all released, over the panel too.
+    app_buttons: Vec<PointerButton>,
     /// Whether the pointer is over the panel, as the last move found.
     over: bool,
     /// Whether keys go to the overlay, after a press on the panel and until
@@ -207,8 +207,8 @@ impl Devtools {
             tools,
             quiet: Rc::new(Cell::new(false)),
             open,
-            captured: false,
-            app_pressed: false,
+            panel_buttons: Vec::new(),
+            app_buttons: Vec::new(),
             over: false,
             keys: false,
             window_focused: true,
@@ -371,7 +371,7 @@ impl Devtools {
     /// and its release reaches neither side.
     /// Over the panel, the pointer goes to the panel as usual.
     fn pick(&mut self, app: &mut App, event: &InputEvent) -> bool {
-        if !self.tools.is_picking() || self.captured || self.app_pressed {
+        if !self.tools.is_picking() || self.captured() || self.app_pressed() {
             return false;
         }
         let position = match event {
@@ -714,14 +714,10 @@ impl Devtools {
         }
         if !self.open {
             match &event {
-                InputEvent::PointerDown {
-                    button: PointerButton::Primary,
-                    ..
-                } => self.app_pressed = true,
-                InputEvent::PointerUp {
-                    button: PointerButton::Primary,
-                    ..
-                } => self.app_pressed = false,
+                InputEvent::PointerDown { button, .. } => hold(&mut self.app_buttons, *button),
+                InputEvent::PointerUp { button, .. } => {
+                    self.app_buttons.retain(|held| held != button);
+                }
                 InputEvent::WindowFocus(focused) => self.window_focused = *focused,
                 _ => {}
             }
@@ -760,19 +756,24 @@ impl Devtools {
             }
             InputEvent::PointerDown { position, button } => {
                 let over = self.takes_pointer(position);
-                if button == PointerButton::Primary {
-                    self.captured |= over;
-                    self.app_pressed |= !over;
+                if over {
+                    hold(&mut self.panel_buttons, button);
+                } else {
+                    hold(&mut self.app_buttons, button);
                 }
                 self.focus_keys(app, over);
                 self.target(app, over).handle_event(event);
             }
             InputEvent::PointerUp { button, .. } => {
-                let over = self.captured || (!self.app_pressed && self.over);
-                if button == PointerButton::Primary {
-                    self.captured = false;
-                    self.app_pressed = false;
-                }
+                let over = if self.panel_buttons.contains(&button) {
+                    true
+                } else if self.app_buttons.contains(&button) {
+                    false
+                } else {
+                    self.captured() || (!self.app_pressed() && self.over)
+                };
+                self.panel_buttons.retain(|held| *held != button);
+                self.app_buttons.retain(|held| *held != button);
                 self.target(app, over).handle_event(event);
             }
             InputEvent::Wheel { .. } => {
@@ -794,6 +795,7 @@ impl Devtools {
                 self.app.handle_event(event.clone());
                 app.handle_event(event);
             }
+            _ => app.handle_event(event),
         }
         false
     }
@@ -803,12 +805,10 @@ impl Devtools {
     /// forgets the frames the hidden panel no longer hears.
     fn show(&mut self, app: &mut App, open: bool) {
         if !open {
-            if self.captured {
-                let position = self.app.pointer_position();
-                self.app.handle_event(InputEvent::PointerUp {
-                    position,
-                    button: PointerButton::Primary,
-                });
+            let position = self.app.pointer_position();
+            for button in std::mem::take(&mut self.panel_buttons) {
+                self.app
+                    .handle_event(InputEvent::PointerUp { position, button });
             }
             if self.over {
                 self.app.handle_event(InputEvent::PointerLeft);
@@ -825,15 +825,27 @@ impl Devtools {
             self.access_shown = None;
         }
         self.open = open;
-        self.captured = false;
+        self.panel_buttons.clear();
         self.over = false;
+    }
+
+    /// Returns whether a press that began over the panel is held, so the
+    /// pointer stays with the overlay.
+    fn captured(&self) -> bool {
+        !self.panel_buttons.is_empty()
+    }
+
+    /// Returns whether a press that began on the app is held, so the pointer
+    /// stays with the app.
+    fn app_pressed(&self) -> bool {
+        !self.app_buttons.is_empty()
     }
 
     /// Returns whether the pointer at `position` goes to the overlay: a press
     /// that began on it holds it, one that began on the app keeps it, and
     /// otherwise it goes where the panel is.
     fn takes_pointer(&self, position: Point) -> bool {
-        !self.app_pressed && (self.captured || self.over_panel(position))
+        !self.app_pressed() && (self.captured() || self.over_panel(position))
     }
 
     /// Sends the keys to the overlay when `overlay` holds, and to `app`
@@ -949,6 +961,13 @@ impl Shortcut {
             return false;
         };
         character.to_lowercase() == self.character && key.modifiers == self.modifiers
+    }
+}
+
+/// Records `button` as held in `held`, once.
+fn hold(held: &mut Vec<PointerButton>, button: PointerButton) {
+    if !held.contains(&button) {
+        held.push(button);
     }
 }
 

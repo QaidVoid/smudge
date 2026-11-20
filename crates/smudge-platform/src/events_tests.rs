@@ -108,20 +108,33 @@ fn a_button_press_without_a_cursor_position_is_dropped() {
 }
 
 #[test]
-fn a_side_mouse_button_is_dropped() {
+fn every_mouse_button_reaches_the_app() {
     let mut translator = EventTranslator::new();
     let moved = WindowEvent::CursorMoved {
         device_id: DeviceId::dummy(),
         position: PhysicalPosition::new(1.0, 1.0),
     };
     translator.translate(&moved, 1.0);
-    let pressed = WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Other(8),
-    };
-
-    assert_eq!(translator.translate(&pressed, 1.0), None);
+    for (button, expected) in [
+        (MouseButton::Right, PointerButton::Secondary),
+        (MouseButton::Middle, PointerButton::Middle),
+        (MouseButton::Back, PointerButton::Back),
+        (MouseButton::Forward, PointerButton::Forward),
+        (MouseButton::Other(8), PointerButton::Other(8)),
+    ] {
+        let pressed = WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button,
+        };
+        assert_eq!(
+            translator.translate(&pressed, 1.0),
+            Some(InputEvent::PointerDown {
+                position: Point { x: 1.0, y: 1.0 },
+                button: expected,
+            })
+        );
+    }
 }
 
 #[test]
@@ -170,7 +183,12 @@ fn keys_translate_by_meaning() {
         Key::Backspace
     );
     assert_eq!(key_name(&WinitKey::Named(NamedKey::PageUp)), Key::PageUp);
-    assert_eq!(key_name(&WinitKey::Named(NamedKey::F5)), Key::Other);
+    assert_eq!(key_name(&WinitKey::Named(NamedKey::F5)), Key::Function(5));
+    assert_eq!(
+        key_name(&WinitKey::Named(NamedKey::ContextMenu)),
+        Key::ContextMenu
+    );
+    assert_eq!(key_name(&WinitKey::Named(NamedKey::F35)), Key::Other);
     assert_eq!(key_name(&WinitKey::Dead(None)), Key::Other);
 }
 

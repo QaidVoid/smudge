@@ -11,7 +11,7 @@
 
 use crate::geometry::Point;
 use crate::geometry::Rect;
-use crate::input::{Drag, Handled, KeyEvent, PointerButton};
+use crate::input::{ButtonEvent, Drag, Handled, Key, KeyEvent, PointerButton};
 
 use super::{WidgetId, WidgetTree};
 
@@ -76,6 +76,10 @@ pub(crate) type CommitHandler = Box<dyn FnMut(&str)>;
 /// A preedit handler: it shows or clears the text an input method composes.
 pub(crate) type PreeditHandler = Box<dyn FnMut(&str, Option<(usize, usize)>)>;
 
+/// A button press handler: it decides whether the node takes the press, and
+/// with it the moves and the release of the button.
+pub(crate) type ButtonDownHandler = Box<dyn FnMut(ButtonEvent) -> Handled>;
+
 /// The input handlers one node owns.
 ///
 /// The builder methods on [`Element`](crate::element::Element) set them, and
@@ -132,6 +136,22 @@ pub(crate) struct Handlers {
     /// to bring the focused node into view. Its presence is what lets the
     /// tree scroll the node for that, and it takes no part in hit testing.
     pub(crate) on_reveal: Option<Box<dyn FnMut(Point)>>,
+    /// Runs when any pointer button is pressed while the node is in the
+    /// chain of the press's target. Returning [`Handled::Yes`] takes the
+    /// press: the node then hears the button's moves and its release, and
+    /// the ancestors do not hear the press.
+    pub(crate) on_button_down: Option<ButtonDownHandler>,
+    /// Runs on every pointer move while a button press the node took is
+    /// held.
+    pub(crate) on_button_move: Option<Box<dyn FnMut(ButtonEvent)>>,
+    /// Runs when the button of a press the node took is released, wherever
+    /// the pointer is.
+    pub(crate) on_button_up: Option<Box<dyn FnMut(ButtonEvent)>>,
+    /// Runs when the node's context menu is asked for: by a secondary press
+    /// in its chain that no button handler took, or by the context menu key
+    /// or Shift+F10 while it or a descendant holds the focus. It hears the
+    /// point to open the menu at, relative to the node's rectangle.
+    pub(crate) on_context_menu: Option<Box<dyn FnMut(Point)>>,
     /// Whether a fresh press of Enter or Space runs the node's
     /// [`on_press`](Self::on_press) handler, which is how a button fires from
     /// the keyboard.
@@ -188,7 +208,9 @@ impl Handlers {
     /// [`Interaction::FOCUSABLE`] tracks. A commit handler is left out,
     /// because a commit never comes from the pointer.
     pub(crate) fn has_any(&self) -> bool {
-        self.on_press.is_some()
+        self.on_button_down.is_some()
+            || self.on_context_menu.is_some()
+            || self.on_press.is_some()
             || self.on_hover.is_some()
             || self.on_pointer_down.is_some()
             || self.on_press_outside.is_some()
@@ -204,7 +226,9 @@ impl Handlers {
     /// only scrolls, such as a scroll view, lets presses on it pass to the
     /// nearest ancestor that takes them.
     pub(crate) fn takes_press(&self) -> bool {
-        self.on_press.is_some()
+        self.on_button_down.is_some()
+            || self.on_context_menu.is_some()
+            || self.on_press.is_some()
             || self.on_hover.is_some()
             || self.on_pointer_down.is_some()
             || self.on_press_outside.is_some()
@@ -226,6 +250,7 @@ impl WidgetTree {
     pub(crate) fn pointer_move(&mut self, position: Point) {
         self.pointer = position;
         self.pointer_inside = true;
+        self.run_button_moves(position);
         if self.drag.is_some() {
             self.deliver_drag_over();
             self.deliver_drag(position);
@@ -257,15 +282,23 @@ impl WidgetTree {
     /// press outside the trap leaves the focus where it is instead, and so
     /// does a press on a node built with
     /// [`keeps_focus`](crate::element::Element::keeps_focus).
+    ///
+    /// Before any of that, every button offers the press to the button
+    /// handlers of the target's chain, deepest first, and the first that
+    /// takes it hears the button's moves and release. A secondary press that
+    /// no button handler took asks the chain for its context menu.
     pub(crate) fn pointer_down(&mut self, position: Point, button: PointerButton) {
         self.pointer = position;
         self.pointer_inside = true;
-        if self.pressed.is_some() && button != PointerButton::Primary {
-            return;
-        }
         let target = self.target(position);
-        self.set_hover_target(self.hover_target(position));
-        self.set_keyboard_nav(false);
+        if self.pressed.is_none() || button == PointerButton::Primary {
+            self.set_hover_target(self.hover_target(position));
+            self.set_keyboard_nav(false);
+        }
+        let taken = self.run_button_down(target, button, position);
+        if button == PointerButton::Secondary && !taken {
+            self.run_context_menu(target, position);
+        }
         if button != PointerButton::Primary {
             return;
         }
@@ -314,7 +347,9 @@ impl WidgetTree {
 
     /// Routes a pointer up at `position`.
     ///
-    /// Releasing the primary button clears the captured node's pressed bit,
+    /// The node that took the button's press through its button handlers
+    /// hears the release first, wherever the pointer is. Releasing the
+    /// primary button clears the captured node's pressed bit,
     /// runs its `on_press` when the release happens over the captured node,
     /// which is the case when the node under the pointer is the captured node
     /// or one of its descendants, and runs its `on_pointer_up` whether or not
@@ -324,6 +359,7 @@ impl WidgetTree {
     /// [`WidgetTree::release_press`] already ended: then no handler runs.
     /// Hover follows the pointer again either way.
     pub(crate) fn pointer_up(&mut self, position: Point, button: PointerButton) {
+        self.run_button_up(button, position);
         if button != PointerButton::Primary {
             return;
         }
@@ -352,6 +388,29 @@ impl WidgetTree {
             self.run_press(captured);
         }
         self.run_pointer_up(captured, position);
+    }
+
+    /// Asks for the context menu of the focused node, as the context menu
+    /// key and Shift+F10 do, when `event` is a fresh press of one of them:
+    /// the nearest node in the focused node's chain that has a context menu
+    /// hears the focused node's top left. Returns whether a node heard it.
+    pub(crate) fn context_menu_key(&mut self, event: &KeyEvent) -> bool {
+        let asks = event.pressed
+            && !event.repeat
+            && match event.key {
+                Key::ContextMenu => true,
+                Key::Function(10) => event.modifiers.shift,
+                _ => false,
+            };
+        let Some(focused) = self.focused.filter(|_| asks) else {
+            return false;
+        };
+        let corner = self
+            .nodes
+            .get(focused)
+            .map(|node| node.rect.origin())
+            .unwrap_or_default();
+        self.run_context_menu(Some(focused), corner)
     }
 
     /// Ends the held press without a release: the captured node loses its
@@ -1021,6 +1080,141 @@ impl WidgetTree {
     }
 
     /// Runs `on_pointer_down` of `id` inside the node's owner.
+    /// Returns whether the node's handlers may run: it is live, enabled and
+    /// not hidden.
+    fn hears(&self, id: WidgetId) -> bool {
+        self.nodes
+            .get(id)
+            .is_some_and(|node| !node.interaction.has(Interaction::DISABLED) && !node.withdrawn())
+    }
+
+    /// Builds the button event a node hears for `button` with the pointer
+    /// at `position`.
+    fn button_event(&self, id: WidgetId, button: PointerButton, position: Point) -> ButtonEvent {
+        ButtonEvent {
+            button,
+            position: self.local_position(id, position),
+            modifiers: self.modifiers,
+        }
+    }
+
+    /// Offers a press of `button` at `position` to the button handlers of
+    /// `target`'s chain, deepest first, and returns whether one took it. The
+    /// node that took it holds the button until its release, in place of
+    /// any node that held it before.
+    fn run_button_down(
+        &mut self,
+        target: Option<WidgetId>,
+        button: PointerButton,
+        position: Point,
+    ) -> bool {
+        self.button_holders.retain(|(held, _)| *held != button);
+        for id in self.chain(target) {
+            if !self.hears(id) {
+                continue;
+            }
+            let Some(owner) = self.owner(id).cloned() else {
+                continue;
+            };
+            let event = self.button_event(id, button, position);
+            let mut handled = Handled::No;
+            owner.with(|| {
+                if let Some(on_button_down) = self
+                    .nodes
+                    .get_mut(id)
+                    .and_then(|node| node.handlers.on_button_down.as_mut())
+                {
+                    handled = on_button_down(event);
+                }
+            });
+            if handled == Handled::Yes {
+                self.button_holders.push((button, id));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Runs `on_button_move` of every node that holds a button, with the
+    /// pointer at `position`.
+    fn run_button_moves(&mut self, position: Point) {
+        for (button, id) in self.button_holders.clone() {
+            if !self.hears(id) {
+                continue;
+            }
+            let Some(owner) = self.owner(id).cloned() else {
+                continue;
+            };
+            let event = self.button_event(id, button, position);
+            owner.with(|| {
+                if let Some(on_button_move) = self
+                    .nodes
+                    .get_mut(id)
+                    .and_then(|node| node.handlers.on_button_move.as_mut())
+                {
+                    on_button_move(event);
+                }
+            });
+        }
+    }
+
+    /// Ends the hold on `button`: the node that took its press hears the
+    /// release at `position`.
+    fn run_button_up(&mut self, button: PointerButton, position: Point) {
+        let Some(at) = self
+            .button_holders
+            .iter()
+            .position(|(held, _)| *held == button)
+        else {
+            return;
+        };
+        // A holder that became disabled or hidden while the button was held
+        // still hears its release, so it lets go of what it holds.
+        let (_, id) = self.button_holders.remove(at);
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        let event = self.button_event(id, button, position);
+        owner.with(|| {
+            if let Some(on_button_up) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.on_button_up.as_mut())
+            {
+                on_button_up(event);
+            }
+        });
+    }
+
+    /// Runs the context menu handler of the nearest node in `start`'s chain
+    /// that has one, with `position` relative to that node, and returns
+    /// whether a node heard it.
+    fn run_context_menu(&mut self, start: Option<WidgetId>, position: Point) -> bool {
+        let Some(id) = self.chain(start).into_iter().find(|&id| {
+            self.hears(id)
+                && self
+                    .nodes
+                    .get(id)
+                    .is_some_and(|node| node.handlers.on_context_menu.is_some())
+        }) else {
+            return false;
+        };
+        let Some(owner) = self.owner(id).cloned() else {
+            return false;
+        };
+        let local = self.local_position(id, position);
+        owner.with(|| {
+            if let Some(on_context_menu) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.on_context_menu.as_mut())
+            {
+                on_context_menu(local);
+            }
+        });
+        true
+    }
+
     fn run_pointer_down(&mut self, id: WidgetId, position: Point) {
         let Some(owner) = self.owner(id).cloned() else {
             return;

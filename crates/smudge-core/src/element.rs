@@ -45,7 +45,7 @@ use std::rc::Rc;
 
 use crate::animation::Spring;
 use crate::geometry::{Color, Corners, Point, Rect, Size};
-use crate::input::{Handled, KeyEvent};
+use crate::input::{ButtonEvent, Handled, KeyEvent};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RenderEffect, RwSignal};
 use crate::semantics::{Announcer, Checked, Role, ValueRange};
@@ -1403,6 +1403,81 @@ impl<W: Widget> Element<W> {
     /// view put the node. Other buttons do not run it.
     pub fn on_pointer_down(mut self, handler: impl FnMut(Point) + 'static) -> Self {
         self.handlers.on_pointer_down = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
+    /// Runs `handler` when any pointer button is pressed on the node or on a
+    /// descendant, with the button, the position relative to the top left of
+    /// the node's rectangle, and the keyboard modifiers held.
+    ///
+    /// The press goes to the node a primary press would target and then to
+    /// its ancestors, deepest first, until a handler returns
+    /// [`Handled::Yes`]. That node takes the press: it hears every move
+    /// through [`on_button_move`](Self::on_button_move) and the release
+    /// through [`on_button_up`](Self::on_button_up), wherever the pointer
+    /// goes, until the button comes up. A middle drag pans a view this way.
+    ///
+    /// It runs for the primary button too, before what a primary press runs
+    /// today, which taking the press does not stop: the primary press still
+    /// focuses, presses and drags as it would. Other buttons take no focus
+    /// and start no selection. A secondary press that no handler takes asks
+    /// for the context menu, as [`on_context_menu`](Self::on_context_menu)
+    /// describes.
+    ///
+    /// ```
+    /// use smudge_core::input::{Handled, PointerButton};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let view = panel().on_button_down(|event| {
+    ///     if event.button == PointerButton::Middle {
+    ///         Handled::Yes
+    ///     } else {
+    ///         Handled::No
+    ///     }
+    /// });
+    /// ```
+    pub fn on_button_down(mut self, handler: impl FnMut(ButtonEvent) -> Handled + 'static) -> Self {
+        self.handlers.on_button_down = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
+    /// Runs `handler` on every pointer move while a button press that the
+    /// node took through [`on_button_down`](Self::on_button_down) is held,
+    /// with the position relative to the top left of the node's rectangle,
+    /// which can lie outside it.
+    pub fn on_button_move(mut self, handler: impl FnMut(ButtonEvent) + 'static) -> Self {
+        self.handlers.on_button_move = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
+    /// Runs `handler` when the button of a press that the node took through
+    /// [`on_button_down`](Self::on_button_down) is released, wherever the
+    /// pointer is.
+    pub fn on_button_up(mut self, handler: impl FnMut(ButtonEvent) + 'static) -> Self {
+        self.handlers.on_button_up = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
+    /// Runs `handler` when the node's context menu is asked for, with the
+    /// point to open it at, relative to the top left of the node's
+    /// rectangle.
+    ///
+    /// A secondary press on the node or on a descendant asks for it at the
+    /// pointer, unless a button handler took the press. The context menu key
+    /// and Shift+F10 ask for it at the top left of the focused node, while
+    /// the node or a descendant holds the focus and no key handler took the
+    /// key. The nearest node with a context menu hears it, and its ancestors
+    /// do not. A disabled or hidden node hears nothing.
+    ///
+    /// ```
+    /// use smudge_core::widget::panel;
+    ///
+    /// let row = panel().focusable().on_context_menu(|at| {
+    ///     let _ = at;
+    /// });
+    /// ```
+    pub fn on_context_menu(mut self, handler: impl FnMut(Point) + 'static) -> Self {
+        self.handlers.on_context_menu = Some(Box::new(crate::hot::wrap1_mut(handler)));
         self
     }
 

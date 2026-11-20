@@ -580,5 +580,5 @@ fn a_tree_node_keeps_its_size() {
     } else {
         0
     };
-    assert!(std::mem::size_of::<super::Node>() <= 1360 + devtools);
+    assert!(std::mem::size_of::<super::Node>() <= 1424 + devtools);
 }

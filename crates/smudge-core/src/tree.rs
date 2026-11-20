@@ -350,6 +350,12 @@ pub(crate) struct WidgetTree {
     pointer_inside: bool,
     /// The node a primary press captured, while the button is held.
     pressed: Option<WidgetId>,
+    /// The nodes whose button handlers took a press, each with the button,
+    /// while the button is held.
+    button_holders: Vec<(crate::input::PointerButton, WidgetId)>,
+    /// The keyboard modifiers the last key or modifiers event reported,
+    /// which the button handlers hear.
+    pub(crate) modifiers: crate::input::Modifiers,
     /// The drag the held press makes, while it is held.
     drag: Option<interaction::DragState>,
     /// Whether a press was released without its release, so a primary
@@ -445,6 +451,8 @@ impl WidgetTree {
             pointer: Point::default(),
             pointer_inside: false,
             pressed: None,
+            button_holders: Vec::new(),
+            modifiers: crate::input::Modifiers::default(),
             drag: None,
             released_early: false,
             focused: None,

@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -1486,4 +1486,68 @@ fn reading_the_app_for_every_tab_never_wakes_it() {
         devtools.app.frame();
     }
     assert_eq!(wakes.get(), 0, "the panel's reads leave the app asleep");
+}
+
+#[test]
+fn a_middle_drag_that_began_on_the_app_stays_with_it_over_the_panel() {
+    TextSystem::bundled_only().install();
+    let heard = Rc::new(RefCell::new(Vec::new()));
+    let (downs, moves, ups) = (Rc::clone(&heard), Rc::clone(&heard), Rc::clone(&heard));
+    let mut app = App::new(
+        AppConfig {
+            viewport: VIEWPORT,
+            scale: 1.0,
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Damage,
+        },
+        move || {
+            let (downs, moves, ups) = (Rc::clone(&downs), Rc::clone(&moves), Rc::clone(&ups));
+            Element::new(Panel)
+                .width(pct(100.0))
+                .height(pct(100.0))
+                .on_button_down(move |event| {
+                    downs.borrow_mut().push(("down", event.button));
+                    Handled::Yes
+                })
+                .on_button_move(move |event| moves.borrow_mut().push(("move", event.button)))
+                .on_button_up(move |event| ups.borrow_mut().push(("up", event.button)))
+        },
+    );
+    app.frame();
+    let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
+    devtools.app.frame();
+    let on_panel = overlay_text(&devtools, "Frames");
+
+    devtools.dispatch(
+        &mut app,
+        InputEvent::PointerDown {
+            position: OFF_PANEL,
+            button: PointerButton::Middle,
+        },
+    );
+    devtools.dispatch(&mut app, InputEvent::PointerMoved { position: on_panel });
+    devtools.dispatch(
+        &mut app,
+        InputEvent::PointerUp {
+            position: on_panel,
+            button: PointerButton::Middle,
+        },
+    );
+    devtools.dispatch(
+        &mut app,
+        InputEvent::PointerDown {
+            position: on_panel,
+            button: PointerButton::Secondary,
+        },
+    );
+
+    assert_eq!(
+        *heard.borrow(),
+        [
+            ("down", PointerButton::Middle),
+            ("move", PointerButton::Middle),
+            ("up", PointerButton::Middle),
+        ],
+        "the drag stays with the app, and a press on the panel never reaches it"
+    );
 }

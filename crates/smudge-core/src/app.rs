@@ -1054,10 +1054,14 @@ impl App {
             InputEvent::PointerLeft => self.tree.pointer_left(),
             InputEvent::Wheel { delta } => self.tree.wheel(delta),
             InputEvent::Key(key) => {
+                self.tree.modifiers = key.modifiers;
                 self.tree.key(&key);
                 self.modifiers = key.modifiers;
             }
-            InputEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            InputEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers;
+                self.tree.modifiers = modifiers;
+            }
             InputEvent::ImeCommit { text } => self.tree.ime_commit(&text),
             InputEvent::ImePreedit { text, cursor } => self.tree.ime_preedit(&text, cursor),
             InputEvent::WindowFocus(focused) => {

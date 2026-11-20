@@ -265,7 +265,10 @@ Any element can handle input:
 |---|---|
 | `on_press(f)` | A completed press: pointer down and up over the node, or Enter or Space when `activate_on_keys` is set. |
 | `on_hover(f)` | `true` when the pointer enters, `false` when it leaves. |
-| `on_pointer_down(f)`, `on_pointer_move(f)`, `on_pointer_up(f)` | The position relative to the node's top left corner. |
+| `on_pointer_down(f)`, `on_pointer_move(f)`, `on_pointer_up(f)` | The position relative to the node's top left corner, for the primary button. |
+| `on_button_down(f)` | A `ButtonEvent` for any button: which button, the position relative to the node and the modifiers held. Return `Handled::Yes` to take the press, `Handled::No` to let it bubble. |
+| `on_button_move(f)`, `on_button_up(f)` | A `ButtonEvent` for each move and for the release of a press the node took, wherever the pointer goes. |
+| `on_context_menu(f)` | The point to open a context menu at, relative to the node: from a right press, or from the context menu key or Shift+F10 while the node or a descendant has the focus. |
 | `on_press_outside(f)` | A press anywhere outside the node, for closing popovers. |
 | `on_wheel(f)` | The scroll delta. Return `Handled::Yes` to take it, `Handled::No` to let it bubble to an outer handler. |
 | `on_key(f)` | A `KeyEvent`. Return `Handled::Yes` to stop it, `Handled::No` to let it bubble. |
@@ -291,6 +294,35 @@ let canvas = panel()
         Handled::No
     });
 ```
+
+The primary button presses, focuses and drags as `on_press` and `on_drag` describe. The other buttons take no focus and start no selection: they reach `on_button_down` alone, from the deepest node under the pointer up through its ancestors until one takes the press. The node that takes it hears every move and the release, so a middle drag pans a view:
+
+```rust
+use smudge::core::input::{Handled, PointerButton};
+
+let offset = RwSignal::new(Point::default());
+let (grab, pan) = (RwSignal::new(Point::default()), offset.clone());
+let start = grab.clone();
+let view = panel()
+    .size(Size { width: 320.0, height: 200.0 })
+    .on_button_down(move |event| {
+        if event.button != PointerButton::Middle {
+            return Handled::No;
+        }
+        start.set(event.position);
+        Handled::Yes
+    })
+    .on_button_move(move |event| {
+        let from = grab.get();
+        pan.update(|offset| {
+            offset.x += event.position.x - from.x;
+            offset.y += event.position.y - from.y;
+        });
+        grab.set(event.position);
+    });
+```
+
+A right press that no button handler takes asks the nearest `on_context_menu` in the chain for its menu, at the pointer. The context menu key and Shift+F10 ask the focused node's chain, at the focused node's top left corner, when no key handler took the key.
 
 ### Keyboard focus
 

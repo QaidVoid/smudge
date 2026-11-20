@@ -74,6 +74,9 @@ impl WidgetTree {
         if !event.pressed {
             return;
         }
+        if handled != Handled::Yes && self.context_menu_key(event) {
+            return;
+        }
         match event.key {
             Key::Tab => {
                 self.set_keyboard_nav(true);
