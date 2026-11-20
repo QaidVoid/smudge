@@ -310,3 +310,16 @@ fn an_effect_rerun_reads_the_time_of_the_effect_owners_clock() {
         "a rerun with no owner current reads the app's clock, not the system time"
     );
 }
+
+#[test]
+fn a_timer_too_far_off_for_the_clock_never_fires() {
+    let start = Instant::now();
+    let (fired, set_fired) = signal_local(0u32);
+    let (mut app, clock) = timed(start, || {
+        timer::after(Duration::MAX, move || set_fired.update(|count| *count += 1));
+    });
+    app.frame();
+    clock.advance(Duration::from_secs(60 * 60 * 24 * 365));
+    app.frame();
+    assert_eq!(fired.get(), 0);
+}

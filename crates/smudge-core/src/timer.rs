@@ -243,8 +243,8 @@ impl TimerBook {
 /// again every period after that.
 ///
 /// Returns the entry, or `None` when the running code belongs to no owner,
-/// its owner has already been cleaned up, or no app holds a timer book above
-/// the owner.
+/// its owner has already been cleaned up, no app holds a timer book above
+/// the owner, or `delay` reaches past what the clock can count.
 fn register(
     period: Option<Duration>,
     delay: Duration,
@@ -255,10 +255,10 @@ fn register(
         return None;
     }
     let book = book_of(&owner)?;
-    let now = book.borrow().clock.now();
+    let next = book.borrow().clock.now().checked_add(delay)?;
     let entry = Rc::new(TimerEntry {
         period,
-        next: Cell::new(now + delay),
+        next: Cell::new(next),
         run: RefCell::new(Some(run)),
         active: Cell::new(true),
         owner: Rc::downgrade(&owner),
@@ -287,7 +287,10 @@ pub(crate) fn fire_due(book: &Rc<RefCell<TimerBook>>) {
         if !run_entry(&entry) {
             entry.active.set(false);
         } else if let Some(period) = entry.period {
-            entry.next.set(entry.next.get().max(now) + period);
+            match entry.next.get().max(now).checked_add(period) {
+                Some(next) => entry.next.set(next),
+                None => entry.active.set(false),
+            }
         }
     }
     book.borrow_mut().timers.retain(|entry| entry.is_live());
@@ -381,7 +384,8 @@ pub fn now() -> Instant {
 /// write the signals that owner's bindings read. Code that belongs to no
 /// owner, or has no app above it, creates no timer and drops `fun`.
 ///
-/// A duration of zero fires at the start of the next frame.
+/// A duration of zero fires at the start of the next frame, and one too long
+/// for the clock to count, such as [`Duration::MAX`], never fires.
 pub fn after(duration: Duration, fun: impl FnMut() + 'static) {
     register(None, duration, Box::new(crate::hot::wrap_mut(fun)));
 }
