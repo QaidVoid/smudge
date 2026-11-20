@@ -116,8 +116,21 @@ impl WidgetTree {
     /// the key.
     fn route_key(&mut self, start: Option<WidgetId>, event: &KeyEvent) -> Handled {
         let mut next = start;
+        // Whether the key has bubbled out of an overlay into its host, past
+        // which the arrows of the nodes around the host never move the focus
+        // out of the overlay.
+        let mut left_overlay = false;
+        // Only the nearest container that navigates with the arrows decides,
+        // so a nested one keeps its keys from the one around it. Inside an
+        // overlay it takes them before they bubble on, so an open menu keeps
+        // them from the shortcuts around its opener. Elsewhere it takes only
+        // the keys no handler above it took.
+        let mut arrows_seen = false;
+        let mut deferred = None;
         while let Some(id) = next {
             next = self.nodes.get(id).and_then(|node| node.parent);
+            let arrows_here = !left_overlay;
+            left_overlay |= self.is_overlay_root(id);
             // A disabled or hidden node's handlers never run, but the key keeps
             // bubbling, so shortcuts above it still work.
             if self
@@ -155,6 +168,17 @@ impl WidgetTree {
             if handled == Handled::Yes {
                 return Handled::Yes;
             }
+            if arrows_here
+                && !arrows_seen
+                && let Some(axis) = self.nodes.get(id).and_then(|node| node.handlers.arrows)
+            {
+                arrows_seen = true;
+                if !self.within_overlay(id) {
+                    deferred = Some((id, axis));
+                } else if self.navigate_in(id, axis, event) {
+                    return Handled::Yes;
+                }
+            }
             // An Escape nothing inside an open overlay took closes it before
             // it reaches the nodes around the overlay's host.
             if event.pressed
@@ -170,7 +194,24 @@ impl WidgetTree {
                 return Handled::Yes;
             }
         }
+        if let Some((container, axis)) = deferred
+            && self.navigate_in(container, axis, event)
+        {
+            return Handled::Yes;
+        }
         Handled::No
+    }
+
+    /// Returns whether `id` lies inside an overlay, its top node included.
+    fn within_overlay(&self, id: WidgetId) -> bool {
+        let mut next = Some(id);
+        while let Some(current) = next {
+            if self.is_overlay_root(current) {
+                return true;
+            }
+            next = self.nodes.get(current).and_then(|node| node.parent);
+        }
+        false
     }
 
     /// Delivers committed input method text to the focused node.
@@ -689,6 +730,77 @@ impl WidgetTree {
             next = self.nodes.get(current).and_then(|node| node.parent);
         }
         false
+    }
+
+    /// Moves the focus among the focusable nodes inside `container` along
+    /// `axis`, as `event` asks, and returns whether it moved.
+    ///
+    /// The arrows along the axis step to the next or the previous focusable
+    /// node inside it, in paint order and wrapping at both ends, Home and
+    /// End go to the first and the last, and a letter goes to the next one
+    /// whose accessible name starts with it. With the focus outside the
+    /// container, as on the node that opened a menu, the first step goes to
+    /// the first node or the last. Disabled and hidden nodes are passed
+    /// over, and so are the overlays the container's content opened.
+    fn navigate_in(
+        &mut self,
+        container: WidgetId,
+        axis: crate::style::Direction,
+        event: &KeyEvent,
+    ) -> bool {
+        if !event.pressed {
+            return false;
+        }
+        let focused = self.focused;
+        let mut order = Vec::new();
+        self.collect_focusable(container, &mut order);
+        order.retain(|&id| id != container);
+        if order.is_empty() {
+            return false;
+        }
+        let at = order.iter().position(|&id| Some(id) == focused);
+        let last = order.len() - 1;
+        let step = |forward: bool| match at {
+            Some(at) if forward => (at + 1) % order.len(),
+            Some(at) => (at + last) % order.len(),
+            None if forward => 0,
+            None => last,
+        };
+        let vertical = axis == crate::style::Direction::Column;
+        let target = match &event.key {
+            Key::ArrowDown if vertical => step(true),
+            Key::ArrowUp if vertical => step(false),
+            Key::ArrowRight if !vertical => step(true),
+            Key::ArrowLeft if !vertical => step(false),
+            Key::Home => 0,
+            Key::End => last,
+            Key::Character(text)
+                if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta =>
+            {
+                let mut letters = text.chars();
+                let (Some(letter), None) = (letters.next(), letters.next()) else {
+                    return false;
+                };
+                let starts = |id: WidgetId| {
+                    self.nodes
+                        .get(id)
+                        .and_then(|node| node.a11y_label.as_deref())
+                        .and_then(|label| label.chars().next())
+                        .is_some_and(|first| first.to_lowercase().eq(letter.to_lowercase()))
+                };
+                let from = at.map_or(0, |at| at + 1);
+                let Some(found) = (0..order.len())
+                    .map(|offset| (from + offset) % order.len())
+                    .find(|&index| starts(order[index]))
+                else {
+                    return false;
+                };
+                found
+            }
+            _ => return false,
+        };
+        self.set_keyboard_nav(true);
+        self.request_focus(order[target])
     }
 
     /// Returns where the focus goes when the trap at `node` ends: the node

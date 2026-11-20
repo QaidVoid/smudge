@@ -149,6 +149,7 @@ static_values!(
     Justify,
     Overflow,
     Point,
+    Placement,
 );
 
 impl From<crate::window::Cursor> for Value<Option<crate::window::Cursor>> {
@@ -2047,9 +2048,40 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Moves the focus among the focusable nodes inside this one with the
+    /// arrow keys along `axis`, as a menu, a list or a tab bar does.
+    ///
+    /// While the focus is inside the node, or a key starts at it because it
+    /// is the focus trap that holds the keyboard, Down and Up step through a
+    /// [`Direction::Column`], Right and Left through a [`Direction::Row`],
+    /// wrapping at both ends, Home and End go to the first and the last, and
+    /// a letter goes to the next node whose accessible name starts with it.
+    /// Disabled and hidden nodes are passed over. Only the nearest such node
+    /// around the focus moves it, so a nested one keeps its keys and the one
+    /// around it never steps into it. Inside an overlay the node takes these
+    /// keys before they bubble past it, so an open menu keeps them from the
+    /// shortcuts around its opener. Elsewhere it takes only the keys that no
+    /// handler, up to the root, took.
+    ///
+    /// ```
+    /// use smudge_core::style::{Direction, px};
+    /// use smudge_core::widget::panel;
+    ///
+    /// let list = panel()
+    ///     .column()
+    ///     .navigate_with_arrows(Direction::Column)
+    ///     .child(panel().height(px(20.0)).focusable().accessible_label("Apple"))
+    ///     .child(panel().height(px(20.0)).focusable().accessible_label("Banana"));
+    /// ```
+    pub fn navigate_with_arrows(mut self, axis: Direction) -> Self {
+        self.handlers.arrows = Some(axis);
+        self
+    }
+
     /// Opens the element `build` returns over the whole window while `open`
     /// reads `true`, placed against this node by `placement`, as a popup,
-    /// a menu or a tooltip opens.
+    /// a menu or a tooltip opens. The placement can be bound to a signal, as
+    /// a context menu follows the point it was asked for at.
     ///
     /// The overlay escapes every clip around this node and draws over
     /// everything, the last opened on top, and a press over it reaches the
@@ -2092,9 +2124,10 @@ impl<W: Widget> Element<W> {
     pub fn overlay<E: IntoElement>(
         mut self,
         open: RwSignal<bool>,
-        placement: Placement,
+        placement: impl Into<Value<Placement>>,
         build: impl Fn() -> E + 'static,
     ) -> Self {
+        let placement = placement.into();
         let build = crate::hot::wrap(build);
         let build: Rc<dyn Fn() -> AnyElement> = Rc::new(move || build().into_any());
         self.bindings.push(Binding {
@@ -2103,8 +2136,13 @@ impl<W: Widget> Element<W> {
                 let queue = queue.clone();
                 let mounted: Rc<RefCell<Option<(WidgetId, Owner)>>> = Rc::new(RefCell::new(None));
                 let exiting: Rc<RefCell<Option<WidgetId>>> = Rc::new(RefCell::new(None));
+                let placement = placement.clone();
                 RenderEffect::new_unwrapped(move || {
                     let visible = open.get();
+                    let placement = match &placement {
+                        Value::Static(placement) => *placement,
+                        Value::Dynamic(get) => get(),
+                    };
                     let child_queue = queue.clone();
                     let (mounted, exiting) = (Rc::clone(&mounted), Rc::clone(&exiting));
                     let (build, open) = (Rc::clone(&build), open.clone());
@@ -2114,7 +2152,9 @@ impl<W: Widget> Element<W> {
                         match (visible, mounted.take()) {
                             (true, None) => {
                                 let back = exiting.take().and_then(|top| {
-                                    tree.cancel_exit(top).map(|owner| (top, owner))
+                                    let owner = tree.cancel_exit(top)?;
+                                    tree.set_overlay_placement(top, placement);
+                                    Some((top, owner))
                                 });
                                 *mounted = back.or_else(|| {
                                     mount_overlay(id, tree, &child_queue, placement, open, || {
@@ -2126,7 +2166,11 @@ impl<W: Widget> Element<W> {
                                 Ok(()) => *exiting = Some(top),
                                 Err(owner) => unmount_child(top, &owner, tree),
                             },
-                            (_, unchanged) => *mounted = unchanged,
+                            (true, Some((top, owner))) => {
+                                tree.set_overlay_placement(top, placement);
+                                *mounted = Some((top, owner));
+                            }
+                            (false, None) => {}
                         }
                     }));
                 })

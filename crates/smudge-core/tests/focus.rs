@@ -1487,3 +1487,203 @@ fn the_node_that_takes_a_press_decides_whether_the_focus_stays() {
         "and its flag kept the focus"
     );
 }
+
+/// A column of five focusable items named Apple, Banana, Cherry, Date and
+/// Elder, 20 pixels tall each, that navigates with the arrow keys along
+/// `axis`, with Date disabled. Returns the harness and the name of each item
+/// by its index.
+fn arrow_list(
+    axis: smudge_core::style::Direction,
+    focus_log: Rc<RefCell<Vec<&'static str>>>,
+) -> smudge_test::Harness {
+    let mut harness = smudge_test::Harness::new(100.0, 120.0, 1.0, move || {
+        let names = ["Apple", "Banana", "Cherry", "Date", "Elder"];
+        names
+            .into_iter()
+            .fold(panel().column().navigate_with_arrows(axis), |list, name| {
+                let log = Rc::clone(&focus_log);
+                list.child(
+                    panel()
+                        .height(px(20.0))
+                        .focusable()
+                        .disabled(name == "Date")
+                        .accessible_label(name)
+                        .on_focus(move |on| {
+                            if on {
+                                log.borrow_mut().push(name);
+                            }
+                        }),
+                )
+            })
+    });
+    harness.frame();
+    harness
+}
+
+#[test]
+fn arrows_step_through_a_column_wrapping_and_passing_over_disabled_items() {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let mut harness = arrow_list(smudge_core::style::Direction::Column, Rc::clone(&log));
+    harness.click(Point { x: 10.0, y: 50.0 });
+
+    for key in [
+        Key::ArrowDown,
+        Key::ArrowDown,
+        Key::ArrowUp,
+        Key::Home,
+        Key::ArrowUp,
+        Key::End,
+        Key::ArrowLeft,
+    ] {
+        harness.press_key(key);
+    }
+
+    assert_eq!(
+        *log.borrow(),
+        ["Cherry", "Elder", "Apple", "Elder", "Apple", "Elder"],
+        "End stays on Elder, and Left does nothing in a column"
+    );
+}
+
+#[test]
+fn a_letter_goes_to_the_next_item_whose_name_starts_with_it() {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let mut harness = arrow_list(smudge_core::style::Direction::Column, Rc::clone(&log));
+    harness.click(Point { x: 10.0, y: 10.0 });
+
+    harness.press_key(Key::Character(String::from("c")));
+    harness.press_key(Key::Character(String::from("E")));
+    harness.press_key(Key::Character(String::from("d")));
+
+    assert_eq!(
+        *log.borrow(),
+        ["Apple", "Cherry", "Elder"],
+        "Date is disabled, so d finds nothing"
+    );
+}
+
+/// Returns the accessible name of the node that holds the focus.
+fn focused_name(harness: &mut Harness) -> Option<String> {
+    harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.focused)
+        .and_then(|node| node.label)
+}
+
+/// A focusable item 20 pixels square, named `name`, with a role so a screen
+/// reader, and the test, sees it.
+fn item(name: &'static str) -> Element<smudge_core::widget::Panel> {
+    panel()
+        .width(px(20.0))
+        .height(px(20.0))
+        .role(smudge_core::semantics::Role::Button)
+        .accessible_label(name)
+        .focusable()
+}
+
+#[test]
+fn a_nested_arrow_container_keeps_the_outer_one_from_stepping_into_it() {
+    use smudge_core::style::Direction;
+    let mut harness = Harness::new(200.0, 120.0, 1.0, || {
+        panel()
+            .navigate_with_arrows(Direction::Row)
+            .child(item("Cut"))
+            .child(
+                panel()
+                    .column()
+                    .navigate_with_arrows(Direction::Column)
+                    .child(item("Red"))
+                    .child(item("Green"))
+                    .child(item("Blue")),
+            )
+            .child(item("Paste"))
+    });
+    harness.frame();
+    harness.click(Point { x: 30.0, y: 30.0 });
+    assert_eq!(focused_name(&mut harness).as_deref(), Some("Green"));
+
+    harness.press_key(Key::ArrowRight);
+    assert_eq!(
+        focused_name(&mut harness).as_deref(),
+        Some("Green"),
+        "Right is the inner column's to leave alone"
+    );
+    harness.press_key(Key::ArrowDown);
+    assert_eq!(focused_name(&mut harness).as_deref(), Some("Blue"));
+}
+
+#[test]
+fn a_shortcut_above_an_arrow_container_outside_an_overlay_hears_its_letter_first() {
+    use smudge_core::style::Direction;
+    let heard = Rc::new(Cell::new(0u32));
+    let count = Rc::clone(&heard);
+    let mut harness = Harness::new(200.0, 60.0, 1.0, move || {
+        let count = Rc::clone(&count);
+        panel()
+            .on_key(move |event| {
+                if event.pressed && event.key == Key::Character(String::from("h")) {
+                    count.set(count.get() + 1);
+                    return Handled::Yes;
+                }
+                Handled::No
+            })
+            .child(
+                panel()
+                    .navigate_with_arrows(Direction::Row)
+                    .child(item("Files"))
+                    .child(item("History")),
+            )
+    });
+    harness.frame();
+    harness.click(Point { x: 5.0, y: 5.0 });
+
+    harness.press_key(Key::Character(String::from("h")));
+    assert_eq!(heard.get(), 1, "the shortcut took it");
+    assert_eq!(focused_name(&mut harness).as_deref(), Some("Files"));
+    harness.press_key(Key::ArrowRight);
+    assert_eq!(focused_name(&mut harness).as_deref(), Some("History"));
+}
+
+#[test]
+fn a_trap_that_navigates_with_the_arrows_takes_them_with_the_focus_outside() {
+    use smudge_core::style::Direction;
+    let shown = RwSignal::new(false);
+    let open = shown.clone();
+    let mut harness = Harness::new(200.0, 120.0, 1.0, move || {
+        let open = open.clone();
+        panel().child(item("Behind")).child(show(
+            move || open.get(),
+            || {
+                panel()
+                    .column()
+                    .trap_focus()
+                    .navigate_with_arrows(Direction::Column)
+                    .child(item("One"))
+                    .child(item("Two"))
+            },
+        ))
+    });
+    harness.frame();
+    harness.click(Point { x: 5.0, y: 5.0 });
+    shown.set(true);
+    harness.frame();
+    assert_eq!(focused_name(&mut harness).as_deref(), Some("Behind"));
+
+    harness.press_key(Key::ArrowDown);
+    assert_eq!(focused_name(&mut harness).as_deref(), Some("One"));
+}
+
+#[test]
+fn a_row_steps_with_left_and_right() {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let mut harness = arrow_list(smudge_core::style::Direction::Row, Rc::clone(&log));
+    harness.click(Point { x: 10.0, y: 10.0 });
+
+    harness.press_key(Key::ArrowRight);
+    harness.press_key(Key::ArrowDown);
+    harness.press_key(Key::ArrowLeft);
+
+    assert_eq!(*log.borrow(), ["Apple", "Banana", "Apple"]);
+}

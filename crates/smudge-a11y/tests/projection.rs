@@ -1991,3 +1991,93 @@ fn a_new_title_names_the_window_from_the_next_full_update() {
         Some("*map.map")
     );
 }
+
+#[test]
+fn menus_report_their_roles_and_a_check_item_its_state() {
+    let mut app = app_with(|| {
+        Element::new(Panel)
+            .role(Role::Menu)
+            .child(
+                Element::new(Panel)
+                    .role(Role::MenuItem)
+                    .accessible_label("Open")
+                    .on_press(|| {}),
+            )
+            .child(
+                Element::new(Panel)
+                    .role(Role::MenuItemCheckBox)
+                    .accessible_label("Grid")
+                    .accessible_checked(smudge_core::semantics::Checked::True)
+                    .on_press(|| {}),
+            )
+    });
+    let mut projection = Projection::new("Smudge");
+
+    let update = update_after_frame(&mut app, &mut projection, true);
+
+    node_with_role(&update, AccessKitRole::Menu);
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::MenuItem).label(),
+        Some("Open")
+    );
+    let check = node_with_role(&update, AccessKitRole::MenuItemCheckBox);
+    assert_eq!(check.toggled(), Some(accesskit::Toggled::True));
+    assert!(
+        !check.is_read_only(),
+        "a pressable check item can be changed"
+    );
+}
+
+#[test]
+fn an_overlay_that_opens_and_closes_joins_and_leaves_the_window() {
+    let open = RwSignal::new(false);
+    let shown = open.clone();
+    let mut app = app_with(move || {
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Panel)
+                .role(Role::Button)
+                .accessible_label("Edit")
+                .on_press(|| {})
+                .overlay(
+                    shown.clone(),
+                    smudge_core::element::Placement::Below,
+                    || {
+                        Element::new(Panel).role(Role::Menu).child(
+                            Element::new(Panel)
+                                .role(Role::MenuItem)
+                                .accessible_label("Cut"),
+                        )
+                    },
+                ),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    update_after_frame(&mut app, &mut projection, true);
+
+    open.set(true);
+    let opened = update_after_frame(&mut app, &mut projection, false);
+    let menu = id_with_role(&opened, AccessKitRole::Menu);
+    let window = opened
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == WINDOW_ROOT)
+        .map(|(_, node)| node)
+        .expect("the window's children changed, so the update carries it");
+    assert!(
+        window.children().contains(&menu),
+        "the menu hangs off the window"
+    );
+
+    open.set(false);
+    let closed = update_after_frame(&mut app, &mut projection, false);
+    let window = closed
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == WINDOW_ROOT)
+        .map(|(_, node)| node)
+        .expect("the window's children changed again");
+    assert!(
+        !window.children().contains(&menu),
+        "and leaves it when it closes"
+    );
+}

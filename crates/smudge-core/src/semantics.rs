@@ -69,6 +69,16 @@ pub enum Role {
     /// [`Semantics::range`]. Without a range it reads as busy, with no known
     /// progress.
     ProgressBar,
+    /// A bar of menus across the top of a window or a view.
+    MenuBar,
+    /// A list of choices that opens from a menu bar, a button or a right
+    /// press, and closes once one is chosen.
+    Menu,
+    /// One choice of a menu, or a menu of a menu bar.
+    MenuItem,
+    /// A choice of a menu that is checked or not, which choosing toggles.
+    /// Its state is [`Semantics::checked`].
+    MenuItemCheckBox,
 }
 
 /// Whether a checkbox or a switch is checked.

@@ -238,6 +238,40 @@ let picker = button("Colors")
 
 Escape and a press outside the overlay write `false` to `open`, so it closes. A press on the node an overlay opens against is not outside it, so the button above closes its popup with its own press. A press over an overlay reaches the overlay and never the window under it, and keys inside it bubble on to the node that opened it and that node's ancestors, so the shortcuts around it keep working. An overlay that takes the keyboard calls `trap_focus()`, and `autofocus()` on the node that should take the focus first: Tab then stays inside it, and the focus goes back to the node that opened it when it closes, or where it was when that node cannot take the focus.
 
+## Menus
+
+`menu_bar()` builds a bar of menus, `menu(title, items)` a button that opens one, and `context_menu(items)` opens one at the pointer on a right press. Each takes a closure that returns the items, which runs every time the menu opens, so the items follow the app's state:
+
+```rust
+use smudge::widgets::{
+    ContextMenuExt, menu_bar, menu_check_item, menu_item, menu_separator, submenu,
+};
+
+let grid = RwSignal::new(true);
+let shown = grid.clone();
+let bar = menu_bar()
+    .menu("File", || {
+        vec![
+            menu_item("Open", || println!("open")).shortcut("Ctrl+O"),
+            submenu("Recent", || vec![menu_item("map.map", || {})]),
+            menu_separator(),
+            menu_item("Quit", || {}).disabled(true),
+        ]
+    })
+    .menu("View", move || vec![menu_check_item("Grid", shown.clone())]);
+
+let canvas_area = panel()
+    .grow(1.0)
+    .focusable()
+    .context_menu(|| vec![menu_item("Paste here", || {})]);
+```
+
+`menu_item(label, on_choose)` runs its closure after the menus close, under the owner the menu's opener was built in, so the signals and timers it creates outlive the menu, `menu_check_item(label, signal)` toggles a signal and shows a check mark while it is on, `submenu(label, items)` opens another menu beside it, and `menu_separator()` draws a line between groups. `.shortcut(text)` shows a shortcut at the right of an item. It only tells the user, and the app handles the keys itself. `.disabled(value)` greys an item out.
+
+The keyboard walks every menu: Up and Down step through the items, a letter goes to the next item that starts with it, Enter and Space choose, Right opens a submenu and Left closes it, Escape closes the menu that is open, and in a menu bar Left and Right move to the next menu. A context menu also opens with the menu key, or Shift+F10, at the top left of the focused node. Screen readers hear the menu bar, menu, menu item and checked item roles.
+
+Under them is `navigate_with_arrows(direction)`, which any container can use, so the arrow keys move the focus among the focusable nodes inside it, as a list or a toolbar does.
+
 ## Writing your own
 
 The button, the containers, the scroll view and the virtual list are composed from `panel`, `label` and the public element builders. A component of your own is the same thing, a function that returns an element:

@@ -529,7 +529,11 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     if let Some(level) = node.level {
         out.set_level(level.saturating_sub(1));
     }
-    if matches!(node.role, Role::CheckBox | Role::Switch) && !node.pressable {
+    if matches!(
+        node.role,
+        Role::CheckBox | Role::Switch | Role::MenuItemCheckBox
+    ) && !node.pressable
+    {
         out.set_read_only();
     }
     out.set_bounds(scaled_bounds(node.bounds, scale));
@@ -676,6 +680,10 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::ProgressBar => AccessKitRole::ProgressIndicator,
         Role::Link => AccessKitRole::Link,
         Role::Heading => AccessKitRole::Heading,
+        Role::MenuBar => AccessKitRole::MenuBar,
+        Role::Menu => AccessKitRole::Menu,
+        Role::MenuItem => AccessKitRole::MenuItem,
+        Role::MenuItemCheckBox => AccessKitRole::MenuItemCheckBox,
         // A role added after this mapping reports as a plain group.
         _ => AccessKitRole::Group,
     }

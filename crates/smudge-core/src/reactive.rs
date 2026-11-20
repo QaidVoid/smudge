@@ -599,6 +599,16 @@ impl Default for Owner {
 }
 
 impl Owner {
+    /// Returns the current owner, when one is set and still alive: the
+    /// owner a build, a handler or an effect runs in.
+    ///
+    /// Code that keeps it to run work later in the same place, as a widget
+    /// runs a callback under the owner that built it, keeps what the work
+    /// creates alive for as long as that owner lives.
+    pub fn current() -> Option<Owner> {
+        runtime::current_owner().map(|inner| Owner { inner })
+    }
+
     /// Creates an owner under the current owner, when there is one.
     ///
     /// With no current owner the new owner starts a new root scope, which
@@ -683,14 +693,15 @@ impl Owner {
     ///
     /// With no current owner, `fun` is dropped.
     pub fn on_cleanup(fun: impl FnOnce() + 'static) {
-        let Some(owner) = Owner::current() else {
+        let Some(owner) = Owner::current_data() else {
             return;
         };
         owner.state.borrow_mut().cleanups.push(Box::new(fun));
     }
 
-    /// Returns the current owner, when one is set and still alive.
-    fn current() -> Option<Rc<OwnerData>> {
+    /// Returns the data of the current owner, when one is set and still
+    /// alive.
+    fn current_data() -> Option<Rc<OwnerData>> {
         runtime::current_owner()
     }
 
@@ -727,7 +738,7 @@ impl Drop for Owner {
 ///
 /// With no current owner, `value` is dropped.
 pub fn provide_context<T: 'static>(value: T) {
-    let Some(owner) = Owner::current() else {
+    let Some(owner) = Owner::current_data() else {
         return;
     };
     let key = TypeId::of::<T>();
@@ -749,7 +760,7 @@ pub fn provide_context<T: 'static>(value: T) {
 /// Returns `None` when neither has one.
 pub fn use_context<T: Clone + 'static>() -> Option<T> {
     let key = TypeId::of::<T>();
-    let mut current = Owner::current();
+    let mut current = Owner::current_data();
     while let Some(owner) = current {
         let found = owner
             .state

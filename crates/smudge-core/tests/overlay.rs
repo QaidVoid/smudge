@@ -426,6 +426,41 @@ fn escape_closes_the_popup_the_focus_is_in_before_the_nodes_around_its_opener() 
 }
 
 #[test]
+fn the_arrows_of_a_container_around_the_opener_stay_out_of_a_popup() {
+    let open = RwSignal::new(true);
+    let focused: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+    let (shown, log) = (open.clone(), Rc::clone(&focused));
+    let mut harness = Harness::new(200.0, 120.0, 1.0, move || {
+        let (shown, log) = (shown.clone(), Rc::clone(&log));
+        let item = move |name: &'static str| {
+            let log = Rc::clone(&log);
+            panel()
+                .width(px(30.0))
+                .height(px(20.0))
+                .focusable()
+                .on_focus(move |on| {
+                    if on {
+                        log.borrow_mut().push(name);
+                    }
+                })
+        };
+        panel()
+            .navigate_with_arrows(smudge_core::style::Direction::Row)
+            .child(item("a").overlay(shown, Placement::Below, {
+                let item = item.clone();
+                move || panel().trap_focus().child(item("inner").autofocus())
+            }))
+            .child(item("b"))
+    });
+    harness.frame();
+    assert_eq!(*focused.borrow(), ["inner"]);
+
+    harness.press_key(Key::ArrowRight);
+
+    assert_eq!(*focused.borrow(), ["inner"], "the focus stays in the popup");
+}
+
+#[test]
 fn a_popup_flipped_above_its_node_keeps_its_margin_clear_of_it() {
     let open = RwSignal::new(true);
     let mut harness = Harness::new(200.0, 120.0, 1.0, move || {

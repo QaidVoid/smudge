@@ -29,6 +29,7 @@ mod canvas;
 mod containers;
 mod height_index;
 mod image;
+mod menu;
 mod scroll;
 mod split;
 mod virtual_list;
@@ -38,6 +39,10 @@ pub use button::{ButtonExt, button};
 pub use canvas::{Canvas, Painter, canvas};
 pub use containers::{column, row, spacer, stack};
 pub use image::{ImageView, image};
+pub use menu::{
+    ContextMenuExt, MenuBar, MenuItem, menu, menu_bar, menu_check_item, menu_item, menu_separator,
+    submenu,
+};
 pub use scroll::{ScrollExt, ScrollView, scroll};
 pub use split::{Split, SplitExt, split};
 pub use virtual_list::virtual_list;

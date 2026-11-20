@@ -185,6 +185,31 @@ fn overlay_sample() {
         });
 }
 
+#[test]
+fn menus_sample() {
+    use smudge::widgets::{
+        ContextMenuExt, menu_bar, menu_check_item, menu_item, menu_separator, submenu,
+    };
+
+    let grid = RwSignal::new(true);
+    let shown = grid.clone();
+    let bar = menu_bar()
+        .menu("File", || {
+            vec![
+                menu_item("Open", || println!("open")).shortcut("Ctrl+O"),
+                submenu("Recent", || vec![menu_item("map.map", || {})]),
+                menu_separator(),
+                menu_item("Quit", || {}).disabled(true),
+            ]
+        })
+        .menu("View", move || vec![menu_check_item("Grid", shown.clone())]);
+
+    let canvas_area = panel()
+        .grow(1.0)
+        .focusable()
+        .context_menu(|| vec![menu_item("Paste here", || {})]);
+}
+
 fn stat(title: &'static str, value: RwSignal<u32>) -> Element<Panel> {
     column()
         .padding(px(12.0))

@@ -219,6 +219,22 @@ impl WidgetTree {
         changed
     }
 
+    /// Places the overlay whose top node is `root` by `placement` from now
+    /// on, and moves it at once when that changes where it goes.
+    pub(crate) fn set_overlay_placement(&mut self, root: WidgetId, placement: Placement) {
+        let Some(overlay) = self
+            .overlays
+            .iter_mut()
+            .find(|overlay| overlay.root == root)
+        else {
+            return;
+        };
+        if overlay.placement != placement {
+            overlay.placement = placement;
+            self.place_overlays(false);
+        }
+    }
+
     /// Closes the overlays a press at `position` lands outside of, the last
     /// opened first: those whose subtree the press misses, unless it lands on
     /// the node an overlay hangs off.

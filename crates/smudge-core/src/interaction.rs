@@ -160,6 +160,9 @@ pub(crate) struct Handlers {
     /// [`on_press`](Self::on_press) handler, which is how a button fires from
     /// the keyboard.
     pub(crate) activate_on_keys: bool,
+    /// The axis along which the arrow keys move the focus among the
+    /// focusable nodes inside this one, when they do.
+    pub(crate) arrows: Option<crate::style::Direction>,
 }
 
 /// The drag a held primary press makes, from the press until its release,

@@ -333,8 +333,8 @@ A view that flies a camera, or drags a value past the window's edge, locks the p
 Three builders cover the focus an application drives itself:
 
 - `autofocus()` gives the node the keyboard focus on the first frame it is laid out visible, so a form's first field is ready to type into, and a field inside a hidden panel takes the focus when the panel shows.
-- `trap_focus()` keeps Tab and Shift+Tab inside the node's subtree, which is how a modal dialog holds the keyboard while it is up. While a trap is active, a key pressed with the focus outside it, or with no focus, starts at the trap, so the dialog hears it first. The trap mounted last wins, and removing it restores the trap mounted before it and gives the focus back to the node that held it when the trap mounted.
-- A key that no node handles bubbles to the application's top element, so an `on_key` there is the application-wide shortcut handler, for example an Escape that closes a dialog.
+- `trap_focus()` keeps Tab and Shift+Tab inside the node's subtree, which is how a modal dialog holds the keyboard while it is up. While a trap is active, a key pressed with the focus outside it, or with no focus, starts at the trap, so the dialog hears it first. The trap mounted last wins, and removing it restores the trap mounted before it. The focus goes back to the node that opened the overlay the trap sits in, when there is one that can take it, and otherwise to the node that held it when the trap mounted.
+- A key that no node handles bubbles to the application's top element, so an `on_key` there is the application-wide shortcut handler, for example an Escape that closes a dialog. Inside an open menu or list, the arrow keys, Home, End and letters move the focus before they reach it.
 
 ```rust
 use smudge::core::input::{Handled, Key};
