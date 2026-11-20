@@ -1439,3 +1439,51 @@ fn the_hit_testing_overlay_outlines_what_takes_a_press() {
         "and so is the hovered chain"
     );
 }
+
+#[test]
+fn reading_the_app_for_every_tab_never_wakes_it() {
+    TextSystem::bundled_only().install();
+    let mut app = App::new(
+        AppConfig {
+            viewport: VIEWPORT,
+            scale: 1.0,
+            clear_color: Color::WHITE,
+            repaint: RepaintMode::Damage,
+        },
+        || {
+            let count = RwSignal::new(0u32);
+            let (shown, press) = (count.clone(), count);
+            beside_panel(
+                smudge_widgets::button(move || format!("Count {}", shown.get()))
+                    .on_press(move || press.update(|count| *count += 1)),
+            )
+        },
+    );
+    app.frame();
+    let mut devtools = Devtools::with(VIEWPORT, 1.0, true, Shortcut::default());
+    devtools.app.frame();
+    let mut switches = devtools.tools.switches();
+    switches.layout_bounds = true;
+    switches.focus = true;
+    switches.hit_testing = true;
+    devtools.tools.set_switches(switches);
+    let wakes = Rc::new(Cell::new(0u32));
+    let counted = Rc::clone(&wakes);
+    app.set_wake_callback(move || counted.set(counted.get() + 1));
+
+    let start = Instant::now();
+    for (seconds, tab) in (0..).zip(["Inspector", "Reactive", "Access", "Live", "Frames"]) {
+        let at = overlay_text(&devtools, tab);
+        click(&mut devtools, &mut app, at);
+        devtools.app.frame();
+        let mut entries = Vec::new();
+        app.visit_tree(|entry| entries.push(entry.id));
+        devtools.tools.select(entries.last().copied());
+        devtools.show_bounds(&app, false);
+        devtools.inspect(&app, false, true);
+        devtools.observe(&app, false, true);
+        devtools.trace(&app, start + Duration::from_secs(seconds), false);
+        devtools.app.frame();
+    }
+    assert_eq!(wakes.get(), 0, "the panel's reads leave the app asleep");
+}

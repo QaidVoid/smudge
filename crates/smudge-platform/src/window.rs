@@ -796,6 +796,11 @@ struct WindowState {
     /// the next frame presents even when nothing in it changed.
     #[cfg(feature = "_devtools")]
     toggled: bool,
+    /// Whether a signal write woke the app since the last frame, so the
+    /// frame is the app's own and the devtools record it, even when the
+    /// write left the tree no work it can see yet.
+    #[cfg(feature = "_devtools")]
+    app_woke: Rc<std::cell::Cell<bool>>,
     /// The bridge that maps the app's accessibility projection onto the
     /// platform's, when the platform builds with accessibility.
     #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
@@ -963,7 +968,13 @@ where
         }
 
         let weak = Arc::downgrade(&window);
+        #[cfg(feature = "_devtools")]
+        let app_woke = Rc::new(std::cell::Cell::new(false));
+        #[cfg(feature = "_devtools")]
+        let woke = Rc::clone(&app_woke);
         app.set_wake_callback(move || {
+            #[cfg(feature = "_devtools")]
+            woke.set(true);
             if let Some(window) = weak.upgrade() {
                 window.request_redraw();
             }
@@ -1041,6 +1052,8 @@ where
             devtools,
             #[cfg(feature = "_devtools")]
             toggled: false,
+            #[cfg(feature = "_devtools")]
+            app_woke,
             #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
             adapter,
             #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
@@ -1148,7 +1161,8 @@ where
         // A frame the overlay alone asked for records nothing, or recording
         // a frame, which wakes the overlay, would ask for the next.
         #[cfg(feature = "_devtools")]
-        let app_wanted = state.app.needs_frame() || paced || state.app.is_animating();
+        let app_wanted =
+            state.app_woke.take() || state.app.needs_frame() || paced || state.app.is_animating();
         #[cfg(feature = "_devtools")]
         let driven = driven && !std::mem::take(&mut state.toggled);
         #[cfg(feature = "_devtools")]
