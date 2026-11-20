@@ -31,7 +31,7 @@ fontique = { version = "0.12.0", default-features = false }
 icu_segmenter = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 parley = { version = "0.12.0", default-features = false, features = ["std"] }
 skrifa = "0.44.0"
-smudge-core = { version = "0.3.0", path = "../smudge-core" }
+smudge-core = { version = "0.4.0", path = "../smudge-core" }
 web-time = "1.1.0"
 
 [lints]

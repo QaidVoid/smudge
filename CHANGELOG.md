@@ -1,4 +1,78 @@
 
+## [0.4.0](https://github.com/QaidVoid/smudge/compare/v0.3.0...v0.4.0) - 2026-11-20
+
+### ⛰️  Features
+
+- *(core)* Lock the pointer to a node and hand it raw motion - ([69a1692](https://github.com/QaidVoid/smudge/commit/69a169261e62b11334a54d2d3c550aac13a25999))
+- *(core)* [**breaking**] Round each corner by a radius of its own - ([4093943](https://github.com/QaidVoid/smudge/commit/4093943225a2b22867ea464d5291d93c4f884794))
+- *(core)* Move paint props under springs with transition - ([b9c0cf6](https://github.com/QaidVoid/smudge/commit/b9c0cf63dd70a100239c7bbb36eda467f3ccd410))
+- *(core)* [**breaking**] Report headings, links and the split divider - ([27d2ee9](https://github.com/QaidVoid/smudge/commit/27d2ee9a381a0850210bf7273d8f536c44401837))
+- *(core)* [**breaking**] Report list rows' places to screen readers - ([dc092da](https://github.com/QaidVoid/smudge/commit/dc092da4424ce71fbdb11c3f6a855f98e2838c0a))
+- *(core)* [**breaking**] Report checkboxes, switches and progress bars - ([2931d50](https://github.com/QaidVoid/smudge/commit/2931d50d6f111f7fa407893ca0e840c274d8d248))
+- *(core)* Open overlays that escape every clip - ([f47f323](https://github.com/QaidVoid/smudge/commit/f47f3236a7dba75db8b41808692dbd4f2220b5c2))
+- *(core)* [**breaking**] Let every pointer button reach the app - ([6361eee](https://github.com/QaidVoid/smudge/commit/6361eee858d335b9289b72b4fa7f57eacc2c7bab))
+- *(core)* [**breaking**] Report what a remount kept - ([56a72e3](https://github.com/QaidVoid/smudge/commit/56a72e328e2f0bea4c3781f1a7eaf3989e65686c))
+- *(core)* Report focus, pointer and accessibility state to devtools - ([d64a870](https://github.com/QaidVoid/smudge/commit/d64a87037748dd9c5a56e53e4a770b377664d284))
+- *(core)* Trace which write wakes each binding - ([caa15aa](https://github.com/QaidVoid/smudge/commit/caa15aaa0ddd62f2c560b9117028bbb69709bdd5))
+- *(core)* Let devtools inspect the widget tree - ([ea19953](https://github.com/QaidVoid/smudge/commit/ea1995315ccc6b6393b003fbe9191da8dd152909))
+- *(core)* Draw a border with its own width on each side - ([447fd5c](https://github.com/QaidVoid/smudge/commit/447fd5c3600fdadfe16f294807b3291f48c4008b))
+- *(core)* Fade nodes in and out as they mount and leave - ([6082f0e](https://github.com/QaidVoid/smudge/commit/6082f0e1a67c44f1b5197679bcd2a4444c5a70a0))
+- *(core)* [**breaking**] Draw a subtree at an opacity as one group - ([5c284d6](https://github.com/QaidVoid/smudge/commit/5c284d67bcbfdf1dd6fcf33fac1611d8941b9224))
+- *(core)* Add springs that can change target mid-motion - ([6dd0c27](https://github.com/QaidVoid/smudge/commit/6dd0c27dd19d6bf466313b1c8cda2ee7374f50ea))
+- *(devtools)* Show hot reload in the panel - ([52cea79](https://github.com/QaidVoid/smudge/commit/52cea79b475b06fecdc56bc439be025b04b67703))
+- *(devtools)* Show the devtools panel over a running app - ([3b12380](https://github.com/QaidVoid/smudge/commit/3b12380a12d403566dff03765a35ca8df7e35659))
+- *(devtools)* Add the devtools crate with a movable panel - ([26d536a](https://github.com/QaidVoid/smudge/commit/26d536aed01ef432d19a141546a3f563c88ad6d6))
+- *(devtools)* Copy a node as a test - ([5e72c6b](https://github.com/QaidVoid/smudge/commit/5e72c6b0565a39caa9070e1ad02d3f4984decf68))
+- *(devtools)* Redesign the panel so each tool explains itself - ([9e7acfa](https://github.com/QaidVoid/smudge/commit/9e7acfa1e8abbf72ea6d24edf3f36182b0fe7171))
+- *(devtools)* Tune the theme from a file while the app runs - ([c6b7e15](https://github.com/QaidVoid/smudge/commit/c6b7e153606dc647a79d0ba7e1ce0695b36752e0))
+- *(devtools)* Show focus, hit testing and accessibility - ([66cbcb1](https://github.com/QaidVoid/smudge/commit/66cbcb1f318638be76073c47907337f081ffa64a))
+- *(devtools)* Show why bindings rerun - ([98c22df](https://github.com/QaidVoid/smudge/commit/98c22dffe883cd84bd01ec8b966ff14ef12ebdb8))
+- *(devtools)* Add the inspector with pick mode - ([430ced7](https://github.com/QaidVoid/smudge/commit/430ced7c93ff8278c587896a623f295e16d65608))
+- *(devtools)* Outline the app's layout bounds - ([e9dee02](https://github.com/QaidVoid/smudge/commit/e9dee027a841270dbee8772128a1501586226ffd))
+- *(devtools)* Flash what each frame repaints - ([8a8cf11](https://github.com/QaidVoid/smudge/commit/8a8cf119b33f8b9e97b0976460c3d73a50f4dcf5))
+- *(devtools)* Add damage tint and full repaint switches - ([55b0bad](https://github.com/QaidVoid/smudge/commit/55b0bad380b6f712f45bb432ac380dba924d8be5))
+- *(devtools)* Show a timeline of the app's last frames - ([5de2a18](https://github.com/QaidVoid/smudge/commit/5de2a18d93b42f3d356bf4e61b42de8ed9a7a6b0))
+- *(devtools)* Keep the panel inside the window - ([a192d6a](https://github.com/QaidVoid/smudge/commit/a192d6af7aed06c0b2099143638c1ff6ffe61c5b))
+- *(gpu)* Let an app draw into the interface with wgpu - ([c70ccff](https://github.com/QaidVoid/smudge/commit/c70ccff121092bef86d88953ae8fe9ed30e0e6cc))
+- *(markdown)* Render markdown from a source that streams in - ([a51cf29](https://github.com/QaidVoid/smudge/commit/a51cf29991f8cd7f9b16a1002bb0c60b3b96e067))
+- *(platform)* [**breaking**] Set the window's title and icon while it runs - ([6ebb712](https://github.com/QaidVoid/smudge/commit/6ebb71272c39c6eda8b3a0da5181db1f28aaa2d2))
+- *(platform)* Follow the system's reduced-motion setting - ([d4774e3](https://github.com/QaidVoid/smudge/commit/d4774e36af579ac8543dde02ef963ad17d90d169))
+- *(platform)* Lend the window's native handles to dialogs - ([f4a5b6a](https://github.com/QaidVoid/smudge/commit/f4a5b6a64cece1aab0a8796e960ecb6406248643))
+- *(platform)* Read reduced motion on Windows and macOS - ([2be2828](https://github.com/QaidVoid/smudge/commit/2be282856759949482b50f6eaf67cfa1dc8d55b4))
+- *(text)* Report a scope's selection to readers block by block - ([3da670a](https://github.com/QaidVoid/smudge/commit/3da670a554b54dc11cc2ad9b7f3edc1d39267d25))
+- *(widgets)* Add checkboxes, switches, sliders and number fields - ([34b0663](https://github.com/QaidVoid/smudge/commit/34b06638f71a5afd6feaf11e55aa7fd98a44549b))
+- *(widgets)* Add menus, menu bars and context menus - ([3659f79](https://github.com/QaidVoid/smudge/commit/3659f792a07918313aafe888b4d06b362fd2e2f1))
+- *(widgets)* Add a keyed virtual column with no list semantics - ([be579ac](https://github.com/QaidVoid/smudge/commit/be579acbf96403df53a73563f1e56ed96f49772f))
+- *(widgets)* Drag the scroll thumb and page from its track - ([a24dce3](https://github.com/QaidVoid/smudge/commit/a24dce351e24721c1a85fecef5f4035bdb629ec0))
+- Draw paths and add a canvas widget - ([4ce1142](https://github.com/QaidVoid/smudge/commit/4ce114278d60105ed98a2a732be49a438d073bbd))
+- Add tabs - ([8f72086](https://github.com/QaidVoid/smudge/commit/8f72086b28f6af93be6180e1f9c338b5d82921c8))
+- [**breaking**] Add tooltips and dropdowns - ([2f94b56](https://github.com/QaidVoid/smudge/commit/2f94b562f013edec81e1d233bab6cae272863dbd))
+- [**breaking**] Let screen readers reach and press links inside text - ([a79a5fc](https://github.com/QaidVoid/smudge/commit/a79a5fc14cbe93dfe433c3c32c523050e86c41f5))
+- [**breaking**] Report the caret and selection of text fields to readers - ([a75253b](https://github.com/QaidVoid/smudge/commit/a75253b26b3ad88ed138f75e9bcea5380cfdadd5))
+- [**breaking**] Read labels and rich text line by line to screen readers - ([61c61a1](https://github.com/QaidVoid/smudge/commit/61c61a1a7d7350099e3e53042c85ecf7577292cb))
+- [**breaking**] Speak announcements and streamed blocks to screen readers - ([f8b99af](https://github.com/QaidVoid/smudge/commit/f8b99af1b79dac3bb22117927aac067c447872dc))
+- Pass call sites through widget constructors - ([681d396](https://github.com/QaidVoid/smudge/commit/681d39697c9ed644d5ba5e9551f045e62a208c5f))
+- [**breaking**] Draw variable fonts at the weight the text asks for - ([cc12cee](https://github.com/QaidVoid/smudge/commit/cc12cee36973fbd7139ee38aa3ea4a8822fb8262))
+
+### 🐛 Bug Fixes
+
+- *(core)* Tell screen readers where a scroll moves nodes - ([b5ba1bb](https://github.com/QaidVoid/smudge/commit/b5ba1bb8def0b636c43759638ec7c8df28422b9a))
+- *(core)* Keep layout rectangles finite for any length - ([c85c506](https://github.com/QaidVoid/smudge/commit/c85c506eef0eee3ecc688d5f7c5d93e76c0af4d6))
+- *(core)* Keep fading nodes in their place until they go - ([0f9e51b](https://github.com/QaidVoid/smudge/commit/0f9e51b389bbbf9e0294c79f36b608619810586a))
+- *(core)* Keep transitions true to colors, text and the projection - ([b1d1298](https://github.com/QaidVoid/smudge/commit/b1d12984b50fcb1ceb379f7d7866262a3cf83a65))
+- *(devtools)* Reach the panel by keyboard and stop repeated work - ([e63e3b4](https://github.com/QaidVoid/smudge/commit/e63e3b4eb8b56810192fe78edc703a93c0ab1209))
+- *(devtools)* Record the frames a signal write wakes - ([915eb69](https://github.com/QaidVoid/smudge/commit/915eb69a892356a2d6d5c2402981261e457f55be))
+- *(text)* Keep selection scopes in step with changing text - ([56cb076](https://github.com/QaidVoid/smudge/commit/56cb0760e0109ac032896a9380370870d8115f1e))
+
+### 📚 Documentation
+
+- Add an editor example of menus, tabs and controls - ([00d12ab](https://github.com/QaidVoid/smudge/commit/00d12abbdf307608205d14df11bbfca4fe324b52))
+- Add the devtools guide - ([bd778a8](https://github.com/QaidVoid/smudge/commit/bd778a8e20d3086826dfa2ac29468f22066f31b7))
+
+### ⚡ Performance
+
+- *(markdown)* Parse one long pushed block in linear time - ([1a697e3](https://github.com/QaidVoid/smudge/commit/1a697e3b92244920df7b7ac38c1e536b2b232dcc))
+
 ## [0.3.0](https://github.com/QaidVoid/smudge/compare/v0.2.0...v0.3.0) - 2026-11-18
 
 ### ⛰️  Features
