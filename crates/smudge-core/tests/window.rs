@@ -633,3 +633,46 @@ fn a_press_keeps_the_cursor_of_a_cursor_only_child_under_the_pointer() {
     );
     harness.button_up(Point { x: 180.0, y: 180.0 });
 }
+
+#[test]
+fn the_latest_title_and_icon_reach_the_windowing_layer_once() {
+    let icon = smudge_core::image::Image::from_straight_rgba(1, 1, vec![255, 0, 0, 255])
+        .expect("the buffer holds one pixel");
+    let shown = icon.clone();
+    let mut app = App::new(config(), move || {
+        let shown = shown.clone();
+        panel().child(panel().width(px(40.0)).height(px(20.0)).on_press(move || {
+            window::set_title("map.map");
+            window::set_title("*map.map");
+            window::set_icon(Some(shown.clone()));
+        }))
+    });
+    app.frame();
+    assert_eq!(app.take_window_title(), None, "nothing set yet");
+
+    app.handle_event(InputEvent::PointerDown {
+        position: Point { x: 10.0, y: 10.0 },
+        button: PointerButton::Primary,
+    });
+    app.handle_event(InputEvent::PointerUp {
+        position: Point { x: 10.0, y: 10.0 },
+        button: PointerButton::Primary,
+    });
+
+    assert_eq!(app.take_window_title().as_deref(), Some("*map.map"));
+    assert_eq!(app.take_window_title(), None, "taking it empties it");
+    let taken = app.take_window_icon().expect("an icon was set");
+    assert_eq!(taken.map(|image| image.id()), Some(icon.id()));
+    assert!(app.take_window_icon().is_none());
+}
+
+#[test]
+fn taking_the_icon_away_reaches_the_windowing_layer() {
+    let mut app = App::new(config(), || {
+        window::set_icon(None);
+        panel()
+    });
+    app.frame();
+
+    assert!(matches!(app.take_window_icon(), Some(None)));
+}

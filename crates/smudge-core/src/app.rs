@@ -921,6 +921,19 @@ impl App {
         crate::window::take_commands(&self.window)
     }
 
+    /// Takes the title that [`window::set_title`](crate::window::set_title)
+    /// set since the last call, if any, which the windowing layer shows.
+    pub fn take_window_title(&mut self) -> Option<String> {
+        crate::window::take_title(&self.window)
+    }
+
+    /// Takes the icon that [`window::set_icon`](crate::window::set_icon) set
+    /// since the last call, if any: `Some(None)` takes the icon away. The
+    /// windowing layer shows it.
+    pub fn take_window_icon(&mut self) -> Option<Option<crate::image::Image>> {
+        crate::window::take_icon(&self.window)
+    }
+
     /// Replaces the window state the application's
     /// [`maximized`](crate::window::maximized) reads.
     ///

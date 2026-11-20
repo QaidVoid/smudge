@@ -185,6 +185,44 @@ pub fn toggle_maximize() {
     queue(WindowCommand::ToggleMaximize);
 }
 
+/// Sets the text of the window's title bar, as an editor names the open
+/// file and marks unsaved changes.
+///
+/// The latest title set before the windowing layer looks wins. With no
+/// application above the running code the call does nothing. Call it from
+/// an effect to keep the title in step with the state it shows:
+///
+/// ```
+/// use smudge_core::reactive::{RenderEffect, RwSignal, prelude::*};
+/// use smudge_core::window;
+///
+/// let dirty = RwSignal::new(false);
+/// let shown = dirty.clone();
+/// let _title = RenderEffect::new(move || {
+///     let mark = if shown.get() { "*" } else { "" };
+///     window::set_title(format!("{mark}map.map"));
+/// });
+/// ```
+pub fn set_title(title: impl Into<String>) {
+    if let Some(book) = running_book() {
+        book.borrow_mut().title = Some(title.into());
+    }
+}
+
+/// Sets the window's icon, or takes it away with `None`.
+///
+/// The latest icon set before the windowing layer looks wins. A window
+/// system that shows a size of its own scales the image. On Wayland the
+/// desktop takes the icon from the desktop file the window's app id names,
+/// and on macOS and the web the window has no icon, so the call changes
+/// nothing there. With no application above the running code the call does
+/// nothing.
+pub fn set_icon(icon: Option<crate::image::Image>) {
+    if let Some(book) = running_book() {
+        book.borrow_mut().icon = Some(icon);
+    }
+}
+
 /// Queues a command to close the window and end the run.
 ///
 /// With no application above the running code the call does nothing.
@@ -275,6 +313,16 @@ pub(crate) fn set_focused(book: &Rc<RefCell<WindowBook>>, focused: bool) {
     }
 }
 
+/// Takes the title set since the windowing layer last looked, if any.
+pub(crate) fn take_title(book: &Rc<RefCell<WindowBook>>) -> Option<String> {
+    book.borrow_mut().title.take()
+}
+
+/// Takes the icon set since the windowing layer last looked, if any.
+pub(crate) fn take_icon(book: &Rc<RefCell<WindowBook>>) -> Option<Option<crate::image::Image>> {
+    book.borrow_mut().icon.take()
+}
+
 /// Takes every command queued so far, in the order they were queued.
 pub(crate) fn take_commands(book: &Rc<RefCell<WindowBook>>) -> Vec<WindowCommand> {
     std::mem::take(&mut book.borrow_mut().commands)
@@ -287,6 +335,8 @@ pub(crate) fn new_book(root: &Owner) -> Rc<RefCell<WindowBook>> {
     let (maximized, focused) = root.with(|| (RwSignal::new(false), RwSignal::new(true)));
     Rc::new(RefCell::new(WindowBook {
         commands: Vec::new(),
+        title: None,
+        icon: None,
         maximized,
         focused,
     }))
@@ -300,6 +350,11 @@ pub(crate) fn new_book(root: &Owner) -> Rc<RefCell<WindowBook>> {
 pub(crate) struct WindowBook {
     /// The commands queued since the windowing layer last took them.
     commands: Vec<WindowCommand>,
+    /// The title set since the windowing layer last took it.
+    title: Option<String>,
+    /// The icon set since the windowing layer last took it, `Some(None)`
+    /// when it was taken away.
+    icon: Option<Option<crate::image::Image>>,
     /// The maximized state the windowing layer last reported.
     maximized: RwSignal<bool>,
     /// Whether the window held the input focus when the windowing layer

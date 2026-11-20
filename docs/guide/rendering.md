@@ -63,6 +63,8 @@ A window without decorations needs a way to be moved, resized and closed. The fu
 | `start_resize(edge)` | Start an interactive resize from an edge or corner. |
 | `toggle_maximize()` | Maximize the window, or restore it. |
 | `close()` | Close the window and end the run. |
+| `set_title(text)` | Show `text` in the title bar, as an editor names the open file. |
+| `set_icon(image)` | Show an icon, an `Image`, or none with `None`. |
 
 `maximized()` reads whether the window is maximized, and a binding that reads it reruns when that changes, so a header can swap its maximize icon or hide its resize handles. On the web every command does nothing and `maximized()` stays `false`, as [the web guide](/guide/web) explains.
 
@@ -75,6 +77,8 @@ let header = panel()
     .height(px(40.0))
     .on_pointer_down(|_| start_move());
 ```
+
+`set_title` and `set_icon` take effect from any handler, effect or timer, and the latest one wins. `WindowOptions::icon` sets the icon the window opens with. On Wayland the desktop takes the icon from the desktop file that `WindowOptions::app_id` names, and on macOS and the web a window has no icon of its own, so the icon changes nothing there.
 
 `focused()` reads whether the window holds the input focus, and a binding or an effect that reads it reruns when the window comes to the front or goes to the background. The keyboard focus inside the window stays where it is either way. An app with no window to report it, such as a headless test, counts as focused.
 

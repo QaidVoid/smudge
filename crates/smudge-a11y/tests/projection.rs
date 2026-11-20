@@ -1976,3 +1976,18 @@ fn a_link_of_a_disabled_node_runs_nothing() {
     assert!(!app.press_link(owner, index));
     assert_eq!(presses.get(), 0);
 }
+
+#[test]
+fn a_new_title_names_the_window_from_the_next_full_update() {
+    let mut app = app_with(|| Element::new(Panel).role(Role::Group));
+    let mut projection = Projection::new("map.map");
+    update_after_frame(&mut app, &mut projection, true);
+
+    projection.set_title("*map.map");
+    let update = update_after_frame(&mut app, &mut projection, true);
+
+    assert_eq!(
+        node_with_role(&update, AccessKitRole::Window).label(),
+        Some("*map.map")
+    );
+}

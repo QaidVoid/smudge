@@ -220,6 +220,14 @@ pub struct WindowOptions {
     /// the WM_CLASS, so a desktop can match the window to a `.desktop` entry.
     /// On the other platforms the field has no effect.
     pub app_id: Option<String>,
+    /// The window's icon, which
+    /// [`window::set_icon`](smudge_core::window::set_icon) changes while it
+    /// runs.
+    ///
+    /// On Wayland the desktop takes the icon from the desktop file that
+    /// [`app_id`](Self::app_id) names, and on macOS and the web the window
+    /// has no icon, so the field has no effect there.
+    pub icon: Option<smudge_core::image::Image>,
 }
 
 impl Default for WindowOptions {
@@ -241,6 +249,7 @@ impl Default for WindowOptions {
             decorations: true,
             min_size: None,
             app_id: None,
+            icon: None,
         }
     }
 }
@@ -261,6 +270,7 @@ impl std::fmt::Debug for WindowOptions {
             .field("decorations", &self.decorations)
             .field("min_size", &self.min_size)
             .field("app_id", &self.app_id)
+            .field("icon", &self.icon.is_some())
             .finish()
     }
 }
@@ -836,6 +846,7 @@ where
                 f64::from(self.options.size.height),
             ))
             .with_decorations(self.options.decorations)
+            .with_window_icon(self.options.icon.as_ref().and_then(window_icon))
             // The accessibility adapter must be attached before the window is
             // shown, so the window starts hidden and is shown right after.
             .with_visible(false);
@@ -1715,6 +1726,18 @@ impl WindowState {
     /// no handler, because the app ignores the release of a press it ended.
     /// On the web a close does nothing, like the other commands there.
     fn apply_window_commands(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(title) = self.app.take_window_title() {
+            self.window.set_title(&title);
+            #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
+            {
+                self.a11y.set_title(title);
+                self.a11y_full = true;
+            }
+        }
+        if let Some(icon) = self.app.take_window_icon() {
+            self.window
+                .set_window_icon(icon.as_ref().and_then(window_icon));
+        }
         for command in self.app.take_window_commands() {
             match command {
                 WindowCommand::Move => {
@@ -2250,6 +2273,29 @@ fn logical_size(physical: PhysicalSize<u32>, scale: f32) -> Size {
         width: physical.width as f32 / scale,
         height: physical.height as f32 / scale,
     }
+}
+
+/// Converts an image into a window icon, whose pixels the window system
+/// takes as straight RGBA, or `None` when it refuses the size.
+fn window_icon(image: &smudge_core::image::Image) -> Option<winit::window::Icon> {
+    let rgba = straight_rgba(image.pixels());
+    winit::window::Icon::from_rgba(rgba, image.width(), image.height()).ok()
+}
+
+/// Converts premultiplied RGBA8 pixels to straight ones.
+fn straight_rgba(premultiplied: &[u8]) -> Vec<u8> {
+    let mut rgba = premultiplied.to_vec();
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        let alpha = u16::from(pixel[3]);
+        if alpha == 0 {
+            continue;
+        }
+        for channel in &mut pixel[..3] {
+            let straight = (u16::from(*channel) * 255 + alpha / 2) / alpha;
+            *channel = u8::try_from(straight.min(255)).unwrap_or(u8::MAX);
+        }
+    }
+    rgba
 }
 
 /// Maps the app's cursor onto the window system's icon.

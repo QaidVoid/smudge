@@ -9,12 +9,31 @@
 //! - hold the right button to fly: the pointer hides and stays put, and the
 //!   heading and pitch follow the raw motion until the release, Escape or
 //!   a switch to another window frees it;
+//! - watch the title bar, which says whether the pad is flying, and the
+//!   window's icon, a small gradient the example draws;
 //! - Shift+right-click, which the pad leaves to the context menu, or press
 //!   the menu key or Shift+F10 after a click on the pad: the log shows where
 //!   a context menu would open.
 
+use smudge::commands;
+use smudge::core::image::Image;
 use smudge::core::input::{ButtonEvent, Handled, PointerButton};
+use smudge::core::reactive::RenderEffect;
 use smudge::prelude::*;
+
+/// Draws the window's icon: a square that fades from blue to orange.
+fn icon() -> Option<Image> {
+    let size = 32_u32;
+    let mut pixels = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let t = (x + y) * 255 / (2 * (size - 1));
+            let t = u8::try_from(t).unwrap_or(u8::MAX);
+            pixels.extend_from_slice(&[t, 120, 255 - t, 255]);
+        }
+    }
+    Image::from_straight_rgba(size, size, pixels).ok()
+}
 
 /// Describes `event` in a line of the log.
 fn describe(event: &ButtonEvent) -> String {
@@ -54,6 +73,7 @@ fn main() -> Result<(), PlatformError> {
                 height: 360.0,
             },
             clear_color: Color::rgb(16, 17, 21),
+            icon: icon(),
             ..WindowOptions::default()
         },
         move || {
@@ -63,6 +83,14 @@ fn main() -> Result<(), PlatformError> {
             let (where_, how) = (offset.clone(), angles.clone());
             let lock = flying.clone();
             let state = flying.clone();
+            let titled = flying.clone();
+            let _title = RenderEffect::new(move || {
+                commands::set_title(if titled.get() {
+                    "Pointer, flying"
+                } else {
+                    "Pointer"
+                });
+            });
             column()
                 .padding(px(24.0))
                 .gap(Size {

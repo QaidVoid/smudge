@@ -87,6 +87,12 @@ struct Sent {
 }
 
 impl Projection {
+    /// Names the window root `title` from the next update on, which must be
+    /// a full one for the name to reach assistive technology.
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        self.title = title.into();
+    }
+
     /// Creates a projection for a window with `title`.
     pub fn new(title: impl Into<String>) -> Projection {
         Projection {

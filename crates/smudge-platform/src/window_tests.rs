@@ -8,7 +8,9 @@ use smudge_core::element::IntoElement;
 use smudge_core::geometry::{Color, Size};
 use smudge_core::widget::panel;
 
-use super::{WaitDecision, WindowOptions, next_frame_at, run_view, run_with, wait_decision};
+use super::{
+    WaitDecision, WindowOptions, next_frame_at, run_view, run_with, straight_rgba, wait_decision,
+};
 use crate::PlatformError;
 
 /// Returns options with an opaque clear color, so a test only has to change
@@ -93,4 +95,14 @@ fn a_frame_that_ran_late_starts_the_next_at_once_without_catching_up() {
         "a late frame asks for one frame now, not for the frames it missed"
     );
     assert_eq!(next_frame_at(started, period, started + period), None);
+}
+
+#[test]
+fn an_icon_reaches_the_window_system_with_straight_alpha() {
+    let premultiplied = [128, 64, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0];
+
+    assert_eq!(
+        straight_rgba(&premultiplied),
+        [255, 128, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0]
+    );
 }
