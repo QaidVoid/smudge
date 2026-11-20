@@ -226,6 +226,21 @@ fn dropdown_sample() {
         .child(button("Clear").tooltip_text("Clear the canvas"));
 }
 
+#[test]
+fn controls_sample() {
+    use smudge::widgets::{checkbox, number_field, slider, switch};
+
+    let grid = RwSignal::new(true);
+    let snap = RwSignal::new(false);
+    let opacity = RwSignal::new(0.8);
+    let width = RwSignal::new(12.0);
+    let form = column()
+        .child(checkbox("Show the grid", grid))
+        .child(switch("Snap to grid", snap))
+        .child(slider(opacity, 0.0..=1.0, 0.05).accessible_label("Opacity"))
+        .child(number_field("Width", width, 1.0..=512.0, 1.0));
+}
+
 fn stat(title: &'static str, value: RwSignal<u32>) -> Element<Panel> {
     column()
         .padding(px(12.0))

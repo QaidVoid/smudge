@@ -14,17 +14,15 @@ use std::rc::Rc;
 use smudge_core::element::{Element, IntoElement, Placement, Value};
 use smudge_core::geometry::{Point, Size};
 use smudge_core::input::{Handled, Key};
-use smudge_core::paint::PaintOp;
-use smudge_core::path::{LineCap, LineJoin, Path, PathPaint, Stroke};
 use smudge_core::reactive::{Owner, RwSignal, prelude::*};
 use smudge_core::semantics::{Checked, Role};
 use smudge_core::style::{Align, Direction, px};
-use smudge_core::theme::{ColorToken, ColorValue, RadiusToken};
-use smudge_core::tree::Dirty;
-use smudge_core::widget::{PaintCx, Panel, Widget, panel};
+use smudge_core::theme::{ColorToken, RadiusToken};
+use smudge_core::widget::{Panel, panel};
 use smudge_text::label;
 
 use crate::containers::{column, row};
+use crate::marks::{Mark, Shape, mark};
 
 /// What choosing a menu item does.
 #[derive(Clone)]
@@ -178,58 +176,10 @@ fn focusable_now(item: &MenuItem) -> bool {
 /// The width of the column the check mark sits in, in logical pixels.
 const CHECK: f32 = 14.0;
 
-/// The check mark of a check item, in the item's text color.
-struct CheckMark {
-    /// Whether the mark shows.
-    checked: bool,
-}
-
-/// The key of a check mark's binding.
-struct Checks;
-
-impl Widget for CheckMark {
-    /// Strokes a tick across the content box while checked, in the node's
-    /// text color, or the theme's text color without one.
-    fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
-        if !self.checked {
-            return;
-        }
-        let color = cx
-            .style
-            .paint
-            .text_color
-            .unwrap_or(ColorValue::Token(ColorToken::TEXT))
-            .resolve(cx.theme);
-        let area = cx.content;
-        let at = |x: f32, y: f32| Point {
-            x: area.x0 + x * area.width(),
-            y: area.y0 + y * area.height(),
-        };
-        let tick = Path::polyline([at(0.15, 0.55), at(0.4, 0.78), at(0.85, 0.25)]);
-        out.push(PaintOp::Path(Rc::new(PathPaint::stroked(
-            tick,
-            Stroke::new(1.8, color)
-                .with_cap(LineCap::Round)
-                .with_join(LineJoin::Round),
-        ))));
-    }
-}
-
 /// Builds the check mark of a check item that shows while `checked` reads
 /// `true`.
-fn check_mark(checked: RwSignal<bool>) -> Element<CheckMark> {
-    Element::new(CheckMark { checked: false })
-        .bind(
-            Checks,
-            move || checked.get(),
-            |mark, checked| {
-                mark.checked = checked;
-                Dirty::Paint
-            },
-        )
-        .width(px(CHECK))
-        .height(px(CHECK))
-        .shrink(0.0)
+fn check_mark(checked: RwSignal<bool>) -> Element<Mark> {
+    mark(Shape::Check, CHECK, move || checked.get())
 }
 
 /// Builds the menu of `items`, at `level` among the menus open together.

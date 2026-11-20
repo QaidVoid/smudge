@@ -1523,6 +1523,35 @@ impl App {
         self.tree.run_press(id)
     }
 
+    /// Steps the value of `id` one step up, or down when `up` is `false`, as
+    /// a screen reader's increment or decrement action would: it focuses the
+    /// node and presses Up or Down there, which a slider or a spin button
+    /// takes as a step.
+    ///
+    /// A node that cannot take the focus, or that an active focus trap
+    /// keeps the keyboard from, is left alone and `false` is returned.
+    /// `true` means the key reached the node.
+    pub fn step_value(&mut self, id: WidgetId, up: bool) -> bool {
+        if self.tree.behind_trap(id) || !self.request_focus(id) {
+            return false;
+        }
+        let key = if up {
+            crate::input::Key::ArrowUp
+        } else {
+            crate::input::Key::ArrowDown
+        };
+        for pressed in [true, false] {
+            self.handle_event(InputEvent::Key(crate::input::KeyEvent {
+                key: key.clone(),
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::default(),
+                text: None,
+            }));
+        }
+        true
+    }
+
     /// Runs the link at `index` of the links `id` reports, as a screen
     /// reader's press on the link would.
     ///

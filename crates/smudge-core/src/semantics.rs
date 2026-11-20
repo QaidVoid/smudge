@@ -89,6 +89,12 @@ pub enum Role {
     ListBoxOption,
     /// A short text that describes the node it shows over.
     Tooltip,
+    /// A control that picks a number in a range by dragging a thumb along
+    /// a track. Its number is [`Semantics::range`].
+    Slider,
+    /// A field that holds a number in a range, which steps up and down. Its
+    /// number is [`Semantics::range`].
+    SpinButton,
 }
 
 /// Whether a checkbox or a switch is checked.

@@ -2116,3 +2116,28 @@ fn an_overlay_that_opens_and_closes_joins_and_leaves_the_window() {
         "and leaves it when it closes"
     );
 }
+
+#[test]
+fn a_slider_offers_increment_and_decrement_while_it_can_take_the_focus() {
+    let off = RwSignal::new(false);
+    let disabled = off.clone();
+    let mut app = app_with(move || {
+        Element::new(Panel).role(Role::Group).child(
+            Element::new(Panel)
+                .role(Role::Slider)
+                .accessible_label("Volume")
+                .focusable()
+                .disabled(move || disabled.get()),
+        )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let slider = node_with_role(&update, AccessKitRole::Slider);
+    assert!(slider.supports_action(Action::Increment));
+    assert!(slider.supports_action(Action::Decrement));
+
+    off.set(true);
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let slider = node_with_role(&update, AccessKitRole::Slider);
+    assert!(!slider.supports_action(Action::Increment));
+}

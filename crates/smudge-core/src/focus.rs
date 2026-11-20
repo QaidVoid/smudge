@@ -214,6 +214,13 @@ impl WidgetTree {
         false
     }
 
+    /// Returns whether an active focus trap holds the keyboard and `id`
+    /// lies outside it, so a key meant for `id` would reach the trap.
+    pub(crate) fn behind_trap(&self, id: WidgetId) -> bool {
+        self.active_focus_trap()
+            .is_some_and(|trap| !self.is_within(id, trap))
+    }
+
     /// Delivers committed input method text to the focused node.
     ///
     /// The commit walks up from the focused node, like a key event, and the
@@ -350,6 +357,45 @@ impl WidgetTree {
         }
         if let Some(new) = id {
             self.push_a11y(new);
+        }
+        self.run_focus_within(old, id, &[]);
+    }
+
+    /// Runs `on_focus_within` of the nodes the focus left, with `false`,
+    /// deepest first, and of the nodes it entered, with `true`, outermost
+    /// first, as it moves from `old` to `new`, through the hosts of overlays.
+    /// The nodes of `removed`, which are being removed, hear nothing.
+    pub(super) fn run_focus_within(
+        &mut self,
+        old: Option<WidgetId>,
+        new: Option<WidgetId>,
+        removed: &[WidgetId],
+    ) {
+        let before = self.lineage(old);
+        let after = self.lineage(new);
+        let left = before
+            .iter()
+            .filter(|id| !after.contains(id) && !removed.contains(id))
+            .map(|&id| (id, false));
+        let entered = after
+            .iter()
+            .rev()
+            .filter(|id| !before.contains(id))
+            .map(|&id| (id, true));
+        let changes: Vec<(WidgetId, bool)> = left.chain(entered).collect();
+        for (id, inside) in changes {
+            let Some(owner) = self.owner(id).cloned() else {
+                continue;
+            };
+            owner.with(|| {
+                if let Some(handler) = self
+                    .nodes
+                    .get_mut(id)
+                    .and_then(|node| node.handlers.on_focus_within.as_mut())
+                {
+                    handler(inside);
+                }
+            });
         }
     }
 

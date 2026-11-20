@@ -295,6 +295,28 @@ let picker = row()
 
 A press, Enter, Space or Down opens the list on the picked choice, or on the first one when `selected` names none. Up and Down walk it, a letter goes to the next choice that starts with it, and Enter or a press picks one and closes the list, while Escape or a press outside closes it unchanged. An empty list does not open, and a list whose choices change while it is open closes. A screen reader hears a combo box whose value is the picked choice, and whether its list is open.
 
+## Form controls
+
+`checkbox`, `switch`, `slider` and `number_field` bind to signals, draw in the theme's colors, and work from the keyboard:
+
+```rust
+use smudge::widgets::{checkbox, number_field, slider, switch};
+
+let grid = RwSignal::new(true);
+let snap = RwSignal::new(false);
+let opacity = RwSignal::new(0.8);
+let width = RwSignal::new(12.0);
+let form = column()
+    .child(checkbox("Show the grid", grid))
+    .child(switch("Snap to grid", snap))
+    .child(slider(opacity, 0.0..=1.0, 0.05).accessible_label("Opacity"))
+    .child(number_field("Width", width, 1.0..=512.0, 1.0));
+```
+
+A checkbox and a switch toggle on a press, Enter or Space. A slider sets the number under the pointer as it is pressed and dragged, and the arrow keys, Page Up, Page Down, Home and End move it. A number field reads what was typed when Enter is pressed and when the focus leaves it after an edit, moving it onto a step of the range, and Up, Down, the wheel while it holds the focus, and the arrows at its right step it. Its first argument is the name a screen reader hears. Every number a slider or a number field sets lies on a step and inside the range, counted from the range's start, and a screen reader hears each control's role, state and number, and can step a slider or a number field up and down.
+
+A control of your own that checks its input when the user moves on uses `on_focus_within`, which hears the focus enter the node or anything inside it, and leave them all.
+
 ## Writing your own
 
 The button, the containers, the scroll view and the virtual list are composed from `panel`, `label` and the public element builders. A component of your own is the same thing, a function that returns an element:

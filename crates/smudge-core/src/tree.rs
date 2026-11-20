@@ -751,8 +751,9 @@ impl WidgetTree {
         self.overlays
             .retain(|overlay| !order.contains(&overlay.root));
         self.end_holds_of(&order);
-        if self.focused.is_some_and(|focused| order.contains(&focused)) {
+        if let Some(focused) = self.focused.filter(|focused| order.contains(focused)) {
             self.focused = None;
+            self.run_focus_within(Some(focused), None, &order);
         }
         if self.stale_focus.is_some_and(|stale| order.contains(&stale)) {
             self.stale_focus = None;

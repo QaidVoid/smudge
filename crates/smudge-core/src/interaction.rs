@@ -122,6 +122,9 @@ pub(crate) struct Handlers {
     pub(crate) on_ime_preedit: Option<PreeditHandler>,
     /// Runs when the node gains or loses the keyboard focus.
     pub(crate) on_focus: Option<Box<dyn FnMut(bool)>>,
+    /// Runs when the keyboard focus enters the node or its subtree from
+    /// outside, or leaves both.
+    pub(crate) on_focus_within: Option<Box<dyn FnMut(bool)>>,
     /// Runs, while a primary press is held, when the node is the deepest one
     /// under the pointer that sets it. It takes no part in hit testing.
     pub(crate) on_drag_over: Option<Box<dyn FnMut(Point)>>,
@@ -840,7 +843,7 @@ impl WidgetTree {
     /// Returns `target` and every ancestor, deepest first, through the
     /// hosts of overlays, so a node inside an overlay lies inside the node
     /// that opened it.
-    fn lineage(&self, target: Option<WidgetId>) -> Vec<WidgetId> {
+    pub(super) fn lineage(&self, target: Option<WidgetId>) -> Vec<WidgetId> {
         let mut chain = Vec::new();
         let mut next = target;
         while let Some(id) = next {

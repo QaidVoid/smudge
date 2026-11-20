@@ -1562,6 +1562,57 @@ fn a_letter_goes_to_the_next_item_whose_name_starts_with_it() {
     );
 }
 
+#[test]
+fn a_row_steps_with_left_and_right() {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let mut harness = arrow_list(smudge_core::style::Direction::Row, Rc::clone(&log));
+    harness.click(Point { x: 10.0, y: 10.0 });
+
+    harness.press_key(Key::ArrowRight);
+    harness.press_key(Key::ArrowDown);
+    harness.press_key(Key::ArrowLeft);
+
+    assert_eq!(*log.borrow(), ["Apple", "Banana", "Apple"]);
+}
+
+#[test]
+fn focus_within_hears_the_focus_enter_and_leave_but_not_move_inside() {
+    let heard = Rc::new(RefCell::new(Vec::new()));
+    let present = RwSignal::new(true);
+    let (log, here) = (Rc::clone(&heard), present.clone());
+    let mut harness = Harness::new(200.0, 100.0, 1.0, move || {
+        let (log, here) = (Rc::clone(&log), here.clone());
+        panel()
+            .child(
+                panel()
+                    .column()
+                    .on_focus_within(move |inside| log.borrow_mut().push(inside))
+                    .child(panel().width(px(40.0)).height(px(20.0)).focusable())
+                    .child(show(
+                        move || here.get(),
+                        || panel().width(px(40.0)).height(px(20.0)).focusable(),
+                    )),
+            )
+            .child(panel().width(px(40.0)).height(px(20.0)).focusable())
+    });
+    harness.frame();
+
+    harness.click(Point { x: 10.0, y: 10.0 });
+    harness.click(Point { x: 10.0, y: 30.0 });
+    assert_eq!(*heard.borrow(), [true], "moving inside runs nothing");
+    harness.click(Point { x: 60.0, y: 10.0 });
+    assert_eq!(*heard.borrow(), [true, false]);
+
+    harness.click(Point { x: 10.0, y: 30.0 });
+    present.set(false);
+    harness.frame();
+    assert_eq!(
+        *heard.borrow(),
+        [true, false, true, false],
+        "removing the focused node inside takes the focus out"
+    );
+}
+
 /// Returns the accessible name of the node that holds the focus.
 fn focused_name(harness: &mut Harness) -> Option<String> {
     harness
@@ -1676,14 +1727,38 @@ fn a_trap_that_navigates_with_the_arrows_takes_them_with_the_focus_outside() {
 }
 
 #[test]
-fn a_row_steps_with_left_and_right() {
-    let log = Rc::new(RefCell::new(Vec::new()));
-    let mut harness = arrow_list(smudge_core::style::Direction::Row, Rc::clone(&log));
-    harness.click(Point { x: 10.0, y: 10.0 });
+fn a_value_step_behind_a_trap_reaches_nothing() {
+    let shown = RwSignal::new(true);
+    let open = shown.clone();
+    let heard = Rc::new(Cell::new(0u32));
+    let count = Rc::clone(&heard);
+    let mut harness = Harness::new(200.0, 120.0, 1.0, move || {
+        let (open, count) = (open.clone(), Rc::clone(&count));
+        panel()
+            .child(item("Level").on_key(move |event| {
+                if event.pressed {
+                    count.set(count.get() + 1);
+                }
+                Handled::Yes
+            }))
+            .child(show(
+                move || open.get(),
+                || panel().trap_focus().child(item("Dialog").autofocus()),
+            ))
+    });
+    harness.frame();
+    let level = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.label.as_deref() == Some("Level"))
+        .expect("the level shows")
+        .id;
 
-    harness.press_key(Key::ArrowRight);
-    harness.press_key(Key::ArrowDown);
-    harness.press_key(Key::ArrowLeft);
-
-    assert_eq!(*log.borrow(), ["Apple", "Banana", "Apple"]);
+    assert!(!harness.app().step_value(level, true));
+    assert_eq!(heard.get(), 0);
+    shown.set(false);
+    harness.frame();
+    assert!(harness.app().step_value(level, true));
+    assert_eq!(heard.get(), 1, "the press, not the release, counts");
 }

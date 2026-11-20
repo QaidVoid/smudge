@@ -558,6 +558,10 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     if node.focusable {
         out.add_action(accesskit::Action::Focus);
     }
+    if node.focusable && !node.disabled && matches!(node.role, Role::Slider | Role::SpinButton) {
+        out.add_action(accesskit::Action::Increment);
+        out.add_action(accesskit::Action::Decrement);
+    }
     out
 }
 
@@ -697,6 +701,8 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::ListBox => AccessKitRole::ListBox,
         Role::ListBoxOption => AccessKitRole::ListBoxOption,
         Role::Tooltip => AccessKitRole::Tooltip,
+        Role::Slider => AccessKitRole::Slider,
+        Role::SpinButton => AccessKitRole::SpinButton,
         // A role added after this mapping reports as a plain group.
         _ => AccessKitRole::Group,
     }

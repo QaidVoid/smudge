@@ -1420,6 +1420,12 @@ where
                     (accesskit::Action::Focus, _) => {
                         state.app.request_focus(id);
                     }
+                    (accesskit::Action::Increment, _) => {
+                        state.app.step_value(id, true);
+                    }
+                    (accesskit::Action::Decrement, _) => {
+                        state.app.step_value(id, false);
+                    }
                     _ => {}
                 }
                 if state.app.needs_frame() {

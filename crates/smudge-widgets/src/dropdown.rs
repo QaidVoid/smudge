@@ -4,18 +4,17 @@
 use std::rc::Rc;
 
 use smudge_core::element::{Element, Placement};
-use smudge_core::geometry::{Point, Size};
+use smudge_core::geometry::Size;
 use smudge_core::input::{Handled, Key};
-use smudge_core::paint::PaintOp;
-use smudge_core::path::{LineCap, LineJoin, Path, PathPaint, Stroke};
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::Role;
 use smudge_core::style::{Align, Direction, px};
-use smudge_core::theme::{ColorToken, ColorValue, RadiusToken};
-use smudge_core::widget::{PaintCx, Panel, Widget};
+use smudge_core::theme::{ColorToken, RadiusToken};
+use smudge_core::widget::{Panel, Widget};
 use smudge_text::{LabelExt, label};
 
 use crate::containers::{column, row};
+use crate::marks::{Shape, mark};
 
 /// The builder of a tooltip with text.
 pub trait TooltipExt: Sized {
@@ -43,33 +42,6 @@ impl<W: Widget + 'static> TooltipExt for Element<W> {
                 .corner_radius(RadiusToken::SMALL)
                 .child(label(shown.clone()).text_size(12.0))
         })
-    }
-}
-
-/// The arrow at the right of a dropdown, in the field's text color.
-struct Chevron;
-
-impl Widget for Chevron {
-    /// Strokes a downward chevron across the content box.
-    fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
-        let color = cx
-            .style
-            .paint
-            .text_color
-            .unwrap_or(ColorValue::Token(ColorToken::TEXT_MUTED))
-            .resolve(cx.theme);
-        let area = cx.content;
-        let at = |x: f32, y: f32| Point {
-            x: area.x0 + x * area.width(),
-            y: area.y0 + y * area.height(),
-        };
-        let chevron = Path::polyline([at(0.2, 0.35), at(0.5, 0.65), at(0.8, 0.35)]);
-        out.push(PaintOp::Path(Rc::new(PathPaint::stroked(
-            chevron,
-            Stroke::new(1.5, color)
-                .with_cap(LineCap::Round)
-                .with_join(LineJoin::Round),
-        ))));
     }
 }
 
@@ -175,12 +147,7 @@ pub fn dropdown(
             Handled::No
         })
         .child(label(current).grow(1.0))
-        .child(
-            Element::new(Chevron)
-                .width(px(12.0))
-                .height(px(12.0))
-                .shrink(0.0),
-        )
+        .child(mark(Shape::Down, 12.0, true).text_color(ColorToken::TEXT_MUTED))
         .overlay(open, Placement::Below, list)
 }
 

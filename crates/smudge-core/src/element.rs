@@ -2384,6 +2384,28 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Runs `handler` with `true` when the keyboard focus enters this node or
+    /// a node inside it from outside, and with `false` when it leaves them
+    /// all, as a form field that checks its text when the user moves on
+    /// does.
+    ///
+    /// Nodes inside an overlay this node opened count as inside it. Moving
+    /// the focus among the nodes inside runs nothing.
+    ///
+    /// ```
+    /// use smudge_core::widget::panel;
+    ///
+    /// let field = panel().on_focus_within(|inside| {
+    ///     if !inside {
+    ///         // Check what was typed.
+    ///     }
+    /// });
+    /// ```
+    pub fn on_focus_within(mut self, handler: impl FnMut(bool) + 'static) -> Self {
+        self.handlers.on_focus_within = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
     /// Locks the pointer to the window while `locked` reads `true`, for a
     /// view that flies a camera or drags a value past the window's edge.
     ///
