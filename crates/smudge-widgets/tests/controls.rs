@@ -281,7 +281,11 @@ fn a_slider_keeps_to_its_steps_and_range_whatever_it_is_given() {
     let mut harness = window(move || slider(bound.clone(), 0.0..=11.0, -3.0).width(px(204.0)));
     harness.press_key(Key::Tab);
     harness.press_key(Key::End);
-    assert_eq!(value.get(), 9.0, "the last step inside the range");
+    assert_eq!(
+        value.get(),
+        11.0,
+        "End reaches the end whatever the step divides"
+    );
     harness.press_key(Key::ArrowLeft);
     assert_eq!(value.get(), 6.0, "a negative step steps down on Left");
 

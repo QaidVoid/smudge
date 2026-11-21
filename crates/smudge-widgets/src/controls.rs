@@ -1,5 +1,5 @@
 //! Form controls bound to signals: a checkbox, a switch, a radio group, a
-//! slider and a number field.
+//! slider, a range slider and a number field.
 
 use std::cell::Cell;
 use std::ops::RangeInclusive;
@@ -172,8 +172,21 @@ fn snap(value: f64, range: &RangeInclusive<f64>, step: f64) -> f64 {
             stepped
         }
     };
-    let first = on_step(((min - origin) / step).ceil());
-    let last = on_step(((max - origin) / step).floor());
+    // A division can leave the count a hair under its whole number: 0.3
+    // in steps of 0.03 is ten steps, not nine. That hair rounds up.
+    let whole_count = |count: f64| {
+        let whole = count.round();
+        // The hair stays under half a step, so a real half is never
+        // rounding error.
+        let hair = (count.abs() * f64::EPSILON * 8.0).min(0.25);
+        if count != whole && (count - whole).abs() <= hair {
+            whole
+        } else {
+            count
+        }
+    };
+    let first = on_step(whole_count((min - origin) / step).ceil());
+    let last = on_step(whole_count((max - origin) / step).floor());
     if first.is_nan() || last.is_nan() || first > last {
         return value.clamp(min, max);
     }
@@ -208,7 +221,8 @@ impl Widget for SliderArea {
 ///
 /// A press or a drag along the track sets the number under the pointer.
 /// Left and Down step it down, Right and Up step it up, Page Up and Page
-/// Down by ten steps, and Home and End go to the first and the last step.
+/// Down by ten steps, and Home and End go to the ends of the range
+/// whatever the step divides.
 /// Every number it sets lies on a step and inside the range, a negative
 /// step counts as its size, and the steps count from the range's start. A
 /// screen reader hears a slider with its number and range. Give it a name
@@ -258,15 +272,15 @@ pub fn slider(value: RwSignal<f64>, range: RangeInclusive<f64>, step: f64) -> El
     let (press_at, drag_at) = (set_at.clone(), set_at);
     let keys = {
         let (value, range) = (value.clone(), range.clone());
-        move |key: &Key| -> Option<f64> {
+        move |key: &Key| -> Option<(f64, bool)> {
             let current = snap(value.get(), &range, step);
             match key {
-                Key::ArrowLeft | Key::ArrowDown => Some(current - step),
-                Key::ArrowRight | Key::ArrowUp => Some(current + step),
-                Key::PageDown => Some(current - 10.0 * step),
-                Key::PageUp => Some(current + 10.0 * step),
-                Key::Home => Some(*range.start()),
-                Key::End => Some(*range.end()),
+                Key::ArrowLeft | Key::ArrowDown => Some((current - step, false)),
+                Key::ArrowRight | Key::ArrowUp => Some((current + step, false)),
+                Key::PageDown => Some((current - 10.0 * step, false)),
+                Key::PageUp => Some((current + 10.0 * step, false)),
+                Key::Home => Some((*range.start(), true)),
+                Key::End => Some((*range.end(), true)),
                 _ => None,
             }
         }
@@ -303,10 +317,14 @@ pub fn slider(value: RwSignal<f64>, range: RangeInclusive<f64>, step: f64) -> El
         if !event.pressed {
             return Handled::No;
         }
-        let Some(next) = keys(&event.key) else {
+        let Some((next, exact)) = keys(&event.key) else {
             return Handled::No;
         };
-        let next = snap(next, &key_range, step);
+        let next = if exact {
+            next
+        } else {
+            snap(next, &key_range, step)
+        };
         if next.is_finite() && key_value.get() != next {
             key_value.set(next);
         }
@@ -361,6 +379,460 @@ pub fn slider(value: RwSignal<f64>, range: RangeInclusive<f64>, step: f64) -> El
             ),
     )
 }
+
+/// The pointer's offset from the start of a range slider's track, from its
+/// offset from the node's corner. The surface keeps a transparent ring
+/// reserve like every control, so its content starts one ring in.
+fn along_track(x: f32) -> f32 {
+    x - RING - TRACK_INSET
+}
+
+/// Builds one thumb of a [`RangeSlider`] at `share` percent of the way
+/// along the lane both thumbs share.
+fn range_thumb(
+    share: impl Fn() -> f32 + 'static,
+    label: Value<String>,
+    announced: impl Fn() -> ValueRange + 'static,
+    mut steps_with: impl FnMut(&Key) -> bool + 'static,
+    mut grabs: impl FnMut(f32) + 'static,
+    disabled: Value<bool>,
+) -> Element<Panel> {
+    panel()
+        .absolute()
+        .inset(move || Edges {
+            left: Length::Percent(share()),
+            top: px(0.0),
+            right: Length::Auto,
+            bottom: Length::Auto,
+        })
+        .width(px(2.0 * TRACK_INSET))
+        .height(px(16.0))
+        .corner_radius(TRACK_INSET)
+        .background(ColorToken::SURFACE)
+        .border(1.5)
+        .border_color(ColorToken::ACCENT)
+        .focused(|p| p.border_color(ColorToken::FOCUS_RING))
+        .disabled_style(|p| p.opacity(0.5))
+        .role(Role::Slider)
+        .accessible_label(label)
+        .accessible_range(announced)
+        .disabled(disabled)
+        .focusable()
+        .on_pointer_down(move |at| grabs(at.x))
+        .on_key(move |event| {
+            if event.pressed && steps_with(&event.key) {
+                Handled::Yes
+            } else {
+                Handled::No
+            }
+        })
+}
+
+/// The key of the binding that swaps a pair an outside write left crossed,
+/// so no thumb sits past the other while the control is mounted.
+struct Uncross;
+
+/// The builder of a range slider, which [`range_slider`] creates and
+/// [`RangeSlider::step`] and the naming and disabling methods fill.
+pub struct RangeSlider {
+    /// The signal that holds the low thumb's value.
+    low: RwSignal<f64>,
+    /// The signal that holds the high thumb's value.
+    high: RwSignal<f64>,
+    /// The range both thumbs move in.
+    range: RangeInclusive<f64>,
+    /// The size of one arrow step, or `None` for a hundredth of the range.
+    step: Option<f64>,
+    /// The names the thumbs announce, the low one first.
+    names: Option<(Value<String>, Value<String>)>,
+    /// The name the group announces, when the app gave one.
+    name: Option<Value<String>>,
+    /// Whether the control is disabled: the thumbs take neither the focus
+    /// nor a press, and the pointer moves no thumb.
+    disabled: Value<bool>,
+}
+
+impl RangeSlider {
+    /// Returns the slider whose arrows and page keys land on steps of
+    /// `step`, counted from the range's start, and whose presses and drags
+    /// land on the nearest step. Home and End go to the ends of the range
+    /// whatever the step divides. A negative step counts as its size. A
+    /// step that is not finite and positive, and no step at all, is a
+    /// hundredth of the range.
+    pub fn step(mut self, step: f64) -> Self {
+        self.step = Some(step);
+        self
+    }
+
+    /// Names the thumbs, which a screen reader announces, instead of the
+    /// defaults "minimum" and "maximum". The low thumb's name comes first.
+    pub fn accessible_labels(
+        mut self,
+        low: impl Into<Value<String>>,
+        high: impl Into<Value<String>>,
+    ) -> Self {
+        self.names = Some((low.into(), high.into()));
+        self
+    }
+
+    /// Names the group that holds the thumbs, which a screen reader
+    /// announces before them.
+    pub fn accessible_label(mut self, name: impl Into<Value<String>>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Returns the slider with both thumbs disabled while `disabled` reads
+    /// `true`: they take neither the focus nor a press, and the pointer
+    /// moves no thumb.
+    pub fn disabled(mut self, disabled: impl Into<Value<bool>>) -> Self {
+        self.disabled = disabled.into();
+        self
+    }
+}
+
+impl IntoElement for RangeSlider {
+    fn into_any(self) -> AnyElement {
+        let RangeSlider {
+            low,
+            high,
+            range,
+            step,
+            names,
+            name,
+            disabled,
+        } = self;
+        let step = step
+            .map(|step| step.abs())
+            .filter(|step| step.is_finite() && *step > 0.0)
+            .unwrap_or_else(|| (*range.end() - *range.start()).abs() / 100.0);
+        let (low_label, high_label) = names.unwrap_or_else(|| {
+            (
+                Value::Static(String::from("minimum")),
+                Value::Static(String::from("maximum")),
+            )
+        });
+        let width = Rc::new(Cell::new(0.0_f32));
+        let grabbed: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+        let grab_offset: Rc<Cell<f32>> = Rc::new(Cell::new(0.0));
+        let stopped = |high_side: bool, next: f64, stop_at: f64| {
+            if !next.is_finite() {
+                return next;
+            }
+            if high_side {
+                next.max(stop_at)
+            } else {
+                next.min(stop_at)
+            }
+        };
+        let share = {
+            let (low, high, range) = (low.clone(), high.clone(), range.clone());
+            move |high_side: bool| -> f32 {
+                let value = if high_side { high.get() } else { low.get() };
+                let (min, max) = (*range.start(), *range.end());
+                let share = (value - min) / (max - min);
+                if max > min && share.is_finite() {
+                    (share.clamp(0.0, 1.0) * 100.0) as f32
+                } else {
+                    0.0
+                }
+            }
+        };
+        let low_share = {
+            let share = share.clone();
+            move || share(false)
+        };
+        let high_share = move || share(true);
+        let (low_lane, high_lane) = (low_share.clone(), high_share.clone());
+        let place = {
+            let (low, high, range, width) =
+                (low.clone(), high.clone(), range.clone(), Rc::clone(&width));
+            move |high_side: bool, along: f32| {
+                let across = width.get();
+                if across <= 0.0 {
+                    return;
+                }
+                let fraction = f64::from((along / across).clamp(0.0, 1.0));
+                let (min, max) = (*range.start(), *range.end());
+                let next = snap(min + fraction * (max - min), &range, step);
+                let (mine, stop_at) = if high_side {
+                    (high.clone(), low.get())
+                } else {
+                    (low.clone(), high.get())
+                };
+                let next = stopped(high_side, next, stop_at);
+                if next.is_finite() && mine.get() != next {
+                    mine.set(next);
+                }
+            }
+        };
+        let (press_place, drag_place) = (place.clone(), place);
+        let nearer_high = {
+            let (low, high, range, width) =
+                (low.clone(), high.clone(), range.clone(), Rc::clone(&width));
+            move |along: f32| -> bool {
+                let across = width.get();
+                if across <= 0.0 {
+                    return false;
+                }
+                let fraction = f64::from((along / across).clamp(0.0, 1.0));
+                let (min, max) = (*range.start(), *range.end());
+                let at = min + fraction * (max - min);
+                at - low.get() > high.get() - at
+            }
+        };
+        let (press_near, drag_near) = (nearer_high.clone(), nearer_high);
+        // Reports whether the key belongs to the thumb, so a thumb at its
+        // stop still keeps the key from its ancestors.
+        let step_at = {
+            let (low, high, range) = (low.clone(), high.clone(), range.clone());
+            move |high_side: bool, key: &Key| -> bool {
+                let (mine, stop_at) = if high_side {
+                    (high.clone(), low.get())
+                } else {
+                    (low.clone(), high.get())
+                };
+                let raw = mine.get();
+                // An endpoint Home or End wrote can sit off the steps:
+                // outward keys keep it, a step back lands on the nearest
+                // step inside.
+                let at_end = raw == *range.end();
+                let current = snap(raw, &range, step);
+                let off_grid = current != raw;
+                let (headed, exact) = match key {
+                    Key::ArrowRight | Key::ArrowUp | Key::PageUp if at_end => (raw, true),
+                    Key::ArrowLeft | Key::ArrowDown if at_end && off_grid => (current, true),
+                    Key::ArrowLeft | Key::ArrowDown => (current - step, false),
+                    Key::ArrowRight | Key::ArrowUp => (current + step, false),
+                    Key::PageDown => (current - 10.0 * step, false),
+                    Key::PageUp => (current + 10.0 * step, false),
+                    Key::Home => (*range.start(), true),
+                    Key::End => (*range.end(), true),
+                    _ => return false,
+                };
+                let next = if exact {
+                    headed
+                } else {
+                    snap(headed, &range, step)
+                };
+                // A landing that a bound pulled back can lie behind the
+                // value, so a page never carries the thumb the other way.
+                let next = match key {
+                    Key::PageDown if next > raw => raw,
+                    Key::PageUp if next < raw => raw,
+                    _ => next,
+                };
+                let next = stopped(high_side, next, stop_at);
+                if next.is_finite() && mine.get() != next {
+                    mine.set(next);
+                }
+                true
+            }
+        };
+        let (low_steps, high_steps) = {
+            let (step_at, step_at_high) = (step_at.clone(), step_at);
+            (
+                move |key: &Key| step_at(false, key),
+                move |key: &Key| step_at_high(true, key),
+            )
+        };
+        let (low_report, high_report) = (low.clone(), high.clone());
+        let (low_bound, high_bound) = (low.clone(), high.clone());
+        let (low_span, high_span) = (range.clone(), range);
+        let (press_grab, drag_grab, low_grab_src, high_grab_src) = (
+            grabbed.clone(),
+            grabbed.clone(),
+            grabbed.clone(),
+            grabbed.clone(),
+        );
+        let (press_offset, drag_offset, low_offset_src, high_offset_src) = (
+            grab_offset.clone(),
+            grab_offset.clone(),
+            grab_offset.clone(),
+            grab_offset,
+        );
+        // A thumb hears its press in its own frame, where its center
+        // sits half a thumb in from the left.
+        let (low_grab, high_grab) = (
+            move |pointer_x: f32| {
+                low_grab_src.set(Some(false));
+                low_offset_src.set(pointer_x - TRACK_INSET);
+            },
+            move |pointer_x: f32| {
+                high_grab_src.set(Some(true));
+                high_offset_src.set(pointer_x - TRACK_INSET);
+            },
+        );
+        // The ring shows around the focused thumb, so the reserve stays
+        // transparent.
+        let mut area = Element::new(SliderArea {
+            track: Rc::clone(&width),
+        })
+        .height(px(20.0))
+        .min_width(px(80.0))
+        .border(RING)
+        .border_color(Color::TRANSPARENT)
+        .disabled(disabled.clone())
+        .disabled_style(|p| p.opacity(0.5))
+        .role(Role::Group);
+        if let Some(name) = name {
+            area = area.accessible_label(name);
+        }
+        area.bind(
+            Uncross,
+            {
+                let (low, high) = (low.clone(), high.clone());
+                move || {
+                    let (low_value, high_value) = (low.get(), high.get());
+                    if low_value > high_value {
+                        low.set(high_value);
+                        high.set(low_value);
+                    }
+                }
+            },
+            |_, ()| smudge_core::tree::Dirty::Clean,
+        )
+        .keeps_focus()
+        .on_pointer_down(move |at| {
+            let along = along_track(at.x);
+            let which = press_near(along);
+            press_grab.set(Some(which));
+            press_offset.set(0.0);
+            press_place(which, along);
+        })
+        .on_drag(move |step| match step {
+            Drag::Moved(at) => {
+                let along = along_track(at.x) - drag_offset.get();
+                let which = drag_grab.get().unwrap_or_else(|| {
+                    let which = drag_near(along);
+                    drag_grab.set(Some(which));
+                    which
+                });
+                drag_place(which, along);
+                Handled::Yes
+            }
+            // The drag is over, or another observer took it.
+            _ => {
+                drag_grab.set(None);
+                drag_offset.set(0.0);
+                Handled::No
+            }
+        })
+        .child(
+            panel()
+                .absolute()
+                .inset(Edges {
+                    left: px(TRACK_INSET),
+                    right: px(TRACK_INSET),
+                    top: px(6.0),
+                    bottom: Length::Auto,
+                })
+                .height(px(4.0))
+                .corner_radius(2.0)
+                .background(ColorToken::BORDER)
+                .child(
+                    panel()
+                        .absolute()
+                        .inset(move || Edges {
+                            left: Length::Percent(low_share()),
+                            right: Length::Percent(100.0 - high_share()),
+                            top: px(0.0),
+                            bottom: px(0.0),
+                        })
+                        .corner_radius(2.0)
+                        .background(ColorToken::ACCENT),
+                ),
+        )
+        .child(
+            panel()
+                .absolute()
+                .inset(Edges {
+                    left: px(0.0),
+                    right: px(2.0 * TRACK_INSET),
+                    top: px(0.0),
+                    bottom: px(0.0),
+                })
+                // One lane for both circles, so a press lands on the circle under the pointer.
+                .child(range_thumb(
+                    low_lane,
+                    low_label,
+                    move || ValueRange {
+                        value: low_report.get(),
+                        min: *low_span.start(),
+                        max: high_bound.get(),
+                    },
+                    low_steps,
+                    low_grab,
+                    disabled.clone(),
+                ))
+                .child(range_thumb(
+                    high_lane,
+                    high_label,
+                    move || ValueRange {
+                        value: high_report.get(),
+                        min: low_bound.get(),
+                        max: *high_span.end(),
+                    },
+                    high_steps,
+                    high_grab,
+                    disabled,
+                )),
+        )
+        .into_any()
+    }
+}
+
+/// Creates a range slider that picks the low and the high of a pair, bound
+/// to `low` and `high`, with both thumbs moving in `range`.
+///
+/// The two thumbs are one track with the stretch between them filled: a
+/// press on the track moves the thumb it lies nearer to, and a drag moves
+/// the thumb it grabbed. No thumb crosses the other: a drag or a step that
+/// would stops at the thumb it meets, and a write from outside that
+/// crosses the pair swaps the two back. A press on the track leaves the
+/// keyboard focus where it is, so a thumb that holds it keeps it.
+///
+/// Each thumb is its own Tab stop, and the arrows step the thumb the
+/// keyboard is on, Page Up and Page Down by ten steps, and Home and End to
+/// the ends of the range. The arrows and the page keys land on steps of
+/// [`RangeSlider::step`], counted from the range's start, and a press or a
+/// drag lands on the nearest step, or on a hundredth of the range when the
+/// app set no step. A thumb that meets the other stops at whatever value
+/// the other holds, which an app can seed off the steps. The range's ends
+/// should be finite numbers. A screen reader hears a group holding the two
+/// thumbs, each a slider with its value and the stretch it can still move
+/// in, bounded by the other thumb, named "minimum" and "maximum" unless
+/// the app names them with [`RangeSlider::accessible_labels`]. Name the
+/// group itself with [`RangeSlider::accessible_label`]. The builder sets
+/// no style of its own, so the parent that holds it gives it its size.
+///
+/// ```
+/// use smudge_core::reactive::RwSignal;
+/// use smudge_widgets::range_slider;
+///
+/// let (low, high) = (RwSignal::new(20.0), RwSignal::new(80.0));
+/// let filter = range_slider(low, high, 10.0..=100.0).step(5.0);
+/// ```
+#[track_caller]
+pub fn range_slider(
+    low: RwSignal<f64>,
+    high: RwSignal<f64>,
+    range: RangeInclusive<f64>,
+) -> RangeSlider {
+    RangeSlider {
+        low,
+        high,
+        range,
+        step: None,
+        names: None,
+        name: None,
+        disabled: Value::Static(false),
+    }
+}
+
+#[cfg(test)]
+#[path = "controls_tests.rs"]
+mod tests;
 
 /// The key of the binding that shows an outside write to a number field's
 /// number in its text.

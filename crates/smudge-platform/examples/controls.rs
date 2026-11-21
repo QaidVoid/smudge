@@ -1,10 +1,11 @@
-//! Buttons, labels, a text input and a scroll view, to try accessibility by
-//! hand.
+//! Buttons, labels, a text input, sliders and a scroll view, to try
+//! accessibility by hand.
 //!
 //! Run with `cargo run --example controls -p smudge-platform`. A screen
-//! reader announces the two buttons, the field and the list this window
-//! shows: press the buttons with the keyboard, type into the field, and
-//! scroll the list while the reader runs to hear what changes.
+//! reader announces the two buttons, the field, the sliders and the list
+//! this window shows: press the buttons with the keyboard, type into the
+//! field, step the sliders with the arrows and drag or press their tracks
+//! while the reader runs to hear what changes.
 
 use std::process::ExitCode;
 
@@ -21,7 +22,9 @@ use smudge_text::text_input;
 use smudge_widgets::ButtonExt;
 use smudge_widgets::button;
 use smudge_widgets::column;
+use smudge_widgets::range_slider;
 use smudge_widgets::scroll;
+use smudge_widgets::slider;
 
 /// The height of one input field, in logical pixels.
 const FIELD_HEIGHT: f32 = 32.0;
@@ -33,10 +36,15 @@ fn main() -> ExitCode {
     let build = || {
         let clicks = RwSignal::new(0u32);
         let typed = RwSignal::new(String::new());
+        let opacity = RwSignal::new(0.5_f64);
+        let (low, high) = (RwSignal::new(20.0), RwSignal::new(80.0));
         let press_clicks = clicks.clone();
         let reset_clicks = clicks.clone();
         let read_clicks = clicks.clone();
         let read_typed = typed.clone();
+        let read_opacity = opacity.clone();
+        let read_low = low.clone();
+        let read_high = high.clone();
         panel()
             .column()
             .padding(px(24.0))
@@ -69,6 +77,22 @@ fn main() -> ExitCode {
                     format!("You typed: {}", read_typed.get())
                 }
             }))
+            .child(label(move || format!("Opacity: {:.2}", read_opacity.get())))
+            .child(
+                slider(opacity, 0.0..=1.0, 0.05)
+                    .accessible_label("Opacity")
+                    .width(Length::pct(100.0)),
+            )
+            .child(label(move || {
+                format!("Range: {} to {}", read_low.get(), read_high.get())
+            }))
+            .child(
+                column().width(Length::pct(100.0)).child(
+                    range_slider(low, high, 0.0..=100.0)
+                        .step(5.0)
+                        .accessible_labels("Low end", "High end"),
+                ),
+            )
             .child(
                 scroll(
                     column()
