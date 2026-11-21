@@ -1,4 +1,31 @@
 
+## [0.5.0](https://github.com/QaidVoid/smudge/compare/v0.4.0...v0.5.0) - 2026-11-21
+
+### ⛰️  Features
+
+- *(core)* Draw overlays in layers for dialogs and toasts - ([3fbc4e8](https://github.com/QaidVoid/smudge/commit/3fbc4e89a36b20ee5434030386ee2e66eb5ab18b))
+- *(markdown)* Scroll long lines of code sideways - ([eb62cdb](https://github.com/QaidVoid/smudge/commit/eb62cdb6e5d9d7c50fc2891ee80ec414564fbf2f))
+- *(text)* [**breaking**] Add password fields - ([f3807a2](https://github.com/QaidVoid/smudge/commit/f3807a2fb22c06dc6beb772452d32f90182d9c13))
+- *(widgets)* Add toasts - ([748c389](https://github.com/QaidVoid/smudge/commit/748c3893410aac383a8d4bc2a6f4bba690b905f3))
+- *(widgets)* Add modal dialogs - ([94bf1e0](https://github.com/QaidVoid/smudge/commit/94bf1e084ecad88ca1bf90a92f74ef405bf46f05))
+- *(widgets)* [**breaking**] Scroll content wider than the view - ([2b4023c](https://github.com/QaidVoid/smudge/commit/2b4023c6afdb982f38398a51f6fcb24106ac61fb))
+- *(widgets)* Add a horizontal scrollbar - ([676b564](https://github.com/QaidVoid/smudge/commit/676b56427a500353e119d89ea74970faafdb855c))
+- [**breaking**] Mark a field invalid and tell a screen reader why - ([4b38583](https://github.com/QaidVoid/smudge/commit/4b38583cb5b1fc2df9000d46e6df6ad661b0ce0d))
+- Reveal the focus and auto-scroll a drag on both axes - ([c1a962d](https://github.com/QaidVoid/smudge/commit/c1a962d32484f130ce102a3a531a3782209e1f08))
+- Scroll sideways with Shift and pass on what a view cannot use - ([8ef1e05](https://github.com/QaidVoid/smudge/commit/8ef1e05733d0de91f5193dc37c5ce99172505e4d))
+
+### 🐛 Bug Fixes
+
+- *(a11y)* Send a node again when its description or states change - ([e2b881c](https://github.com/QaidVoid/smudge/commit/e2b881c133d67dd1893261446981349abb0cc54e))
+- *(core)* Treat an empty accessible description as none - ([a952485](https://github.com/QaidVoid/smudge/commit/a952485d6776090d5dafdb988a365f7c09870ff7))
+- *(core)* Never fire a timer past what the clock can count - ([15e60da](https://github.com/QaidVoid/smudge/commit/15e60da0867fcc821715999101d4c5b8842dfa29))
+- *(text)* Keep a padded text input's line inside its padding - ([c2f8ed8](https://github.com/QaidVoid/smudge/commit/c2f8ed877a7452f3e8742d0463458027725d7531))
+
+### 📚 Documentation
+
+- Add an example of scrolling on both axes - ([20ee288](https://github.com/QaidVoid/smudge/commit/20ee2887e9f2f892d5e329ec8604f732c2630bab))
+- Bring the README and the limits up to date - ([9b23f6a](https://github.com/QaidVoid/smudge/commit/9b23f6ada3507ea00628d4f9e0231d6d66beca9d))
+
 ## [0.4.0](https://github.com/QaidVoid/smudge/compare/v0.3.0...v0.4.0) - 2026-11-20
 
 ### ⛰️  Features
