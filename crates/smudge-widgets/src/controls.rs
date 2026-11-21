@@ -1,11 +1,11 @@
-//! Form controls bound to signals: a checkbox, a switch, a slider and a
-//! number field.
+//! Form controls bound to signals: a checkbox, a switch, a radio group, a
+//! slider and a number field.
 
 use std::cell::Cell;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
-use smudge_core::element::Element;
+use smudge_core::element::{AnyElement, Element, IntoElement, Value};
 use smudge_core::geometry::{Color, Size};
 use smudge_core::input::{Drag, Handled, Key};
 use smudge_core::paint::PaintOp;
@@ -552,4 +552,240 @@ pub fn number_field(
                 .child(stepper(Shape::Up, 1.0))
                 .child(stepper(Shape::Down, -1.0)),
         )
+}
+
+/// One choice of a [`RadioGroup`].
+struct Choice<T> {
+    /// The value the group's signal holds while this choice is the chosen
+    /// one.
+    value: T,
+    /// The choice's text.
+    label: String,
+    /// Whether the choice is disabled, so it can be neither chosen nor
+    /// focused, and the arrows pass it over.
+    disabled: Value<bool>,
+}
+
+/// The builder of a radio group, which [`radio_group`] creates and
+/// [`RadioGroup::option`] fills.
+pub struct RadioGroup<T: PartialEq + Clone + 'static> {
+    /// The signal that holds the chosen value.
+    selected: RwSignal<T>,
+    /// The choices added so far, in order.
+    choices: Vec<Choice<T>>,
+    /// Whether the choices lay out in a row instead of a column.
+    horizontal: bool,
+    /// The name the app gives the group, or `None` for a group a screen
+    /// reader announces by its choices alone.
+    name: Option<Value<String>>,
+}
+
+impl<T: PartialEq + Clone + 'static> RadioGroup<T> {
+    /// Returns the group with a choice of `value`, shown as `label`, added
+    /// at the end.
+    ///
+    /// The choices keep the order they were added in, which the arrows walk
+    /// and the projection reports each choice's place by.
+    pub fn option(mut self, value: T, label: impl Into<String>) -> Self {
+        self.choices.push(Choice {
+            value,
+            label: label.into(),
+            disabled: Value::Static(false),
+        });
+        self
+    }
+
+    /// Returns the group with a choice of `value`, shown as `label`, added
+    /// at the end, that is disabled while `disabled` reads `true`: it can
+    /// be neither chosen nor focused, and the arrows pass it over.
+    pub fn option_disabled(
+        mut self,
+        value: T,
+        label: impl Into<String>,
+        disabled: impl Into<Value<bool>>,
+    ) -> Self {
+        self.choices.push(Choice {
+            value,
+            label: label.into(),
+            disabled: disabled.into(),
+        });
+        self
+    }
+
+    /// Returns the group with its choices laid out in a row instead of a
+    /// column.
+    pub fn horizontal(mut self) -> Self {
+        self.horizontal = true;
+        self
+    }
+
+    /// Names the group, which a screen reader announces before its choices.
+    pub fn accessible_label(mut self, name: impl Into<Value<String>>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+}
+
+impl<T: PartialEq + Clone + 'static> IntoElement for RadioGroup<T> {
+    fn into_any(self) -> AnyElement {
+        let RadioGroup {
+            selected,
+            choices,
+            horizontal,
+            name,
+        } = self;
+        let count = choices.len();
+        let mut group = if horizontal {
+            row().gap(Size {
+                width: 16.0,
+                height: 0.0,
+            })
+        } else {
+            column().gap(Size {
+                width: 0.0,
+                height: 4.0,
+            })
+        };
+        group = group
+            .role(Role::Group)
+            .accessible_set_size(count)
+            .navigate_with_all_arrows();
+        if let Some(name) = name {
+            group = group.accessible_label(name);
+        }
+        for (index, choice) in choices.into_iter().enumerate() {
+            group = group.child(radio_option(choice, index, selected.clone()));
+        }
+        group.into_any()
+    }
+}
+
+/// Builds one option of a radio group: a circle with a dot while it is the
+/// chosen one, and a label a press chooses by.
+fn radio_option<T: PartialEq + Clone + 'static>(
+    choice: Choice<T>,
+    index: usize,
+    selected: RwSignal<T>,
+) -> Element<Panel> {
+    let Choice {
+        value,
+        label: text,
+        disabled,
+    } = choice;
+    let (fill, stroke, dot, checked, picked, press) = (
+        selected.clone(),
+        selected.clone(),
+        selected.clone(),
+        selected.clone(),
+        selected.clone(),
+        selected.clone(),
+    );
+    let (fill_value, stroke_value, dot_value, checked_value, picked_value) = (
+        value.clone(),
+        value.clone(),
+        value.clone(),
+        value.clone(),
+        value.clone(),
+    );
+    let (press_value, chosen) = (value.clone(), value);
+    let indicator = row()
+        .width(px(16.0))
+        .height(px(16.0))
+        .shrink(0.0)
+        .justify_content(Justify::Center)
+        .align_items(Align::Center)
+        .corner_radius(8.0)
+        .border(1.5)
+        .background(move || {
+            ColorValue::from(if fill.get() == fill_value {
+                ColorToken::ACCENT
+            } else {
+                ColorToken::SURFACE
+            })
+        })
+        .border_color(move || {
+            ColorValue::from(if stroke.get() == stroke_value {
+                ColorToken::ACCENT
+            } else {
+                ColorToken::BORDER
+            })
+        })
+        .child(
+            panel()
+                .width(px(8.0))
+                .height(px(8.0))
+                .shrink(0.0)
+                .corner_radius(4.0)
+                .background(move || {
+                    if dot.get() == dot_value {
+                        ColorValue::from(ColorToken::ACCENT_TEXT)
+                    } else {
+                        ColorValue::Literal(Color::TRANSPARENT)
+                    }
+                }),
+        );
+    row()
+        .gap(Size {
+            width: 8.0,
+            height: 0.0,
+        })
+        .align_items(Align::Center)
+        .padding(px(2.0))
+        .border(RING)
+        .border_color(Color::TRANSPARENT)
+        .corner_radius(RadiusToken::SMALL)
+        .hover(|p| p.background(ColorToken::SURFACE_HOVER))
+        .pressed(|p| p.background(ColorToken::SURFACE_PRESSED))
+        .focused(|p| p.border_color(ColorToken::FOCUS_RING))
+        .disabled_style(|p| p.opacity(0.5))
+        .role(Role::RadioButton)
+        .accessible_label(text.clone())
+        .accessible_checked(move || Checked::from(checked.get() == checked_value))
+        .accessible_selected(move || picked.get() == picked_value)
+        .accessible_position(index)
+        .disabled(disabled)
+        .focusable()
+        .activate_on_keys()
+        .on_press(move || press.set(press_value.clone()))
+        .on_arrow_focus(move || selected.set(chosen.clone()))
+        .child(indicator)
+        .child(label(text))
+}
+
+/// Creates a radio group whose chosen value `selected` holds, which
+/// [`RadioGroup::option`] fills with choices.
+///
+/// The group is one Tab stop: Tab enters it at the chosen choice, or at the
+/// first when no choice matches `selected`, and the next Tab leaves it. The
+/// arrow keys move the choice and the focus together, Down and Right to the
+/// next choice and Up and Left to the one before it, wrapping at the ends,
+/// and a press on a choice, or Enter or Space on the focused one, chooses
+/// it. An arrow whose choice already holds the focus, because it is the
+/// only one enabled or the walk has come back around to it, still chooses
+/// it. A disabled choice can be neither chosen nor focused, and the arrows
+/// pass it over, as does an arrow that reaches a group whose focused choice
+/// was just disabled. A screen reader hears a group, named by
+/// [`RadioGroup::accessible_label`], of radio buttons, the chosen one
+/// checked, each with its place in the set of choices.
+///
+/// ```
+/// use smudge_core::reactive::RwSignal;
+/// use smudge_widgets::radio_group;
+///
+/// # #[derive(Clone, PartialEq)]
+/// # enum Size { Small, Large }
+/// let size = RwSignal::new(Size::Small);
+/// let group = radio_group(size)
+///     .option(Size::Small, "Small")
+///     .option(Size::Large, "Large")
+///     .accessible_label("Brush size");
+/// ```
+#[track_caller]
+pub fn radio_group<T: PartialEq + Clone + 'static>(selected: RwSignal<T>) -> RadioGroup<T> {
+    RadioGroup {
+        selected,
+        choices: Vec::new(),
+        horizontal: false,
+        name: None,
+    }
 }

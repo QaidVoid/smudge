@@ -61,6 +61,10 @@ pub enum Role {
     /// [`Semantics::checked`], without which a screen reader announces no
     /// state. One without a press handler reads as read only.
     Switch,
+    /// One choice of a set of which exactly one is chosen. Its state is
+    /// [`Semantics::checked`], without which a screen reader announces no
+    /// state. One without a press handler reads as read only.
+    RadioButton,
     /// A link that a press follows. One with no name of its own is named by
     /// its text.
     Link,

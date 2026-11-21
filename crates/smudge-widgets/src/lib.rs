@@ -44,7 +44,7 @@ mod virtual_list_keyed;
 pub use button::{ButtonExt, button};
 pub use canvas::{Canvas, Painter, canvas};
 pub use containers::{column, row, spacer, stack};
-pub use controls::{SliderArea, checkbox, number_field, slider, switch};
+pub use controls::{RadioGroup, SliderArea, checkbox, number_field, radio_group, slider, switch};
 pub use dropdown::{TooltipExt, dropdown};
 pub use image::{ImageView, image};
 pub use menu::{

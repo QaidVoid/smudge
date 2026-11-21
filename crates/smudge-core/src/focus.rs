@@ -171,12 +171,12 @@ impl WidgetTree {
             }
             if arrows_here
                 && !arrows_seen
-                && let Some(axis) = self.nodes.get(id).and_then(|node| node.handlers.arrows)
+                && let Some(nav) = self.nodes.get(id).and_then(|node| node.handlers.arrows)
             {
                 arrows_seen = true;
                 if !self.within_overlay(id) {
-                    deferred = Some((id, axis));
-                } else if self.navigate_in(id, axis, event) {
+                    deferred = Some((id, nav));
+                } else if self.navigate_in(id, nav, event) {
                     return Handled::Yes;
                 }
             }
@@ -213,8 +213,8 @@ impl WidgetTree {
                 return Handled::No;
             }
         }
-        if let Some((container, axis)) = deferred
-            && self.navigate_in(container, axis, event)
+        if let Some((container, nav)) = deferred
+            && self.navigate_in(container, nav, event)
         {
             return Handled::Yes;
         }
@@ -534,11 +534,15 @@ impl WidgetTree {
     /// children are still visited, matching hit testing. While a focus trap
     /// is mounted, the order holds only the focusable nodes inside it, so a
     /// Tab press from outside the trap enters it and one inside it never
-    /// leaves.
+    /// leaves. The tree's top collapses like any container that navigates
+    /// with the arrows, so a tree that is one radio group Tab enters at its
+    /// chosen node, while the top of a trap and of an overlay keeps walking
+    /// its own nodes, so an open menu keeps cycling.
     fn next_focusable(&self, from: Option<WidgetId>, backwards: bool) -> Option<WidgetId> {
         let mut order = Vec::new();
-        if let Some(scope) = self.active_focus_trap().or(self.root) {
-            self.collect_tab_stops(scope, true, &mut order);
+        let trap = self.active_focus_trap();
+        if let Some(scope) = trap.or(self.root) {
+            self.collect_tab_stops(scope, trap.is_some(), &mut order);
             for top in self.overlays_within(scope) {
                 self.collect_tab_stops(top, true, &mut order);
             }
@@ -756,7 +760,7 @@ impl WidgetTree {
                 continue;
             }
             let mut order = Vec::new();
-            self.collect_tab_stops(id, true, &mut order);
+            self.collect_tab_stops(id, false, &mut order);
             for top in self.overlays_within(id) {
                 self.collect_tab_stops(top, true, &mut order);
             }
@@ -954,22 +958,29 @@ impl WidgetTree {
         false
     }
 
-    /// Moves the focus among the focusable nodes inside `container` along
-    /// `axis`, as `event` asks, and returns whether it moved.
+    /// Moves the focus among the focusable nodes inside `container` as
+    /// `nav` and `event` ask, and returns whether it moved.
     ///
-    /// The arrows along the axis step to the next or the previous focusable
-    /// node inside it, in paint order and wrapping at both ends, Home and
-    /// End go to the first and the last, and a letter goes to the next one
-    /// whose accessible name starts with it. With the focus outside the
+    /// Along an [`ArrowNav::Axis`] the arrows of that axis step to the next
+    /// or the previous focusable node inside it; with
+    /// [`ArrowNav::Linear`] every arrow steps: Down and Right to the next,
+    /// Up and Left to the previous. Both wrap at the ends, Home and End go
+    /// to the first and the last, and a letter goes to the next one whose
+    /// accessible name starts with it. With the focus outside the
     /// container, as on the node that opened a menu, the first step goes to
     /// the first node or the last. Disabled and hidden nodes are passed
-    /// over, and so are the overlays the container's content opened.
+    /// over, and so are the overlays the container's content opened. An
+    /// [`on_arrow_focus`](crate::element::Element::on_arrow_focus) handler
+    /// of the node each landing resolves to runs before the focus moves,
+    /// even when it already holds the focus.
     fn navigate_in(
         &mut self,
         container: WidgetId,
-        axis: crate::style::Direction,
+        nav: super::interaction::ArrowNav,
         event: &KeyEvent,
     ) -> bool {
+        use super::interaction::ArrowNav;
+        use crate::style::Direction;
         if !event.pressed {
             return false;
         }
@@ -988,14 +999,25 @@ impl WidgetTree {
             None if forward => 0,
             None => last,
         };
-        let vertical = axis == crate::style::Direction::Column;
         let target = match &event.key {
-            Key::ArrowDown if vertical => step(true),
-            Key::ArrowUp if vertical => step(false),
-            Key::ArrowRight if !vertical => step(true),
-            Key::ArrowLeft if !vertical => step(false),
-            Key::Home => 0,
-            Key::End => last,
+            Key::ArrowDown => match nav {
+                ArrowNav::Axis(Direction::Column) | ArrowNav::Linear => Some(step(true)),
+                ArrowNav::Axis(Direction::Row) => None,
+            },
+            Key::ArrowUp => match nav {
+                ArrowNav::Axis(Direction::Column) | ArrowNav::Linear => Some(step(false)),
+                ArrowNav::Axis(Direction::Row) => None,
+            },
+            Key::ArrowRight => match nav {
+                ArrowNav::Axis(Direction::Row) | ArrowNav::Linear => Some(step(true)),
+                ArrowNav::Axis(Direction::Column) => None,
+            },
+            Key::ArrowLeft => match nav {
+                ArrowNav::Axis(Direction::Row) | ArrowNav::Linear => Some(step(false)),
+                ArrowNav::Axis(Direction::Column) => None,
+            },
+            Key::Home => Some(0),
+            Key::End => Some(last),
             Key::Character(text)
                 if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta =>
             {
@@ -1011,18 +1033,29 @@ impl WidgetTree {
                         .is_some_and(|first| first.to_lowercase().eq(letter.to_lowercase()))
                 };
                 let from = at.map_or(0, |at| at + 1);
-                let Some(found) = (0..order.len())
+                (0..order.len())
                     .map(|offset| (from + offset) % order.len())
                     .find(|&index| starts(order[index]))
-                else {
-                    return false;
-                };
-                found
             }
-            _ => return false,
+            _ => None,
         };
+        let Some(target) = target else {
+            return false;
+        };
+        let landing = order[target];
+        if let Some(owner) = self.owner(landing).cloned() {
+            owner.with(|| {
+                if let Some(on_arrow_focus) = self
+                    .nodes
+                    .get_mut(landing)
+                    .and_then(|node| node.handlers.on_arrow_focus.as_mut())
+                {
+                    on_arrow_focus();
+                }
+            });
+        }
         self.set_keyboard_nav(true);
-        self.request_focus(order[target])
+        self.request_focus(landing)
     }
 
     /// Returns where the focus goes when the trap at `node` ends: the node

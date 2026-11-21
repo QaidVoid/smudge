@@ -2295,7 +2295,74 @@ impl<W: Widget> Element<W> {
     ///     .child(panel().height(px(20.0)).focusable().accessible_label("Banana"));
     /// ```
     pub fn navigate_with_arrows(mut self, axis: Direction) -> Self {
-        self.handlers.arrows = Some(axis);
+        self.handlers.arrows = Some(crate::tree::interaction::ArrowNav::Axis(axis));
+        self
+    }
+
+    /// Moves the focus among the focusable nodes inside this one with every
+    /// arrow key, as a radio group does.
+    ///
+    /// The arrows all walk the same order, wrapping at both ends: Down and
+    /// Right go to the next node, Up and Left to the one before it, and
+    /// Home and End go to the first and the last. Disabled and hidden nodes
+    /// are passed over, and a letter goes to the next node whose accessible
+    /// name starts with it, exactly as
+    /// [`navigate_with_arrows`](Self::navigate_with_arrows) walks them along
+    /// one axis. Tab also stops once inside the node, at the node that
+    /// holds the focus there, or else the one marked selected with
+    /// [`accessible_selected`](Element::accessible_selected), or else the
+    /// first. Only the nearest such node around the focus moves it, and a
+    /// nested one keeps its keys, as
+    /// [`navigate_with_arrows`](Self::navigate_with_arrows) does.
+    ///
+    /// ```
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let group = panel()
+    ///     .column()
+    ///     .navigate_with_all_arrows()
+    ///     .child(panel().height(px(20.0)).focusable().accessible_label("Day"))
+    ///     .child(panel().height(px(20.0)).focusable().accessible_label("Night"));
+    /// ```
+    pub fn navigate_with_all_arrows(mut self) -> Self {
+        self.handlers.arrows = Some(crate::tree::interaction::ArrowNav::Linear);
+        self
+    }
+
+    /// Reports that the arrows of a container around this node just chose
+    /// this one to land the focus on.
+    ///
+    /// Pairs with [`navigate_with_arrows`](Self::navigate_with_arrows) or
+    /// [`navigate_with_all_arrows`](Self::navigate_with_all_arrows) on a
+    /// container around this node: when a key of theirs resolves to this
+    /// node, the handler runs before the focus moves, and even when this
+    /// node already holds the focus, so an arrow whose landing is where the
+    /// focus already is still reports it. What the handler does stays in
+    /// the node's own hands, so a radio choice that lands chooses itself by
+    /// the value it was built with.
+    ///
+    /// ```
+    /// use smudge_core::reactive::{RwSignal, prelude::*};
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let picked = RwSignal::new(0_usize);
+    /// let (day, night) = (picked.clone(), picked.clone());
+    /// let list = panel()
+    ///     .column()
+    ///     .navigate_with_all_arrows()
+    ///     .child(
+    ///         panel().height(px(20.0)).focusable().accessible_label("Day")
+    ///             .on_arrow_focus(move || day.set(0)),
+    ///     )
+    ///     .child(
+    ///         panel().height(px(20.0)).focusable().accessible_label("Night")
+    ///             .on_arrow_focus(move || night.set(1)),
+    ///     );
+    /// ```
+    pub fn on_arrow_focus(mut self, handler: impl FnMut() + 'static) -> Self {
+        self.handlers.on_arrow_focus = Some(Box::new(crate::hot::wrap_mut(handler)));
         self
     }
 

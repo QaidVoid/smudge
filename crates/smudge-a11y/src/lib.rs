@@ -543,7 +543,7 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     }
     if matches!(
         node.role,
-        Role::CheckBox | Role::Switch | Role::MenuItemCheckBox
+        Role::CheckBox | Role::Switch | Role::RadioButton | Role::MenuItemCheckBox
     ) && !node.pressable
     {
         out.set_read_only();
@@ -700,6 +700,7 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::Splitter => AccessKitRole::Splitter,
         Role::CheckBox => AccessKitRole::CheckBox,
         Role::Switch => AccessKitRole::Switch,
+        Role::RadioButton => AccessKitRole::RadioButton,
         Role::ProgressBar => AccessKitRole::ProgressIndicator,
         Role::Link => AccessKitRole::Link,
         Role::Heading => AccessKitRole::Heading,

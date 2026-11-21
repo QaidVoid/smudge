@@ -142,7 +142,7 @@ impl WidgetTree {
         let trap = self.active_focus_trap();
         let mut order = Vec::new();
         if let Some(scope) = trap.or(self.root) {
-            self.collect_tab_stops(scope, true, &mut order);
+            self.collect_tab_stops(scope, trap.is_some(), &mut order);
             for top in self.overlays_within(scope) {
                 self.collect_tab_stops(top, true, &mut order);
             }

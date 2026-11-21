@@ -77,6 +77,26 @@ fn node_with_role(update: &accesskit::TreeUpdate, role: AccessKitRole) -> &acces
     &matches[0].1
 }
 
+/// Returns the accesskit node with `role` and `label`, failing the test when
+/// there is not exactly one.
+fn node_with_label<'a>(
+    update: &'a accesskit::TreeUpdate,
+    role: AccessKitRole,
+    label: &str,
+) -> &'a accesskit::Node {
+    let matches: Vec<_> = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == role && node.label() == Some(label))
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "exactly one node has the role {role:?} named {label:?}"
+    );
+    &matches[0].1
+}
+
 /// Returns the node id the projection assigned to the node with `role`.
 fn id_with_role(update: &accesskit::TreeUpdate, role: AccessKitRole) -> NodeId {
     let matches: Vec<_> = update
@@ -773,6 +793,64 @@ fn a_checkbox_reports_a_mixed_state() {
     assert_eq!(
         checkbox.label().map(str::to_owned),
         Some("Select all".to_owned())
+    );
+}
+
+#[test]
+fn a_radio_button_reports_its_state_its_place_and_its_set() {
+    let chosen = RwSignal::new(1_usize);
+    let mut app = app_with(|| {
+        let (small, medium) = (chosen.clone(), chosen.clone());
+        Element::new(Panel)
+            .role(Role::Group)
+            .accessible_label("Size")
+            .accessible_set_size(3)
+            .child(
+                Element::new(Panel)
+                    .role(Role::RadioButton)
+                    .accessible_label("Small")
+                    .accessible_checked(move || Checked::from(small.get() == 0))
+                    .accessible_position(0)
+                    .on_press(|| {}),
+            )
+            .child(
+                Element::new(Panel)
+                    .role(Role::RadioButton)
+                    .accessible_label("Medium")
+                    .accessible_checked(move || Checked::from(medium.get() == 1))
+                    .accessible_position(1),
+            )
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let group = node_with_label(&update, AccessKitRole::Group, "Size");
+    assert_eq!(
+        group.size_of_set(),
+        Some(3),
+        "the size of the set lives on the container"
+    );
+    let small = node_with_label(&update, AccessKitRole::RadioButton, "Small");
+    assert_eq!(small.toggled(), Some(Toggled::False));
+    assert_eq!(small.label(), Some("Small"));
+    assert_eq!(small.position_in_set(), Some(0));
+    assert_eq!(small.size_of_set(), None);
+    assert!(!small.is_read_only(), "a press handler makes it operable");
+
+    let medium = node_with_label(&update, AccessKitRole::RadioButton, "Medium");
+    assert_eq!(medium.toggled(), Some(Toggled::True));
+    assert_eq!(medium.position_in_set(), Some(1));
+    assert!(
+        medium.is_read_only(),
+        "a radio without a press handler reads as read only"
+    );
+
+    chosen.set(2);
+    let update = update_after_frame(&mut app, &mut projection, false);
+    let medium = node_with_label(&update, AccessKitRole::RadioButton, "Medium");
+    assert_eq!(
+        medium.toggled(),
+        Some(Toggled::False),
+        "a value no option holds checks none"
     );
 }
 

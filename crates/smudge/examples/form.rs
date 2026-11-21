@@ -1,9 +1,10 @@
-//! Two inputs, a submit button and a live preview: how a two-way input
-//! binding feeds the widgets around it.
+//! Two inputs, a plan to pick and a submit button, with a live preview:
+//! how a two-way input binding feeds the widgets around it.
 //!
 //! Run with `cargo run --example form -p smudge`.
 
 use smudge::prelude::*;
+use smudge::widgets::radio_group;
 
 /// The height of one input field, in logical pixels.
 const FIELD_HEIGHT: f32 = 32.0;
@@ -11,15 +12,33 @@ const FIELD_HEIGHT: f32 = 32.0;
 /// The border color of an input field.
 const FIELD_BORDER: Color = Color::rgb(70, 74, 88);
 
+/// The plan the form's radio group picks.
+#[derive(Clone, PartialEq)]
+enum Plan {
+    Free,
+    Pro,
+}
+
+/// Returns the name `plan` shows.
+fn plan_name(plan: &Plan) -> &'static str {
+    match plan {
+        Plan::Free => "Free",
+        Plan::Pro => "Pro",
+    }
+}
+
 fn main() -> Result<(), PlatformError> {
     let name = RwSignal::new(String::new());
     let email = RwSignal::new(String::new());
+    let plan = RwSignal::new(Plan::Free);
     let submitted = RwSignal::new(String::new());
 
     let preview_name = name.clone();
     let preview_email = email.clone();
+    let preview_plan = plan.clone();
     let submit_name = name.clone();
     let submit_email = email.clone();
+    let submit_plan = plan.clone();
     let shown_submitted = submitted.clone();
 
     run_with(
@@ -27,7 +46,7 @@ fn main() -> Result<(), PlatformError> {
             title: String::from("Smudge form"),
             size: Size {
                 width: 380.0,
-                height: 300.0,
+                height: 360.0,
             },
             clear_color: Color::rgb(16, 17, 21),
             ..WindowOptions::default()
@@ -65,20 +84,32 @@ fn main() -> Result<(), PlatformError> {
                         .border(1.0)
                         .border_color(FIELD_BORDER),
                 )
+                .child(
+                    radio_group(plan)
+                        .option(Plan::Free, "Free")
+                        .option(Plan::Pro, "Pro")
+                        .accessible_label("Plan"),
+                )
                 .child(button("Submit").primary().on_press(move || {
+                    let chosen = submit_plan.get();
                     submitted.set(format!(
-                        "Submitted {} <{}>",
+                        "Submitted {} <{}> on the {} plan",
                         submit_name.get(),
-                        submit_email.get()
+                        submit_email.get(),
+                        plan_name(&chosen),
                     ));
                 }))
                 .child(label(move || {
                     let name = preview_name.get();
                     let email = preview_email.get();
+                    let chosen = preview_plan.get();
                     if name.is_empty() && email.is_empty() {
                         String::from("Type a name and an email")
                     } else {
-                        format!("Preview: {name} <{email}>")
+                        format!(
+                            "Preview: {name} <{email}> on the {} plan",
+                            plan_name(&chosen)
+                        )
                     }
                 }))
                 .child(label(move || match shown_submitted.get().as_str() {

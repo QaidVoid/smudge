@@ -166,13 +166,31 @@ pub(crate) struct Handlers {
     /// [`on_press`](Self::on_press) handler, which is how a button fires from
     /// the keyboard.
     pub(crate) activate_on_keys: bool,
-    /// The axis along which the arrow keys move the focus among the
-    /// focusable nodes inside this one, when they do.
-    pub(crate) arrows: Option<crate::style::Direction>,
+    /// How the arrow keys move the focus among the focusable nodes inside
+    /// this one, when they do.
+    pub(crate) arrows: Option<ArrowNav>,
+    /// Runs when the arrows of a container around this node land the focus
+    /// on this one, set by
+    /// [`Element::on_arrow_focus`](crate::element::Element::on_arrow_focus).
+    pub(crate) on_arrow_focus: Option<Box<dyn FnMut()>>,
     /// What the library builds on the node watches of its hover and its
     /// presses beside the app's own handlers, boxed since few nodes have
     /// any.
     pub(crate) watchers: Option<Box<Watchers>>,
+}
+
+/// The keys a node set up with
+/// [`navigate_with_arrows`](crate::element::Element::navigate_with_arrows)
+/// or [`navigate_with_all_arrows`](crate::element::Element::navigate_with_all_arrows)
+/// answers the arrows with.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) enum ArrowNav {
+    /// The arrows along one layout axis move the focus: Down and Up through
+    /// a column, Right and Left through a row.
+    Axis(crate::style::Direction),
+    /// Every arrow moves the focus in one order: Down and Right to the next
+    /// node, Up and Left to the one before it, as a radio group does.
+    Linear,
 }
 
 /// Closures that watch a node's hover and presses beside its handlers, so
