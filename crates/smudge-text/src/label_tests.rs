@@ -38,6 +38,8 @@ fn painted_glyphs(label: &Label) -> Vec<(u32, f32, f32)> {
         content: rect,
         style: &style,
         theme: &theme,
+        now: 0.0,
+        reduced_motion: false,
     };
     let mut ops = Vec::new();
     label.paint(&cx, &mut ops);

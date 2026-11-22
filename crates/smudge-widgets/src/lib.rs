@@ -45,8 +45,8 @@ pub use button::{ButtonExt, button};
 pub use canvas::{Canvas, Painter, canvas};
 pub use containers::{column, row, spacer, stack};
 pub use controls::{
-    NumberField, RadioGroup, RangeSlider, SliderArea, checkbox, number_field, radio_group,
-    range_slider, slider, switch,
+    NumberField, Progress, RadioGroup, RangeSlider, SliderArea, Spinner, checkbox, number_field,
+    progress, radio_group, range_slider, slider, spinner, switch,
 };
 pub use dropdown::{TooltipExt, dropdown};
 pub use image::{ImageView, image};

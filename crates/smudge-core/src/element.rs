@@ -174,6 +174,18 @@ impl From<Option<u32>> for Value<Option<u32>> {
     }
 }
 
+impl From<f32> for Value<Option<f32>> {
+    fn from(fraction: f32) -> Value<Option<f32>> {
+        Value::Static(Some(fraction))
+    }
+}
+
+impl From<Option<f32>> for Value<Option<f32>> {
+    fn from(fraction: Option<f32>) -> Value<Option<f32>> {
+        Value::Static(fraction)
+    }
+}
+
 impl From<u32> for Value<u32> {
     fn from(value: u32) -> Value<u32> {
         Value::Static(value)

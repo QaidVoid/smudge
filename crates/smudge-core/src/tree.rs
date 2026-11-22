@@ -455,12 +455,16 @@ pub(crate) struct WidgetTree {
     /// The time the paint pass moves springs to, the frame's time on the
     /// app's clock.
     now: Instant,
+    /// The app clock's time the tree came up at, the zero its animation
+    /// time counts from.
+    started: Instant,
     /// Whether springs jump to their targets instead of moving.
     reduced_motion: bool,
     /// Whether a node has ever mounted with a transition.
     transitions_mounted: bool,
-    /// The nodes whose springs were still moving at their last paint, which
-    /// the next frame paints again.
+    /// The nodes whose motion was still moving at their last paint, a
+    /// spring or a widget that animates, which the next frame paints
+    /// again.
     animating: Vec<WidgetId>,
     /// The list the next frame's animating nodes are taken into, kept so
     /// its capacity is reused.
@@ -517,6 +521,7 @@ impl WidgetTree {
             a11y_tops: Vec::new(),
             announcements: Vec::new(),
             now: Instant::now(),
+            started: Instant::now(),
             reduced_motion: false,
             transitions_mounted: false,
             animating: Vec::new(),
@@ -1045,9 +1050,26 @@ impl WidgetTree {
         self.now = now;
     }
 
-    /// Sets whether springs jump to their targets instead of moving.
+    /// Sets the app clock's time the tree's animation time counts from, so
+    /// a frame's animation time is the clock's own span, which a test that
+    /// advances the clock by hand moves exactly.
+    pub(crate) fn set_epoch(&mut self, started: Instant) {
+        self.started = started;
+    }
+
+    /// Sets whether springs jump to their targets instead of moving. A
+    /// flip repaints every node once, so the widgets that take their still
+    /// or moving look from the flag change at once, and those whose motion
+    /// resumes rejoin the frames the window paces.
     pub(crate) fn set_reduced_motion(&mut self, reduced: bool) {
+        if self.reduced_motion == reduced {
+            return;
+        }
         self.reduced_motion = reduced;
+        let ids: Vec<WidgetId> = self.nodes.keys().collect();
+        for id in ids {
+            self.mark(id, Dirty::Paint);
+        }
     }
 
     /// Whether a spring was still moving at the last paint, so the next
@@ -1160,8 +1182,8 @@ impl WidgetTree {
         self.exited = exited;
     }
 
-    /// Queues for paint every node whose springs were still moving at the
-    /// last paint.
+    /// Queues for paint every node whose motion was still moving at the
+    /// last paint, a spring or a widget that animates.
     ///
     /// The nodes are queued for paint alone, without the accessibility
     /// update a repaint of a projected node queues, since motion changes no

@@ -33,6 +33,8 @@ fn painted(timeline: Timeline) -> Vec<PaintOp> {
             content: rect,
             style: &style,
             theme: &theme,
+            now: 0.0,
+            reduced_motion: false,
         },
         &mut out,
     );

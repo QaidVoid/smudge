@@ -1,0 +1,6 @@
+---
+source: crates/smudge-widgets/tests/progress.rs
+expression: "still_window(Theme::light()).png()"
+extension: png
+snapshot_kind: binary
+---

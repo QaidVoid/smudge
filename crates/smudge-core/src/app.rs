@@ -288,6 +288,7 @@ impl App {
             .replace(Some(Rc::downgrade(&hooks)));
         let mut tree = WidgetTree::new();
         tree.set_scale(config.scale);
+        tree.set_epoch(timers.borrow().clock.now());
         let queue = UpdateQueue::default();
         let build_owner = root.child();
         {
@@ -767,7 +768,10 @@ impl App {
         self.set_clear_color(clear);
     }
 
-    /// Makes springs show every new value at once, or move again.
+    /// Makes springs show every new value at once, or move again, and
+    /// stills or resumes the widgets that animate, whose pulses arm and
+    /// retire with it. Widgets read the setting through
+    /// [`crate::window::reduced_motion`].
     ///
     /// With reduced motion, a node with a
     /// [`transition`](crate::element::Element::transition) paints a changed
@@ -798,6 +802,7 @@ impl App {
     pub fn set_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion_app = Some(reduced);
         self.tree.set_reduced_motion(self.reduced_motion());
+        crate::window::set_reduced_motion(&self.window, self.reduced_motion());
     }
 
     /// Reports whether the system asks for reduced motion.
@@ -808,6 +813,7 @@ impl App {
     pub fn set_system_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion_system = reduced;
         self.tree.set_reduced_motion(self.reduced_motion());
+        crate::window::set_reduced_motion(&self.window, self.reduced_motion());
     }
 
     /// Whether springs show every new value at once: the app's own choice
@@ -827,11 +833,12 @@ impl App {
         self.tree.transitions_mounted()
     }
 
-    /// Whether a spring is still moving, so the next frame has motion to
-    /// paint.
+    /// Whether anything still moves, so the next frame has motion to
+    /// paint: a spring that has not arrived, or a widget whose
+    /// [`animating`](crate::widget::Widget::animating) reports true.
     ///
     /// A window keeps drawing paced frames while it is true, as it does for
-    /// a tick, and goes idle once every spring has arrived.
+    /// a tick, and goes idle once every motion has finished.
     pub fn is_animating(&self) -> bool {
         self.tree.is_animating()
     }
@@ -1215,7 +1222,8 @@ impl App {
     /// 3. Reactive effects and the updates they queue, until neither has work
     ///    left. A signal write therefore lands before layout, including one a
     ///    channel handler or a timer made at the start of the frame.
-    /// 4. The nodes whose springs were still moving, which repaint. Then the
+    /// 4. The nodes whose motion was still moving at their last paint, a
+    ///    spring or a widget that animates, which repaint. Then the
     ///    layout pass, which runs the layout engine only when a node needs
     ///    it.
     /// 5. The paint pass, which regenerates the operations of the nodes that

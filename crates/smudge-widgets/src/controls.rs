@@ -1,21 +1,25 @@
 //! Form controls bound to signals: a checkbox, a switch, a radio group, a
-//! slider, a range slider and a number field.
+//! slider, a range slider, a number field, a progress bar and a spinner.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::RangeInclusive;
 use std::rc::Rc;
+use std::time::Duration;
 
 use smudge_core::element::{AnyElement, Element, IntoElement, Value};
-use smudge_core::geometry::{Color, Point, Size};
+use smudge_core::geometry::{Color, Corners, Point, Rect, Size};
 use smudge_core::input::{ButtonEvent, Drag, Handled, Key, PointerButton};
 use smudge_core::paint::PaintOp;
+use smudge_core::path::{LineCap, LineJoin, Path, PathPaint, Stroke};
 use smudge_core::reactive::{RwSignal, prelude::*};
-use smudge_core::semantics::{Checked, Role, ValueRange};
+use smudge_core::semantics::{Checked, Role, Semantics, ValueRange};
 use smudge_core::style::{Align, Edges, Justify, Length, pct, px};
 use smudge_core::theme::{ColorToken, ColorValue, RadiusToken};
-use smudge_core::widget::{PaintCx, Panel, Widget, panel};
-use smudge_core::window::Cursor;
-use smudge_text::{PressHold, TextInputExt, label, text_input};
+use smudge_core::timer::{self, TimerHandle};
+use smudge_core::tree::Dirty;
+use smudge_core::widget::{MeasureInput, PaintCx, Panel, Widget, panel};
+use smudge_core::window::{self, Cursor};
+use smudge_text::{PressHold, TextInputExt, TextStyle, current_text_style, label, text_input};
 
 use crate::containers::{column, row};
 use crate::marks::{Shape, mark};
@@ -1470,4 +1474,401 @@ pub fn radio_group<T: PartialEq + Clone + 'static>(selected: RwSignal<T>) -> Rad
         horizontal: false,
         name: None,
     }
+}
+
+/// The seconds an unknown-length task's stripe needs to cross the track
+/// once.
+const STRIPE_PERIOD: f64 = 2.0;
+
+/// The share of the track a stripe is long.
+const STRIPE_SHARE: f32 = 0.25;
+
+/// The height of a progress bar's track, in logical pixels.
+const TRACK_HEIGHT: f32 = 4.0;
+
+/// The share of a spinner's size its arc strokes with.
+const ARC_OF_SIZE: f32 = 8.0;
+
+/// The radians of a turn the spinner's arc covers, three quarters of a
+/// circle.
+const ARC_SWEEP: f32 = 3.0 * std::f32::consts::FRAC_PI_2;
+
+/// The least a spinner measures, in logical pixels, when the text around
+/// it is tiny.
+const MIN_SPINNER: f32 = 12.0;
+
+/// The seconds one phase of a reduced-motion pulse takes, bright or dim.
+const PULSE_HALF: f64 = 0.6;
+
+/// The alpha a reduced-motion pulse's dim phase draws at.
+const PULSE_DIM: u8 = 90;
+
+/// The wake an animated control keeps for its pulse: a timer that fires
+/// once a pulse phase and counts the flips, which a paint binding tracks,
+/// so a flip repaints the control and its paint reads the new alpha off
+/// the frame's time. The timer lives only while the control pulses: it
+/// arms when reduced motion turns on, or a bar of unknown length mounts
+/// under it, and retires when that ends, because the window paces the
+/// control itself while its widget reports that it animates.
+struct Pulse {
+    /// The flips the timer has counted.
+    flips: RwSignal<u32>,
+    /// The live timer, held while the control pulses. Dropping it takes
+    /// the timer's deadline with it.
+    timer: RefCell<Option<TimerHandle>>,
+}
+
+impl Pulse {
+    /// Creates a pulse whose timer nobody runs yet.
+    fn new() -> Rc<Pulse> {
+        Rc::new(Pulse {
+            flips: RwSignal::new(0),
+            timer: RefCell::new(None),
+        })
+    }
+
+    /// Arms the timer once. A binding's read runs under the owner the
+    /// control mounts in, so the timer dies when the control unmounts,
+    /// whatever the handle holds. The tick holds the pulse weakly, so the
+    /// timer's entry never keeps a retired pulse alive.
+    fn arm(self: &Rc<Self>) {
+        if self.timer.borrow().is_some() {
+            return;
+        }
+        let pulse = Rc::downgrade(self);
+        let timer = timer::every(Duration::from_secs_f64(PULSE_HALF), move || {
+            if let Some(pulse) = pulse.upgrade() {
+                pulse.tick();
+            }
+        });
+        *self.timer.borrow_mut() = Some(timer);
+    }
+
+    /// Retires the timer, whose deadline then holds nothing. The binding
+    /// that armed it calls this when the control no longer pulses.
+    fn disarm(&self) {
+        *self.timer.borrow_mut() = None;
+    }
+
+    /// Counts one flip, whose repaint shows the pulse's next phase. The
+    /// timer only lives while the control pulses, so nothing counts at
+    /// any other time.
+    fn tick(&self) {
+        self.flips.update(|flips| *flips += 1);
+    }
+}
+
+/// Returns which half of a reduced-motion pulse `elapsed` sits in.
+fn pulse_phase(elapsed: f64) -> u64 {
+    (elapsed / PULSE_HALF) as u64 % 2
+}
+
+/// Returns the alpha a still animation draws at, full through the bright
+/// half of the pulse and dim through the dark half.
+fn pulse_dim(elapsed: f64) -> u8 {
+    if pulse_phase(elapsed) == 0 {
+        u8::MAX
+    } else {
+        PULSE_DIM
+    }
+}
+
+/// The key of a progress bar's share binding.
+struct FractionKey;
+
+/// The key of the binding that arms a control's pulse.
+struct PulseKey;
+
+/// The key of the binding that reads a control's pulse flips.
+struct FlipKey;
+
+/// The key of a spinner's ambient text style binding.
+struct AmbientStyleKey;
+
+/// Applies one share to a progress bar: clamped for painting and for what
+/// a screen reader hears.
+fn apply_fraction(progress: &mut Progress, fraction: Option<f32>) -> Dirty {
+    let share = fraction.map(|fraction| {
+        if fraction.is_finite() {
+            fraction.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    });
+    if progress.fraction == share {
+        return Dirty::Clean;
+    }
+    progress.fraction = share;
+    Dirty::Paint
+}
+
+/// Repaints a control for one counted pulse flip, whose paint reads the
+/// pulse's phase off the frame's time. A bar with a known share draws no
+/// pulse, so its flips repaint nothing.
+fn repaint_progress(progress: &mut Progress, _: u32) -> Dirty {
+    if progress.fraction.is_none() {
+        Dirty::Paint
+    } else {
+        Dirty::Clean
+    }
+}
+
+/// Applies the ambient text style to a spinner, whose size follows the
+/// size of a line of the text around it.
+fn apply_ambient_style(spinner: &mut Spinner, ambient: TextStyle) -> Dirty {
+    let size = (ambient.size * ambient.line_height)
+        .round()
+        .max(MIN_SPINNER);
+    if spinner.size == size {
+        return Dirty::Clean;
+    }
+    spinner.size = size;
+    Dirty::Layout
+}
+
+/// Repaints a spinner for one counted pulse flip, whose paint reads the
+/// pulse's phase off the frame's time.
+fn repaint_spinner(_: &mut Spinner, _: u32) -> Dirty {
+    Dirty::Paint
+}
+
+/// The bar that shows how far a task has come, which [`progress`] builds.
+///
+/// The track the style paints belongs to the element; the bar itself
+/// paints the fill over it.
+pub struct Progress {
+    /// The share of the task done, clamped to 0.0 to 1.0, or `None` while
+    /// the length of the task is unknown.
+    fraction: Option<f32>,
+}
+
+impl Widget for Progress {
+    /// Paints the fill over the track the style painted: the share of the
+    /// task done from the left, or a stripe that rides the clock while the
+    /// share is unknown. Under reduced motion the stripe stands at the
+    /// track's start and pulses. Only the part of the stripe over the
+    /// track draws, so the damage a tick costs stays the size of the
+    /// track.
+    fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
+        Panel.paint(cx, out);
+        let track = cx.rect;
+        let radius = Corners::all(cx.theme.radius(RadiusToken::SMALL));
+        let accent = cx.theme.color(ColorToken::ACCENT);
+        let fill = match self.fraction {
+            Some(share) => Some((
+                Rect::new(
+                    track.x0,
+                    track.y0,
+                    track.x0 + track.width() * share,
+                    track.y1,
+                ),
+                accent,
+            )),
+            None => {
+                let stripe = track.width() * STRIPE_SHARE;
+                let (start, color) = if cx.reduced_motion {
+                    (
+                        track.x0,
+                        Color {
+                            a: pulse_dim(cx.now),
+                            ..accent
+                        },
+                    )
+                } else {
+                    let traveled = (cx.now % STRIPE_PERIOD) / STRIPE_PERIOD;
+                    (
+                        track.x0 - stripe + (track.width() + stripe) * traveled as f32,
+                        accent,
+                    )
+                };
+                let over = start.max(track.x0)..(start + stripe).min(track.x1);
+                (over.end > over.start)
+                    .then(|| (Rect::new(over.start, track.y0, over.end, track.y1), color))
+            }
+        };
+        if let Some((rect, color)) = fill {
+            out.push(PaintOp::FillRect {
+                rect,
+                radius,
+                color,
+            });
+        }
+    }
+
+    /// Reports a progress bar, whose share is its range. No share reads as
+    /// busy.
+    fn semantics(&self) -> Option<Semantics> {
+        Some(Semantics {
+            range: self.fraction.map(|share| ValueRange {
+                value: f64::from(share),
+                min: 0.0,
+                max: 1.0,
+            }),
+            ..Semantics::new(Role::ProgressBar)
+        })
+    }
+
+    /// Keeps the frames coming while the share is unknown and motion runs
+    /// at full, since the stripe rides the frame's time. A known share
+    /// shows no motion, and a reduced pulse repaints through its timer.
+    fn animating(&self, cx: &PaintCx<'_>) -> bool {
+        self.fraction.is_none() && !cx.reduced_motion
+    }
+}
+
+/// Creates a progress bar bound to `fraction`, the share of a task that
+/// is done, from 0.0 to 1.0.
+///
+/// A share of `None` shows a task whose length the app does not know: a
+/// stripe rides the track until the app learns the share and the bound
+/// value writes it. A screen reader hears a progress bar whose range is
+/// the share, and one with no range as busy. Under reduced motion the
+/// stripe stands still and pulses. The bar takes no press and no keys,
+/// because it shows and changes nothing. Give it a name with
+/// [`accessible_label`](Element::accessible_label).
+///
+/// The bound value is either a share in hand or a closure that reads
+/// signals, so a bar whose task moves shows the move.
+///
+/// ```
+/// use smudge_core::reactive::{RwSignal, prelude::*};
+/// use smudge_widgets::{column, progress};
+///
+/// let done = RwSignal::new(Some(0.25_f32));
+/// let bars = column().child(progress(move || done.get())).child(progress(1.0));
+/// ```
+pub fn progress(fraction: impl Into<Value<Option<f32>>>) -> Element<Progress> {
+    let fraction = fraction.into();
+    let pulse = Pulse::new();
+    let arm = Rc::clone(&pulse);
+    let read = Rc::clone(&pulse);
+    let arms = fraction.clone();
+    Element::new(Progress { fraction: None })
+        .height(px(TRACK_HEIGHT))
+        .background(ColorToken::BORDER)
+        .corner_radius(RadiusToken::SMALL)
+        .disabled_style(|p| p.opacity(0.5))
+        .bind(FractionKey, fraction, apply_fraction)
+        // A known share pulses nothing, and with motion at full the
+        // window paces the control, so the pulse arms only while the
+        // share is unknown under reduced motion, and retires otherwise.
+        .bind(
+            PulseKey,
+            move || {
+                let unknown = match &arms {
+                    Value::Static(share) => share.is_none(),
+                    Value::Dynamic(get) => get().is_none(),
+                };
+                if unknown && window::reduced_motion() {
+                    arm.arm();
+                } else {
+                    arm.disarm();
+                }
+            },
+            |_, _| Dirty::Clean,
+        )
+        .bind(FlipKey, move || read.flips.get(), repaint_progress)
+}
+
+/// The spinner that shows a task is running, which [`spinner`] builds.
+pub struct Spinner {
+    /// The diameter the ambient text gives the spinner, in logical pixels.
+    size: f32,
+}
+
+impl Widget for Spinner {
+    /// Measures the diameter a line of the ambient text takes.
+    fn measure(&mut self, _input: MeasureInput) -> Option<Size> {
+        Some(Size {
+            width: self.size,
+            height: self.size,
+        })
+    }
+
+    /// Paints the arc: three quarters of a circle that turns once a
+    /// second. Under reduced motion the arc stands at its start and
+    /// pulses.
+    fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
+        let size = self.size;
+        if !size.is_finite() || size <= 0.0 {
+            return;
+        }
+        let box_ = cx.rect;
+        let center = Point {
+            x: (box_.x0 + box_.x1) / 2.0,
+            y: (box_.y0 + box_.y1) / 2.0,
+        };
+        let width = (size / ARC_OF_SIZE).max(1.0);
+        let radius = (size - width) / 2.0;
+        let mut color = cx.theme.color(ColorToken::ACCENT);
+        let start = if cx.reduced_motion {
+            color.a = pulse_dim(cx.now);
+            0.0
+        } else {
+            (cx.now.fract() * std::f64::consts::TAU) as f32
+        };
+        let arc = Path::new().arc(
+            center,
+            Point {
+                x: radius,
+                y: radius,
+            },
+            start,
+            ARC_SWEEP,
+        );
+        out.push(PaintOp::Path(Rc::new(PathPaint::stroked(
+            arc,
+            Stroke::new(width, color)
+                .with_join(LineJoin::Round)
+                .with_cap(LineCap::Round),
+        ))));
+    }
+
+    /// Reports a progress bar with no range, which a screen reader reads
+    /// as busy.
+    fn semantics(&self) -> Option<Semantics> {
+        Some(Semantics::new(Role::ProgressBar))
+    }
+
+    /// Keeps the frames coming while motion runs at full, since the arc
+    /// turns with the frame's time. A reduced pulse repaints through its
+    /// timer.
+    fn animating(&self, cx: &PaintCx<'_>) -> bool {
+        !cx.reduced_motion
+    }
+}
+
+/// Creates a spinner that shows a task of unknown length is running.
+///
+/// The spinner measures a line of the text around it, so it sits in a row
+/// or beside a label without extra sizing. It turns once a second, and
+/// under reduced motion it stands still and pulses. A screen reader hears
+/// a progress bar with no range, which reads as busy. Give it a name with
+/// [`accessible_label`](Element::accessible_label).
+///
+/// ```
+/// use smudge_widgets::{button, row, spinner};
+///
+/// let saving = row().child(spinner()).child(button("Saving"));
+/// ```
+pub fn spinner() -> Element<Spinner> {
+    let pulse = Pulse::new();
+    let arm = Rc::clone(&pulse);
+    let read = Rc::clone(&pulse);
+    Element::new(Spinner { size: 0.0 })
+        .bind(AmbientStyleKey, current_text_style, apply_ambient_style)
+        // With motion at full the window paces the arc, so the pulse runs
+        // only while motion is reduced.
+        .bind(
+            PulseKey,
+            move || {
+                if window::reduced_motion() {
+                    arm.arm();
+                } else {
+                    arm.disarm();
+                }
+            },
+            |_, _| Dirty::Clean,
+        )
+        .bind(FlipKey, move || read.flips.get(), repaint_spinner)
 }

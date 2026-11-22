@@ -111,6 +111,45 @@ pub trait Widget: Any + type_name::TypeName {
     /// covers the box `paint` drew. The default draws nothing.
     fn paint_inside(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
 
+    /// Returns whether this widget still shows motion at the time it
+    /// painted, so the next frame paints it again and the window keeps
+    /// drawing paced frames while it does, as it does while a spring
+    /// moves.
+    ///
+    /// The paint pass asks after [`Widget::paint`] with the same `cx`. A
+    /// widget that animates paints its motion from [`PaintCx::now`] alone,
+    /// so every frame it repaints shows the next step at the pace the
+    /// window runs at, and answers `false` once the motion is done, or at
+    /// once under [`PaintCx::reduced_motion`], so the window goes idle. A
+    /// widget that moved through no motion of its own answers nothing and
+    /// leaves the pacing to whoever changed it.
+    ///
+    /// The default reports `false`, which suits a widget that paints from
+    /// state alone.
+    ///
+    /// # Examples
+    ///
+    /// A stripe that rides the frame's time for one second while motion
+    /// runs at full:
+    ///
+    /// ```
+    /// use smudge_core::paint::PaintOp;
+    /// use smudge_core::widget::{PaintCx, Widget};
+    ///
+    /// struct Stripe;
+    ///
+    /// impl Widget for Stripe {
+    ///     fn paint(&self, _cx: &PaintCx<'_>, _out: &mut Vec<PaintOp>) {}
+    ///
+    ///     fn animating(&self, cx: &PaintCx<'_>) -> bool {
+    ///         !cx.reduced_motion && cx.now < 1.0
+    ///     }
+    /// }
+    /// ```
+    fn animating(&self, _cx: &PaintCx<'_>) -> bool {
+        false
+    }
+
     /// Returns the rectangle the input method should anchor to while this
     /// widget holds the keyboard focus, in the paint coordinates of
     /// [`Widget::paint`].
@@ -205,6 +244,13 @@ pub struct PaintCx<'a> {
     pub style: &'a Style,
     /// The theme that style values which name a token resolve against.
     pub theme: &'a Theme,
+    /// The seconds on the app's clock this frame painted at, counted from
+    /// the app's start, so a widget that animates paints the time's own
+    /// motion while [`Widget::animating`] keeps the frames coming.
+    pub now: f64,
+    /// Whether animations stand still, as the app last read the setting,
+    /// so a widget that animates stands still and pulses instead.
+    pub reduced_motion: bool,
 }
 
 /// A container that paints a background and a border and does nothing else.

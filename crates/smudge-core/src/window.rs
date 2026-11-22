@@ -277,6 +277,42 @@ pub fn focused() -> bool {
     book.borrow().focused.get()
 }
 
+/// Reports whether the running application reduces motion, as the last
+/// [`App::set_reduced_motion`](crate::app::App::set_reduced_motion) or
+/// [`App::set_system_reduced_motion`](crate::app::App::set_system_reduced_motion)
+/// call set it, `false` when neither has and `false` with no live
+/// application above the code.
+///
+/// Animations read this when they advance and stand still, or slow to a
+/// pulse, while it reads `true`. A binding that reads it runs again when
+/// the setting flips, so a control can arm or retire the clock its pulse
+/// runs on.
+///
+/// # Examples
+///
+/// A busy spinner that keeps its angle while motion is reduced:
+///
+/// ```
+/// use smudge_core::window;
+///
+/// fn angle(elapsed: f64) -> f64 {
+///     if window::reduced_motion() {
+///         0.0
+///     } else {
+///         elapsed * std::f64::consts::TAU
+///     }
+/// }
+///
+/// // With no live application the setting reads as false.
+/// assert_eq!(angle(2.0), 2.0 * std::f64::consts::TAU);
+/// ```
+pub fn reduced_motion() -> bool {
+    let Some(book) = running_book() else {
+        return false;
+    };
+    book.borrow().reduced_motion.get()
+}
+
 /// Appends `command` to the command queue of the application the running
 /// code belongs to, or drops it when no live application is above the code.
 fn queue(command: WindowCommand) {
@@ -313,6 +349,15 @@ pub(crate) fn set_focused(book: &Rc<RefCell<WindowBook>>, focused: bool) {
     }
 }
 
+/// Records `reduced` in the book, for [`reduced_motion`] to read, but only
+/// when it changed, so an equal report wakes no binding.
+pub(crate) fn set_reduced_motion(book: &Rc<RefCell<WindowBook>>, reduced: bool) {
+    let signal = book.borrow().reduced_motion.clone();
+    if signal.get() != reduced {
+        signal.set(reduced);
+    }
+}
+
 /// Takes the title set since the windowing layer last looked, if any.
 pub(crate) fn take_title(book: &Rc<RefCell<WindowBook>>) -> Option<String> {
     book.borrow_mut().title.take()
@@ -328,17 +373,24 @@ pub(crate) fn take_commands(book: &Rc<RefCell<WindowBook>>) -> Vec<WindowCommand
     std::mem::take(&mut book.borrow_mut().commands)
 }
 
-/// Creates the book of a new application, whose [`maximized`] and
-/// [`focused`] signals are created under the application's root owner so
-/// they die with it.
+/// Creates the book of a new application, whose [`maximized`], [`focused`]
+/// and [`reduced_motion`] signals are created under the application's root
+/// owner so they die with it.
 pub(crate) fn new_book(root: &Owner) -> Rc<RefCell<WindowBook>> {
-    let (maximized, focused) = root.with(|| (RwSignal::new(false), RwSignal::new(true)));
+    let (maximized, focused, reduced_motion) = root.with(|| {
+        (
+            RwSignal::new(false),
+            RwSignal::new(true),
+            RwSignal::new(false),
+        )
+    });
     Rc::new(RefCell::new(WindowBook {
         commands: Vec::new(),
         title: None,
         icon: None,
         maximized,
         focused,
+        reduced_motion,
     }))
 }
 
@@ -360,6 +412,10 @@ pub(crate) struct WindowBook {
     /// Whether the window held the input focus when the windowing layer
     /// last reported it.
     focused: RwSignal<bool>,
+    /// Whether animations of the application stand still, as
+    /// [`App::set_reduced_motion`](crate::app::App::set_reduced_motion)
+    /// last set it. A binding that reads it runs again when it flips.
+    reduced_motion: RwSignal<bool>,
 }
 
 /// Returns the window book of the application `owner` belongs to, walking up

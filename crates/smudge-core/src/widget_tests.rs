@@ -18,6 +18,8 @@ fn paint(style: &Style) -> Vec<PaintOp> {
             content: rect(),
             style,
             theme: &Theme::light(),
+            now: 0.0,
+            reduced_motion: false,
         },
         &mut ops,
     );

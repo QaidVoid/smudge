@@ -1,12 +1,12 @@
-//! Buttons, labels, a text input, sliders, a number field and a scroll
-//! view, to try accessibility by hand.
+//! Buttons, labels, a text input, sliders, a number field, a progress
+//! bar, a spinner and a scroll view, to try accessibility by hand.
 //!
 //! Run with `cargo run --example controls -p smudge-platform`. A screen
 //! reader announces the two buttons, the field, the sliders, the number
-//! field and the list this window shows: press the buttons with the
-//! keyboard, type into the field, step the sliders with the arrows and
-//! drag or press their tracks, step or drag the number field, while the
-//! reader runs to hear what changes.
+//! field, the progress bar and the list this window shows: press the
+//! buttons with the keyboard, type into the field, step the sliders with
+//! the arrows and drag or press their tracks, step or drag the number
+//! field, while the reader runs to hear what changes.
 
 use std::process::ExitCode;
 
@@ -24,9 +24,12 @@ use smudge_widgets::ButtonExt;
 use smudge_widgets::button;
 use smudge_widgets::column;
 use smudge_widgets::number_field;
+use smudge_widgets::progress;
 use smudge_widgets::range_slider;
+use smudge_widgets::row;
 use smudge_widgets::scroll;
 use smudge_widgets::slider;
+use smudge_widgets::spinner;
 
 /// The height of one input field, in logical pixels.
 const FIELD_HEIGHT: f32 = 32.0;
@@ -41,6 +44,7 @@ fn main() -> ExitCode {
         let opacity = RwSignal::new(0.5_f64);
         let (low, high) = (RwSignal::new(20.0), RwSignal::new(80.0));
         let size = RwSignal::new(12.0_f64);
+        let done = RwSignal::new(Some(0.6_f32));
         let press_clicks = clicks.clone();
         let reset_clicks = clicks.clone();
         let read_clicks = clicks.clone();
@@ -50,6 +54,8 @@ fn main() -> ExitCode {
         let read_high = high.clone();
         let read_size = size.clone();
         let bound_size = size.clone();
+        let read_done = done.clone();
+        let cycle_done = done.clone();
         panel()
             .column()
             .padding(px(24.0))
@@ -103,6 +109,38 @@ fn main() -> ExitCode {
                 column()
                     .width(Length::pct(100.0))
                     .child(number_field("Size", bound_size, 1.0..=100.0, 1.0).drag_speed(1.0)),
+            )
+            .child(label({
+                let read = read_done.clone();
+                move || match read.get() {
+                    Some(done) => format!("Loading: {:.0}%", done * 100.0),
+                    None => String::from("Loading: unknown length"),
+                }
+            }))
+            .child(
+                progress({
+                    let read = read_done.clone();
+                    move || read.get()
+                })
+                .width(Length::pct(100.0))
+                .accessible_label("Loading"),
+            )
+            .child(
+                row()
+                    .gap(Size {
+                        width: 8.0,
+                        height: 0.0,
+                    })
+                    .child(button("Unknown length").on_press(move || {
+                        cycle_done.update(|done| {
+                            *done = match *done {
+                                None => Some(0.25),
+                                Some(done) if done < 1.0 => Some(done + 0.25),
+                                Some(_) => None,
+                            }
+                        });
+                    }))
+                    .child(spinner().accessible_label("Working")),
             )
             .child(
                 scroll(

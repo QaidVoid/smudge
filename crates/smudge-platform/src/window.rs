@@ -1519,6 +1519,9 @@ where
             PlatformEvent::ReducedMotionChanged(reduced) => {
                 if let Some(state) = self.state.as_mut() {
                     state.app.set_system_reduced_motion(reduced);
+                    if state.app.needs_frame() {
+                        state.window.request_redraw();
+                    }
                 }
             }
         }

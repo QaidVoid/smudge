@@ -128,9 +128,18 @@ impl WidgetTree {
                     content: node.paint_content,
                     style,
                     theme: &self.theme,
+                    now: self
+                        .now
+                        .checked_duration_since(self.started)
+                        .unwrap_or_default()
+                        .as_secs_f64(),
+                    reduced_motion: self.reduced_motion,
                 };
                 node.widget.paint(&cx, &mut node.ops);
                 node.widget.paint_inside(&cx, &mut node.inner_ops);
+                if node.widget.animating(&cx) {
+                    self.animating.push(id);
+                }
                 node.uses_tokens = self.theme.consulted();
             } else {
                 // A node that paints nothing shows no theme value, and one
