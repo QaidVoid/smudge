@@ -6,15 +6,16 @@ use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 use smudge_core::element::{AnyElement, Element, IntoElement, Value};
-use smudge_core::geometry::{Color, Size};
-use smudge_core::input::{Drag, Handled, Key};
+use smudge_core::geometry::{Color, Point, Size};
+use smudge_core::input::{ButtonEvent, Drag, Handled, Key, PointerButton};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::{Checked, Role, ValueRange};
 use smudge_core::style::{Align, Edges, Justify, Length, pct, px};
 use smudge_core::theme::{ColorToken, ColorValue, RadiusToken};
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
-use smudge_text::{TextInputExt, label, text_input};
+use smudge_core::window::Cursor;
+use smudge_text::{PressHold, TextInputExt, label, text_input};
 
 use crate::containers::{column, row};
 use crate::marks::{Shape, mark};
@@ -847,6 +848,358 @@ fn format_number(value: f64, step: f64) -> String {
     format!("{value:.decimals$}")
 }
 
+/// How far a press must travel before it becomes a drag of a number
+/// field's number, in logical pixels.
+const DRAG_START: f32 = 4.0;
+
+/// How much a held Shift slows a number field's drag, tenfold.
+const SLOW_DRAG: f64 = 0.1;
+
+/// The horizontal drag a number field with a [`NumberField::drag_speed`]
+/// turns into value changes, and the hold that keeps its text out of the
+/// press until the press has decided.
+struct FieldDrag {
+    /// The hold the input keeps the press under while the field decides.
+    hold: PressHold,
+    /// Where the press began, relative to the field's text.
+    press: Cell<Point>,
+    /// Whether the press became a drag.
+    dragging: Cell<bool>,
+    /// The x and the number the drag moves from, retaken when Shift joins
+    /// or leaves, so slowing a drag never moves the number back.
+    anchor: Cell<(f32, f64)>,
+    /// Whether the anchor was taken with Shift held.
+    slow: Cell<bool>,
+    /// The x of the last move, which a change of speed anchors from.
+    last: Cell<f32>,
+    /// The number change of one logical pixel of drag.
+    speed: f64,
+    /// The signal that holds the number.
+    value: RwSignal<f64>,
+    /// The range the number moves in.
+    range: RangeInclusive<f64>,
+    /// The size of one step.
+    step: f64,
+}
+
+impl FieldDrag {
+    /// Watches a drag that changes `value` of `range` in steps of `step`,
+    /// at `speed` per logical pixel.
+    fn new(speed: f32, value: RwSignal<f64>, range: RangeInclusive<f64>, step: f64) -> FieldDrag {
+        FieldDrag {
+            hold: PressHold::new(),
+            press: Cell::new(Point { x: 0.0, y: 0.0 }),
+            dragging: Cell::new(false),
+            anchor: Cell::new((0.0, 0.0)),
+            slow: Cell::new(false),
+            last: Cell::new(0.0),
+            speed: f64::from(speed),
+            value,
+            range,
+            step,
+        }
+    }
+
+    /// Takes the press over, so the input holds its caret back.
+    fn press(&self, event: &ButtonEvent) -> Handled {
+        if event.button != PointerButton::Primary {
+            return Handled::No;
+        }
+        self.press.set(event.position);
+        self.dragging.set(false);
+        self.hold.claim();
+        Handled::Yes
+    }
+
+    /// Moves the number once the press has travelled far enough, by the
+    /// speed times the distance from the anchor, stepped and clamped.
+    ///
+    /// A change of speed anchors at the last position, so the move that
+    /// brought the change travels on at the speed it names.
+    fn drag(&self, at: Point, slow_now: bool) {
+        if !self.hold.is_claimed() {
+            return;
+        }
+        if !self.dragging.get() {
+            let from = self.press.get();
+            if (at.x - from.x).hypot(at.y - from.y) <= DRAG_START {
+                return;
+            }
+            self.dragging.set(true);
+            self.last.set(from.x);
+            self.anchor.set((from.x, self.value.get()));
+            self.slow.set(slow_now);
+        }
+        if slow_now != self.slow.get() {
+            self.anchor.set((self.last.get(), self.value.get()));
+            self.slow.set(slow_now);
+        }
+        let (from_x, base) = self.anchor.get();
+        let rate = self.speed * if slow_now { SLOW_DRAG } else { 1.0 };
+        let next = snap(
+            base + f64::from(at.x - from_x) * rate,
+            &self.range,
+            self.step,
+        );
+        if next.is_finite() && self.value.get() != next {
+            self.value.set(next);
+        }
+        self.last.set(at.x);
+    }
+
+    /// Ends the hold: a drag puts it down, a still press places the caret.
+    fn release(&self) {
+        if !self.hold.is_claimed() {
+            return;
+        }
+        if self.dragging.get() {
+            self.hold.release();
+        } else {
+            self.hold.click();
+        }
+    }
+
+    /// Puts a drag down that ended without reaching the field, as when the
+    /// window lost the focus while the button was held. A hold a press has
+    /// just taken stays, because the end belongs to the drag it replaces.
+    fn dropped(&self) {
+        if self.dragging.get() {
+            self.dragging.set(false);
+            self.hold.release();
+        }
+    }
+}
+
+/// The builder of a number field, which [`number_field`] creates and
+/// [`NumberField::drag_speed`] fills.
+pub struct NumberField {
+    /// The name the field announces.
+    name: String,
+    /// The signal that holds the number.
+    value: RwSignal<f64>,
+    /// The range the number moves in.
+    range: RangeInclusive<f64>,
+    /// The size of one step.
+    step: f64,
+    /// The number change of one logical pixel of horizontal drag, or
+    /// `None` for a field that does not drag.
+    drag_speed: Option<f32>,
+}
+
+impl NumberField {
+    /// Returns the field whose number a horizontal drag across its text
+    /// changes by `speed` per logical pixel.
+    ///
+    /// A press that moves more than four logical pixels before release
+    /// becomes a drag: the number follows the pointer from the number the
+    /// press began with, clamped and stepped, and the field does not take
+    /// the text caret. A press that stays still edits the text as before.
+    /// Shift slows the drag tenfold, for fine changes, and the field shows
+    /// the column resize cursor over its text while it can be dragged. A
+    /// negative speed counts as its size, and a speed of no use, zero or
+    /// one that is not finite, leaves the field without a drag.
+    pub fn drag_speed(mut self, speed: f32) -> Self {
+        self.drag_speed = (speed.is_finite() && speed != 0.0).then(|| speed.abs());
+        self
+    }
+}
+
+impl IntoElement for NumberField {
+    fn into_any(self) -> AnyElement {
+        let NumberField {
+            name,
+            value,
+            range,
+            step,
+            drag_speed,
+        } = self;
+        let step = step.abs();
+        let text = crate::signal(format_number(value.get(), step));
+        let focused = crate::signal(false);
+        let (written, shown_text) = (value.clone(), text.clone());
+        let commit = {
+            let (value, text, range) = (value.clone(), text.clone(), range.clone());
+            Rc::new(move || {
+                // Text nobody edited reads the number as it is, even one off the
+                // steps written from outside.
+                if text.with(|text| *text == format_number(value.get(), step)) {
+                    return;
+                }
+                let typed = text.with(|text| text.trim().parse::<f64>().ok());
+                match typed.filter(|typed| typed.is_finite()) {
+                    Some(typed) => {
+                        let next = snap(typed, &range, step);
+                        if value.get() != next {
+                            value.set(next);
+                        }
+                        text.set(format_number(next, step));
+                    }
+                    None => text.set(format_number(value.get(), step)),
+                }
+            })
+        };
+        let nudge = {
+            let (value, text, range) = (value.clone(), text.clone(), range.clone());
+            let commit = Rc::clone(&commit);
+            Rc::new(move |steps: f64| {
+                commit();
+                let next = snap(snap(value.get(), &range, step) + steps * step, &range, step);
+                if value.get() != next {
+                    value.set(next);
+                }
+                // The text shows the step at once, so a second step in the same
+                // frame reads it rather than the number before.
+                text.set(format_number(next, step));
+            })
+        };
+        let (announced, reported) = (value.clone(), range.clone());
+        let mut input = text_input(text)
+            .role(Role::SpinButton)
+            .accessible_label(name)
+            .accessible_range(move || ValueRange {
+                value: announced.get(),
+                min: *reported.start(),
+                max: *reported.end(),
+            })
+            .grow(1.0)
+            .min_width(px(48.0));
+        let drag =
+            drag_speed.map(|speed| Rc::new(FieldDrag::new(speed, value.clone(), range, step)));
+        if let Some(drag) = &drag {
+            input = input
+                .cursor(Cursor::ColumnResize)
+                .press_hold(drag.hold.clone());
+        }
+        // The wheel leaves a held drag alone: the drag owns the number, and
+        // a step it took would be lost to the next move from the anchor.
+        let wheel_held = drag.as_ref().map(|drag| drag.hold.clone());
+        let stepper = |shape: Shape, steps: f64| {
+            let nudge = Rc::clone(&nudge);
+            row()
+                .grow(1.0)
+                .padding_xy(Size {
+                    width: 4.0,
+                    height: 0.0,
+                })
+                .align_items(Align::Center)
+                .hover(|p| p.background(ColorToken::SURFACE_HOVER))
+                .pressed(|p| p.background(ColorToken::SURFACE_PRESSED))
+                .keeps_focus()
+                .on_press(move || nudge(steps))
+                .child(mark(shape, 10.0, true).text_color(ColorToken::TEXT_MUTED))
+        };
+        let (key_nudge, wheel_nudge, blur) =
+            (Rc::clone(&nudge), Rc::clone(&nudge), Rc::clone(&commit));
+        let (track_focus, wheel_focus) = (focused.clone(), focused);
+        // The wheel's distance not yet turned into a step.
+        let turned = Rc::new(Cell::new(0.0_f32));
+        let mut surface = row().grow(1.0).padding_xy(Size {
+            width: 8.0,
+            height: 4.0,
+        });
+        if let Some(drag) = drag {
+            let (press_drag, move_drag, up_drag, ended_drag) = (
+                Rc::clone(&drag),
+                Rc::clone(&drag),
+                Rc::clone(&drag),
+                Rc::clone(&drag),
+            );
+            let step_drag = Rc::clone(&drag);
+            surface = surface
+                .on_button_down(move |event| press_drag.press(&event))
+                .on_button_move(move |event| move_drag.drag(event.position, event.modifiers.shift))
+                .on_button_up(move |_| up_drag.release())
+                .on_drag(move |step| match step {
+                    Drag::Moved(_) if step_drag.dragging.get() => Handled::Yes,
+                    Drag::Ended => {
+                        ended_drag.dropped();
+                        Handled::No
+                    }
+                    _ => Handled::No,
+                });
+        }
+        row()
+            .align_items(Align::Stretch)
+            .background(ColorToken::SURFACE)
+            .border(1.0)
+            .border_color(ColorToken::BORDER)
+            .corner_radius(RadiusToken::MEDIUM)
+            // An outside write to the number shows in the text, unless the
+            // text already reads that number.
+            .bind(
+                Follow,
+                move || {
+                    let number = written.get();
+                    // Untracked, so typing, which writes the text, never wakes
+                    // this and puts the number back.
+                    let shown = shown_text.read(|text| text.trim().parse::<f64>().ok());
+                    if shown != Some(number) {
+                        shown_text.set(format_number(number, step));
+                    }
+                },
+                |_, ()| smudge_core::tree::Dirty::Clean,
+            )
+            .on_focus_within(move |inside| {
+                track_focus.set(inside);
+                if !inside {
+                    blur();
+                }
+            })
+            .on_key(move |event| {
+                if !event.pressed {
+                    return Handled::No;
+                }
+                let steps = match event.key {
+                    Key::ArrowUp => 1.0,
+                    Key::ArrowDown => -1.0,
+                    Key::PageUp => 10.0,
+                    Key::PageDown => -10.0,
+                    Key::Enter => {
+                        key_nudge(0.0);
+                        return Handled::Yes;
+                    }
+                    _ => return Handled::No,
+                };
+                key_nudge(steps);
+                Handled::Yes
+            })
+            .on_wheel(move |delta| {
+                if wheel_held.as_ref().is_some_and(|hold| hold.is_claimed()) {
+                    return Handled::No;
+                }
+                if !wheel_focus.get() || delta.y == 0.0 || !delta.y.is_finite() {
+                    return Handled::No;
+                }
+                let mut sum = turned.get();
+                if sum * delta.y < 0.0 {
+                    sum = 0.0;
+                }
+                sum += delta.y;
+                let lines = (sum / WHEEL_LINE).trunc();
+                turned.set(sum - lines * WHEEL_LINE);
+                if lines != 0.0 {
+                    wheel_nudge(-f64::from(lines));
+                }
+                Handled::Yes
+            })
+            .child(surface.child(input.placeholder("0")))
+            .child(
+                column()
+                    .width(px(18.0))
+                    .border_edges(Edges {
+                        top: 0.0,
+                        right: 0.0,
+                        bottom: 0.0,
+                        left: 1.0,
+                    })
+                    .border_color(ColorToken::BORDER)
+                    .child(stepper(Shape::Up, 1.0))
+                    .child(stepper(Shape::Down, -1.0)),
+            )
+            .into_any()
+    }
+}
+
 /// Creates a field named `name` that holds a number of `range`, in steps
 /// of `step`, bound to `value`.
 ///
@@ -857,6 +1210,8 @@ fn format_number(value: f64, step: f64) -> String {
 /// Down by ten steps, and so do the arrows beside it and the wheel while
 /// the field holds the focus, a step for each line it turns. A screen
 /// reader hears a spin button called `name` with its number and range.
+/// The field does not drag until [`NumberField::drag_speed`] says how
+/// fast.
 ///
 /// ```
 /// use smudge_core::reactive::RwSignal;
@@ -871,159 +1226,14 @@ pub fn number_field(
     value: RwSignal<f64>,
     range: RangeInclusive<f64>,
     step: f64,
-) -> Element<Panel> {
-    let step = step.abs();
-    let text = crate::signal(format_number(value.get(), step));
-    let focused = crate::signal(false);
-    let (written, shown_text) = (value.clone(), text.clone());
-    let commit = {
-        let (value, text, range) = (value.clone(), text.clone(), range.clone());
-        Rc::new(move || {
-            // Text nobody edited reads the number as it is, even one off the
-            // steps written from outside.
-            if text.with(|text| *text == format_number(value.get(), step)) {
-                return;
-            }
-            let typed = text.with(|text| text.trim().parse::<f64>().ok());
-            match typed.filter(|typed| typed.is_finite()) {
-                Some(typed) => {
-                    let next = snap(typed, &range, step);
-                    if value.get() != next {
-                        value.set(next);
-                    }
-                    text.set(format_number(next, step));
-                }
-                None => text.set(format_number(value.get(), step)),
-            }
-        })
-    };
-    let nudge = {
-        let (value, text, range) = (value.clone(), text.clone(), range.clone());
-        let commit = Rc::clone(&commit);
-        Rc::new(move |steps: f64| {
-            commit();
-            let next = snap(snap(value.get(), &range, step) + steps * step, &range, step);
-            if value.get() != next {
-                value.set(next);
-            }
-            // The text shows the step at once, so a second step in the same
-            // frame reads it rather than the number before.
-            text.set(format_number(next, step));
-        })
-    };
-    let (announced, reported) = (value.clone(), range.clone());
-    let input = text_input(text)
-        .role(Role::SpinButton)
-        .accessible_label(name.into())
-        .accessible_range(move || ValueRange {
-            value: announced.get(),
-            min: *reported.start(),
-            max: *reported.end(),
-        })
-        .grow(1.0)
-        .min_width(px(48.0));
-    let stepper = |shape: Shape, steps: f64| {
-        let nudge = Rc::clone(&nudge);
-        row()
-            .grow(1.0)
-            .padding_xy(Size {
-                width: 4.0,
-                height: 0.0,
-            })
-            .align_items(Align::Center)
-            .hover(|p| p.background(ColorToken::SURFACE_HOVER))
-            .pressed(|p| p.background(ColorToken::SURFACE_PRESSED))
-            .keeps_focus()
-            .on_press(move || nudge(steps))
-            .child(mark(shape, 10.0, true).text_color(ColorToken::TEXT_MUTED))
-    };
-    let (key_nudge, wheel_nudge, blur) = (Rc::clone(&nudge), Rc::clone(&nudge), Rc::clone(&commit));
-    let (track_focus, wheel_focus) = (focused.clone(), focused);
-    // The wheel's distance not yet turned into a step.
-    let turned = Rc::new(Cell::new(0.0_f32));
-    row()
-        .align_items(Align::Stretch)
-        .background(ColorToken::SURFACE)
-        .border(1.0)
-        .border_color(ColorToken::BORDER)
-        .corner_radius(RadiusToken::MEDIUM)
-        // An outside write to the number shows in the text, unless the
-        // text already reads that number.
-        .bind(
-            Follow,
-            move || {
-                let number = written.get();
-                // Untracked, so typing, which writes the text, never wakes
-                // this and puts the number back.
-                let shown = shown_text.read(|text| text.trim().parse::<f64>().ok());
-                if shown != Some(number) {
-                    shown_text.set(format_number(number, step));
-                }
-            },
-            |_, ()| smudge_core::tree::Dirty::Clean,
-        )
-        .on_focus_within(move |inside| {
-            track_focus.set(inside);
-            if !inside {
-                blur();
-            }
-        })
-        .on_key(move |event| {
-            if !event.pressed {
-                return Handled::No;
-            }
-            let steps = match event.key {
-                Key::ArrowUp => 1.0,
-                Key::ArrowDown => -1.0,
-                Key::PageUp => 10.0,
-                Key::PageDown => -10.0,
-                Key::Enter => {
-                    key_nudge(0.0);
-                    return Handled::Yes;
-                }
-                _ => return Handled::No,
-            };
-            key_nudge(steps);
-            Handled::Yes
-        })
-        .on_wheel(move |delta| {
-            if !wheel_focus.get() || delta.y == 0.0 || !delta.y.is_finite() {
-                return Handled::No;
-            }
-            let mut sum = turned.get();
-            if sum * delta.y < 0.0 {
-                sum = 0.0;
-            }
-            sum += delta.y;
-            let lines = (sum / WHEEL_LINE).trunc();
-            turned.set(sum - lines * WHEEL_LINE);
-            if lines != 0.0 {
-                wheel_nudge(-f64::from(lines));
-            }
-            Handled::Yes
-        })
-        .child(
-            row()
-                .grow(1.0)
-                .padding_xy(Size {
-                    width: 8.0,
-                    height: 4.0,
-                })
-                .child(input.placeholder("0")),
-        )
-        .child(
-            column()
-                .width(px(18.0))
-                .border_edges(Edges {
-                    top: 0.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                    left: 1.0,
-                })
-                .border_color(ColorToken::BORDER)
-                .child(stepper(Shape::Up, 1.0))
-                .child(stepper(Shape::Down, -1.0)),
-        )
+) -> NumberField {
+    NumberField {
+        name: name.into(),
+        value,
+        range,
+        step,
+        drag_speed: None,
+    }
 }
 
 /// One choice of a [`RadioGroup`].

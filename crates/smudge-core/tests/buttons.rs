@@ -219,6 +219,106 @@ fn the_node_that_took_a_middle_press_hears_its_moves_and_release_anywhere() {
 }
 
 #[test]
+fn a_second_press_makes_the_button_it_replaces_hear_a_release() {
+    let downs: Log<Point> = log();
+    let ups: Log<Point> = log();
+    let (pressed, released) = (Rc::clone(&downs), Rc::clone(&ups));
+    let mut harness = Harness::new(200.0, 100.0, 1.0, move || {
+        let (pressed, released) = (Rc::clone(&pressed), Rc::clone(&released));
+        scene(
+            panel()
+                .width(px(40.0))
+                .height(px(20.0))
+                .on_button_down(move |event| {
+                    if event.button == PointerButton::Primary {
+                        pressed.borrow_mut().push(event.position);
+                        Handled::Yes
+                    } else {
+                        Handled::No
+                    }
+                })
+                .on_button_up(move |event| released.borrow_mut().push(event.position)),
+        )
+    });
+    harness.frame();
+
+    down(
+        &mut harness,
+        Point { x: 15.0, y: 15.0 },
+        PointerButton::Primary,
+    );
+    down(
+        &mut harness,
+        Point { x: 100.0, y: 50.0 },
+        PointerButton::Primary,
+    );
+    up(
+        &mut harness,
+        Point { x: 100.0, y: 50.0 },
+        PointerButton::Primary,
+    );
+
+    assert_eq!(
+        *downs.borrow(),
+        [Point { x: 5.0, y: 5.0 }],
+        "the second press lands outside the node, so it takes no press"
+    );
+    assert_eq!(
+        *ups.borrow(),
+        [Point { x: 90.0, y: 40.0 }],
+        "the replaced press hears its release when the next press comes"
+    );
+}
+
+#[test]
+fn a_window_that_loses_the_focus_ends_a_held_press() {
+    let downs: Log<Point> = log();
+    let ups: Log<Point> = log();
+    let (pressed, released) = (Rc::clone(&downs), Rc::clone(&ups));
+    let mut harness = Harness::new(200.0, 100.0, 1.0, move || {
+        let (pressed, released) = (Rc::clone(&pressed), Rc::clone(&released));
+        scene(
+            panel()
+                .width(px(40.0))
+                .height(px(20.0))
+                .on_button_down(move |event| {
+                    if event.button == PointerButton::Primary {
+                        pressed.borrow_mut().push(event.position);
+                        Handled::Yes
+                    } else {
+                        Handled::No
+                    }
+                })
+                .on_button_up(move |event| released.borrow_mut().push(event.position)),
+        )
+    });
+    harness.frame();
+
+    down(
+        &mut harness,
+        Point { x: 15.0, y: 15.0 },
+        PointerButton::Primary,
+    );
+    harness.event(InputEvent::WindowFocus(false));
+    up(
+        &mut harness,
+        Point { x: 20.0, y: 20.0 },
+        PointerButton::Primary,
+    );
+
+    assert_eq!(
+        *downs.borrow(),
+        [Point { x: 5.0, y: 5.0 }],
+        "the focus loss ends the press the release never reached"
+    );
+    assert_eq!(
+        *ups.borrow(),
+        [Point { x: 5.0, y: 5.0 }],
+        "a release that comes after the focus loss reaches no handler"
+    );
+}
+
+#[test]
 fn a_right_press_asks_the_nearest_context_menu_at_the_pointer() {
     let menus: Log<(&'static str, Point)> = log();
     let (inner, outer) = (Rc::clone(&menus), Rc::clone(&menus));

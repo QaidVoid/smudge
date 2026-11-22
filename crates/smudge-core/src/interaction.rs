@@ -540,12 +540,22 @@ impl WidgetTree {
 
     /// Ends the held press without a release: the captured node loses its
     /// pressed bit and hears `on_pointer_up`, so a drag it started ends, but
-    /// not `on_press`. Hover then follows the pointer again. The press's own
-    /// release, when it still arrives, reaches no handler, because the
-    /// window system may refuse the gesture it was released for. Without a
-    /// held press it does nothing.
+    /// not `on_press`, and the node that took the press through its button
+    /// handlers hears the release too, so a hold it keeps ends, whether or
+    /// not a node is captured. Hover then follows the pointer again. The
+    /// press's own release, when it still arrives, reaches no handler,
+    /// because the window system may refuse the gesture it was released
+    /// for.
     pub(crate) fn release_press(&mut self) {
         self.end_drag();
+        let buttons = self
+            .button_holders
+            .iter()
+            .map(|(held, _)| *held)
+            .collect::<Vec<_>>();
+        for button in buttons {
+            self.run_button_up(button, self.pointer);
+        }
         let Some(captured) = self.pressed.take() else {
             return;
         };
@@ -1305,14 +1315,15 @@ impl WidgetTree {
     /// Offers a press of `button` at `position` to the button handlers of
     /// `target`'s chain, deepest first, and returns whether one took it. The
     /// node that took it holds the button until its release, in place of
-    /// any node that held it before.
+    /// any node that held it before, and the node it replaced hears the
+    /// release at once, because the release of its own press never arrives.
     fn run_button_down(
         &mut self,
         target: Option<WidgetId>,
         button: PointerButton,
         position: Point,
     ) -> bool {
-        self.button_holders.retain(|(held, _)| *held != button);
+        self.run_button_up(button, position);
         for id in self.chain(target) {
             if !self.hears(id) {
                 continue;

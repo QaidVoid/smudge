@@ -535,7 +535,7 @@ fn visible_lines(chrome: &InputChrome) -> isize {
 /// to the ends of the visual line, and with Control or Meta to the ends of
 /// the text, and the rest works as the single-line input's keys do.
 fn handle_key(chrome: &InputChrome, event: &KeyEvent) -> Handled {
-    if !event.pressed {
+    if !event.pressed || chrome.holds_press() {
         return Handled::No;
     }
     let modifiers = event.modifiers;

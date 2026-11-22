@@ -1,11 +1,12 @@
-//! Buttons, labels, a text input, sliders and a scroll view, to try
-//! accessibility by hand.
+//! Buttons, labels, a text input, sliders, a number field and a scroll
+//! view, to try accessibility by hand.
 //!
 //! Run with `cargo run --example controls -p smudge-platform`. A screen
-//! reader announces the two buttons, the field, the sliders and the list
-//! this window shows: press the buttons with the keyboard, type into the
-//! field, step the sliders with the arrows and drag or press their tracks
-//! while the reader runs to hear what changes.
+//! reader announces the two buttons, the field, the sliders, the number
+//! field and the list this window shows: press the buttons with the
+//! keyboard, type into the field, step the sliders with the arrows and
+//! drag or press their tracks, step or drag the number field, while the
+//! reader runs to hear what changes.
 
 use std::process::ExitCode;
 
@@ -22,6 +23,7 @@ use smudge_text::text_input;
 use smudge_widgets::ButtonExt;
 use smudge_widgets::button;
 use smudge_widgets::column;
+use smudge_widgets::number_field;
 use smudge_widgets::range_slider;
 use smudge_widgets::scroll;
 use smudge_widgets::slider;
@@ -38,6 +40,7 @@ fn main() -> ExitCode {
         let typed = RwSignal::new(String::new());
         let opacity = RwSignal::new(0.5_f64);
         let (low, high) = (RwSignal::new(20.0), RwSignal::new(80.0));
+        let size = RwSignal::new(12.0_f64);
         let press_clicks = clicks.clone();
         let reset_clicks = clicks.clone();
         let read_clicks = clicks.clone();
@@ -45,6 +48,8 @@ fn main() -> ExitCode {
         let read_opacity = opacity.clone();
         let read_low = low.clone();
         let read_high = high.clone();
+        let read_size = size.clone();
+        let bound_size = size.clone();
         panel()
             .column()
             .padding(px(24.0))
@@ -92,6 +97,12 @@ fn main() -> ExitCode {
                         .step(5.0)
                         .accessible_labels("Low end", "High end"),
                 ),
+            )
+            .child(label(move || format!("Size: {}", read_size.get())))
+            .child(
+                column()
+                    .width(Length::pct(100.0))
+                    .child(number_field("Size", bound_size, 1.0..=100.0, 1.0).drag_speed(1.0)),
             )
             .child(
                 scroll(

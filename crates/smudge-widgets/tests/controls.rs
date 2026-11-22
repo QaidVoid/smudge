@@ -7,9 +7,10 @@ use smudge_core::reactive::{RwSignal, prelude::*};
 use smudge_core::semantics::{Checked, Role, SemanticsNode};
 use smudge_core::style::{Align, px};
 use smudge_core::widget::panel;
+use smudge_core::window::Cursor;
 use smudge_test::Harness;
 use smudge_text::TextSystem;
-use smudge_widgets::{checkbox, number_field, slider, switch};
+use smudge_widgets::{checkbox, column, number_field, slider, switch};
 
 /// Returns the first projected node with `role`.
 fn with_role(harness: &mut Harness, role: Role) -> SemanticsNode {
@@ -132,7 +133,8 @@ fn a_number_field_reads_typed_text_on_enter_and_when_the_focus_leaves() {
     let bound = value.clone();
     let mut harness = window(move || {
         smudge_widgets::column()
-            .child(number_field("Width", bound.clone(), 1.0..=100.0, 1.0).width(px(120.0)))
+            .width(px(120.0))
+            .child(number_field("Width", bound.clone(), 1.0..=100.0, 1.0))
             .child(checkbox("Other", RwSignal::new(false)))
     });
     let field = with_role(&mut harness, Role::SpinButton);
@@ -175,8 +177,11 @@ fn a_number_field_reads_typed_text_on_enter_and_when_the_focus_leaves() {
 fn a_number_field_steps_with_the_arrows_the_wheel_and_its_buttons() {
     let value = RwSignal::new(5.0);
     let bound = value.clone();
-    let mut harness =
-        window(move || number_field("Size", bound.clone(), 0.0..=10.0, 0.5).width(px(120.0)));
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=10.0, 0.5))
+    });
     let field = with_role(&mut harness, Role::SpinButton);
     assert_eq!(field.value.as_deref(), Some("5.0"));
 
@@ -232,7 +237,8 @@ fn a_number_field_keeps_what_is_typed_across_frames_and_leaves_an_unedited_value
     let bound = value.clone();
     let mut harness = window(move || {
         smudge_widgets::column()
-            .child(number_field("Size", bound.clone(), 0.0..=10.0, 0.1).width(px(120.0)))
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=10.0, 0.1))
             .child(checkbox("Other", RwSignal::new(false)))
     });
     harness.settle();
@@ -317,7 +323,11 @@ fn a_screen_reader_steps_a_slider_and_a_number_field() {
     let mut harness = window(move || {
         smudge_widgets::column()
             .child(slider(bound_level.clone(), 0.0..=1.0, 0.1).width(px(204.0)))
-            .child(number_field("Width", bound_width.clone(), 0.0..=20.0, 2.0).width(px(120.0)))
+            .child(
+                smudge_widgets::column()
+                    .width(px(120.0))
+                    .child(number_field("Width", bound_width.clone(), 0.0..=20.0, 2.0)),
+            )
     });
     let slider_id = with_role(&mut harness, Role::Slider).id;
     let field_id = with_role(&mut harness, Role::SpinButton).id;
@@ -332,8 +342,11 @@ fn a_screen_reader_steps_a_slider_and_a_number_field() {
 fn the_wheel_steps_a_number_field_once_per_line_it_turns() {
     let value = RwSignal::new(5.0);
     let bound = value.clone();
-    let mut harness =
-        window(move || number_field("Size", bound.clone(), 0.0..=10.0, 1.0).width(px(120.0)));
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=10.0, 1.0))
+    });
     let field = with_role(&mut harness, Role::SpinButton);
     harness.click(middle(&field));
     for _ in 0..4 {
@@ -342,4 +355,430 @@ fn the_wheel_steps_a_number_field_once_per_line_it_turns() {
         });
     }
     assert_eq!(value.get(), 6.0, "four small turns make one line");
+}
+
+#[test]
+fn a_drag_changes_the_number_by_its_speed_times_the_distance() {
+    let value = RwSignal::new(12.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=100.0, 1.0).drag_speed(1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let y = middle(&field).y;
+
+    harness.button_down(Point { x: 30.0, y });
+    harness.move_to(Point { x: 40.0, y });
+    assert_eq!(value.get(), 22.0, "ten pixels at a speed of one make ten");
+    harness.move_to(Point { x: 35.0, y });
+    assert_eq!(value.get(), 17.0, "the number follows the pointer back");
+    harness.button_up(Point { x: 35.0, y });
+    assert_eq!(value.get(), 17.0, "the release left the number");
+    harness.frame();
+    assert_eq!(
+        with_role(&mut harness, Role::SpinButton)
+            .range
+            .map(|range| range.value),
+        Some(17.0),
+        "a screen reader hears the dragged number"
+    );
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn a_drag_lands_on_steps_and_stops_at_the_range() {
+    let value = RwSignal::new(40.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=100.0, 5.0).drag_speed(0.5))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let y = middle(&field).y;
+
+    harness.button_down(Point { x: 30.0, y });
+    harness.move_to(Point { x: 43.0, y });
+    assert_eq!(value.get(), 45.0, "six and a half of drag lands on a step");
+
+    harness.move_to(Point { x: 500.0, y });
+    assert_eq!(value.get(), 100.0, "a drag past the end stops there");
+
+    harness.move_to(Point { x: 2.0, y });
+    assert_eq!(
+        value.get(),
+        25.0,
+        "a drag back to the press's start reads the number again"
+    );
+    harness.button_up(Point { x: 2.0, y });
+}
+
+#[test]
+fn shift_slows_a_drag_tenfold() {
+    let value = RwSignal::new(12.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=100.0, 1.0).drag_speed(1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let y = middle(&field).y;
+
+    harness.event(InputEvent::ModifiersChanged(Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    }));
+    harness.button_down(Point { x: 30.0, y });
+    harness.move_to(Point { x: 40.0, y });
+    assert_eq!(value.get(), 13.0, "ten slowed pixels make one");
+
+    harness.event(InputEvent::ModifiersChanged(Modifiers::default()));
+    harness.move_to(Point { x: 50.0, y });
+    assert_eq!(
+        value.get(),
+        23.0,
+        "letting Shift go takes the full speed up from where it is"
+    );
+    harness.button_up(Point { x: 50.0, y });
+}
+
+#[test]
+fn a_press_that_stays_still_places_the_caret() {
+    let value = RwSignal::new(12.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Width", bound.clone(), 1.0..=1000.0, 1.0).drag_speed(1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let y = middle(&field).y;
+
+    // A press two pixels into the text that only jiggles three is a click.
+    let press_x = field.bounds.x0 + 2.0;
+    harness.button_down(Point { x: press_x, y });
+    harness.move_to(Point {
+        x: press_x + 3.0,
+        y,
+    });
+    harness.button_up(Point {
+        x: press_x + 3.0,
+        y,
+    });
+    harness.frame();
+
+    harness.type_text("9");
+    harness.press_key(Key::Enter);
+    assert_eq!(
+        value.get(),
+        912.0,
+        "the click placed the caret at the start of the text"
+    );
+}
+
+#[test]
+fn a_field_without_a_usable_drag_speed_does_not_drag() {
+    for speed in [None, Some(0.0), Some(f32::INFINITY), Some(f32::NAN)] {
+        let value = RwSignal::new(12.0);
+        let bound = value.clone();
+        let mut harness = window(move || {
+            column().width(px(120.0)).child({
+                let field = number_field("Width", bound.clone(), 1.0..=1000.0, 1.0);
+                match speed {
+                    Some(speed) => field.drag_speed(speed),
+                    None => field,
+                }
+            })
+        });
+        let field = with_role(&mut harness, Role::SpinButton);
+        let press_x = field.bounds.x0 + 2.0;
+        let y = middle(&field).y;
+
+        harness.button_down(Point { x: press_x, y });
+        harness.move_to(Point {
+            x: press_x + 30.0,
+            y,
+        });
+        harness.button_up(Point {
+            x: press_x + 30.0,
+            y,
+        });
+        assert_eq!(
+            value.get(),
+            12.0,
+            "a field with {speed:?} for a speed moves nothing"
+        );
+        let selected = with_role(&mut harness, Role::SpinButton).text_selection;
+        assert!(
+            selected.is_some_and(|selection| selection.anchor != selection.focus),
+            "a field with {speed:?} for a speed lets the drag select its text"
+        );
+    }
+}
+
+#[test]
+fn a_negative_drag_speed_drags_at_its_size() {
+    let value = RwSignal::new(12.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=100.0, 1.0).drag_speed(-1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let y = middle(&field).y;
+
+    harness.button_down(Point { x: 30.0, y });
+    harness.move_to(Point { x: 40.0, y });
+    harness.button_up(Point { x: 40.0, y });
+    assert_eq!(value.get(), 22.0, "a negative speed counts as its size");
+}
+
+#[test]
+fn a_draggable_field_shows_the_column_resize_cursor_over_its_text() {
+    let value = RwSignal::new(12.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=100.0, 1.0).drag_speed(1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    harness.move_to(middle(&field));
+    assert_eq!(
+        harness.app().cursor(),
+        Cursor::ColumnResize,
+        "the field shows the column resize cursor while it can be dragged"
+    );
+
+    let plain = RwSignal::new(12.0);
+    let bound = plain.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=100.0, 1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    harness.move_to(middle(&field));
+    assert_eq!(
+        harness.app().cursor(),
+        Cursor::Text,
+        "a field that cannot drag shows the text cursor"
+    );
+}
+
+#[test]
+fn the_wheel_leaves_a_number_alone_while_a_drag_holds_it() {
+    let value = RwSignal::new(5.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=10.0, 1.0).drag_speed(1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let (x, y) = (middle(&field).x, middle(&field).y);
+
+    harness.click(middle(&field));
+    harness.button_down(Point { x, y });
+    harness.move_to(Point { x, y: y + 10.0 });
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: -40.0 },
+    });
+    assert_eq!(value.get(), 5.0, "the wheel leaves the number a drag holds");
+
+    harness.button_up(Point { x, y: y + 10.0 });
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: -40.0 },
+    });
+    assert_eq!(value.get(), 6.0, "the wheel steps again once the drag ends");
+}
+
+#[test]
+fn keys_do_not_edit_while_a_drag_holds_the_number() {
+    let value = RwSignal::new(12.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 1.0..=1000.0, 1.0).drag_speed(1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let (x, y) = (middle(&field).x, middle(&field).y);
+
+    harness.click(middle(&field));
+    harness.button_down(Point { x: 30.0, y });
+    harness.move_to(Point { x: 40.0, y });
+    harness.frame();
+    assert_eq!(value.get(), 22.0, "the drag holds the number");
+
+    harness.type_text("9");
+    harness.frame();
+    assert_eq!(
+        value.get(),
+        22.0,
+        "keys edit nothing while a drag holds the number"
+    );
+    assert_eq!(
+        with_role(&mut harness, Role::SpinButton).value.as_deref(),
+        Some("22"),
+        "the text shows the number the drag holds"
+    );
+
+    harness.button_up(Point { x, y });
+    assert_eq!(value.get(), 22.0, "the release left the number");
+}
+
+#[test]
+fn a_window_that_loses_the_focus_ends_a_number_drag() {
+    let value = RwSignal::new(5.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=10.0, 1.0).drag_speed(1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let (x, y) = (middle(&field).x, middle(&field).y);
+
+    harness.click(middle(&field));
+    harness.button_down(Point { x, y });
+    harness.move_to(Point { x, y: y + 10.0 });
+    harness.event(InputEvent::WindowFocus(false));
+    harness.event(InputEvent::Wheel {
+        delta: Point { x: 0.0, y: -40.0 },
+    });
+    assert_eq!(
+        value.get(),
+        6.0,
+        "the drag the focus loss ended keeps no hold on the number"
+    );
+}
+
+#[test]
+fn a_drag_that_writes_the_number_ends_the_selection_it_found() {
+    let value = RwSignal::new(12.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=100.0, 1.0).drag_speed(1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let y = middle(&field).y;
+
+    harness.click(middle(&field));
+    harness.press_key_with(
+        Key::Character(String::from("a")),
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        },
+    );
+    harness.frame();
+    let selected = with_role(&mut harness, Role::SpinButton)
+        .text_selection
+        .expect("the field reports its selection");
+    assert_ne!(selected.anchor, selected.focus, "the text is all selected");
+
+    harness.button_down(Point { x: 30.0, y });
+    harness.move_to(Point { x: 40.0, y });
+    harness.button_up(Point { x: 40.0, y });
+    harness.frame();
+
+    assert_eq!(value.get(), 22.0, "the drag wrote the number");
+    let left = with_role(&mut harness, Role::SpinButton)
+        .text_selection
+        .expect("the field still reports its selection");
+    assert_eq!(
+        left.anchor, left.focus,
+        "the drag left a caret, not a selection"
+    );
+    assert_eq!(
+        left.focus.byte, 2,
+        "the caret sits at the end of the shown number"
+    );
+}
+
+#[test]
+fn a_drag_that_moves_the_number_nothing_leaves_the_selection_alone() {
+    let value = RwSignal::new(12.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Size", bound.clone(), 0.0..=100.0, 1.0).drag_speed(1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let y = middle(&field).y;
+
+    harness.click(middle(&field));
+    harness.press_key_with(
+        Key::Character(String::from("a")),
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        },
+    );
+    harness.frame();
+    let selected = with_role(&mut harness, Role::SpinButton).text_selection;
+    assert!(selected.is_some(), "the field reports its selection");
+
+    // A drag that climbs instead of crossing moves no number, so no write
+    // of the number comes to cover what the press would have done.
+    harness.button_down(middle(&field));
+    harness.move_to(Point {
+        x: middle(&field).x,
+        y: y + 10.0,
+    });
+    harness.button_up(Point {
+        x: middle(&field).x,
+        y: y + 10.0,
+    });
+    harness.frame();
+
+    assert_eq!(value.get(), 12.0, "the drag moved no number");
+    assert_eq!(
+        with_role(&mut harness, Role::SpinButton).text_selection,
+        selected,
+        "the drag left the selection it found"
+    );
+}
+
+#[test]
+fn a_drag_that_took_the_press_keeps_the_next_click_from_selecting_a_word() {
+    let value = RwSignal::new(12.0);
+    let bound = value.clone();
+    let mut harness = window(move || {
+        column()
+            .width(px(120.0))
+            .child(number_field("Width", bound.clone(), 1.0..=1000.0, 1.0).drag_speed(1.0))
+    });
+    let field = with_role(&mut harness, Role::SpinButton);
+    let y = middle(&field).y;
+    let press_x = field.bounds.x0 + 2.0;
+
+    harness.click(Point { x: press_x, y });
+    harness.button_down(Point { x: press_x, y });
+    harness.move_to(Point {
+        x: press_x,
+        y: y + 10.0,
+    });
+    harness.button_up(Point {
+        x: press_x,
+        y: y + 10.0,
+    });
+    harness.frame();
+
+    harness.click(Point { x: press_x, y });
+    harness.type_text("9");
+    harness.press_key(Key::Enter);
+    assert_eq!(
+        value.get(),
+        912.0,
+        "the drag made the next click place the caret, not select a word"
+    );
 }

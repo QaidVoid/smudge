@@ -13,10 +13,11 @@ use proptest::prelude::*;
 
 use smudge_core::clipboard::{Clipboard, MemoryClipboard};
 use smudge_core::geometry::{Color, PixelRect, Point, Rect};
-use smudge_core::input::{InputEvent, Key, Modifiers};
+use smudge_core::input::{Handled, InputEvent, Key, Modifiers};
 use smudge_core::paint::{DisplayItem, PaintOp};
 use smudge_core::reactive::RwSignal;
 use smudge_core::reactive::prelude::*;
+use smudge_core::semantics::{Role, SemanticsNode};
 use smudge_core::style::px;
 use smudge_core::theme::{ColorToken, Theme};
 use smudge_core::widget::panel;
@@ -1735,6 +1736,16 @@ fn only_the_focused_field_shows_its_selection() {
     harness.assert_matches_full_repaint();
 }
 
+/// Returns the input's semantics node.
+fn input_node(harness: &mut Harness) -> SemanticsNode {
+    harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == Role::TextInput)
+        .expect("the window shows a text input")
+}
+
 /// Returns whether the next frame paints a caret, telling it apart from
 /// other fills by its width.
 fn paints_caret(harness: &mut Harness) -> bool {
@@ -1937,6 +1948,10 @@ fn held(initial: &str, hold: &PressHold) -> (Harness, RwSignal<String>) {
 fn a_claimed_press_places_the_caret_when_the_hold_ends_as_a_click() {
     let hold = PressHold::new();
     let (mut harness, value) = held("word", &hold);
+    focus(&mut harness);
+    harness.press_key(Key::End);
+    harness.settle();
+    let at_end = input_node(&mut harness).text_selection;
 
     hold.claim();
     harness.click(Point {
@@ -1947,6 +1962,11 @@ fn a_claimed_press_places_the_caret_when_the_hold_ends_as_a_click() {
         value.get(),
         "word",
         "a press a hold claimed edits nothing while it is held"
+    );
+    assert_eq!(
+        input_node(&mut harness).text_selection,
+        at_end,
+        "the claimed press moved no caret while the hold stood"
     );
 
     hold.click();
@@ -1977,5 +1997,107 @@ fn a_hold_that_ends_as_a_drag_leaves_the_caret_where_it_was() {
         value.get(),
         "wordX",
         "the drag left the caret at the end of the text"
+    );
+}
+
+#[test]
+fn a_claimed_hold_hides_the_caret_until_it_ends() {
+    let hold = PressHold::new();
+    let (mut harness, _value) = held("word", &hold);
+    focus(&mut harness);
+    assert!(
+        paints_caret(&mut harness),
+        "a focused field paints its caret"
+    );
+
+    hold.claim();
+    assert!(
+        !paints_caret(&mut harness),
+        "a hold that claimed the press hides the caret while it holds"
+    );
+
+    hold.release();
+    assert!(
+        paints_caret(&mut harness),
+        "the caret came back with the hold"
+    );
+}
+
+#[test]
+fn an_input_method_waits_while_a_hold_claims_the_press() {
+    let hold = PressHold::new();
+    let (mut harness, value) = held("word", &hold);
+    focus(&mut harness);
+    harness.press_key(Key::End);
+
+    hold.claim();
+    harness.event(InputEvent::ImePreedit {
+        text: String::from("pre"),
+        cursor: Some((1, 1)),
+    });
+    harness.frame();
+    let (rects, _) = painted(&mut harness);
+    assert!(
+        !rects.iter().any(is_underline),
+        "a composition waits while a hold claims the press"
+    );
+
+    ime_commit(&mut harness, "X");
+    harness.frame();
+    assert_eq!(
+        value.get(),
+        "word",
+        "a commit waits while a hold claims the press"
+    );
+
+    hold.release();
+    ime_commit(&mut harness, "X");
+    assert_eq!(
+        value.get(),
+        "wordX",
+        "the input method edits once the hold ends"
+    );
+}
+
+#[test]
+fn a_click_that_waited_for_its_hold_keeps_its_press_time() {
+    let hold = PressHold::new();
+    let value = RwSignal::new(String::from("word"));
+    let bound = value.clone();
+    let (ended, held) = (hold.clone(), hold.clone());
+    let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        let ended = ended.clone();
+        panel()
+            .on_key(move |_| {
+                ended.click();
+                Handled::Yes
+            })
+            .child(
+                text_input(bound.clone())
+                    .width(px(VIEWPORT.0))
+                    .height(px(VIEWPORT.1))
+                    .press_hold(held.clone()),
+            )
+    });
+    harness.frame();
+    focus(&mut harness);
+
+    hold.claim();
+    harness.click(Point {
+        x: 1.0,
+        y: VIEWPORT.1 / 2.0,
+    });
+    harness.advance(Duration::from_millis(350));
+    harness.press_key(Key::Other);
+    harness.advance(Duration::from_millis(100));
+    harness.click(Point {
+        x: 1.0,
+        y: VIEWPORT.1 / 2.0,
+    });
+    harness.frame();
+    let selection = input_node(&mut harness).text_selection;
+    assert!(
+        selection.is_some_and(|selection| selection.anchor == selection.focus),
+        "the second click sits outside the double-click time of the hold's press"
     );
 }

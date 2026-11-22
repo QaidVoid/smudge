@@ -22,7 +22,7 @@
 //! instead.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use smudge_core::element::{Element, Value};
 use smudge_core::geometry::{Color, Corners, Point, Rect, Size};
@@ -444,9 +444,29 @@ struct HoldKey;
 /// Hands the input's presses to `hold`.
 fn set_hold(input: &mut TextInput, hold: PressHold) -> Dirty {
     let chrome = Rc::downgrade(&input.chrome);
-    *hold.slot.click.borrow_mut() = Some(Box::new(move |at| {
-        if let (Some(at), Some(chrome)) = (at, chrome.upgrade()) {
-            click_at(&chrome, at);
+    debug_assert!(
+        hold.slot
+            .owner
+            .borrow()
+            .upgrade()
+            .is_none_or(|live| Rc::ptr_eq(&live, &input.chrome)),
+        "one hold serves one input"
+    );
+    *hold.slot.owner.borrow_mut() = chrome.clone();
+    *hold.slot.answer.borrow_mut() = Some(Box::new(move |held| {
+        let Some(chrome) = chrome.upgrade() else {
+            return;
+        };
+        match held {
+            Some((pressed_at, at)) => {
+                click_at(&chrome, at, pressed_at);
+                // The hold ended with the button up, so the click it
+                // placed starts no selection drag of its own.
+                chrome.dragging.set(false);
+            }
+            None => {
+                chrome.last_click.take();
+            }
         }
     }));
     input.chrome.hold.set(Some(hold.slot));
@@ -479,7 +499,8 @@ impl PressHold {
             slot: Rc::new(HoldSlot {
                 claimed: RwSignal::new(false),
                 held: Cell::new(None),
-                click: RefCell::new(None),
+                owner: RefCell::new(Weak::new()),
+                answer: RefCell::new(None),
             }),
         }
     }
@@ -497,15 +518,18 @@ impl PressHold {
     }
 
     /// Ends the hold as a click: the input places its caret where the
-    /// press began. A hold no input claimed does nothing.
+    /// press began, or, when the input never heard the press and kept no
+    /// point, forgets the press as a click, so a drag that took its place
+    /// makes no double click of the next one. A hold nothing claimed does
+    /// nothing.
     pub fn click(&self) {
         if !self.is_claimed() {
             return;
         }
-        let at = self.slot.held.take();
+        let held = self.slot.held.take();
         self.slot.claimed.set(false);
-        if let Some(click) = self.slot.click.borrow_mut().as_mut() {
-            click(at);
+        if let Some(answer) = self.slot.answer.borrow_mut().as_mut() {
+            answer(held);
         }
     }
 
@@ -586,7 +610,7 @@ fn set_placeholder(input: &mut TextInput, text: String) -> Dirty {
 /// C, X and V copies, cuts and pastes. Keys the input does not take, among
 /// them Enter and Tab, bubble to the ancestors.
 fn handle_key(chrome: &InputChrome, event: &KeyEvent) -> Handled {
-    if !event.pressed {
+    if !event.pressed || chrome.holds_press() {
         return Handled::No;
     }
     let modifiers = event.modifiers;

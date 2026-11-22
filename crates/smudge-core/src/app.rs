@@ -897,14 +897,15 @@ impl App {
     /// pressed node's `on_press`.
     ///
     /// The windowing layer calls this when the window system takes over the
-    /// press, as it does for an interactive move or resize: the release of
-    /// that press never reaches the app, so without this the press would stay
-    /// captured and hover would stop following the pointer. The pressed node
-    /// loses its pressed state and hears `on_pointer_up`, so a drag it started
-    /// ends. A window system may still refuse the gesture after the call that
-    /// starts it succeeded, and then the release arrives after all: a primary
-    /// release that comes with no press held, before the next primary press,
-    /// reaches no handler. With no press held this does nothing.
+    /// press, as it does for an interactive move or resize, and when the
+    /// window loses the input focus, because the release of such a press may
+    /// never reach the app. The pressed node loses its pressed state and
+    /// hears `on_pointer_up`, and the node that took the press through its
+    /// button handlers hears the release, so drags and the holds they keep
+    /// end. A window system may still refuse the gesture after the call
+    /// that starts it succeeded, and then the release arrives after all: a
+    /// primary release that comes with no press held, before the next
+    /// primary press, reaches no handler.
     pub fn release_press(&mut self) {
         self.tree.release_press();
     }
@@ -1085,11 +1086,14 @@ impl App {
             InputEvent::WindowFocus(focused) => {
                 // A window that loses the input focus drops its input method
                 // context, so a composition must not outlive the focus. The
-                // empty preedit is the clear. It frees the pointer too.
+                // empty preedit is the clear. It frees the pointer too, and
+                // ends a press whose release the window may never deliver,
+                // so a drag and the holds it keeps end with the focus.
                 if !focused {
                     self.tree.ime_preedit("", None);
                     self.tree.release_pointer_lock();
                     self.tree.close_transient_overlays();
+                    self.tree.release_press();
                 }
                 crate::window::set_focused(&self.window, focused);
             }

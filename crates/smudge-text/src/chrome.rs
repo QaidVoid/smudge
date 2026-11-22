@@ -8,7 +8,7 @@
 //! its paste rule and its measurement.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use smudge_core::clipboard;
@@ -116,9 +116,11 @@ pub(crate) struct InputChrome {
     pub(crate) hold: RwSignal<Option<Rc<HoldSlot>>>,
 }
 
-/// What ends a hold as a click: it places the caret at the point the hold
-/// kept, which is `None` when the hold kept none.
-type Click = Box<dyn FnMut(Option<Point>)>;
+/// What answers the end of a hold, installed by the input: it places the
+/// caret at the point the hold kept, or, for `None`, forgets the press as
+/// a click, because the hold ended as a drag. The answer runs while the
+/// slot holds it borrowed, so it must not end the same hold again.
+type Answer = Box<dyn FnMut(Option<(Instant, Point)>)>;
 
 /// The shared state of a
 /// [`PressHold`](crate::text_input::PressHold), which one input and the
@@ -126,10 +128,15 @@ type Click = Box<dyn FnMut(Option<Point>)>;
 pub(crate) struct HoldSlot {
     /// Whether the press is held.
     pub(crate) claimed: RwSignal<bool>,
-    /// Where the held press began, relative to the input's rectangle.
-    pub(crate) held: Cell<Option<Point>>,
-    /// What ends the hold as a click, installed by the input.
-    pub(crate) click: RefCell<Option<Click>>,
+    /// When and where the held press began, relative to the input's
+    /// rectangle, stamped when the press arrived so a click that ends the
+    /// hold sits in the same double-click time a direct click does.
+    pub(crate) held: Cell<Option<(Instant, Point)>>,
+    /// The input the answer serves, which tells a stale answer left by an
+    /// input that is gone from a second input's claim on the same hold.
+    pub(crate) owner: RefCell<Weak<InputChrome>>,
+    /// What answers the end of the hold.
+    pub(crate) answer: RefCell<Option<Answer>>,
 }
 
 impl HoldSlot {
@@ -139,10 +146,17 @@ impl HoldSlot {
     }
 
     /// Drops the held press: the input shows its caret and answers presses
-    /// again.
+    /// again, and forgets the press as a click when the input heard it, so
+    /// a drag that took a click's place makes no double click of the next
+    /// one.
     pub(crate) fn let_go(&self) {
+        let held = self.held.take();
         self.claimed.set(false);
-        self.held.take();
+        if held.is_some()
+            && let Some(answer) = self.answer.borrow_mut().as_mut()
+        {
+            answer(None);
+        }
     }
 }
 
@@ -420,25 +434,28 @@ pub(crate) fn caret_node(chrome: &Rc<InputChrome>) -> Element<Caret> {
 pub(crate) fn handle_press(chrome: &InputChrome, position: Point) {
     let hold = chrome.hold.read(|hold| hold.clone());
     if let Some(hold) = hold.filter(|hold| hold.holds_press()) {
-        hold.held.set(Some(position));
+        hold.held.set(Some((timer::now(), position)));
         return;
     }
-    click_at(chrome, position);
+    click_at(chrome, position, timer::now());
 }
 
 /// Places the caret at `position`, or selects a word on a second click on
 /// the same spot soon after, and starts a selection drag.
-pub(crate) fn click_at(chrome: &InputChrome, position: Point) {
-    let now = timer::now();
+///
+/// `pressed_at` is when the click's press arrived, which a hold keeps from
+/// the press itself, so a click that waited for its hold still sits in the
+/// same double-click time.
+pub(crate) fn click_at(chrome: &InputChrome, position: Point, pressed_at: Instant) {
     let double_click = chrome
         .last_click
         .get()
         .is_some_and(|(last_at, last_at_point)| {
-            now.duration_since(last_at) <= DOUBLE_CLICK_TIME
+            pressed_at.duration_since(last_at) <= DOUBLE_CLICK_TIME
                 && distance_squared(position, last_at_point)
                     <= DOUBLE_CLICK_DISTANCE * DOUBLE_CLICK_DISTANCE
         });
-    chrome.last_click.set(Some((now, position)));
+    chrome.last_click.set(Some((pressed_at, position)));
     chrome.dragging.set(true);
 
     let (x, y) = layout_position(chrome, position);
@@ -541,7 +558,7 @@ pub(crate) fn apply_active<W>(_widget: &mut W, _active: bool) -> Dirty {
 /// input methods ever take. It can also arrive while the preedit is still
 /// showing, and then it takes the preedit's place.
 pub(crate) fn handle_commit(chrome: &InputChrome, text: &str) {
-    if text.is_empty() {
+    if chrome.holds_press() || text.is_empty() {
         return;
     }
     chrome.editor.commit(text);
@@ -555,6 +572,11 @@ pub(crate) fn handle_commit(chrome: &InputChrome, text: &str) {
 /// cancel, and it arrives when the composition is canceled, committed by a
 /// route that sent its own commit, or dropped with the focus.
 pub(crate) fn handle_preedit(chrome: &InputChrome, text: &str, cursor: Option<(usize, usize)>) {
+    // A hold that claims the press owns the text, so a composition update
+    // waits for it to end. A clear still runs, because it only cleans up.
+    if !text.is_empty() && chrome.holds_press() {
+        return;
+    }
     // An empty preedit with nothing being composed is the platform clearing
     // a composition that never started, as it does when the window loses
     // the focus. It changes nothing, so it must not scroll a view the wheel
