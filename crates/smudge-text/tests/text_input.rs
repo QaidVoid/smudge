@@ -21,7 +21,7 @@ use smudge_core::style::px;
 use smudge_core::theme::{ColorToken, Theme};
 use smudge_core::widget::panel;
 use smudge_test::Harness;
-use smudge_text::{Editor, TextInputExt, TextStyle, text_input};
+use smudge_text::{Editor, PressHold, TextInputExt, TextStyle, text_input};
 
 /// How long the caret stays visible or hidden in one blink, the same period
 /// the input uses.
@@ -1914,5 +1914,68 @@ fn a_padded_and_bordered_field_grows_around_its_line() {
         heights[1],
         heights[0] + 2.0 * 4.0 + 2.0 * 1.0,
         "the padding and the border sit around the line, not over it"
+    );
+}
+
+/// Mounts an input bound to a fresh signal that holds its presses for
+/// `hold`, and returns the harness and the signal.
+fn held(initial: &str, hold: &PressHold) -> (Harness, RwSignal<String>) {
+    let value = RwSignal::new(String::from(initial));
+    let bound = value.clone();
+    let held = hold.clone();
+    let mut harness = Harness::new(VIEWPORT.0, VIEWPORT.1, 1.0, move || {
+        text_input(bound.clone())
+            .width(px(VIEWPORT.0))
+            .height(px(VIEWPORT.1))
+            .press_hold(held.clone())
+    });
+    harness.frame();
+    (harness, value)
+}
+
+#[test]
+fn a_claimed_press_places_the_caret_when_the_hold_ends_as_a_click() {
+    let hold = PressHold::new();
+    let (mut harness, value) = held("word", &hold);
+
+    hold.claim();
+    harness.click(Point {
+        x: 1.0,
+        y: VIEWPORT.1 / 2.0,
+    });
+    assert_eq!(
+        value.get(),
+        "word",
+        "a press a hold claimed edits nothing while it is held"
+    );
+
+    hold.click();
+    harness.frame();
+    harness.type_text("X");
+    assert_eq!(
+        value.get(),
+        "Xword",
+        "the click placed the caret where the press began"
+    );
+}
+
+#[test]
+fn a_hold_that_ends_as_a_drag_leaves_the_caret_where_it_was() {
+    let hold = PressHold::new();
+    let (mut harness, value) = held("word", &hold);
+    focus(&mut harness);
+    harness.press_key(Key::End);
+
+    hold.claim();
+    harness.click(Point {
+        x: 1.0,
+        y: VIEWPORT.1 / 2.0,
+    });
+    hold.release();
+    harness.type_text("X");
+    assert_eq!(
+        value.get(),
+        "wordX",
+        "the drag left the caret at the end of the text"
     );
 }

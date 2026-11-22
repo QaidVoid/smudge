@@ -21,7 +21,7 @@
 //! For text that spans several lines, use [`TextArea`](crate::TextArea)
 //! instead.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use smudge_core::element::{Element, Value};
@@ -37,10 +37,10 @@ use smudge_core::widget::{AvailableSpace, MeasureInput, PaintCx, Panel, Widget, 
 use smudge_core::window::Cursor;
 
 use crate::chrome::{
-    Direction, InputChrome, ParagraphCache, Placeholder, SELECTION_ALPHA, apply_active,
-    apply_edit_count, apply_move, apply_outside_write, caret_node, copy_selection, cut_selection,
-    handle_commit, handle_focus, handle_move, handle_preedit, handle_press, handle_release,
-    is_shortcut, outside_write, paint_paragraphs, paint_selection, types_text,
+    Direction, HoldSlot, InputChrome, ParagraphCache, Placeholder, SELECTION_ALPHA, apply_active,
+    apply_edit_count, apply_move, apply_outside_write, caret_node, click_at, copy_selection,
+    cut_selection, handle_commit, handle_focus, handle_move, handle_preedit, handle_press,
+    handle_release, is_shortcut, outside_write, paint_paragraphs, paint_selection, types_text,
 };
 use crate::style::{TextStyle, current_text_style};
 
@@ -386,6 +386,24 @@ pub trait TextInputExt: Sized {
     ///     .placeholder("Password");
     /// ```
     fn password(self, masked: impl Into<Value<bool>>) -> Self;
+
+    /// Hands the input's presses to `hold` while it is claimed.
+    ///
+    /// A claimed press neither moves the caret nor starts a selection, and
+    /// the caret hides until the hold ends. The widget that claimed it ends
+    /// it with [`PressHold::click`] to place the caret where the press
+    /// began, or with [`PressHold::release`] to leave the caret where it
+    /// was, as a number field that drags its value does. One hold serves
+    /// one input.
+    ///
+    /// ```
+    /// use smudge_core::reactive::RwSignal;
+    /// use smudge_text::{PressHold, TextInputExt, text_input};
+    ///
+    /// let hold = PressHold::new();
+    /// let field = text_input(RwSignal::new(String::new())).press_hold(hold);
+    /// ```
+    fn press_hold(self, hold: PressHold) -> Self;
 }
 
 /// The key of the input's ambient text style binding.
@@ -411,10 +429,97 @@ impl TextInputExt for Element<TextInput> {
     fn password(self, masked: impl Into<Value<bool>>) -> Self {
         self.bind(PasswordKey, masked, set_masked)
     }
+
+    fn press_hold(self, hold: PressHold) -> Self {
+        self.bind(HoldKey, Value::Static(hold), set_hold)
+    }
 }
 
 /// The key of the input's mask binding.
 struct PasswordKey;
+
+/// The key of the input's press hold binding.
+struct HoldKey;
+
+/// Hands the input's presses to `hold`.
+fn set_hold(input: &mut TextInput, hold: PressHold) -> Dirty {
+    let chrome = Rc::downgrade(&input.chrome);
+    *hold.slot.click.borrow_mut() = Some(Box::new(move |at| {
+        if let (Some(at), Some(chrome)) = (at, chrome.upgrade()) {
+            click_at(&chrome, at);
+        }
+    }));
+    input.chrome.hold.set(Some(hold.slot));
+    Dirty::Clean
+}
+
+/// A press an input holds back while another widget decides what the press
+/// became.
+///
+/// A widget that answers presses before the input edits them claims the
+/// hold when the press begins and ends it when the press does.
+/// [`PressHold::click`] ends it as a click: the input places its caret
+/// where the press began, as it would have for a press it answered itself.
+/// [`PressHold::release`] ends it as a drag: the input keeps its caret
+/// where it was. While a hold is claimed, the input hides its caret and
+/// answers no press of its own.
+///
+/// One hold serves one input, which
+/// [`TextInputExt::press_hold`](TextInputExt::press_hold) hands it to.
+#[derive(Clone)]
+pub struct PressHold {
+    /// The state the input and the holder share.
+    slot: Rc<HoldSlot>,
+}
+
+impl PressHold {
+    /// Creates a hold no input knows yet.
+    pub fn new() -> PressHold {
+        PressHold {
+            slot: Rc::new(HoldSlot {
+                claimed: RwSignal::new(false),
+                held: Cell::new(None),
+                click: RefCell::new(None),
+            }),
+        }
+    }
+
+    /// Returns whether the hold is claimed, so an input is holding its
+    /// caret and its click back.
+    pub fn is_claimed(&self) -> bool {
+        self.slot.holds_press()
+    }
+
+    /// Claims the press: the input hides its caret and holds its click
+    /// back until the hold ends.
+    pub fn claim(&self) {
+        self.slot.claimed.set(true);
+    }
+
+    /// Ends the hold as a click: the input places its caret where the
+    /// press began. A hold no input claimed does nothing.
+    pub fn click(&self) {
+        if !self.is_claimed() {
+            return;
+        }
+        let at = self.slot.held.take();
+        self.slot.claimed.set(false);
+        if let Some(click) = self.slot.click.borrow_mut().as_mut() {
+            click(at);
+        }
+    }
+
+    /// Ends the hold as a drag: the input keeps its caret where it was.
+    pub fn release(&self) {
+        self.slot.let_go();
+    }
+}
+
+impl Default for PressHold {
+    fn default() -> PressHold {
+        PressHold::new()
+    }
+}
 
 /// Masks the input's text or shows it again.
 fn set_masked(input: &mut TextInput, masked: bool) -> Dirty {

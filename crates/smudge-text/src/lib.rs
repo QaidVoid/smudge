@@ -95,7 +95,7 @@ pub use selection::{SelectableExt, selection_scope};
 pub use style::{TextStyle, current_text_style, provide_text_style};
 pub use system::{FontError, TextSystem};
 pub use text_area::{TextArea, TextAreaExt, text_area};
-pub use text_input::{TextInput, TextInputExt, text_input};
+pub use text_input::{PressHold, TextInput, TextInputExt, text_input};
 
 /// Creates a signal the library keeps for itself, such as a widget's own
 /// state.

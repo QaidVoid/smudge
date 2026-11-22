@@ -111,6 +111,39 @@ pub(crate) struct InputChrome {
     /// The selection rectangles the last paint built, kept so the next
     /// paint fills the same buffer.
     pub(crate) selection: RefCell<Vec<Rect>>,
+    /// The press a widget outside holds back, present only when the widget
+    /// was built with [`TextInputExt::press_hold`](crate::TextInputExt::press_hold).
+    pub(crate) hold: RwSignal<Option<Rc<HoldSlot>>>,
+}
+
+/// What ends a hold as a click: it places the caret at the point the hold
+/// kept, which is `None` when the hold kept none.
+type Click = Box<dyn FnMut(Option<Point>)>;
+
+/// The shared state of a
+/// [`PressHold`](crate::text_input::PressHold), which one input and the
+/// widget that answers its presses see at once.
+pub(crate) struct HoldSlot {
+    /// Whether the press is held.
+    pub(crate) claimed: RwSignal<bool>,
+    /// Where the held press began, relative to the input's rectangle.
+    pub(crate) held: Cell<Option<Point>>,
+    /// What ends the hold as a click, installed by the input.
+    pub(crate) click: RefCell<Option<Click>>,
+}
+
+impl HoldSlot {
+    /// Returns whether the press is held, tracking the claim.
+    pub(crate) fn holds_press(&self) -> bool {
+        self.claimed.with(|claimed| *claimed)
+    }
+
+    /// Drops the held press: the input shows its caret and answers presses
+    /// again.
+    pub(crate) fn let_go(&self) {
+        self.claimed.set(false);
+        self.held.take();
+    }
 }
 
 impl InputChrome {
@@ -142,6 +175,7 @@ impl InputChrome {
             blink: RefCell::new(None),
             follow_caret: Cell::new(true),
             selection: RefCell::new(Vec::new()),
+            hold: RwSignal::new(None),
         }
     }
 
@@ -160,6 +194,16 @@ impl InputChrome {
         }
         drop(blink);
         self.edits.update(|edits| *edits += 1);
+    }
+
+    /// Returns whether a hold keeps the caret hidden.
+    ///
+    /// Read where the caret's visibility binds, so it follows the hold's
+    /// claim and the hold arriving or leaving.
+    pub(crate) fn holds_press(&self) -> bool {
+        self.hold
+            .with(|hold| hold.as_ref().map(|hold| hold.holds_press()))
+            .unwrap_or_default()
     }
 
     /// Starts the blink timer, when none runs yet.
@@ -357,14 +401,34 @@ pub(crate) fn caret_node(chrome: &Rc<InputChrome>) -> Element<Caret> {
     )
     .bind(
         CaretShownKey,
-        move || shown_chrome.caret_on.get() && shown_chrome.focused.get() && window::focused(),
+        move || {
+            shown_chrome.caret_on.get()
+                && shown_chrome.focused.get()
+                && window::focused()
+                && !shown_chrome.holds_press()
+        },
         apply_caret_shown,
     )
 }
 
 /// Edits the pointer press makes: place the caret, or select a word on a
 /// double click, and start a drag.
+///
+/// A press a hold claims goes to the holder instead: the input keeps where
+/// the press began and places nothing, until the hold ends as a click and
+/// [`click_at`] runs for it.
 pub(crate) fn handle_press(chrome: &InputChrome, position: Point) {
+    let hold = chrome.hold.read(|hold| hold.clone());
+    if let Some(hold) = hold.filter(|hold| hold.holds_press()) {
+        hold.held.set(Some(position));
+        return;
+    }
+    click_at(chrome, position);
+}
+
+/// Places the caret at `position`, or selects a word on a second click on
+/// the same spot soon after, and starts a selection drag.
+pub(crate) fn click_at(chrome: &InputChrome, position: Point) {
     let now = timer::now();
     let double_click = chrome
         .last_click
