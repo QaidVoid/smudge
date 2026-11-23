@@ -1,5 +1,6 @@
 //! Two inputs, a plan to pick and a submit button, with a live preview:
-//! how a two-way input binding feeds the widgets around it.
+//! how a two-way input binding feeds the widgets around it. A separator
+//! divides the sections and a hyperlink links to the plans page.
 //!
 //! Run with `cargo run --example form -p smudge`.
 
@@ -46,7 +47,7 @@ fn main() -> Result<(), PlatformError> {
             title: String::from("Smudge form"),
             size: Size {
                 width: 380.0,
-                height: 360.0,
+                height: 410.0,
             },
             clear_color: Color::rgb(16, 17, 21),
             ..WindowOptions::default()
@@ -84,6 +85,7 @@ fn main() -> Result<(), PlatformError> {
                         .border(1.0)
                         .border_color(FIELD_BORDER),
                 )
+                .child(separator())
                 .child(
                     radio_group(plan)
                         .option(Plan::Free, "Free")
@@ -115,6 +117,16 @@ fn main() -> Result<(), PlatformError> {
                 .child(label(move || match shown_submitted.get().as_str() {
                     "" => String::from("Nothing submitted yet"),
                     text => text.to_owned(),
+                }))
+                .child(hyperlink("Compare the plans", || {
+                    // Opening a URL is a service of the platform, which
+                    // phones get through the platform layer. On the desktop,
+                    // the app asks the system's opener itself, which hands
+                    // back the opener process for the app to keep or reap:
+                    #[cfg(target_os = "linux")]
+                    let _ = std::process::Command::new("xdg-open")
+                        .arg("https://smudge.example/plans")
+                        .spawn();
                 }))
         },
         |app| app.set_theme(Theme::dark()),
