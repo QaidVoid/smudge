@@ -431,7 +431,74 @@ let form = column()
 
 A checkbox and a switch toggle on a press, Enter or Space. A slider sets the number under the pointer as it is pressed and dragged, and the arrow keys, Page Up, Page Down, Home and End move it. A number field reads what was typed when Enter is pressed and when the focus leaves it after an edit, moving it onto a step of the range, and Up, Down, the wheel while it holds the focus, and the arrows at its right step it. Its first argument is the name a screen reader hears. Every number a slider or a number field sets lies on a step and inside the range, counted from the range's start, and a screen reader hears each control's role, state and number, and can step a slider or a number field up and down.
 
+A number field with `.drag_speed` also drags its number across its text, as a property panel's field does. A press that moves more than four logical pixels before it releases becomes a drag: the number follows the pointer from where the press began, clamped and stepped, and the field does not take the text caret. A press that stays still edits the text as before. Shift slows the drag tenfold for fine changes, and the field shows the column resize cursor over its text while it can be dragged:
+
+```rust
+use smudge::widgets::number_field;
+
+let radius = RwSignal::new(12.0);
+let size = number_field("Corner radius", radius, 0.0..=64.0, 1.0).drag_speed(0.5);
+```
+
 A control of your own that checks its input when the user moves on uses `on_focus_within`, which hears the focus enter the node or anything inside it, and leave them all.
+
+## Radio groups
+
+`radio_group(selected)` binds a group of choices to the signal that holds the chosen one. `.option(value, label)` adds a choice, and `.accessible_label` names the group:
+
+```rust
+use smudge::widgets::radio_group;
+
+#[derive(Clone, PartialEq)]
+enum Plan {
+    Free,
+    Pro,
+}
+
+let plan = RwSignal::new(Plan::Free);
+let plans = radio_group(plan)
+    .option(Plan::Free, "Free")
+    .option(Plan::Pro, "Pro")
+    .accessible_label("Plan");
+```
+
+The group is one Tab stop: Tab enters it at the chosen choice, or at the first when none matches the signal, and the next Tab leaves it. The arrow keys move the choice and the focus together, Down and Right to the next choice and Up and Left to the one before it, wrapping at the ends, and a press on a choice, or Enter or Space on the focused one, chooses it. `.option_disabled(value, label, disabled)` adds a choice that can be neither chosen nor focused, which the arrows pass over, and `.horizontal()` lays the choices out in a row instead of a column. A screen reader hears the group, then each choice as a radio button with its place in the set, the chosen one checked.
+
+## Range sliders
+
+`range_slider(low, high, range)` puts two thumbs on one track with the stretch between them filled, for a filter that picks a from and a to:
+
+```rust
+use smudge::widgets::range_slider;
+
+let low = RwSignal::new(20.0);
+let high = RwSignal::new(80.0);
+let price = range_slider(low, high, 0.0..=100.0)
+    .step(5.0)
+    .accessible_label("Price");
+```
+
+A press on the track moves the thumb it lies nearer to, and a drag moves the thumb it grabbed. The thumbs never cross: a drag or a step that would cross stops at the thumb it meets, and a write from outside that crosses the pair swaps the two back. Each thumb is its own Tab stop, and the arrows step the thumb the keyboard is on, Page Up and Page Down by ten steps, and Home and End go to the ends, while a press on the track leaves the keyboard focus where it was. `.step` sets the size of one step, counted from the range's start. Without it, a step is a hundredth of the range. A screen reader hears a group named by `accessible_label` holding two sliders, named "minimum" and "maximum", or the names `.accessible_labels` gives them, each with its value and the stretch it can still move in. The range's ends should be finite numbers.
+
+## Progress bars and spinners
+
+`progress(fraction)` shows how far a task has come, and `spinner()` that a task is running whose length the app does not know:
+
+```rust
+use smudge::widgets::{progress, spinner};
+
+let done = RwSignal::new(Some(0.25_f32));
+let share = done.clone();
+
+let status = column()
+    .gap(Size { width: 8.0, height: 0.0 })
+    .child(progress(move || share.get()).width(px(160.0)))
+    .child(spinner());
+```
+
+The bound value is a share in hand or a closure that reads signals, so the bar follows its task. A share is clamped into 0.0 to 1.0 and fills the track from the left, and `None` shows a task of unknown length as a stripe that rides the track until the app learns the share. The bar takes no press and no keys, because it shows and changes nothing. A screen reader hears a progress bar with its share, and one with none as busy.
+
+`spinner()` is an arc that turns once a second, measured to a line of the text around it, so it sits in a row beside a button or a label without extra sizing. Under reduced motion the stripe and the arc stand still and pulse slowly instead. A screen reader hears the spinner as busy too, and either control can take a name with `accessible_label` where the task it shows needs one.
 
 ## Tabs
 

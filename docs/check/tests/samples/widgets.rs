@@ -324,6 +324,55 @@ fn controls_sample() {
 }
 
 #[test]
+fn number_field_drag_sample() {
+    use smudge::widgets::number_field;
+
+    let radius = RwSignal::new(12.0);
+    let size = number_field("Corner radius", radius, 0.0..=64.0, 1.0).drag_speed(0.5);
+}
+
+#[test]
+fn radio_group_sample() {
+    use smudge::widgets::radio_group;
+
+    #[derive(Clone, PartialEq)]
+    enum Plan {
+        Free,
+        Pro,
+    }
+
+    let plan = RwSignal::new(Plan::Free);
+    let plans = radio_group(plan)
+        .option(Plan::Free, "Free")
+        .option(Plan::Pro, "Pro")
+        .accessible_label("Plan");
+}
+
+#[test]
+fn range_slider_sample() {
+    use smudge::widgets::range_slider;
+
+    let low = RwSignal::new(20.0);
+    let high = RwSignal::new(80.0);
+    let price = range_slider(low, high, 0.0..=100.0)
+        .step(5.0)
+        .accessible_label("Price");
+}
+
+#[test]
+fn progress_sample() {
+    use smudge::widgets::{progress, spinner};
+
+    let done = RwSignal::new(Some(0.25_f32));
+    let share = done.clone();
+
+    let status = column()
+        .gap(Size { width: 8.0, height: 0.0 })
+        .child(progress(move || share.get()).width(px(160.0)))
+        .child(spinner());
+}
+
+#[test]
 fn tabs_sample() {
     use smudge::widgets::tabs;
 
