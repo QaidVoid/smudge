@@ -75,7 +75,12 @@ fi
 
 if ! $full; then
     crates="$( (grep -oE '^crates/[^/]+' <<<"$files" | cut -d/ -f2; grep -q '^docs/' <<<"$files" && echo docs-check; grep -q '^README\.md' <<<"$files" && echo docs-check) | sort -u | with_dependents)"
-    mapfile -t tests < <(grep -v '^$' <<<"$crates")
+    # bash's process substitution needs /dev/fd, which some systems have
+    # no symlink for, so read the names through a here-string instead.
+    tests=()
+    while IFS= read -r crate; do
+        [[ -n "$crate" ]] && tests+=("$crate")
+    done <<<"$crates"
     # The hot reload suite builds fixture apps one at a time, so it runs when
     # the builder or the code a patch goes through changed.
     hot=false
