@@ -15,7 +15,7 @@ use parley::PositionedLayoutItem;
 use parley::StyleProperty;
 use parley::fontique::Synthesis;
 use parley::style::LineHeight;
-use smudge_core::geometry::Size;
+use smudge_core::geometry::{Point, Rect, Size};
 
 /// A block of text laid out in logical pixels against one style.
 ///
@@ -383,6 +383,59 @@ impl TextLayout {
             })
         })
     }
+
+    /// Returns the rectangle under every glyph run of every kept line, in
+    /// logical pixels offset by `origin`, for a widget that draws an
+    /// underline beneath laid-out text.
+    ///
+    /// Each rectangle sits at the font's own underline offset and carries
+    /// the font's underline thickness, at least one logical pixel. The
+    /// whitespace a wrapped line ends with hangs past its end edge and is
+    /// not underlined, and on the line a truncation cut, the underline ends
+    /// where the ellipsis begins and covers only the runs that survive.
+    pub fn underlines(&self, origin: Point) -> Vec<Rect> {
+        let truncation = self.truncation.as_ref();
+        let kept_lines = truncation.map_or(usize::MAX, |truncation| truncation.kept_lines);
+        let rtl = self.layout.is_rtl();
+        let mut underlines = Vec::new();
+        for (line_index, line) in self.layout.lines().enumerate().take(kept_lines) {
+            let cut = truncation
+                .filter(|_| line_index + 1 == kept_lines)
+                .and_then(|truncation| truncation.cut.as_ref());
+            let hanging = line.metrics().hanging_advance;
+            let items = line.items().count();
+            let mut run_index = 0usize;
+            for (at, item) in line.items().enumerate() {
+                let PositionedLayoutItem::GlyphRun(run) = item else {
+                    continue;
+                };
+                // `Cut.run` counts the glyph runs of the line alone, the way
+                // the paint conversion does, while the trim indices count
+                // every item. No layout carries an inline box today, so the
+                // two countings agree.
+                if cut.is_some_and(|cut| run_index > cut.run) {
+                    break;
+                }
+                let cut_run = cut.is_some_and(|cut| run_index == cut.run);
+                run_index += 1;
+                let metrics = run.run().font_metrics();
+                let top = origin.y + run.baseline() - metrics.underline_offset;
+                let bottom = top + metrics.underline_size.max(1.0);
+                let mut left = origin.x + run.offset();
+                let mut right = left + run.advance();
+                trim_hanging_whitespace(rtl, at, items, hanging, &mut left, &mut right);
+                if let Some(cut) = cut
+                    && cut_run
+                {
+                    right = right.min(origin.x + cut.x);
+                }
+                if right > left {
+                    underlines.push(Rect::new(left, top, right, bottom));
+                }
+            }
+        }
+        underlines
+    }
 }
 
 /// Returns the advance of `line` without the whitespace that hangs past
@@ -390,6 +443,26 @@ impl TextLayout {
 fn line_width(line: &parley::Line<'_, ()>) -> f32 {
     let metrics = line.metrics();
     metrics.advance - metrics.hanging_advance
+}
+
+/// Trims the whitespace a wrapped line hangs past its end edge from the
+/// edges of the run `at` of `items`, in a line that reads `rtl` or not. The
+/// underline painters call this for every run, so keep their callers in
+/// [`TextLayout::underlines`] and [`crate::glyphs::rich_glyph_runs`] in step
+/// through this one helper.
+pub(crate) fn trim_hanging_whitespace(
+    rtl: bool,
+    at: usize,
+    items: usize,
+    hanging: f32,
+    left: &mut f32,
+    right: &mut f32,
+) {
+    if rtl && at == 0 {
+        *left = (*left + hanging).min(*right);
+    } else if !rtl && at + 1 == items {
+        *right = (*right - hanging).max(*left);
+    }
 }
 
 /// Finds the longest prefix of whole clusters of `line` that fits `width`

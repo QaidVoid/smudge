@@ -162,3 +162,66 @@ fn a_slanted_bold_run_claims_the_ink_of_its_widened_sheared_outlines() {
         }
     }
 }
+
+/// A link span of the whole `text`.
+fn link_span(text: &str) -> crate::rich_text::Span {
+    use std::rc::Rc;
+
+    crate::rich_text::Span {
+        text: String::from(text),
+        style: crate::rich_text::SpanStyle {
+            link: Some(Rc::new(|| {})),
+            ..Default::default()
+        },
+    }
+}
+
+/// A wrapped paragraph's link underline ends before the whitespace the line
+/// hangs past its end edge, and every run underlines something.
+#[test]
+fn a_link_span_underlines_its_runs_before_the_hanging_whitespace() {
+    setup();
+
+    let span = link_span("the quick brown fox jumps over the lazy dog");
+    let style = TextStyle::default();
+    let fonts = vec![(
+        0..span.text.len(),
+        crate::layout::SpanFont {
+            underline: true,
+            ..Default::default()
+        },
+    )];
+    let width = crate::layout::RichLayout::new(&span.text, &style, &fonts, None)
+        .size()
+        .width;
+    let layout = crate::layout::RichLayout::new(&span.text, &style, &fonts, Some(width / 2.0));
+    let origin = Point { x: 3.0, y: 4.0 };
+
+    let (runs, underlines) = super::rich_glyph_runs(&layout, origin, &[]);
+
+    assert!(!runs.is_empty(), "the link span paints glyphs");
+    assert!(
+        !underlines.is_empty(),
+        "a link span underlines the runs it covers"
+    );
+    assert!(
+        underlines.iter().all(|(rect, _)| rect.width() > 0.0),
+        "a whitespace-only run leaves no underline"
+    );
+    let line = layout.layout.lines().next().unwrap();
+    let metrics = line.metrics();
+    assert!(
+        metrics.hanging_advance > 0.0,
+        "the first line ends the wrap in whitespace"
+    );
+    let first_line_y0 = underlines[0].0.y0;
+    let widest = underlines
+        .iter()
+        .filter(|(rect, _)| rect.y0 == first_line_y0)
+        .map(|(rect, _)| rect.x1)
+        .fold(f32::MIN, f32::max);
+    assert!(
+        (widest - origin.x - (metrics.advance - metrics.hanging_advance)).abs() < 0.01,
+        "the first line's underline ends before the hanging whitespace: {widest}"
+    );
+}

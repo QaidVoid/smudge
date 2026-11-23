@@ -30,11 +30,13 @@ mod containers;
 mod controls;
 mod dropdown;
 mod height_index;
+mod hyperlink;
 mod image;
 mod marks;
 mod menu;
 mod modal;
 mod scroll;
+mod separator;
 mod split;
 mod tabs;
 mod toasts;
@@ -49,6 +51,7 @@ pub use controls::{
     progress, radio_group, range_slider, slider, spinner, switch,
 };
 pub use dropdown::{TooltipExt, dropdown};
+pub use hyperlink::hyperlink;
 pub use image::{ImageView, image};
 pub use menu::{
     ContextMenuExt, MenuBar, MenuItem, menu, menu_bar, menu_check_item, menu_item, menu_separator,
@@ -56,6 +59,7 @@ pub use menu::{
 };
 pub use modal::{Modal, modal};
 pub use scroll::{ScrollAxis, ScrollExt, ScrollView, scroll};
+pub use separator::separator;
 pub use split::{Split, SplitExt, split};
 pub use tabs::{Tabs, tabs};
 pub use toasts::{MAX_TOASTS, TOAST_DURATION, Toasts, toast_host};

@@ -56,6 +56,7 @@ A panel lays its children out along its direction, which is a row unless you cal
 | `direction(Direction::Row)`, `.row()`, `.column()` | The main axis. |
 | `gap(Size { width, height })` | Space between adjacent children. |
 | `align_items(Align::...)` | Cross-axis placement: `Start`, `Center`, `End` or `Stretch`. |
+| `align_self(Align::...)` | A child's own cross-axis placement, over its parent's `align_items`. |
 | `justify_content(Justify::...)` | Main-axis placement: `Start`, `Center`, `End` or `SpaceBetween`. |
 | `wrap(true)` | Lets children wrap onto further lines. |
 | `grow(1.0)`, `shrink(0.0)`, `basis(px(120.0))` | How a child takes or gives up space. |

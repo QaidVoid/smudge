@@ -24,9 +24,7 @@ use parley::FontFamily;
 use parley::FontWeight;
 use smudge_core::element::Element;
 use smudge_core::element::Value;
-use smudge_core::geometry::Color;
-use smudge_core::geometry::Point;
-use smudge_core::geometry::Size;
+use smudge_core::geometry::{Color, Corners, Point, Size};
 use smudge_core::paint::GlyphRun;
 use smudge_core::paint::PaintOp;
 use smudge_core::semantics::{Role, Semantics};
@@ -332,6 +330,15 @@ impl Label {
         }
         if let Some(cached) = cache.as_ref() {
             out.extend(cached.runs.iter().cloned().map(PaintOp::Glyphs));
+        }
+        if cx.style.paint.underline {
+            for rect in layout.underlines(origin) {
+                out.push(PaintOp::FillRect {
+                    rect,
+                    radius: Corners::ZERO,
+                    color,
+                });
+            }
         }
     }
 }

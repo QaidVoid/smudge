@@ -4,7 +4,7 @@
 //! weight, slant and family, and paints each span in its own color. Colors
 //! stay out of the layout, so a change that touches only colors repaints the
 //! paragraph without laying it out again, and so does a theme switch. A span
-//! with a link paints in the theme's accent color unless it sets its own,
+//! with a link paints in the theme's link color unless it sets its own,
 //! draws an underline, shows the pointing cursor, and runs its handler when
 //! it is clicked.
 //!
@@ -84,7 +84,7 @@ pub struct SpanStyle {
     /// Whether the span is set in the generic monospace family.
     pub monospace: bool,
     /// The color, or `None` for the paragraph's text color, or for the
-    /// theme's accent color when the span is a link.
+    /// theme's link color when the span is a link.
     pub color: Option<ColorValue>,
     /// The handler a click on the span runs, which makes the span a link.
     ///
@@ -305,11 +305,11 @@ impl RichText {
     }
 
     /// Returns the color of the span `span` under the current theme: its own
-    /// color, the accent color for a link, or otherwise `base`.
+    /// color, the link color for a link, or otherwise `base`.
     fn span_color(span: &Span, base: Color, cx: &PaintCx<'_>) -> Color {
         match (&span.style.color, &span.style.link) {
             (Some(color), _) => color.resolve(cx.theme),
-            (None, Some(_)) => ColorValue::Token(ColorToken::ACCENT).resolve(cx.theme),
+            (None, Some(_)) => ColorValue::Token(ColorToken::LINK).resolve(cx.theme),
             (None, None) => base,
         }
     }
@@ -465,7 +465,7 @@ impl Widget for RichText {
 /// span colors repaints the paragraph without laying it out, and any change
 /// to the text, the font style or which spans are links lays it out again.
 ///
-/// A span with a link paints in the theme's accent color unless it sets a
+/// A span with a link paints in the theme's link color unless it sets a
 /// color, draws an underline, and shows the pointing cursor while the
 /// pointer is over it. A press and a release over the same link run its
 /// handler once. The paragraph responds to the pointer over its links

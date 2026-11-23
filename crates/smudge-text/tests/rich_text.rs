@@ -348,7 +348,7 @@ fn a_press_on_plain_words_reaches_the_row_around_the_paragraph() {
 }
 
 #[test]
-fn a_theme_switch_repaints_a_link_in_the_new_accent_without_layout() {
+fn a_theme_switch_repaints_a_link_in_the_new_link_color_without_layout() {
     let clicks = Rc::new(Cell::new(0));
     let shared = Rc::clone(&clicks);
     let mut harness = harness(move || Rc::from([plain("Read the "), link("guide", &shared)]));

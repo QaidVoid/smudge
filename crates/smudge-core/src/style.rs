@@ -239,6 +239,9 @@ pub struct LayoutProps {
     /// Cross axis alignment for this node's children. `None` leaves the layout
     /// engine's default, which stretches children across the cross axis.
     pub align_items: Option<Align>,
+    /// This node's own alignment on the cross axis of its parent, over the
+    /// parent's [`LayoutProps::align_items`]. `None` follows the parent.
+    pub align_self: Option<Align>,
     /// Main axis distribution of this node's children. `None` leaves the
     /// layout engine's default, which packs them against the start.
     pub justify_content: Option<Justify>,
@@ -280,6 +283,7 @@ impl Default for LayoutProps {
             margin: Edges::all(Length::px(0.0)),
             gap: Size::default(),
             align_items: None,
+            align_self: None,
             justify_content: None,
             position: Position::Relative,
             inset: Edges::all(Length::auto()),
@@ -346,6 +350,12 @@ impl LayoutProps {
             Some(Align::Center) => taffy::AlignItems::CENTER,
             Some(Align::Stretch) => taffy::AlignItems::STRETCH,
         };
+        style.align_self = self.align_self.map(|align| match align {
+            Align::Start => taffy::AlignSelf::START,
+            Align::End => taffy::AlignSelf::END,
+            Align::Center => taffy::AlignSelf::CENTER,
+            Align::Stretch => taffy::AlignSelf::STRETCH,
+        });
         style.justify_content = match self.justify_content {
             None => taffy::JustifyContent::NORMAL,
             Some(Justify::Start) => taffy::JustifyContent::START,
@@ -388,6 +398,10 @@ pub struct PaintProps {
     pub text_color: Option<ColorValue>,
     /// Corner radii of the background and the border, one per corner.
     pub corner_radius: CornerRadii,
+    /// Whether the node's text draws an underline. A widget's text paints
+    /// the line in its text color under its glyph runs; a widget without
+    /// text ignores it.
+    pub underline: bool,
     /// How opaque the node and everything under it draw, from 0.0, which
     /// draws nothing, to 1.0, the default, which draws as usual. The subtree
     /// is drawn as one group and blended at this opacity, so overlapping
@@ -415,6 +429,7 @@ impl Default for PaintProps {
             border_color: None,
             text_color: None,
             corner_radius: CornerRadii::default(),
+            underline: false,
             opacity: 1.0,
         }
     }

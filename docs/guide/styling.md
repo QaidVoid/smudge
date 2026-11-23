@@ -25,6 +25,7 @@ let card = panel()
 | `corner_radius` | An `f32`, a `RadiusToken`, or a closure, the same on all four corners. |
 | `corner_radii` | A `Corners` of `f32` radii, a `CornerRadii` with an `f32` or a `RadiusToken` per corner, or a closure returning a `CornerRadii`, such as a card whose top corners are square under a header. |
 | `text_color` | The color of the node's own text, on a label or an input. A container ignores it; use `style_children` or `provide_text_style` to color the text below it. |
+| `underline` | Whether a label's text draws an underline, in its text color. A rich text paragraph underlines only its link spans; a container ignores it. |
 
 `Color::rgb(r, g, b)` and `Color::rgba(r, g, b, a)` take 8-bit sRGB channels. `Color::WHITE`, `Color::BLACK` and `Color::TRANSPARENT` are predefined.
 
@@ -51,6 +52,7 @@ let surface = panel()
 | `TEXT`, `TEXT_MUTED` | `MEDIUM` |
 | `ACCENT`, `ACCENT_HOVER`, `ACCENT_PRESSED`, `ACCENT_TEXT` | `LARGE` |
 | `BORDER`, `FOCUS_RING` | |
+| `LINK` | |
 | `ERROR`, `BACKDROP` | |
 
 The built-in widgets use tokens throughout, so they follow the theme with no extra code. `Theme::light()` and `Theme::dark()` are the two built-in themes.

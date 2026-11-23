@@ -64,6 +64,8 @@ impl ColorToken {
     pub const ACCENT_TEXT: ColorToken = ColorToken("accent_text");
     /// The color of borders around controls.
     pub const BORDER: ColorToken = ColorToken("border");
+    /// The color of the text and underline of a hyperlink.
+    pub const LINK: ColorToken = ColorToken("link");
     /// The color of the ring around the keyboard-focused control.
     pub const FOCUS_RING: ColorToken = ColorToken("focus_ring");
     /// The translucent color that dims the window behind a modal dialog.
@@ -341,6 +343,7 @@ impl Theme {
                 (ColorToken::ACCENT_PRESSED, Color::rgb(0, 71, 153)),
                 (ColorToken::ACCENT_TEXT, Color::WHITE),
                 (ColorToken::BORDER, Color::rgb(204, 204, 204)),
+                (ColorToken::LINK, Color::rgb(11, 87, 208)),
                 (ColorToken::FOCUS_RING, Color::rgb(0, 120, 215)),
                 (ColorToken::BACKDROP, Color::rgba(0, 0, 0, 100)),
                 (ColorToken::ERROR, Color::rgb(196, 30, 58)),
@@ -367,6 +370,7 @@ impl Theme {
                 (ColorToken::ACCENT_PRESSED, Color::rgb(140, 196, 255)),
                 (ColorToken::ACCENT_TEXT, Color::rgb(11, 11, 11)),
                 (ColorToken::BORDER, Color::rgb(68, 68, 68)),
+                (ColorToken::LINK, Color::rgb(138, 180, 248)),
                 (ColorToken::FOCUS_RING, Color::rgb(77, 163, 255)),
                 (ColorToken::BACKDROP, Color::rgba(0, 0, 0, 150)),
                 (ColorToken::ERROR, Color::rgb(255, 107, 120)),

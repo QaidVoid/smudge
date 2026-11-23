@@ -23,6 +23,7 @@ use crate::layout::Ellipsis;
 use crate::layout::RichLayout;
 use crate::layout::TextLayout;
 use crate::layout::Truncation;
+use crate::layout::trim_hanging_whitespace;
 
 thread_local! {
     /// The font blobs already mapped out of parley's font data, keyed by the
@@ -185,11 +186,7 @@ pub(crate) fn rich_glyph_runs(
                 let mut right = left + run.advance();
                 // The whitespace a wrapped line ends with hangs past its end
                 // edge, inside the run that carries it, and is not underlined.
-                if rtl && at == 0 {
-                    left = (left + hanging).min(right);
-                } else if !rtl && at + 1 == items {
-                    right = (right - hanging).max(left);
-                }
+                trim_hanging_whitespace(rtl, at, items, hanging, &mut left, &mut right);
                 if right > left {
                     underlines.push((
                         Rect::new(left, top, right, top + metrics.underline_size.max(1.0)),

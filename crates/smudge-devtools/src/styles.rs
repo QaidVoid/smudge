@@ -68,6 +68,13 @@ pub(crate) fn style_lines(style: &Style) -> Vec<(&'static str, String)> {
             .map_or_else(|| String::from("default"), |align| format!("{align:?}")),
     );
     add(
+        "align self",
+        layout.align_self != was.align_self,
+        layout
+            .align_self
+            .map_or_else(|| String::from("default"), |align| format!("{align:?}")),
+    );
+    add(
         "justify",
         layout.justify_content != was.justify_content,
         layout
@@ -106,6 +113,15 @@ pub(crate) fn style_lines(style: &Style) -> Vec<(&'static str, String)> {
             value.map_or_else(|| String::from("none"), color),
         );
     }
+    add(
+        "underline",
+        paint.underline != was.underline,
+        if paint.underline {
+            String::from("on")
+        } else {
+            String::from("off")
+        },
+    );
     add(
         "radius",
         paint.corner_radius != was.corner_radius,

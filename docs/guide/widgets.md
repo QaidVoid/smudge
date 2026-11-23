@@ -358,6 +358,40 @@ A toast shows for four seconds, `show_for` sets another time, and a press closes
 
 Every popup, menu, tooltip, dialog and toast draws in a layer of its own kind: the app's popups and then its tooltips, then each dialog in the order it opened, with what opens from inside it above it, and the toasts above everything. Losing the window's input focus closes popups and tooltips, and leaves dialogs and toasts open.
 
+## Separators and hyperlinks
+
+`separator()` draws the line that divides sections of a form. In a column it runs horizontally, in a row it runs vertically, one logical pixel thick in the border color, and it takes no space from the keyboard or a screen reader:
+
+```rust
+use smudge::widgets::separator;
+
+let form = column()
+    .gap(Size { width: 0.0, height: 8.0 })
+    .child(label("Account"))
+    .child(separator())
+    .child(label("Appearance"));
+```
+
+`hyperlink(text, on_press)` is a label in the link color that runs the closure when a press releases over it, or when Enter or Space is pressed while it holds the focus. It underlines while the pointer hovers it or the keyboard focuses it, shows the pointing cursor, and is a Tab stop a screen reader hears as a link named by its text:
+
+```rust
+use smudge::widgets::hyperlink;
+
+const GUIDE: &str = "https://smudge.example/guide";
+
+let link = hyperlink("Read the guide", || {
+    // Opening a URL is a service of the platform, which phones get
+    // through the platform layer. On the desktop, the app asks the
+    // system's opener itself:
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(GUIDE).spawn();
+});
+```
+
+`spawn` hands back the opener process, which the app keeps or reaps when it exits; the sample drops it for brevity.
+
+The link opens nothing on its own, so the same builder works wherever the app can follow a link, and the handler decides what following it means.
+
 ## Form controls
 
 `checkbox`, `switch`, `slider` and `number_field` bind to signals, draw in the theme's colors, and work from the keyboard:

@@ -1,0 +1,6 @@
+---
+source: crates/smudge-widgets/tests/separator.rs
+expression: "states_window(Theme::dark()).png()"
+extension: png
+snapshot_kind: binary
+---

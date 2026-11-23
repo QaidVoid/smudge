@@ -1,0 +1,6 @@
+---
+source: crates/smudge-widgets/tests/hyperlink.rs
+expression: "states_window(Theme::light()).png()"
+extension: png
+snapshot_kind: binary
+---

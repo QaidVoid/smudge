@@ -196,6 +196,13 @@ impl PatchBuilder {
         self.push(move |style| style.layout.align_items = Some(align))
     }
 
+    /// Sets how this node lines up across the cross axis of its parent,
+    /// overriding the parent's alignment for this node alone. This takes part
+    /// in layout.
+    pub fn align_self(self, align: Align) -> Self {
+        self.push(move |style| style.layout.align_self = Some(align))
+    }
+
     /// Sets how the children are spread along the main axis. This takes part
     /// in layout.
     pub fn justify_content(self, justify: Justify) -> Self {
@@ -284,6 +291,11 @@ impl PatchBuilder {
     /// 1.0.
     pub fn opacity(self, opacity: f32) -> Self {
         self.push(move |style| style.paint.opacity = opacity)
+    }
+
+    /// Sets whether the node's text draws an underline.
+    pub fn underline(self, underline: bool) -> Self {
+        self.push(move |style| style.paint.underline = underline)
     }
 
     /// Consumes the builder into the patch it recorded.

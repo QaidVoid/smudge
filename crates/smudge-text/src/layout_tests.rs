@@ -672,3 +672,117 @@ fn an_ellipsis_in_a_variable_font_is_spaced_at_the_line_weight() {
         "the full stops are {spacing} apart, but {expected} at the line weight"
     );
 }
+
+/// In a left-to-right paragraph, the first wrapped line's underline ends
+/// before the whitespace the line hangs past its end edge.
+#[test]
+fn underlines_trim_the_hanging_whitespace_of_a_left_to_right_line() {
+    setup();
+    let style = TextStyle::default();
+    let text = "the quick brown fox jumps over the lazy dog";
+    let width = TextLayout::new(text, &style, None).size().width;
+    let layout = TextLayout::new(text, &style, Some(width / 2.0));
+    assert!(layout.line_count() > 1, "the text wraps onto several lines");
+    let origin = Point { x: 3.0, y: 4.0 };
+
+    let rects = layout.underlines(origin);
+
+    let line = layout.layout.lines().next().unwrap();
+    let hanging = line.metrics().hanging_advance;
+    assert!(hanging > 0.0, "the first line ends the wrap in whitespace");
+    let first_line_y0 = rects.first().unwrap().y0;
+    let widest = rects
+        .iter()
+        .filter(|rect| rect.y0 == first_line_y0)
+        .map(|rect| rect.x1)
+        .fold(f32::MIN, f32::max);
+    assert!(
+        (widest - origin.x - line_width(&line)).abs() < 0.01,
+        "the first line's underline ends before the hanging whitespace: {widest}"
+    );
+    assert!(
+        rects.iter().all(|rect| rect.width() > 0.0),
+        "a whitespace-only run leaves no underline"
+    );
+}
+
+/// In a right-to-left paragraph the line's whitespace hangs past the left
+/// edge, so the underline trims there and keeps the runs' whole advance on
+/// the right.
+#[test]
+fn underlines_trim_the_hanging_whitespace_of_a_right_to_left_line() {
+    setup();
+    let style = TextStyle::default();
+    let text =
+        "\u{5d0}\u{5d1}\u{5d2} \u{5d3}\u{5d4}\u{5d5} \u{5d6}\u{5d7}\u{5d8} \u{5d9}\u{5db}\u{5dc}";
+    let width = TextLayout::new(text, &style, None).size().width;
+    let layout = TextLayout::new(text, &style, Some(width / 2.0));
+    assert!(layout.line_count() > 1, "the text wraps onto several lines");
+    assert!(
+        layout.layout.is_rtl(),
+        "the hebrew paragraph reads right to left"
+    );
+    let origin = Point { x: 3.0, y: 4.0 };
+
+    let rects = layout.underlines(origin);
+
+    let line = layout.layout.lines().next().unwrap();
+    let hanging = line.metrics().hanging_advance;
+    assert!(hanging > 0.0, "the first line ends the wrap in whitespace");
+    let first_line_y0 = rects.first().unwrap().y0;
+    let mut leftmost = f32::MAX;
+    let mut widest = f32::MIN;
+    for rect in rects.iter().filter(|rect| rect.y0 == first_line_y0) {
+        leftmost = leftmost.min(rect.x0);
+        widest = widest.max(rect.x1);
+    }
+    assert!(
+        (leftmost - origin.x - hanging).abs() < 0.01,
+        "the underline starts after the whitespace hanging on the left: {leftmost}"
+    );
+    assert!(
+        (widest - origin.x - line.metrics().advance).abs() < 0.01,
+        "the right edge keeps the runs' whole advance: {widest}"
+    );
+    assert!(
+        rects.iter().all(|rect| rect.width() > 0.0),
+        "a whitespace-only run leaves no underline"
+    );
+}
+
+/// A layout truncated to one line underlines only the glyphs that survive
+/// the cut, and the last underline ends where the ellipsis begins.
+#[test]
+fn underlines_end_where_a_truncation_cut_replaces_text() {
+    setup();
+    let style = TextStyle::default();
+    let text = "the quick brown fox jumps over the lazy dog";
+    let mut layout = TextLayout::new(text, &style, Some(120.0));
+    assert!(layout.line_count() > 1);
+    layout.truncate(Some(1), Some(80.0), &style);
+    let origin = Point { x: 3.0, y: 4.0 };
+
+    let rects = layout.underlines(origin);
+
+    let cut = layout
+        .truncation
+        .as_ref()
+        .and_then(|truncation| truncation.cut.as_ref())
+        .expect("the single kept line cuts");
+    assert!(!rects.is_empty(), "the kept glyphs underline");
+    for rect in &rects {
+        assert!(
+            rect.x1 <= origin.x + cut.x + 0.01,
+            "no underline runs past the ellipsis: {rect:?}"
+        );
+    }
+    let last = rects.last().unwrap();
+    assert!(
+        (last.x1 - origin.x - cut.x).abs() < 0.01,
+        "the last underline ends at the ellipsis: {last:?}"
+    );
+    assert!(
+        rects.iter().all(|rect| rect.width() > 0.0),
+        "a run past the cut leaves no underline"
+    );
+}

@@ -297,6 +297,7 @@ enum Prop {
     Shrink,
     Basis,
     AlignItems,
+    AlignSelf,
     JustifyContent,
     Inset,
     BorderWidth,
@@ -306,6 +307,7 @@ enum Prop {
     BorderColor,
     TextColor,
     Radius,
+    Underline,
     Opacity,
     ScrollOffset,
     Disabled,
@@ -1066,6 +1068,15 @@ impl<W: Widget> Element<W> {
         })
     }
 
+    /// Sets how this node lines up across the cross axis of its parent,
+    /// overriding the parent's alignment for this node alone. This takes part
+    /// in layout.
+    pub fn align_self(self, align: impl Into<Value<Align>>) -> Self {
+        self.layout_value(Prop::AlignSelf, align, |layout, align| {
+            layout.align_self = Some(align)
+        })
+    }
+
     /// Sets how the children are spread along the main axis. This takes part in
     /// layout.
     pub fn justify_content(self, justify: impl Into<Value<Justify>>) -> Self {
@@ -1281,6 +1292,17 @@ impl<W: Widget> Element<W> {
     pub fn text_color(self, color: impl Into<Value<ColorValue>>) -> Self {
         self.paint_value(Prop::TextColor, color, |paint, color| {
             paint.text_color = Some(color)
+        })
+    }
+
+    /// Sets whether the node's text draws an underline, in its text color.
+    /// This repaints the node without laying it out again.
+    ///
+    /// A label reads it and underlines its own text; a rich text paragraph
+    /// underlines only its link spans, and widgets without text ignore it.
+    pub fn underline(self, underline: impl Into<Value<bool>>) -> Self {
+        self.paint_value(Prop::Underline, underline, |paint, underline| {
+            paint.underline = underline
         })
     }
 

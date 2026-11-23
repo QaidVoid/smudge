@@ -89,7 +89,7 @@ let summary = rich_text(move || {
 
 The paragraph takes `text_size`, `weight` and `family` like a label, through `RichTextExt`, and `text_color` for the spans that set no color. A change that touches only span colors repaints the paragraph without laying it out again, and so does a theme switch. Any change to the text, a weight, a slant, a family or which spans are links lays it out again.
 
-A link paints in the theme's accent color unless it sets one, and is underlined, so color is not its only cue. The pointer shows the pointing cursor over it, and a press and a release over the same link run its handler once. The paragraph responds to the pointer over its links alone, so a press on its plain words reaches the row or button around it. Links are not reachable with the keyboard yet. The accessible value is the paragraph's whole text.
+A link paints in the theme's link color unless it sets one, and is underlined, so color is not its only cue. The pointer shows the pointing cursor over it, and a press and a release over the same link run its handler once. The paragraph responds to the pointer over its links alone, so a press on its plain words reaches the row or button around it. Links are not reachable with the keyboard yet. The accessible value is the paragraph's whole text.
 
 ## Selecting text
 

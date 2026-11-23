@@ -271,6 +271,32 @@ fn toast_sample() {
 }
 
 #[test]
+fn separator_sample() {
+    use smudge::widgets::separator;
+
+    let form = column()
+        .gap(Size { width: 0.0, height: 8.0 })
+        .child(label("Account"))
+        .child(separator())
+        .child(label("Appearance"));
+}
+
+#[test]
+fn hyperlink_sample() {
+    use smudge::widgets::hyperlink;
+
+    const GUIDE: &str = "https://smudge.example/guide";
+
+    let link = hyperlink("Read the guide", || {
+        // Opening a URL is a service of the platform, which phones get
+        // through the platform layer. On the desktop, the app asks the
+        // system's opener itself:
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open").arg(GUIDE).spawn();
+    });
+}
+
+#[test]
 fn controls_sample() {
     use smudge::widgets::{checkbox, number_field, slider, switch};
 
