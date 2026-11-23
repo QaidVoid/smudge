@@ -97,7 +97,8 @@ pub enum Role {
     /// A short text that describes the node it shows over.
     Tooltip,
     /// A control that picks a number in a range by dragging a thumb along
-    /// a track. Its number is [`Semantics::range`].
+    /// a track. Its number is [`Semantics::range`], or, when it moves in
+    /// two axes, [`Semantics::value`] names both in text.
     Slider,
     /// A field that holds a number in a range, which steps up and down. Its
     /// number is [`Semantics::range`].
@@ -113,6 +114,9 @@ pub enum Role {
     /// reports as modal, and while it shows a screen reader reaches nothing
     /// behind it.
     Dialog,
+    /// A swatch that shows a color and opens a picker for it. Its color is
+    /// [`Semantics::value`], written as `#rrggbb` or `#rrggbbaa`.
+    ColorWell,
 }
 
 /// Whether a checkbox or a switch is checked.

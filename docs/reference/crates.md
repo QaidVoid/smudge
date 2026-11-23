@@ -7,7 +7,7 @@
 | [`smudge`](https://crates.io/crates/smudge) | The facade: re-exports, the prelude, and the examples. | [docs.rs](https://docs.rs/smudge) |
 | [`smudge-core`](https://crates.io/crates/smudge-core) | The widget tree, reactive signals, style, layout, paint, damage tracking and the headless `App`. No window, GPU or rasterizer dependency. | [docs.rs](https://docs.rs/smudge-core) |
 | [`smudge-text`](https://crates.io/crates/smudge-text) | Fonts, text layout, the label, rich text, the text input and the text area. | [docs.rs](https://docs.rs/smudge-text) |
-| [`smudge-widgets`](https://crates.io/crates/smudge-widgets) | Containers, the button, the image, the scroll view, split panes, the virtual lists, the canvas, form controls, tabs, menus, tooltips, dropdowns, separators and hyperlinks. | [docs.rs](https://docs.rs/smudge-widgets) |
+| [`smudge-widgets`](https://crates.io/crates/smudge-widgets) | Containers, the button, the image, the scroll view, split panes, the virtual lists, the canvas, form controls, tabs, menus, tooltips, dropdowns, separators, hyperlinks and the color picker. | [docs.rs](https://docs.rs/smudge-widgets) |
 | [`smudge-markdown`](https://crates.io/crates/smudge-markdown) | Markdown rendered from a source that grows while it shows. | [docs.rs](https://docs.rs/smudge-markdown) |
 | [`smudge-devtools`](https://crates.io/crates/smudge-devtools) | Devtools drawn over a running app. | [docs.rs](https://docs.rs/smudge-devtools) |
 | [`smudge-cpu`](https://crates.io/crates/smudge-cpu) | The CPU renderer, which repaints only damaged regions. | [docs.rs](https://docs.rs/smudge-cpu) |

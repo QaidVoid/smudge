@@ -26,7 +26,7 @@ use crate::marks::{Shape, mark};
 
 /// The width of the focus ring around a control, which every control keeps
 /// room for so the ring appears without moving it.
-const RING: f32 = 2.0;
+pub(crate) const RING: f32 = 2.0;
 
 /// Builds the row a labeled toggle lays out in: `indicator`, then the
 /// label, with room for the focus ring, focusable and pressed by Enter and
@@ -204,7 +204,7 @@ const WHEEL_LINE: f32 = 40.0;
 
 /// How far the track of a slider stays from its sides, half the thumb, so
 /// the thumb stays inside at both ends, in logical pixels.
-const TRACK_INSET: f32 = 8.0;
+pub(crate) const TRACK_INSET: f32 = 8.0;
 
 /// The part of a slider that measures its own width, so a drag along it
 /// knows where the pointer is as a share of the track.
@@ -218,6 +218,18 @@ impl Widget for SliderArea {
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
         self.track.set(cx.content.width() - 2.0 * TRACK_INSET);
         Panel.paint(cx, out);
+    }
+}
+
+/// The share of `range` that `value` holds, from 0 to 100, or 0 for a
+/// value the range cannot place.
+fn value_share(value: &RwSignal<f64>, range: &RangeInclusive<f64>) -> f32 {
+    let (min, max) = (*range.start(), *range.end());
+    let share = (value.get() - min) / (max - min);
+    if max > min && share.is_finite() {
+        share.clamp(0.0, 1.0) as f32 * 100.0
+    } else {
+        0.0
     }
 }
 
@@ -242,23 +254,53 @@ impl Widget for SliderArea {
 /// ```
 #[track_caller]
 pub fn slider(value: RwSignal<f64>, range: RangeInclusive<f64>, step: f64) -> Element<SliderArea> {
+    let (filled, spanned) = (value.clone(), range.clone());
+    slider_with_track(
+        value,
+        range,
+        step,
+        panel()
+            .absolute()
+            .inset(Edges {
+                left: Length::px(TRACK_INSET),
+                right: Length::px(TRACK_INSET),
+                top: Length::px(6.0),
+                bottom: Length::Auto,
+            })
+            .height(px(4.0))
+            .corner_radius(2.0)
+            .background(ColorToken::BORDER)
+            .child(
+                panel()
+                    .height(pct(100.0))
+                    .width(move || pct(value_share(&filled, &spanned)))
+                    .corner_radius(2.0)
+                    .background(ColorToken::ACCENT),
+            ),
+    )
+}
+
+/// Creates a [`slider`] that paints `track` where the slider paints its
+/// track and fill.
+///
+/// The track lies where the slider's own would, between the thumb's two
+/// resting places, and it fills that rectangle. Everything else is the
+/// slider's: the thumb, the keys, the pointer and what a screen reader
+/// hears.
+pub(crate) fn slider_with_track(
+    value: RwSignal<f64>,
+    range: RangeInclusive<f64>,
+    step: f64,
+    track: impl IntoElement,
+) -> Element<SliderArea> {
     let step = step.abs();
     let width = Rc::new(Cell::new(0.0_f32));
     // The pointer's offset from the start of the track, from its offset
     // from the node's corner.
     let along = |x: f32| x - RING - TRACK_INSET;
-    let share = {
-        let (value, range) = (value.clone(), range.clone());
-        move || {
-            let (min, max) = (*range.start(), *range.end());
-            let share = (value.get() - min) / (max - min);
-            if max > min && share.is_finite() {
-                share.clamp(0.0, 1.0) as f32 * 100.0
-            } else {
-                0.0
-            }
-        }
-    };
+    let (sized, spanned) = (value.clone(), range.clone());
+    let thumb_share = move || value_share(&sized, &spanned);
+
     let set_at = {
         let (value, range, width) = (value.clone(), range.clone(), Rc::clone(&width));
         move |x: f32| {
@@ -290,7 +332,6 @@ pub fn slider(value: RwSignal<f64>, range: RangeInclusive<f64>, step: f64) -> El
             }
         }
     };
-    let (fill_share, thumb_share) = (share.clone(), share);
     let (announced, key_value, key_range) = (value.clone(), value.clone(), range.clone());
     let reported = range.clone();
     Element::new(SliderArea {
@@ -335,26 +376,7 @@ pub fn slider(value: RwSignal<f64>, range: RangeInclusive<f64>, step: f64) -> El
         }
         Handled::Yes
     })
-    .child(
-        panel()
-            .absolute()
-            .inset(Edges {
-                left: Length::px(TRACK_INSET),
-                right: Length::px(TRACK_INSET),
-                top: Length::px(6.0),
-                bottom: Length::Auto,
-            })
-            .height(px(4.0))
-            .corner_radius(2.0)
-            .background(ColorToken::BORDER)
-            .child(
-                panel()
-                    .height(pct(100.0))
-                    .width(move || pct(fill_share()))
-                    .corner_radius(2.0)
-                    .background(ColorToken::ACCENT),
-            ),
-    )
+    .child(track)
     // The thumb moves along a lane as long as the track, so its middle sits
     // over the track's point for the value.
     .child(

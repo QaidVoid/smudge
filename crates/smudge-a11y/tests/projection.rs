@@ -855,6 +855,29 @@ fn a_radio_button_reports_its_state_its_place_and_its_set() {
 }
 
 #[test]
+fn a_color_well_reports_its_color_in_hex() {
+    let color = RwSignal::new(Color::rgb(255, 128, 0));
+    let mut app = app_with(|| {
+        let picked = color.clone();
+        smudge_widgets::color_picker(picked).accessible_label("Brush color")
+    });
+    let mut projection = Projection::new("Smudge");
+    let update = update_after_frame(&mut app, &mut projection, true);
+    let well = node_with_label(&update, AccessKitRole::ColorWell, "Brush color");
+    assert_eq!(well.label(), Some("Brush color"));
+    assert_eq!(well.value(), Some("#ff8000"));
+    assert_eq!(well.is_expanded(), Some(false));
+
+    color.set(Color::rgba(1, 2, 3, 4));
+    let update = update_after_frame(&mut app, &mut projection, false);
+    assert_eq!(
+        node_with_label(&update, AccessKitRole::ColorWell, "Brush color").value(),
+        Some("#01020304"),
+        "a new color sends the node, with its alpha once it lets light through"
+    );
+}
+
+#[test]
 fn a_progress_bar_reports_its_value_in_its_range_as_it_moves() {
     let done = RwSignal::new(0.25f64);
     let total = RwSignal::new(1.0f64);

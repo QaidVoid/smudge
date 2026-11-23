@@ -392,6 +392,25 @@ let link = hyperlink("Read the guide", || {
 
 The link opens nothing on its own, so the same builder works wherever the app can follow a link, and the handler decides what following it means.
 
+## Color picker
+
+`color_picker(color)` binds a swatch to a `RwSignal<Color>`. A press opens a picker below the swatch and closes it again, and so do Enter and Space while the swatch holds the focus. The picker holds a saturation and value square, a hue slider and an alpha slider, each of which writes the color as it moves, and a hex field that writes the color once its text is `#rrggbb` or `#rrggbbaa`, with or without the `#`. Text that is no color, an empty field included, leaves the color alone and turns the field's border the error color. A write to the color from outside moves every part of the picker:
+
+```rust
+use smudge::widgets::{color_picker, slider};
+
+let brush = RwSignal::new(Color::rgb(230, 150, 60));
+let opacity = RwSignal::new(0.8_f64);
+let side = column()
+    .gap(Size { width: 0.0, height: 10.0 })
+    .child(color_picker(brush).accessible_label("Brush color"))
+    .child(slider(opacity, 0.0..=1.0, 0.05).accessible_label("Opacity"));
+```
+
+The square takes the focus when the picker opens. Left and Right move its marker's saturation and Up and Down its value, by a hundredth, and Page Up and Page Down the value by a tenth. Tab walks the square, the two sliders and the hex field. Escape closes the picker and the focus returns to the swatch, as it does after a press outside. A screen reader hears a color well whose value is the color in hex, so give the swatch a name, and the square as a slider whose value names its saturation and brightness in percent.
+
+The swatch and the alpha slider lay the color over a checkerboard, so a color that lets something through reads as such on any background.
+
 ## Form controls
 
 `checkbox`, `switch`, `slider` and `number_field` bind to signals, draw in the theme's colors, and work from the keyboard:

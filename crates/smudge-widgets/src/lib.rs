@@ -26,6 +26,7 @@
 
 mod button;
 mod canvas;
+mod color_picker;
 mod containers;
 mod controls;
 mod dropdown;
@@ -45,6 +46,7 @@ mod virtual_list_keyed;
 
 pub use button::{ButtonExt, button};
 pub use canvas::{Canvas, Painter, canvas};
+pub use color_picker::color_picker;
 pub use containers::{column, row, spacer, stack};
 pub use controls::{
     NumberField, Progress, RadioGroup, RangeSlider, SliderArea, Spinner, checkbox, number_field,

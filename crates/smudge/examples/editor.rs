@@ -7,9 +7,9 @@
 //!   and follow the submenu under File > Recent;
 //! - right-click the canvas, or focus it and press the menu key or
 //!   Shift+F10, for its context menu;
-//! - pick a brush, its size and opacity in the side tabs, turn on snapping
-//!   to the grid under Settings, and rest the pointer on the Clear button
-//!   for its tooltip;
+//! - pick a brush, its color, size and opacity in the side tabs, turn on
+//!   snapping to the grid under Settings, and rest the pointer on the Clear
+//!   button for its tooltip;
 //! - with a screen reader, listen to the menus, the tabs and the controls.
 
 use smudge::prelude::*;
@@ -23,6 +23,7 @@ fn main() -> Result<(), PlatformError> {
     let snap = RwSignal::new(false);
     let size = RwSignal::new(8.0);
     let opacity = RwSignal::new(0.8_f64);
+    let color = RwSignal::new(Color::rgb(230, 150, 60));
     let brush = RwSignal::new(0_usize);
     let tab = RwSignal::new(0_usize);
     let marks = RwSignal::new(Vec::<Point>::new());
@@ -76,6 +77,7 @@ fn main() -> Result<(), PlatformError> {
             let (drawn, placed, cleared) = (marks.clone(), marks.clone(), marks.clone());
             let (grid_on, mark_size) = (grid.clone(), size.clone());
             let (shade, shape, snapping) = (opacity.clone(), brush.clone(), snap.clone());
+            let tinted = color.clone();
             let canvas_view = canvas(move |painter| {
                 let area = painter.size();
                 if grid_on.get() {
@@ -98,8 +100,9 @@ fn main() -> Result<(), PlatformError> {
                     }
                 }
                 let radius = mark_size.get() as f32;
-                let alpha = (shade.get().clamp(0.0, 1.0) * 255.0).round() as u8;
-                let color = Color::rgba(230, 150, 60, alpha);
+                let picked = tinted.get();
+                let alpha = (shade.get().clamp(0.0, 1.0) * f64::from(picked.a)).round() as u8;
+                let color = Color::rgba(picked.r, picked.g, picked.b, alpha);
                 for at in drawn.get() {
                     match shape.get() {
                         1 => painter.fill_rect(
@@ -151,7 +154,8 @@ fn main() -> Result<(), PlatformError> {
             let clear_marks = marks.clone();
             let side = tabs(tab.clone())
                 .tab("Brush", {
-                    let (size, opacity, brush) = (size.clone(), opacity.clone(), brush.clone());
+                    let (size, opacity, brush, color) =
+                        (size.clone(), opacity.clone(), brush.clone(), color.clone());
                     move || {
                         column()
                             .gap(Size {
@@ -160,6 +164,16 @@ fn main() -> Result<(), PlatformError> {
                             })
                             .padding(px(12.0))
                             .child(dropdown(brushes, brush).accessible_label("Brush"))
+                            .child(
+                                row()
+                                    .gap(Size {
+                                        width: 8.0,
+                                        height: 0.0,
+                                    })
+                                    .align_items(Align::Center)
+                                    .child(color_picker(color).accessible_label("Brush color"))
+                                    .child(label("Color")),
+                            )
                             .child(slider(size, 2.0..=32.0, 1.0).accessible_label("Size"))
                             .child(slider(opacity, 0.0..=1.0, 0.05).accessible_label("Opacity"))
                             .child(

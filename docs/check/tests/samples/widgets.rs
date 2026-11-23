@@ -297,6 +297,18 @@ fn hyperlink_sample() {
 }
 
 #[test]
+fn color_picker_sample() {
+    use smudge::widgets::{color_picker, slider};
+
+    let brush = RwSignal::new(Color::rgb(230, 150, 60));
+    let opacity = RwSignal::new(0.8_f64);
+    let side = column()
+        .gap(Size { width: 0.0, height: 10.0 })
+        .child(color_picker(brush).accessible_label("Brush color"))
+        .child(slider(opacity, 0.0..=1.0, 0.05).accessible_label("Opacity"));
+}
+
+#[test]
 fn controls_sample() {
     use smudge::widgets::{checkbox, number_field, slider, switch};
 

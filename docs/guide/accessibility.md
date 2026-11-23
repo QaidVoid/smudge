@@ -53,7 +53,7 @@ let toggle = panel()
     .accessible_label(move || if named.get() { "Unmute" } else { "Mute" }.to_owned());
 ```
 
-The roles are `Window`, `Group`, `Button`, `Label`, `TextInput`, `MultilineTextInput`, `ScrollView`, `List`, `ListItem`, `Splitter`, `CheckBox`, `Switch`, `ProgressBar`, `Link`, `Heading`, `MenuBar`, `Menu`, `MenuItem`, `MenuItemCheckBox`, `ComboBox`, `ListBox`, `ListBoxOption`, `Tooltip`, `Slider`, `SpinButton`, `TabList`, `Tab` and `TabPanel`.
+The roles are `Window`, `Group`, `Button`, `Label`, `TextInput`, `PasswordInput`, `MultilineTextInput`, `ScrollView`, `List`, `ListItem`, `Splitter`, `CheckBox`, `Switch`, `RadioButton`, `ProgressBar`, `Link`, `Heading`, `MenuBar`, `Menu`, `MenuItem`, `MenuItemCheckBox`, `ComboBox`, `ListBox`, `ListBoxOption`, `Tooltip`, `Slider`, `SpinButton`, `TabList`, `Tab`, `TabPanel`, `Dialog` and `ColorWell`.
 
 A heading reports its level with `accessible_level`, from 1 for the top level down, so a screen reader can move between headings. A heading or a link with no `accessible_label` is named by its text. The markdown view reports its headings this way, and a split's divider reports the share its ratio asks the first pane to take as a value from 0 to 100.
 
