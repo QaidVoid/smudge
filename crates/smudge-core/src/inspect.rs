@@ -72,6 +72,8 @@ pub struct States {
     pub disabled: bool,
     /// Whether the node holds a value the app rejects.
     pub invalid: bool,
+    /// Whether a drag whose payload the node accepts is held over it.
+    pub drop: bool,
 }
 
 /// A node's four boxes from the last layout pass, in logical pixels in

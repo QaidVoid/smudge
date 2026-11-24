@@ -1637,6 +1637,29 @@ impl<W: Widget> Element<W> {
         self.variant(|variants| &mut variants.pressed, patch)
     }
 
+    /// Applies a patch while a drag whose payload the node accepts is held
+    /// over it.
+    ///
+    /// The state starts when a drag that began on a
+    /// [`drag_source`](Element::drag_source) moves over the node, and only
+    /// while [`drop_target`](Element::drop_target) accepts its payload, so
+    /// a folder highlights for a file but not for a color. It wins over
+    /// the hovered one and loses to the invalid, focused, pressed and
+    /// disabled ones, the same order the other states keep. Everything
+    /// else works as [`hover`](Element::hover) does.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Color;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let folder = panel()
+    ///     .background(Color::rgb(50, 50, 50))
+    ///     .drop_style(|p| p.background(Color::rgb(70, 90, 70)));
+    /// ```
+    pub fn drop_style(self, patch: impl FnOnce(PatchBuilder) -> PatchBuilder) -> Self {
+        self.variant(|variants| &mut variants.drop, patch)
+    }
+
     /// Applies a patch while the node is disabled.
     ///
     /// The patch wins over every other state, so a disabled control keeps its
@@ -1923,6 +1946,181 @@ impl<W: Widget> Element<W> {
         handler: impl FnMut(crate::input::Drag) -> crate::input::Handled + 'static,
     ) -> Self {
         self.handlers.on_drag = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
+    /// Makes the node the source of a drag that carries what `payload`
+    /// builds.
+    ///
+    /// A press on the node that moves four logical pixels while it is held
+    /// becomes a drag: the payload is built once then, and the pointer now
+    /// carries it until a release, Escape, another press or the loss of the
+    /// window's input focus ends the drag. A release before that is a plain
+    /// press, so a drag source still hears
+    /// [`on_press`](Self::on_press) from a click. The payload type decides
+    /// what takes the drag: a [`drop_target`](Self::drop_target) of the same
+    /// type hears it, and one of another type lets it pass. The source hears
+    /// how the drag ended through [`on_drag_end`](Self::on_drag_end).
+    ///
+    /// While the drag is in the air, a preview follows the pointer: what
+    /// [`drag_preview`](Self::drag_preview) builds, or the surface the node
+    /// resolves to when it sets none. Set this builder once: calling it
+    /// again mounts a second preview. The node takes presses, so a drag
+    /// source inside a list row keeps the presses of the row from reaching
+    /// the row.
+    ///
+    /// ```
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let file = panel()
+    ///     .width(px(80.0))
+    ///     .height(px(20.0))
+    ///     .drag_source(|| "report.pdf".to_string());
+    /// ```
+    pub fn drag_source<T: 'static>(mut self, payload: impl Fn() -> T + 'static) -> Self {
+        let payload = crate::hot::wrap(payload);
+        let dnd = self.handlers.dnd.get_or_insert_with(Default::default);
+        dnd.source = Some(Box::new(move || Rc::new(payload())));
+        let (open, at, surface) = (
+            dnd.preview_open.get_or_insert_with(|| RwSignal::new(false)),
+            dnd.preview_at
+                .get_or_insert_with(|| RwSignal::new(Point::default())),
+            dnd.preview_surface.get_or_insert_with(|| {
+                RwSignal::new(crate::tree::interaction::PreviewSurface {
+                    background: crate::theme::ColorValue::Token(crate::theme::ColorToken::SURFACE),
+                    corners: crate::theme::CornerRadii::default(),
+                    size: crate::geometry::Size::default(),
+                })
+            }),
+        );
+        let (open, at, surface) = (open.clone(), at.clone(), surface.clone());
+        let preview = dnd
+            .preview
+            .get_or_insert_with(|| Rc::new(RefCell::new(None)))
+            .clone();
+        let build = Rc::new(move || match preview.borrow().clone() {
+            Some(preview) => preview(),
+            None => {
+                let surface = surface.get();
+                crate::widget::panel()
+                    .width(crate::style::px(surface.size.width))
+                    .height(crate::style::px(surface.size.height))
+                    .background(surface.background)
+                    .corner_radii(surface.corners)
+                    .opacity(0.6)
+                    .into_any()
+            }
+        });
+        self.with_overlay(
+            open,
+            Value::Dynamic(Rc::new(move || Placement::At(at.get()))),
+            build,
+            true,
+            Layer::Dialog,
+        )
+    }
+
+    /// Builds the element shown at the pointer while a drag of the node is
+    /// in the air.
+    ///
+    /// The build runs once when the drag leaves the node, and the element it
+    /// builds is mounted in an overlay that follows the pointer and lets it
+    /// pass through to whatever lies under it. Without one, the preview
+    /// draws the surface the node resolves to when the drag starts: its
+    /// background, corner radii and size, drawn faintly. It takes no part in
+    /// hit testing and hears nothing. It needs a
+    /// [`drag_source`](Self::drag_source) on the same element: without one,
+    /// nothing ever flies.
+    ///
+    /// ```
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let file = panel()
+    ///     .width(px(80.0))
+    ///     .height(px(20.0))
+    ///     .drag_source(|| "report.pdf".to_string())
+    ///     .drag_preview(|| panel().width(px(80.0)).height(px(20.0)));
+    /// ```
+    pub fn drag_preview<E: IntoElement>(mut self, build: impl Fn() -> E + 'static) -> Self {
+        let build = crate::hot::wrap(build);
+        let dnd = self.handlers.dnd.get_or_insert_with(Default::default);
+        let preview = dnd
+            .preview
+            .get_or_insert_with(|| Rc::new(RefCell::new(None)))
+            .clone();
+        *preview.borrow_mut() = Some(Rc::new(move || build().into_any()));
+        self
+    }
+
+    /// Makes the node take drags that carry a payload of type `T`, when
+    /// `accepts` wants this one.
+    ///
+    /// While a drag whose payload `accepts` takes is over the node, the
+    /// [`drop_style`](Self::drop_style) variant applies to it, and a
+    /// release over it hands the payload to `on_drop` with the position
+    /// relative to the top left of the node's content box, which is where
+    /// [`on_drag_over`](Self::on_drag_over) measures from too. A release
+    /// over a node that refuses the payload, or over none, cancels the
+    /// drag: the source hears nothing was taken through
+    /// [`on_drag_end`](Self::on_drag_end). The node answers hover like any
+    /// node with handlers, but takes no presses: a release lands on the
+    /// node under the pointer, and the nearest accepting node around it,
+    /// out through its ancestors, takes the drop.
+    ///
+    /// ```
+    /// use std::cell::Cell;
+    /// use std::rc::Rc;
+    ///
+    /// use smudge_core::style::px;
+    /// use smudge_core::widget::panel;
+    ///
+    /// let dropped = Rc::new(Cell::new(String::new()));
+    /// let folder = panel()
+    ///     .width(px(120.0))
+    ///     .height(px(80.0))
+    ///     .drop_target(
+    ///         |name: &String| name.ends_with(".pdf"),
+    ///         {
+    ///             let dropped = Rc::clone(&dropped);
+    ///             move |name: String, _at| dropped.set(name)
+    ///         },
+    ///     );
+    /// ```
+    pub fn drop_target<T: Clone + 'static>(
+        mut self,
+        accepts: impl Fn(&T) -> bool + 'static,
+        on_drop: impl FnMut(T, Point) + 'static,
+    ) -> Self {
+        let accepts = crate::hot::wrap1_ref(accepts);
+        let mut on_drop = crate::hot::wrap2_mut(on_drop);
+        let dnd = self.handlers.dnd.get_or_insert_with(Default::default);
+        dnd.accepts = Some(Box::new(move |payload| {
+            payload
+                .downcast_ref::<T>()
+                .is_some_and(|payload: &T| accepts(payload))
+        }));
+        dnd.drop = Some(Box::new(move |payload, at| {
+            if let Ok(payload) = payload.downcast::<T>() {
+                on_drop((*payload).clone(), at);
+            }
+        }));
+        self
+    }
+
+    /// Runs `handler` when a drag this node started ends, with whether a
+    /// target took its payload.
+    ///
+    /// It runs once per drag: `true` when a release handed the payload to a
+    /// [`drop_target`](Self::drop_target) that accepted it, `false` when the
+    /// release happened over nothing or over a node that refused it, when
+    /// Escape ended the drag, when another press took the pointer while the
+    /// drag was in the air, or when the window lost the input focus while
+    /// the drag was in the air.
+    pub fn on_drag_end(mut self, handler: impl FnMut(bool) + 'static) -> Self {
+        let dnd = self.handlers.dnd.get_or_insert_with(Default::default);
+        dnd.drag_end = Some(Box::new(crate::hot::wrap1_mut(handler)));
         self
     }
 

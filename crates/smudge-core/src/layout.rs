@@ -114,8 +114,9 @@ impl WidgetTree {
                 // A node that the pass moved under a pointer that stays still
                 // keeps a stale hover, because no pointer event announces the
                 // move. The chain is rebuilt from the last pointer position,
-                // unless a held press keeps the hover on its capture.
-                if rects_changed && self.pointer_inside && self.pressed.is_none() {
+                // unless a held press or a drag in the air keeps the hover
+                // where it is.
+                if rects_changed && self.pointer_inside && !self.holds_pointer() {
                     self.refresh_hover();
                 }
                 // A pinned child goes back to its place with the sizes this
@@ -131,6 +132,7 @@ impl WidgetTree {
                 // once the pins and the follow pin put it where it shows.
                 if rects_changed {
                     self.deliver_drag_over();
+                    self.redeliver_dnd();
                 }
                 true
             }
@@ -244,11 +246,13 @@ impl WidgetTree {
             // The subtree moved under a pointer that stays still, so the
             // hovered chain is rebuilt from the last pointer position, as the
             // layout pass does. A hover style can mark a node for layout,
-            // which the frame's layout pass applies after this.
-            if self.pointer_inside && self.pressed.is_none() {
+            // which the frame's layout pass applies after this. A held press
+            // or a drag in the air keeps the hover where it is.
+            if self.pointer_inside && !self.holds_pointer() {
                 self.refresh_hover();
             }
             self.deliver_drag_over();
+            self.redeliver_dnd();
         }
     }
 

@@ -22,7 +22,7 @@ fn background_patch(color: Color) -> StylePatch {
 }
 
 /// An interaction state with exactly the given bits set.
-fn interaction(bits: &[u8]) -> Interaction {
+fn interaction(bits: &[u16]) -> Interaction {
     let mut interaction = Interaction::default();
     for bit in bits {
         interaction.set(*bit, true);
@@ -34,6 +34,7 @@ fn interaction(bits: &[u8]) -> Interaction {
 fn every_patch() -> Variants {
     Variants {
         hovered: Some(background_patch(Color::rgb(10, 0, 0))),
+        drop: Some(background_patch(Color::rgb(15, 0, 0))),
         focused: Some(background_patch(Color::rgb(20, 0, 0))),
         pressed: Some(background_patch(Color::rgb(30, 0, 0))),
         invalid: Some(background_patch(Color::rgb(35, 0, 0))),
@@ -73,6 +74,14 @@ fn patches_apply_in_a_fixed_order_and_pressed_overrides_hovered() {
         resolve(&base(), &variants, invalid).paint.background,
         Some(Color::rgb(35, 0, 0).into()),
         "invalid overrides hovered"
+    );
+    let hovered_and_drop = interaction(&[Interaction::HOVERED, Interaction::DROP]);
+    assert_eq!(
+        resolve(&base(), &variants, hovered_and_drop)
+            .paint
+            .background,
+        Some(Color::rgb(15, 0, 0).into()),
+        "drop overrides hovered"
     );
     let invalid_and_focused = interaction(&[
         Interaction::HOVERED,

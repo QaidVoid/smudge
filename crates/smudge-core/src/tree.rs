@@ -399,6 +399,9 @@ pub(crate) struct WidgetTree {
     pointer_locks: Vec<(WidgetId, RwSignal<bool>)>,
     /// The drag the held press makes, while it is held.
     drag: Option<interaction::DragState>,
+    /// The in-app drag of a held press on a drag source, armed at the press
+    /// and in the air once the pointer has moved past it.
+    dnd: Option<interaction::ActiveDrag>,
     /// The node that hears the hover of files from outside the window, until
     /// the files leave it or the hover is cancelled.
     file_hover: Option<WidgetId>,
@@ -519,6 +522,7 @@ impl WidgetTree {
             modifiers: crate::input::Modifiers::default(),
             pointer_locks: Vec::new(),
             drag: None,
+            dnd: None,
             file_hover: None,
             released_early: false,
             focused: None,
@@ -861,7 +865,7 @@ impl WidgetTree {
             self.push_a11y(parent);
         }
         self.drop_stale_hoisted_children(parent, &removed_taffy);
-        if overlay && self.pointer_inside && self.pressed.is_none() {
+        if overlay && self.pointer_inside && !self.holds_pointer() {
             self.refresh_hover();
         }
         if self.focused.is_none()
@@ -1159,7 +1163,7 @@ impl WidgetTree {
             self.push_a11y(parent);
         }
         self.drop_invalid_focus();
-        if self.pointer_inside && self.pressed.is_none() {
+        if self.pointer_inside && !self.holds_pointer() {
             self.refresh_hover();
         }
         Ok(())

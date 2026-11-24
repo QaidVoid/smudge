@@ -1,5 +1,5 @@
 //! Style variants: patches the base style takes on while a node is hovered,
-//! keyboard focused, pressed, invalid or disabled.
+//! held over by a drop, keyboard focused, pressed, invalid or disabled.
 //!
 //! Every node carries one complete base [`Style`]. An
 //! element can declare a patch per interaction state, and the tree keeps the
@@ -7,10 +7,11 @@
 //! base style, and layout and paint read the resolved style, which the tree
 //! recomputes whenever the base style or the interaction bits change.
 //!
-//! The patches apply in one fixed order: base, then hovered, then invalid,
-//! then focused, then pressed, then disabled, so an invalid field keeps its
-//! error look while it is hovered, a focus ring still shows on it for a
-//! keyboard user, and a disabled one looks disabled whatever it holds. A
+//! The patches apply in one fixed order: base, then hovered, then drop,
+//! then invalid, then focused, then pressed, then disabled, so an invalid
+//! field keeps its error look while it is hovered, a focus ring still shows
+//! on it for a keyboard user, and a disabled one looks disabled whatever it
+//! holds. A
 //! patch overrides exactly the fields its setters wrote, so a hovered
 //! background leaves the base width alone. The focused state applies only
 //! while the focus last moved by keyboard navigation, so a focus ring
@@ -312,12 +313,15 @@ impl PatchBuilder {
 /// [`hover`](crate::element::Element::hover),
 /// [`focused`](crate::element::Element::focused),
 /// [`pressed`](crate::element::Element::pressed),
+/// [`drop_style`](crate::element::Element::drop_style),
 /// [`invalid_style`](crate::element::Element::invalid_style) and
 /// [`disabled_style`](crate::element::Element::disabled_style) methods. A node
 /// without any patch never changes its style with its interaction state.
 pub struct Variants {
     /// Applied while the node is in the hovered chain.
     pub hovered: Option<StylePatch>,
+    /// Applied while a drag whose payload the node accepts is held over it.
+    pub drop: Option<StylePatch>,
     /// Applied while the node holds the keyboard focus and the focus last
     /// moved by keyboard navigation.
     pub focused: Option<StylePatch>,
@@ -336,6 +340,7 @@ impl Default for Variants {
     fn default() -> Variants {
         Variants {
             hovered: None,
+            drop: None,
             focused: None,
             pressed: None,
             invalid: None,
@@ -348,6 +353,7 @@ impl Variants {
     /// Returns whether no state carries a patch.
     pub(crate) fn is_empty(&self) -> bool {
         self.hovered.is_none()
+            && self.drop.is_none()
             && self.focused.is_none()
             && self.pressed.is_none()
             && self.invalid.is_none()
@@ -358,14 +364,20 @@ impl Variants {
 /// Resolves the style of a node from its base style, its patches and its
 /// interaction state.
 ///
-/// The base style comes first, then the hovered patch, then the invalid
-/// one, then the focused one, then the pressed one, then the disabled one.
-/// Each patch overrides the fields its setters wrote; a later patch wins
-/// over an earlier one for the same field. The base style is not modified.
+/// The base style comes first, then the hovered patch, then the drop one,
+/// then the invalid one, then the focused one, then the pressed one, then
+/// the disabled one. Each patch overrides the fields its setters wrote; a
+/// later patch wins over an earlier one for the same field. The base style
+/// is not modified.
 pub(crate) fn resolve(base: &Style, variants: &Variants, interaction: Interaction) -> Style {
     let mut style = base.clone();
     if interaction.has(Interaction::HOVERED)
         && let Some(patch) = &variants.hovered
+    {
+        patch.apply(&mut style);
+    }
+    if interaction.has(Interaction::DROP)
+        && let Some(patch) = &variants.drop
     {
         patch.apply(&mut style);
     }

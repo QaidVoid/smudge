@@ -53,6 +53,11 @@ impl WidgetTree {
         if event.pressed && event.key == Key::Escape && self.release_pointer_lock() {
             return;
         }
+        // A drag in the air ends before Escape can reach the overlays, so
+        // cancelling a drag never dismisses one underneath it.
+        if event.pressed && event.key == Key::Escape && self.cancel_dnd() {
+            return;
+        }
         // A node that lost the focus by becoming disabled or hidden still
         // anchors the next key, so shortcuts above it keep working. The key
         // starts at its parent: the node itself no longer holds the focus,

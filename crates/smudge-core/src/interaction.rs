@@ -9,7 +9,10 @@
 //! [`on_hover`](crate::element::Element::on_hover). Keyboard focus and key
 //! routing live beside it in [`super::focus`].
 
+use std::any::Any;
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use crate::geometry::Point;
 use crate::geometry::Rect;
@@ -25,42 +28,45 @@ use super::{WidgetId, WidgetTree};
 /// so a style that depends on the state of a node is resolved again before it
 /// paints.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Interaction(u8);
+pub(crate) struct Interaction(u16);
 
 impl Interaction {
     /// The pointer is over the node or over one of its descendants.
-    pub(crate) const HOVERED: u8 = 1 << 0;
+    pub(crate) const HOVERED: u16 = 1 << 0;
 
     /// A primary press started on the node and is still held.
-    pub(crate) const PRESSED: u8 = 1 << 1;
+    pub(crate) const PRESSED: u16 = 1 << 1;
 
     /// The node is left out of hit testing, so it receives no pointer events
     /// of its own.
-    pub(crate) const DISABLED: u8 = 1 << 2;
+    pub(crate) const DISABLED: u16 = 1 << 2;
 
     /// The node holds the keyboard focus.
-    pub(crate) const FOCUSED: u8 = 1 << 3;
+    pub(crate) const FOCUSED: u16 = 1 << 3;
 
     /// The node holds the keyboard focus and the focus last moved by keyboard
     /// navigation, so a focus ring can draw for keyboard users alone.
-    pub(crate) const KEYBOARD_FOCUS: u8 = 1 << 4;
+    pub(crate) const KEYBOARD_FOCUS: u16 = 1 << 4;
 
     /// The node can take the keyboard focus, by a press or by Tab.
-    pub(crate) const FOCUSABLE: u8 = 1 << 5;
+    pub(crate) const FOCUSABLE: u16 = 1 << 5;
 
     /// A press on the node leaves the keyboard focus where it is.
-    pub(crate) const KEEPS_FOCUS: u8 = 1 << 6;
+    pub(crate) const KEEPS_FOCUS: u16 = 1 << 6;
 
     /// The node holds a value the app rejects.
-    pub(crate) const INVALID: u8 = 1 << 7;
+    pub(crate) const INVALID: u16 = 1 << 7;
+
+    /// A drag whose payload the node accepts is held over it.
+    pub(crate) const DROP: u16 = 1 << 8;
 
     /// Returns whether `bit` is set.
-    pub(crate) fn has(self, bit: u8) -> bool {
+    pub(crate) fn has(self, bit: u16) -> bool {
         self.0 & bit != 0
     }
 
     /// Sets or clears `bit`, and returns whether the state changed.
-    pub(crate) fn set(&mut self, bit: u8, on: bool) -> bool {
+    pub(crate) fn set(&mut self, bit: u16, on: bool) -> bool {
         let changed = self.has(bit) != on;
         if changed {
             if on {
@@ -144,6 +150,9 @@ pub(crate) struct Handlers {
     /// The file drop handlers of a node, boxed together since few nodes set
     /// either of them.
     pub(crate) file: Option<Box<FileHandlers>>,
+    /// The in-app drag-and-drop handlers of a node, boxed together since
+    /// few nodes set any of them.
+    pub(crate) dnd: Option<Box<DndHandlers>>,
     /// Runs while a primary press that began inside the node's rectangle is
     /// held, and when it ends. Returning [`Handled::Yes`] for a move keeps it
     /// from the observers around the node. It takes no part in hit testing.
@@ -205,6 +214,65 @@ pub(crate) struct FileHandlers {
     pub(crate) drop: Option<FileDropHandler>,
 }
 
+/// A payload builder: it builds what a drag of the node carries.
+pub(crate) type SourceHandler = Box<dyn Fn() -> Rc<dyn Any>>;
+
+/// A preview factory: it builds the element shown at the pointer while the
+/// node's drag is in the air.
+pub(crate) type PreviewFactory = Rc<dyn Fn() -> crate::element::AnyElement>;
+
+/// A payload acceptor: it answers whether the node takes a drag that
+/// carries this payload.
+pub(crate) type AcceptsHandler = Box<dyn Fn(&Rc<dyn Any>) -> bool>;
+
+/// A payload drop handler: it hears the payload dropped on the node and
+/// where it landed.
+pub(crate) type DropHandler = Box<dyn FnMut(Rc<dyn Any>, Point)>;
+
+/// What the default drag preview draws: the surface the source resolved to
+/// when the drag left it.
+#[derive(Clone, Copy)]
+pub(crate) struct PreviewSurface {
+    /// The fill the source paints behind its content.
+    pub(crate) background: crate::theme::ColorValue,
+    /// The corner radii the source rounds its fill with.
+    pub(crate) corners: crate::theme::CornerRadii,
+    /// The size the source laid out at.
+    pub(crate) size: crate::geometry::Size,
+}
+
+/// The in-app drag-and-drop handlers a node sets, boxed together since few
+/// nodes set any of them.
+#[derive(Default)]
+pub(crate) struct DndHandlers {
+    /// Builds the payload a drag of this node carries, once the drag leaves
+    /// the node.
+    pub(crate) source: Option<SourceHandler>,
+    /// Answers whether this node takes a drag carrying the payload, while a
+    /// drag is in the air.
+    pub(crate) accepts: Option<AcceptsHandler>,
+    /// Runs when a drag whose payload this node accepted is dropped on it,
+    /// with the payload and the position relative to the top left of the
+    /// node's content box.
+    pub(crate) drop: Option<DropHandler>,
+    /// Runs when a drag this node started ends, with whether a target took
+    /// the payload.
+    pub(crate) drag_end: Option<Box<dyn FnMut(bool)>>,
+    /// Builds the preview shown at the pointer while the drag is in the
+    /// air, shared with the overlay the element mounted for the source, so
+    /// a [`drag_preview`](crate::element::Element::drag_preview) set after
+    /// a [`drag_source`](crate::element::Element::drag_source) reaches it.
+    pub(crate) preview: Option<Rc<RefCell<Option<PreviewFactory>>>>,
+    /// Whether the preview of this node's drag shows. Set once the drag
+    /// leaves the node, read by the overlay the element mounted for it.
+    pub(crate) preview_open: Option<RwSignal<bool>>,
+    /// Where the preview sits, relative to the node's rectangle.
+    pub(crate) preview_at: Option<RwSignal<Point>>,
+    /// The surface the preview draws when the node set no preview of its
+    /// own, written when the drag leaves the node.
+    pub(crate) preview_surface: Option<RwSignal<PreviewSurface>>,
+}
+
 /// The keys a node set up with
 /// [`navigate_with_arrows`](crate::element::Element::navigate_with_arrows)
 /// or [`navigate_with_all_arrows`](crate::element::Element::navigate_with_all_arrows)
@@ -245,6 +313,30 @@ pub(crate) struct DragState {
     /// The node and local position the last drag-over reached, so a delivery
     /// that would repeat it is skipped.
     last_over: Option<(WidgetId, Point)>,
+}
+
+/// How far the pointer must move from its press before the press becomes a
+/// drag of the source it began on, in logical pixels.
+const DRAG_SLOP: f32 = 4.0;
+
+/// The in-app drag a held press on a drag source makes.
+///
+/// It is armed when the press captures the source, and left the source once
+/// the pointer has moved [`DRAG_SLOP`] past the press, which is when the
+/// payload is built and the preview shows. A release before that is a plain
+/// press.
+pub(crate) struct ActiveDrag {
+    /// The node the drag started on, whose handlers built the payload, hear
+    /// how the drag ended and own the preview.
+    source: WidgetId,
+    /// What the source carries, held for the drag's duration. `None` while
+    /// the drag has not left the source yet.
+    payload: Option<Rc<dyn Any>>,
+    /// The point the press began at, in window coordinates, which decides
+    /// when the drag leaves the source.
+    began_at: Point,
+    /// The node the drag hovers that accepts the payload, if one does.
+    target: Option<WidgetId>,
 }
 
 /// Returns `point` moved into `rect`, a hair inside its far edges so the
@@ -291,13 +383,18 @@ impl Handlers {
             || self.on_wheel.is_some()
             || self.on_pointer_move.is_some()
             || self.on_pointer_up.is_some()
+            || self
+                .dnd
+                .as_ref()
+                .is_some_and(|dnd| dnd.accepts.is_some() || dnd.source.is_some())
     }
 
     /// Returns whether any handler is set that makes the node take a press.
     ///
     /// The wheel is left out: it reaches the hovered chain, so a node that
     /// only scrolls, such as a scroll view, lets presses on it pass to the
-    /// nearest ancestor that takes them.
+    /// nearest ancestor that takes them. A drag source takes the press so
+    /// the move that starts its drag is the press's own.
     pub(crate) fn takes_press(&self) -> bool {
         self.on_press.is_some()
             || self.on_hover.is_some()
@@ -306,10 +403,17 @@ impl Handlers {
             || self.on_key.is_some()
             || self.on_pointer_move.is_some()
             || self.on_pointer_up.is_some()
+            || self.dnd.as_ref().is_some_and(|dnd| dnd.source.is_some())
     }
 }
 
 impl WidgetTree {
+    /// Returns whether a held press or a drag in the air pins the pointer:
+    /// hover stays where it is while either lasts.
+    pub(crate) fn holds_pointer(&self) -> bool {
+        self.pressed.is_some() || self.dnd.as_ref().is_some_and(|drag| drag.payload.is_some())
+    }
+
     /// Routes a pointer move to the node under `position`.
     ///
     /// While a press is held, the captured node keeps the pointer and hears
@@ -326,8 +430,20 @@ impl WidgetTree {
             self.deliver_drag_over();
             self.deliver_drag(position);
         }
+        // The drag keeps flying even when the press capture is gone, because
+        // the node that took the press can be removed while it is in the
+        // air.
+        if self.holds_pointer() {
+            self.update_dnd(position);
+        }
         if let Some(captured) = self.pressed {
             self.run_pointer_move(captured, position);
+            return;
+        }
+        // A drag whose capture is gone still keeps hover where it is, as a
+        // held press does: what lies under the pointer hears the drop, not
+        // the hover.
+        if self.dnd.as_ref().is_some_and(|drag| drag.payload.is_some()) {
             return;
         }
         let target = self.hover_target(position);
@@ -407,6 +523,19 @@ impl WidgetTree {
             self.reveal_focus = false;
         }
         self.end_drag();
+        // A primary press ends a drag that is still in the air: the
+        // button it waited for is gone. One that never left its source dies
+        // with the press it armed, so the new press cannot re-arm it from a
+        // threshold measured at the press that is being replaced.
+        if let Some(drag) = self.dnd.take()
+            && drag.payload.is_some()
+        {
+            if let Some(old) = drag.target {
+                self.set_bit(old, Interaction::DROP, false);
+            }
+            self.close_preview(drag.source);
+            self.run_drag_end(drag.source, false);
+        }
         if let Some(previous) = self.pressed.take() {
             self.set_bit(previous, Interaction::PRESSED, false);
             self.run_pointer_up(previous, position);
@@ -420,6 +549,20 @@ impl WidgetTree {
         self.run_pointer_down(target, position);
         self.set_bit(target, Interaction::PRESSED, true);
         self.pressed = Some(target);
+        let holds_source = self.nodes.get(target).is_some_and(|node| {
+            node.handlers
+                .dnd
+                .as_ref()
+                .is_some_and(|dnd| dnd.source.is_some())
+        });
+        if holds_source {
+            self.dnd = Some(ActiveDrag {
+                source: target,
+                payload: None,
+                began_at: position,
+                target: None,
+            });
+        }
     }
 
     /// Routes a pointer up at `position`.
@@ -431,7 +574,9 @@ impl WidgetTree {
     /// which is the case when the node under the pointer is the captured node
     /// or one of its descendants, and runs its `on_pointer_up` whether or not
     /// the release happened over it, so a drag that ends elsewhere still
-    /// hears the button come up. With no press held, the hover target hears
+    /// hears the button come up. A release that ends an in-app drag is
+    /// heard as a drop or as a cancellation instead, and runs no press. With
+    /// no press held, the hover target hears
     /// `on_pointer_up`, unless the release belongs to a press that
     /// [`WidgetTree::release_press`] already ended: then no handler runs.
     /// Hover follows the pointer again either way.
@@ -445,6 +590,14 @@ impl WidgetTree {
         // The drag outlives the capture: the node that took the press may be
         // gone, and the observers still hear the release.
         self.end_drag();
+        // A drag that left its source ends with the release: it is heard as
+        // a drop or as a cancellation, and never as a press.
+        if let Some(mut drag) = self.dnd.take()
+            && let Some(payload) = drag.payload.take()
+        {
+            self.finish_dnd(drag, payload, position);
+            return;
+        }
         let hovered = self.hover_target(position);
         let Some(captured) = self.pressed.take() else {
             self.set_hover_target(hovered);
@@ -574,6 +727,17 @@ impl WidgetTree {
     /// for.
     pub(crate) fn release_press(&mut self) {
         self.end_drag();
+        // A drag in the air ends with the press that held it, and its
+        // source hears that nothing took the payload.
+        if let Some(drag) = self.dnd.take()
+            && drag.payload.is_some()
+        {
+            if let Some(old) = drag.target {
+                self.set_bit(old, Interaction::DROP, false);
+            }
+            self.close_preview(drag.source);
+            self.run_drag_end(drag.source, false);
+        }
         let buttons = self
             .button_holders
             .iter()
@@ -583,6 +747,12 @@ impl WidgetTree {
             self.run_button_up(button, self.pointer);
         }
         let Some(captured) = self.pressed.take() else {
+            let hovered = if self.pointer_inside {
+                self.hover_target(self.pointer)
+            } else {
+                None
+            };
+            self.set_hover_target(hovered);
             return;
         };
         self.released_early = true;
@@ -599,11 +769,18 @@ impl WidgetTree {
     /// Clears the hover of the whole tree, as when the pointer leaves the
     /// window.
     ///
-    /// A press that is still held keeps its capture, so a drag that leaves the
-    /// window stays with the node it started on.
+    /// A press that is still held keeps its capture, so a drag that leaves
+    /// the window stays with the node it started on, and the target it was
+    /// over keeps nothing lit while the drag waits outside.
     pub(crate) fn pointer_left(&mut self) {
         self.pointer_inside = false;
         self.set_hover_target(None);
+        if let Some(mut drag) = self.dnd.take() {
+            if let Some(target) = drag.target.take() {
+                self.set_bit(target, Interaction::DROP, false);
+            }
+            self.dnd = Some(drag);
+        }
     }
 
     /// Routes a wheel scroll to the deepest node in the hovered chain that
@@ -742,9 +919,10 @@ impl WidgetTree {
             return;
         }
         self.drop_invalid_focus();
-        // While a press is held the capture keeps the hover of its node, so
-        // the chain is only rebuilt when the pointer is free.
-        if self.pressed.is_none()
+        // While a press is held or a drag is in the air the pointer keeps
+        // the hover of its capture, so the chain is only rebuilt when the
+        // pointer is free.
+        if !self.holds_pointer()
             && self
                 .hovered
                 .is_some_and(|hovered| self.chain(Some(hovered)).contains(&id))
@@ -966,7 +1144,7 @@ impl WidgetTree {
     /// the node.
     ///
     /// A stale id does nothing.
-    pub(super) fn set_bit(&mut self, id: WidgetId, bit: u8, on: bool) {
+    pub(super) fn set_bit(&mut self, id: WidgetId, bit: u16, on: bool) {
         let Some(node) = self.nodes.get_mut(id) else {
             return;
         };
@@ -1298,6 +1476,264 @@ impl WidgetTree {
             next = self.pointer_parent(id);
         }
         None
+    }
+
+    /// Moves the in-app drag of a held press to `position`.
+    ///
+    /// A drag that has not left its source yet leaves it once the pointer
+    /// has moved [`DRAG_SLOP`] past the press, which builds the payload and
+    /// shows the preview. One that has re-resolves the target under the
+    /// pointer and moves the preview with the pointer. This runs on every
+    /// move of the press, and, once the drag has left its source, again
+    /// when content moves under a still pointer.
+    fn update_dnd(&mut self, position: Point) {
+        let Some(mut drag) = self.dnd.take() else {
+            return;
+        };
+        let payload = match drag.payload.clone() {
+            Some(payload) => payload,
+            None => {
+                let dx = position.x - drag.began_at.x;
+                let dy = position.y - drag.began_at.y;
+                if dx * dx + dy * dy < DRAG_SLOP * DRAG_SLOP {
+                    self.dnd = Some(drag);
+                    return;
+                }
+                let source = drag.source;
+                // A source that went disabled or vanished while the press
+                // held it builds no payload, and its drag dies with the
+                // threshold it never passed.
+                let disabled = self.nodes.get(source).is_none_or(|node| {
+                    node.interaction.has(Interaction::DISABLED) || node.withdrawn()
+                });
+                if disabled {
+                    return;
+                }
+                let Some(payload) = self.build_payload(source) else {
+                    return;
+                };
+                self.open_preview(source);
+                drag.payload = Some(payload.clone());
+                payload
+            }
+        };
+        let target = self.drop_target_at(position, &payload);
+        if target != drag.target {
+            if let Some(old) = drag.target {
+                self.set_bit(old, Interaction::DROP, false);
+            }
+            if let Some(new) = target {
+                self.set_bit(new, Interaction::DROP, true);
+            }
+            drag.target = target;
+        }
+        let (preview_at, open) = match self.preview_signals(drag.source) {
+            Some((open, preview_at)) => (preview_at, open),
+            None => {
+                self.dnd = Some(drag);
+                return;
+            }
+        };
+        preview_at.set(self.local_position(drag.source, position));
+        if !open.get() {
+            open.set(true);
+        }
+        self.dnd = Some(drag);
+    }
+
+    /// Returns the deepest enabled node under `position` whose drop target
+    /// accepts `payload`.
+    fn drop_target_at(&self, position: Point, payload: &Rc<dyn Any>) -> Option<WidgetId> {
+        let mut next = self.hit_any(position, false);
+        while let Some(id) = next {
+            let node = self.nodes.get(id)?;
+            let accepts = node
+                .handlers
+                .dnd
+                .as_ref()
+                .and_then(|dnd| dnd.accepts.as_ref());
+            if let Some(accepts) = accepts
+                && !node.interaction.has(Interaction::DISABLED)
+                && !node.withdrawn()
+                && accepts(payload)
+            {
+                return Some(id);
+            }
+            next = self.pointer_parent(id);
+        }
+        None
+    }
+
+    /// Builds the payload of the drag source `source` inside its owner.
+    ///
+    /// A source whose node went away carries nothing, and its drag ends
+    /// before it began.
+    fn build_payload(&mut self, source: WidgetId) -> Option<Rc<dyn Any>> {
+        let build = self
+            .nodes
+            .get(source)
+            .and_then(|node| node.handlers.dnd.as_ref())
+            .and_then(|dnd| dnd.source.as_ref())?;
+        let owner = self.owner(source).cloned()?;
+        Some(owner.with(build))
+    }
+
+    /// Returns the preview signals of the drag source `source`.
+    fn preview_signals(&self, source: WidgetId) -> Option<(RwSignal<bool>, RwSignal<Point>)> {
+        let dnd = self
+            .nodes
+            .get(source)
+            .and_then(|node| node.handlers.dnd.as_ref())?;
+        Some((dnd.preview_open.clone()?, dnd.preview_at.clone()?))
+    }
+
+    /// Samples the surface of the drag of `source`, which the preview the
+    /// source's element mounted draws when it has no preview of its own.
+    fn open_preview(&mut self, source: WidgetId) {
+        let Some(surface) = self
+            .nodes
+            .get(source)
+            .and_then(|node| node.handlers.dnd.as_ref())
+            .and_then(|dnd| dnd.preview_surface.clone())
+        else {
+            return;
+        };
+        let Some(node) = self.nodes.get(source) else {
+            return;
+        };
+        surface.set(PreviewSurface {
+            background: node
+                .resolved
+                .paint
+                .background
+                .unwrap_or(crate::theme::ColorValue::Token(
+                    crate::theme::ColorToken::SURFACE,
+                )),
+            corners: node.resolved.paint.corner_radius,
+            size: crate::geometry::Size {
+                width: node.rect.width(),
+                height: node.rect.height(),
+            },
+        });
+    }
+
+    /// Hides the preview of the drag of `source`.
+    fn close_preview(&mut self, source: WidgetId) {
+        if let Some(dnd) = self
+            .nodes
+            .get(source)
+            .and_then(|node| node.handlers.dnd.as_ref())
+            && let Some(open) = dnd.preview_open.clone()
+        {
+            open.set(false);
+        }
+    }
+
+    /// Ends an in-app drag that left its source, at the release over
+    /// `position`.
+    ///
+    /// The deepest target under the pointer that accepts the payload hears
+    /// the drop, and the source hears whether the payload was taken. The
+    /// release ends the capture but runs no press: a drag is not a click.
+    fn finish_dnd(&mut self, drag: ActiveDrag, payload: Rc<dyn Any>, position: Point) {
+        let target = self.drop_target_at(position, &payload);
+        if let Some(old) = drag.target {
+            self.set_bit(old, Interaction::DROP, false);
+        }
+        self.close_preview(drag.source);
+        let dropped = match target {
+            Some(id) => {
+                let local = self.content_position(id, position);
+                self.run_drop(id, payload, local);
+                true
+            }
+            None => false,
+        };
+        self.run_drag_end(drag.source, dropped);
+        let hovered = self.hover_target(position);
+        if let Some(captured) = self.pressed.take() {
+            self.set_bit(captured, Interaction::PRESSED, false);
+            self.run_pointer_up(captured, position);
+        }
+        self.set_hover_target(hovered);
+    }
+
+    /// Cancels the in-app drag in the air, if it left its source, and
+    /// returns whether there was one to spend Escape on.
+    ///
+    /// A drag that has not left its source yet stays where it is: a press
+    /// below the drag threshold is not a drag for Escape to end. One that
+    /// left takes the press capture with it, so the release that still
+    /// arrives runs no press: a cancelled drag is not a click.
+    pub(crate) fn cancel_dnd(&mut self) -> bool {
+        let Some(drag) = self.dnd.take() else {
+            return false;
+        };
+        if drag.payload.is_none() {
+            self.dnd = Some(drag);
+            return false;
+        }
+        if let Some(old) = drag.target {
+            self.set_bit(old, Interaction::DROP, false);
+        }
+        self.close_preview(drag.source);
+        self.run_drag_end(drag.source, false);
+        if let Some(captured) = self.pressed.take() {
+            self.released_early = true;
+            self.set_bit(captured, Interaction::PRESSED, false);
+            self.run_pointer_up(captured, self.pointer);
+        }
+        let hovered = if self.pointer_inside {
+            self.hover_target(self.pointer)
+        } else {
+            None
+        };
+        self.set_hover_target(hovered);
+        true
+    }
+
+    /// Runs the drop handler of the target `id` with `payload` inside its
+    /// owner.
+    fn run_drop(&mut self, id: WidgetId, payload: Rc<dyn Any>, at: Point) {
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        owner.with(|| {
+            if let Some(drop) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.dnd.as_mut())
+                .and_then(|dnd| dnd.drop.as_mut())
+            {
+                drop(payload, at);
+            }
+        });
+    }
+
+    /// Runs the drag-end handler of the source `id` inside its owner.
+    fn run_drag_end(&mut self, id: WidgetId, dropped: bool) {
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        owner.with(|| {
+            if let Some(drag_end) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.dnd.as_mut())
+                .and_then(|dnd| dnd.drag_end.as_mut())
+            {
+                drag_end(dropped);
+            }
+        });
+    }
+
+    /// Re-resolves the target of an in-app drag under a still pointer, as
+    /// [`Self::deliver_drag_over`] does for a drag-over.
+    pub(super) fn redeliver_dnd(&mut self) {
+        if self.dnd.as_ref().is_none_or(|drag| drag.payload.is_none()) {
+            return;
+        }
+        self.update_dnd(self.pointer);
     }
 
     /// Routes a hover of `paths` over the window at `position` to the drop
