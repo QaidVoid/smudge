@@ -122,6 +122,16 @@ pub enum Role {
     /// One row of a [`Role::Tree`]. Its depth is [`Semantics::level`], and
     /// whether what it holds is open is [`Semantics::expanded`].
     TreeItem,
+    /// A grid of cells under a header, whose rows a screen reader walks by
+    /// row and column index.
+    Table,
+    /// One row of a [`Role::Table`]. Its place is its row index, and the
+    /// rows the table holds are its row count.
+    Row,
+    /// One cell of a [`Role::Row`]. Its place is its row and column index.
+    Cell,
+    /// One cell of a table's header row, naming its column.
+    ColumnHeader,
 }
 
 /// Whether a checkbox or a switch is checked.
@@ -351,6 +361,18 @@ pub struct SemanticsNode {
     /// Whether what the node opens is open, or `None` for a node that opens
     /// nothing.
     pub expanded: Option<bool>,
+    /// The row's place from zero in the table it belongs to, or `None` for
+    /// a node that is no row or cell of a table.
+    pub row_index: Option<usize>,
+    /// The cell's column from zero in the table it belongs to, or `None`
+    /// for a node that is no row or cell of a table.
+    pub column_index: Option<usize>,
+    /// How many rows the table the node holds has, the ones not mounted
+    /// included, or `None` for a node that is no table.
+    pub row_count: Option<usize>,
+    /// How many columns the table the node holds has, or `None` for a node
+    /// that is no table.
+    pub column_count: Option<usize>,
     /// The node's absolute rectangle in logical pixels, as the last layout
     /// pass left it.
     pub bounds: Rect,

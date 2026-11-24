@@ -576,6 +576,74 @@ impl Binding {
         }
     }
 
+    /// A binding that writes the node's row index in a table.
+    fn a11y_row_index(get: Rc<dyn Fn() -> usize>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_row_index(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that writes the node's column index in a table.
+    fn a11y_column_index(get: Rc<dyn Fn() -> usize>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_column_index(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that writes how many rows the node's table holds.
+    fn a11y_row_count(get: Rc<dyn Fn() -> usize>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_row_count(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
+    /// A binding that writes how many columns the node's table holds.
+    fn a11y_column_count(get: Rc<dyn Fn() -> usize>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_column_count(id, Some(value));
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes the size of the set the node holds.
     fn a11y_set_size(get: Rc<dyn Fn() -> usize>) -> Binding {
         Binding {
@@ -791,6 +859,14 @@ pub struct Element<W: Widget> {
     a11y_set_size: Option<Value<usize>>,
     /// The heading level an element set, when it set one.
     a11y_level: Option<Value<usize>>,
+    /// The row index an element set, when it set one.
+    a11y_row_index: Option<Value<usize>>,
+    /// The column index an element set, when it set one.
+    a11y_column_index: Option<Value<usize>>,
+    /// The row count an element set, when it set one.
+    a11y_row_count: Option<Value<usize>>,
+    /// The column count an element set, when it set one.
+    a11y_column_count: Option<Value<usize>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// Applied to the style of every child as it is added.
@@ -847,6 +923,10 @@ impl<W: Widget> Element<W> {
             a11y_position: None,
             a11y_set_size: None,
             a11y_level: None,
+            a11y_row_index: None,
+            a11y_column_index: None,
+            a11y_row_count: None,
+            a11y_column_count: None,
             scroll_offset: Point::default(),
             child_styling: None,
             children: Vec::new(),
@@ -2199,6 +2279,48 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Sets the row's place from zero in the table it belongs to, which a
+    /// screen reader announces with the row's role and the table's row
+    /// count.
+    ///
+    /// This can be bound to a signal, like the style builders. It overrides
+    /// the state the widget itself reports. The table sets it on every row
+    /// it mounts.
+    pub fn accessible_row_index(mut self, index: impl Into<Value<usize>>) -> Self {
+        self.a11y_row_index = Some(index.into());
+        self
+    }
+
+    /// Sets the cell's column from zero in the table it belongs to, which a
+    /// screen reader announces with the cell's role.
+    ///
+    /// This can be bound to a signal, like the style builders. The table
+    /// sets it on every cell it mounts.
+    pub fn accessible_column_index(mut self, index: impl Into<Value<usize>>) -> Self {
+        self.a11y_column_index = Some(index.into());
+        self
+    }
+
+    /// Sets how many rows the table the node holds has, the ones not on
+    /// screen included, which a screen reader announces with the row
+    /// indexes of the rows it walks.
+    ///
+    /// This can be bound to a signal, with a closure that returns the
+    /// count, so it follows the rows as they come and go. The table sets it.
+    pub fn accessible_row_count(mut self, count: impl Into<Value<usize>>) -> Self {
+        self.a11y_row_count = Some(count.into());
+        self
+    }
+
+    /// Sets how many columns the table the node holds has.
+    ///
+    /// This can be bound to a signal, like the style builders. The table
+    /// sets it.
+    pub fn accessible_column_count(mut self, count: impl Into<Value<usize>>) -> Self {
+        self.a11y_column_count = Some(count.into());
+        self
+    }
+
     /// Has a screen reader speak what `announcer` announces, while this node
     /// is mounted and not hidden.
     ///
@@ -3104,6 +3226,14 @@ pub struct AnyElement {
     a11y_set_size: Option<Value<usize>>,
     /// The heading level an element set, when it set one.
     a11y_level: Option<Value<usize>>,
+    /// The row index an element set, when it set one.
+    a11y_row_index: Option<Value<usize>>,
+    /// The column index an element set, when it set one.
+    a11y_column_index: Option<Value<usize>>,
+    /// The row count an element set, when it set one.
+    a11y_row_count: Option<Value<usize>>,
+    /// The column count an element set, when it set one.
+    a11y_column_count: Option<Value<usize>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// The children, in paint order.
@@ -3146,6 +3276,10 @@ impl AnyElement {
             a11y_position: element.a11y_position,
             a11y_set_size: element.a11y_set_size,
             a11y_level: element.a11y_level,
+            a11y_row_index: element.a11y_row_index,
+            a11y_column_index: element.a11y_column_index,
+            a11y_row_count: element.a11y_row_count,
+            a11y_column_count: element.a11y_column_count,
             scroll_offset: element.scroll_offset,
             children: element.children,
             #[cfg(feature = "devtools")]
@@ -3269,6 +3403,10 @@ fn mount_named(
         a11y_position,
         a11y_set_size,
         a11y_level,
+        a11y_row_index,
+        a11y_column_index,
+        a11y_row_count,
+        a11y_column_count,
         scroll_offset,
         children,
         #[cfg(feature = "devtools")]
@@ -3373,6 +3511,26 @@ fn mount_named(
     match a11y_level {
         Some(Value::Static(level)) => tree.set_a11y_level(id, Some(level)),
         Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_level(get)),
+        None => {}
+    }
+    match a11y_row_index {
+        Some(Value::Static(index)) => tree.set_a11y_row_index(id, Some(index)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_row_index(get)),
+        None => {}
+    }
+    match a11y_column_index {
+        Some(Value::Static(index)) => tree.set_a11y_column_index(id, Some(index)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_column_index(get)),
+        None => {}
+    }
+    match a11y_row_count {
+        Some(Value::Static(count)) => tree.set_a11y_row_count(id, Some(count)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_row_count(get)),
+        None => {}
+    }
+    match a11y_column_count {
+        Some(Value::Static(count)) => tree.set_a11y_column_count(id, Some(count)),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_column_count(get)),
         None => {}
     }
     if scroll_offset != Point::default() {

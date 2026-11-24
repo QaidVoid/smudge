@@ -440,6 +440,8 @@ fn digest(node: &SemanticsNode, scale: f32) -> u64 {
     node.value.hash(&mut hasher);
     node.checked.hash(&mut hasher);
     (node.position, node.set_size, node.level).hash(&mut hasher);
+    (node.row_index, node.column_index).hash(&mut hasher);
+    (node.row_count, node.column_count).hash(&mut hasher);
     node.text_selection.hash(&mut hasher);
     node.text_runs.len().hash(&mut hasher);
     for link in &node.links {
@@ -540,6 +542,18 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     // AccessKit counts heading levels from zero, and the projection from 1.
     if let Some(level) = node.level {
         out.set_level(level.saturating_sub(1));
+    }
+    if let Some(index) = node.row_index {
+        out.set_row_index(index);
+    }
+    if let Some(index) = node.column_index {
+        out.set_column_index(index);
+    }
+    if let Some(count) = node.row_count {
+        out.set_row_count(count);
+    }
+    if let Some(count) = node.column_count {
+        out.set_column_count(count);
     }
     if matches!(
         node.role,
@@ -721,6 +735,10 @@ fn map_role(role: Role) -> AccessKitRole {
         Role::ColorWell => AccessKitRole::ColorWell,
         Role::Tree => AccessKitRole::Tree,
         Role::TreeItem => AccessKitRole::TreeItem,
+        Role::Table => AccessKitRole::Table,
+        Role::Row => AccessKitRole::Row,
+        Role::Cell => AccessKitRole::Cell,
+        Role::ColumnHeader => AccessKitRole::ColumnHeader,
         // A role added after this mapping reports as a plain group.
         _ => AccessKitRole::Group,
     }

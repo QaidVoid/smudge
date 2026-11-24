@@ -283,6 +283,16 @@ struct A11yExtra {
     selected: Option<bool>,
     /// Whether what the node opens is open.
     expanded: Option<bool>,
+    /// The row's place from zero in the table it belongs to, for a row or
+    /// a cell of one.
+    row_index: Option<usize>,
+    /// The cell's column from zero in the table it belongs to.
+    column_index: Option<usize>,
+    /// How many rows the table the node holds has, the ones not mounted
+    /// included.
+    row_count: Option<usize>,
+    /// How many columns the table the node holds has.
+    column_count: Option<usize>,
 }
 
 /// A node fading out of a parent that removed it.
@@ -1731,6 +1741,74 @@ impl WidgetTree {
         self.push_a11y(id);
     }
 
+    /// Sets the row index of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_row_index`](crate::element::Element::accessible_row_index)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_row_index(&mut self, id: WidgetId, index: Option<usize>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let extra = node.a11y_extra.get_or_insert_default();
+        if extra.row_index == index {
+            return;
+        }
+        extra.row_index = index;
+        self.push_a11y(id);
+    }
+
+    /// Sets the column index of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_column_index`](crate::element::Element::accessible_column_index)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_column_index(&mut self, id: WidgetId, index: Option<usize>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let extra = node.a11y_extra.get_or_insert_default();
+        if extra.column_index == index {
+            return;
+        }
+        extra.column_index = index;
+        self.push_a11y(id);
+    }
+
+    /// Sets the row count of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_row_count`](crate::element::Element::accessible_row_count)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_row_count(&mut self, id: WidgetId, count: Option<usize>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let extra = node.a11y_extra.get_or_insert_default();
+        if extra.row_count == count {
+            return;
+        }
+        extra.row_count = count;
+        self.push_a11y(id);
+    }
+
+    /// Sets the column count of `id` and records the change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_column_count`](crate::element::Element::accessible_column_count)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_column_count(&mut self, id: WidgetId, count: Option<usize>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let extra = node.a11y_extra.get_or_insert_default();
+        if extra.column_count == count {
+            return;
+        }
+        extra.column_count = count;
+        self.push_a11y(id);
+    }
+
     /// Projects every visible node in paint order, for an accessibility
     /// backend.
     ///
@@ -1945,6 +2023,10 @@ impl WidgetTree {
             position: node.a11y_position.or(position),
             set_size: node.a11y_set_size.or(set_size),
             level: node.a11y_level.or(level),
+            row_index: extra.and_then(|extra| extra.row_index),
+            column_index: extra.and_then(|extra| extra.column_index),
+            row_count: extra.and_then(|extra| extra.row_count),
+            column_count: extra.and_then(|extra| extra.column_count),
             text_runs,
             text_selection,
             links,
