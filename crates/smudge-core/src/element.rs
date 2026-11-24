@@ -386,6 +386,25 @@ impl Binding {
         }
     }
 
+    /// A binding that requests the keyboard focus while `get` reads `true`.
+    fn focus_when(get: Rc<dyn Fn() -> bool>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let wanted = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        if wanted {
+                            tree.request_focus(id);
+                        }
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes whether the node holds a value the app rejects.
     fn invalid(get: Rc<dyn Fn() -> bool>) -> Binding {
         Binding {
@@ -2287,6 +2306,21 @@ impl<W: Widget> Element<W> {
     /// request runs once per mount.
     pub fn autofocus_first(mut self) -> Self {
         self.autofocus_first = true;
+        self
+    }
+
+    /// Requests the keyboard focus for this node whenever `when` reads
+    /// `true`, and again whenever it turns from `false` to `true`, the way
+    /// a tree moves the focus from a row to its first child on Right.
+    /// A node that already holds the focus keeps it.
+    ///
+    /// The closure reading `false` asks for nothing: the focus leaves the
+    /// node by the means that always move it, such as Tab, the arrows or a
+    /// press on another node. This takes part in the keyboard only when the
+    /// node is focusable, so pair it with [`Element::focusable`].
+    pub fn focus_when(mut self, when: impl Fn() -> bool + 'static) -> Self {
+        let when = Rc::new(crate::hot::wrap(when));
+        self.bindings.push(Binding::focus_when(when));
         self
     }
 

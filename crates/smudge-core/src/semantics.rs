@@ -117,6 +117,11 @@ pub enum Role {
     /// A swatch that shows a color and opens a picker for it. Its color is
     /// [`Semantics::value`], written as `#rrggbb` or `#rrggbbaa`.
     ColorWell,
+    /// A tree of rows that expand and collapse, such as a file tree.
+    Tree,
+    /// One row of a [`Role::Tree`]. Its depth is [`Semantics::level`], and
+    /// whether what it holds is open is [`Semantics::expanded`].
+    TreeItem,
 }
 
 /// Whether a checkbox or a switch is checked.

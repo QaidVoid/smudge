@@ -234,7 +234,7 @@ pub fn virtual_column_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoE
 /// Builds a keyed virtual column, reported as a list with its items when
 /// `list` holds.
 #[track_caller]
-fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
+pub(crate) fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     items: impl Fn() -> Rc<[T]> + 'static,
     key: impl Fn(&T) -> K + 'static,
     estimate: f32,

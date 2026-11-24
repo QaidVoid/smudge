@@ -42,6 +42,7 @@ mod separator;
 mod split;
 mod tabs;
 mod toasts;
+mod tree_view;
 mod virtual_list;
 mod virtual_list_keyed;
 
@@ -67,6 +68,7 @@ pub use separator::separator;
 pub use split::{Split, SplitExt, split};
 pub use tabs::{Tabs, tabs};
 pub use toasts::{MAX_TOASTS, TOAST_DURATION, Toasts, toast_host};
+pub use tree_view::{TreeView, tree_view};
 pub use virtual_list::virtual_list;
 pub use virtual_list_keyed::{virtual_column_keyed, virtual_list_keyed};
 
