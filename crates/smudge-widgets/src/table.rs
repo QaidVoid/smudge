@@ -15,7 +15,7 @@ use crate::signal;
 use crate::virtual_list_keyed::keyed;
 
 use smudge_core::element::{AnyElement, Element, IntoElement, Value, show};
-use smudge_core::geometry::{Point, Size};
+use smudge_core::geometry::{Color, Point, Size};
 use smudge_core::hot;
 use smudge_core::input::{Drag, Handled, Key, PointerButton};
 use smudge_core::path::Path;
@@ -472,6 +472,8 @@ where
     let index = indexed.index;
     let selected_key = indexed.key.clone();
     let selected_signal = state.selection.clone();
+    let fill_signal = selected_signal.clone();
+    let fill_key = selected_key.clone();
     let press_key = indexed.key.clone();
     let press_anchor = Rc::clone(&state.anchor);
     let press_signal = state.selection.clone();
@@ -496,6 +498,13 @@ where
         .role(Role::Row)
         .accessible_row_index(index)
         .accessible_selected(move || selected_signal.with(|set| set.contains(&selected_key)))
+        .background(move || {
+            if fill_signal.with(|set| set.contains(&fill_key)) {
+                ColorValue::Token(ColorToken::SURFACE_SELECTED)
+            } else {
+                ColorValue::Literal(Color::TRANSPARENT)
+            }
+        })
         .height(px(ROW_HEIGHT))
         .shrink(0.0)
         .focusable()

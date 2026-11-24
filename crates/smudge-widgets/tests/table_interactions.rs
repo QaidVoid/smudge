@@ -18,7 +18,7 @@ use smudge_core::widget::panel;
 use smudge_test::Harness;
 use smudge_text::{LabelExt, TextSystem, label};
 
-use smudge_widgets::{Column, TableView, table};
+use smudge_widgets::{Column, table};
 
 /// The rows of the test table.
 const ROWS: u64 = 100_000;
@@ -466,7 +466,7 @@ fn the_end_key_reveals_a_row_far_down_the_table() {
         "the last row holds the focus"
     );
     assert_eq!(
-        signals.focused.read(|held| held.clone()),
+        signals.focused.read(|held| *held),
         Some(99_999u64),
         "the view writes the focused key"
     );

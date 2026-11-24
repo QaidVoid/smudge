@@ -8,11 +8,13 @@ use std::hash::Hash;
 use std::rc::Rc;
 
 use smudge_core::element::{AnyElement, Element, IntoElement, Value};
+use smudge_core::geometry::Color;
 use smudge_core::hot;
 use smudge_core::input::{Handled, Key};
 use smudge_core::reactive::{Memo, RwSignal, prelude::*};
 use smudge_core::semantics::Role;
 use smudge_core::style::{Direction, Length};
+use smudge_core::theme::{ColorToken, ColorValue};
 use smudge_core::widget::{Panel, panel};
 
 use crate::signal;
@@ -269,6 +271,8 @@ where
 
         let picked = rows_selected.clone();
         let pick_key = item_key.clone();
+        let fill_picked = rows_selected.clone();
+        let fill_key = item_key.clone();
         let open = rows_expanded.clone();
         let open_key = item_key.clone();
         let held = rows_focused.clone();
@@ -291,6 +295,13 @@ where
             .accessible_set_size(visible.siblings)
             .accessible_expanded(move || open.with(|set| set.contains(&open_key)))
             .accessible_selected(move || picked.with(|pick| pick.as_ref() == Some(&pick_key)))
+            .background(move || {
+                if fill_picked.with(|pick| pick.as_ref() == Some(&fill_key)) {
+                    ColorValue::Token(ColorToken::SURFACE_SELECTED)
+                } else {
+                    ColorValue::Literal(Color::TRANSPARENT)
+                }
+            })
             .focusable()
             .focus_when(move || held.with(|held| held.as_ref() == Some(&held_key)))
             .on_focus(move |gained| {

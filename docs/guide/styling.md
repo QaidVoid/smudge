@@ -48,7 +48,7 @@ let surface = panel()
 
 | Color tokens | Radius tokens |
 |---|---|
-| `SURFACE`, `SURFACE_HOVER`, `SURFACE_PRESSED` | `SMALL` |
+| `SURFACE`, `SURFACE_HOVER`, `SURFACE_PRESSED`, `SURFACE_SELECTED` | `SMALL` |
 | `TEXT`, `TEXT_MUTED` | `MEDIUM` |
 | `ACCENT`, `ACCENT_HOVER`, `ACCENT_PRESSED`, `ACCENT_TEXT` | `LARGE` |
 | `BORDER`, `FOCUS_RING` | |

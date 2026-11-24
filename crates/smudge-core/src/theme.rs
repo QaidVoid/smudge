@@ -50,6 +50,9 @@ impl ColorToken {
     pub const SURFACE_HOVER: ColorToken = ColorToken("surface_hover");
     /// The surface color while a press is held on a control.
     pub const SURFACE_PRESSED: ColorToken = ColorToken("surface_pressed");
+    /// The surface color of a row or item the user has chosen, such as the
+    /// picked row of a table.
+    pub const SURFACE_SELECTED: ColorToken = ColorToken("surface_selected");
     /// The color of primary text.
     pub const TEXT: ColorToken = ColorToken("text");
     /// The color of secondary text, such as captions and placeholders.
@@ -336,6 +339,7 @@ impl Theme {
                 (ColorToken::SURFACE, Color::WHITE),
                 (ColorToken::SURFACE_HOVER, Color::rgb(240, 240, 240)),
                 (ColorToken::SURFACE_PRESSED, Color::rgb(224, 224, 224)),
+                (ColorToken::SURFACE_SELECTED, Color::rgb(204, 229, 255)),
                 (ColorToken::TEXT, Color::rgb(26, 26, 26)),
                 (ColorToken::TEXT_MUTED, Color::rgb(102, 102, 102)),
                 (ColorToken::ACCENT, Color::rgb(0, 95, 204)),
@@ -363,6 +367,7 @@ impl Theme {
                 (ColorToken::SURFACE, Color::rgb(30, 30, 30)),
                 (ColorToken::SURFACE_HOVER, Color::rgb(42, 42, 42)),
                 (ColorToken::SURFACE_PRESSED, Color::rgb(56, 56, 56)),
+                (ColorToken::SURFACE_SELECTED, Color::rgb(28, 60, 94)),
                 (ColorToken::TEXT, Color::rgb(240, 240, 240)),
                 (ColorToken::TEXT_MUTED, Color::rgb(153, 153, 153)),
                 (ColorToken::ACCENT, Color::rgb(77, 163, 255)),
