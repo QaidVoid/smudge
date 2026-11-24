@@ -1,9 +1,11 @@
-//! Two inputs, a plan to pick and a submit button, with a live preview:
-//! how a two-way input binding feeds the widgets around it. A separator
-//! divides the sections and a hyperlink links to the plans page.
+//! A form whose labels sit in one column and whose fields sit in another,
+//! aligned across rows by a grid: two inputs, a plan to pick and a submit
+//! button, with a live preview, showing how a two-way input binding feeds
+//! the widgets around it.
 //!
 //! Run with `cargo run --example form -p smudge`.
 
+use smudge::core::style::Track;
 use smudge::prelude::*;
 use smudge::widgets::radio_group;
 
@@ -62,28 +64,45 @@ fn main() -> Result<(), PlatformError> {
                 .align_items(Align::Start)
                 .width(pct(100.0))
                 .child(
-                    text_input(name)
+                    // The grid gives every label the same first column and
+                    // every field the same second one, so the rows stay
+                    // aligned without nesting a row per field. The column
+                    // does not stretch its children, so the grid needs the
+                    // form's width itself, and with it the fr track has
+                    // space to share with the fields.
+                    grid([Track::Px(90.0), Track::Fr(1.0)])
                         .width(pct(100.0))
-                        .height(px(FIELD_HEIGHT))
-                        .padding_xy(Size {
-                            width: 8.0,
-                            height: 6.0,
+                        .gap(Size {
+                            width: 10.0,
+                            height: 10.0,
                         })
-                        .placeholder("Name")
-                        .border(1.0)
-                        .border_color(FIELD_BORDER),
-                )
-                .child(
-                    text_input(email)
-                        .width(pct(100.0))
-                        .height(px(FIELD_HEIGHT))
-                        .padding_xy(Size {
-                            width: 8.0,
-                            height: 6.0,
-                        })
-                        .placeholder("Email")
-                        .border(1.0)
-                        .border_color(FIELD_BORDER),
+                        .align_items(Align::Center)
+                        .child(label("Name"))
+                        .child(
+                            text_input(name)
+                                .width(pct(100.0))
+                                .height(px(FIELD_HEIGHT))
+                                .padding_xy(Size {
+                                    width: 8.0,
+                                    height: 6.0,
+                                })
+                                .placeholder("Name")
+                                .border(1.0)
+                                .border_color(FIELD_BORDER),
+                        )
+                        .child(label("Email"))
+                        .child(
+                            text_input(email)
+                                .width(pct(100.0))
+                                .height(px(FIELD_HEIGHT))
+                                .padding_xy(Size {
+                                    width: 8.0,
+                                    height: 6.0,
+                                })
+                                .placeholder("Email")
+                                .border(1.0)
+                                .border_color(FIELD_BORDER),
+                        ),
                 )
                 .child(separator())
                 .child(

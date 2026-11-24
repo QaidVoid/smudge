@@ -91,11 +91,12 @@ The repository's examples are complete programs:
 git clone https://github.com/QaidVoid/smudge
 cd smudge
 cargo run --release --example counter -p smudge
+cargo run --release --example data_views -p smudge
 cargo run --release --example form -p smudge
 cargo run --release --example lists -p smudge
 cargo run --release --example tour -p smudge
 ```
 
-`form` binds two text inputs to signals and shows a live preview. `lists` filters a 100,000-row virtual list as you type. `tour` puts a log that follows its end, selectable rich text and notes into resizable panes.
+`form` binds two text inputs to signals and shows a live preview. `lists` filters a 100,000-row virtual list as you type. `tour` puts a log that follows its end, selectable rich text and notes into resizable panes. `data_views` is a file browser whose tree fills a sortable, selectable table, with collapsible details beside it.
 
 Next, [Signals](./signals) explains how state reaches the screen in more detail.
