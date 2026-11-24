@@ -54,6 +54,18 @@ fn header() {
 }
 
 #[test]
+fn grid_form() {
+    use smudge::core::style::Track;
+    
+    let name = RwSignal::new(String::new());
+    
+    let form = grid([Track::Px(110.0), Track::Fr(1.0)])
+        .gap(Size { width: 12.0, height: 8.0 })
+        .child(label("Name"))
+        .child(text_input(name));
+}
+
+#[test]
 fn badge() {
     use smudge::core::style::Edges;
     

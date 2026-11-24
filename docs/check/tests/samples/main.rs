@@ -6,6 +6,8 @@
 #[rustfmt::skip]
 mod accessibility;
 #[rustfmt::skip]
+mod data_views;
+#[rustfmt::skip]
 mod devtools;
 #[rustfmt::skip]
 mod dynamic_content;

@@ -55,6 +55,7 @@ export default defineConfig({
             { text: 'Elements and layout', link: '/guide/layout' },
             { text: 'Styling and themes', link: '/guide/styling' },
             { text: 'Widgets', link: '/guide/widgets' },
+            { text: 'Data views', link: '/guide/data-views' },
             { text: 'Text and input', link: '/guide/text-and-input' },
             { text: 'Markdown', link: '/guide/markdown' },
             { text: 'Dynamic content', link: '/guide/dynamic-content' },

@@ -70,6 +70,23 @@ let header = row()
     .child(button("Compose").primary());
 ```
 
+## Grid layout
+
+`.display(Display::Grid)` lays a panel's children out on a grid. `grid_columns` and `grid_rows` list the tracks, each one sizing a column or a row, and children flow into the cells in order. `grid(columns)` is the shorthand for a panel with its columns set, which is how a form aligns its labels and fields across rows:
+
+```rust
+use smudge::core::style::Track;
+
+let name = RwSignal::new(String::new());
+
+let form = grid([Track::Px(110.0), Track::Fr(1.0)])
+    .gap(Size { width: 12.0, height: 8.0 })
+    .child(label("Name"))
+    .child(text_input(name));
+```
+
+A track is `Px`, `Fr`, `Auto`, `MinContent`, `MaxContent`, or a `MinMax` pair of two of them. A child spans cells with `column_span` and `row_span`, and rows a template does not name size to their content. The guide's [data views](./data-views) page has the full story.
+
 ## Absolute placement
 
 `absolute()` takes a child out of the flow and places it by `inset` against its parent. Use it for badges, overlays inside a panel, and anything that should not push its siblings.
