@@ -1,0 +1,7 @@
+---
+source: crates/smudge-widgets/tests/collapsible.rs
+assertion_line: 233
+expression: "sections_window(Theme::dark()).png()"
+extension: png
+snapshot_kind: binary
+---

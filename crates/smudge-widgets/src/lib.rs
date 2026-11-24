@@ -26,6 +26,7 @@
 
 mod button;
 mod canvas;
+mod collapsible;
 mod color_picker;
 mod containers;
 mod controls;
@@ -46,6 +47,7 @@ mod virtual_list_keyed;
 
 pub use button::{ButtonExt, button};
 pub use canvas::{Canvas, Painter, canvas};
+pub use collapsible::collapsible;
 pub use color_picker::color_picker;
 pub use containers::{column, grid, row, spacer, stack};
 pub use controls::{
