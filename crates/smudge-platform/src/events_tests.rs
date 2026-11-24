@@ -220,3 +220,198 @@ fn a_modifiers_change_reaches_the_app_as_its_own_event() {
         }))
     );
 }
+
+#[test]
+fn hovered_files_of_one_drag_gather_into_one_hover() {
+    let mut translator = EventTranslator::new();
+
+    for name in ["/tmp/a.txt", "/tmp/b.txt"] {
+        assert!(
+            translator
+                .window_event(&WindowEvent::HoveredFile(name.into()), 1.0)
+                .is_empty()
+        );
+    }
+
+    assert_eq!(
+        translator.flush_files(),
+        Some(InputEvent::FileHovered {
+            paths: vec!["/tmp/a.txt".into(), "/tmp/b.txt".into()],
+            position: Point { x: 0.0, y: 0.0 },
+        })
+    );
+    assert_eq!(translator.flush_files(), None);
+}
+
+#[test]
+fn dropped_files_of_one_drag_gather_into_one_drop() {
+    let mut translator = EventTranslator::new();
+
+    for name in ["/tmp/a.txt", "/tmp/b.txt"] {
+        assert!(
+            translator
+                .window_event(&WindowEvent::DroppedFile(name.into()), 1.0)
+                .is_empty()
+        );
+    }
+
+    assert_eq!(
+        translator.flush_files(),
+        Some(InputEvent::FileDropped {
+            paths: vec!["/tmp/a.txt".into(), "/tmp/b.txt".into()],
+            position: Point { x: 0.0, y: 0.0 },
+        })
+    );
+}
+
+#[test]
+fn a_drag_interrupted_by_another_event_reports_before_it() {
+    let mut translator = EventTranslator::new();
+    let moved = WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: PhysicalPosition::new(30.0, 40.0),
+    };
+
+    translator
+        .window_event(&WindowEvent::HoveredFile("/tmp/a.txt".into()), 1.0)
+        .is_empty();
+
+    let translated = translator.window_event(&moved, 1.0);
+
+    assert_eq!(
+        translated,
+        vec![
+            InputEvent::FileHovered {
+                paths: vec!["/tmp/a.txt".into()],
+                position: Point { x: 0.0, y: 0.0 },
+            },
+            InputEvent::PointerMoved {
+                position: Point { x: 30.0, y: 40.0 },
+            },
+        ]
+    );
+    assert_eq!(translator.flush_files(), None);
+}
+
+#[test]
+fn a_drop_after_a_reported_hover_reports_the_hover_first() {
+    let mut translator = EventTranslator::new();
+
+    translator
+        .window_event(&WindowEvent::HoveredFile("/tmp/a.txt".into()), 1.0)
+        .is_empty();
+    assert_eq!(
+        translator.flush_files(),
+        Some(InputEvent::FileHovered {
+            paths: vec!["/tmp/a.txt".into()],
+            position: Point { x: 0.0, y: 0.0 },
+        })
+    );
+
+    translator
+        .window_event(&WindowEvent::DroppedFile("/tmp/a.txt".into()), 1.0)
+        .is_empty();
+
+    assert_eq!(
+        translator.flush_files(),
+        Some(InputEvent::FileDropped {
+            paths: vec!["/tmp/a.txt".into()],
+            position: Point { x: 0.0, y: 0.0 },
+        })
+    );
+    assert_eq!(translator.flush_files(), None);
+}
+
+#[test]
+fn a_cancellation_of_an_unreported_hover_reaches_no_app() {
+    let mut translator = EventTranslator::new();
+
+    translator
+        .window_event(&WindowEvent::HoveredFile("/tmp/a.txt".into()), 1.0)
+        .is_empty();
+
+    assert!(
+        translator
+            .window_event(&WindowEvent::HoveredFileCancelled, 1.0)
+            .is_empty()
+    );
+    assert_eq!(translator.flush_files(), None);
+}
+
+#[test]
+fn a_reported_hover_hears_its_cancellation() {
+    let mut translator = EventTranslator::new();
+
+    translator
+        .window_event(&WindowEvent::HoveredFile("/tmp/a.txt".into()), 1.0)
+        .is_empty();
+    assert!(translator.flush_files().is_some());
+
+    assert_eq!(
+        translator.window_event(&WindowEvent::HoveredFileCancelled, 1.0),
+        [InputEvent::FileHoverCancelled]
+    );
+}
+
+#[test]
+fn a_drop_in_the_same_batch_reports_the_hover_before_it() {
+    let mut translator = EventTranslator::new();
+
+    translator
+        .window_event(&WindowEvent::HoveredFile("/tmp/a.txt".into()), 1.0)
+        .is_empty();
+    let translated = translator.window_event(&WindowEvent::DroppedFile("/tmp/a.txt".into()), 1.0);
+
+    assert_eq!(
+        translated,
+        [InputEvent::FileHovered {
+            paths: vec!["/tmp/a.txt".into()],
+            position: Point { x: 0.0, y: 0.0 },
+        }]
+    );
+    assert_eq!(
+        translator.flush_files(),
+        Some(InputEvent::FileDropped {
+            paths: vec!["/tmp/a.txt".into()],
+            position: Point { x: 0.0, y: 0.0 },
+        })
+    );
+}
+
+#[test]
+fn a_cancellation_after_a_reported_drop_reaches_no_app() {
+    let mut translator = EventTranslator::new();
+
+    translator
+        .window_event(&WindowEvent::DroppedFile("/tmp/a.txt".into()), 1.0)
+        .is_empty();
+    assert!(translator.flush_files().is_some());
+
+    assert!(
+        translator
+            .window_event(&WindowEvent::HoveredFileCancelled, 1.0)
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_drop_reports_at_the_last_pointer_position() {
+    let mut translator = EventTranslator::new();
+    let moved = WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: PhysicalPosition::new(90.0, 120.0),
+    };
+    translator.window_event(&moved, 3.0).is_empty();
+
+    translator
+        .window_event(&WindowEvent::DroppedFile("/tmp/a.txt".into()), 3.0)
+        .is_empty();
+
+    assert_eq!(
+        translator.flush_files(),
+        Some(InputEvent::FileDropped {
+            paths: vec!["/tmp/a.txt".into()],
+            position: Point { x: 30.0, y: 40.0 },
+        })
+    );
+}

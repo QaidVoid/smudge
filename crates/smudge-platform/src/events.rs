@@ -6,6 +6,9 @@
 //! button events do not carry, and the keyboard modifiers, which winit
 //! reports separately from key events.
 
+use std::path::Path;
+use std::path::PathBuf;
+
 use smudge_core::geometry::Point;
 use smudge_core::input::{InputEvent, Key, KeyEvent, Modifiers, PointerButton};
 use winit::dpi::PhysicalPosition;
@@ -24,7 +27,31 @@ pub(crate) struct EventTranslator {
     /// The pointer position of the last cursor move, in logical pixels.
     ///
     /// Button events carry no position of their own, so they reuse this one.
+    /// So do the file events, which the platforms report without a position
+    /// of their own.
     position: Option<Point>,
+    /// The per-file events of one drag gesture, gathered so far.
+    ///
+    /// The platforms report a drag one file at a time, so consecutive
+    /// per-file events gather into one input event, which the event of
+    /// another kind that interrupts the run or the end of the event batch
+    /// reports through [`EventTranslator::flush_files`].
+    files: Option<GatheredFiles>,
+    /// Whether the app heard the hover of the drag still in the air.
+    ///
+    /// The platforms report a cancellation of a drag whose hover never
+    /// reached the app, and hearing a cancellation for a hover the app
+    /// never saw would leave it unbalanced, so only a reported hover
+    /// arms the cancellation.
+    hovering: bool,
+}
+
+/// The per-file window events gathered into one input event.
+struct GatheredFiles {
+    /// Whether the files are a drop, as opposed to a hover.
+    dropped: bool,
+    /// The gathered paths, in the order the window reported them.
+    paths: Vec<PathBuf>,
 }
 
 impl EventTranslator {
@@ -34,6 +61,101 @@ impl EventTranslator {
         EventTranslator {
             modifiers: ModifiersState::empty(),
             position: None,
+            files: None,
+            hovering: false,
+        }
+    }
+
+    /// Translates one window event into the input events it is.
+    ///
+    /// Most events translate into at most one. The per-file events of a
+    /// drag, which the platforms report one file at a time, gather until an
+    /// event of another kind or the end of the event batch reports what
+    /// gathered, so an interrupted run reports before the event that
+    /// interrupts it reaches the app. `scale` is the number of physical
+    /// pixels per logical pixel and must be positive.
+    pub(crate) fn window_event(&mut self, event: &WindowEvent, scale: f32) -> Vec<InputEvent> {
+        match event {
+            WindowEvent::HoveredFile(path) => return self.gather_file(path, false),
+            WindowEvent::DroppedFile(path) => return self.gather_file(path, true),
+            // A drag that never reported files reaches no app, and neither
+            // does its cancellation, while one whose hover was reported
+            // hears this cancellation.
+            WindowEvent::HoveredFileCancelled => {
+                let reported = self.hovering;
+                self.hovering = false;
+                self.files = None;
+                return if reported {
+                    vec![InputEvent::FileHoverCancelled]
+                } else {
+                    Vec::new()
+                };
+            }
+            _ => {}
+        }
+        let mut reported = Vec::new();
+        if let Some(gathered) = self.files.take() {
+            reported.push(self.file_event(gathered));
+        }
+        if let Some(input) = self.translate(event, scale) {
+            reported.push(input);
+        }
+        reported
+    }
+
+    /// Reports the files gathered since the last event, when there are any.
+    ///
+    /// The event loop calls this once an event batch ends, which is when a
+    /// run of per-file events with nothing between them is complete.
+    pub(crate) fn flush_files(&mut self) -> Option<InputEvent> {
+        let gathered = self.files.take()?;
+        Some(self.file_event(gathered))
+    }
+
+    /// Gathers one per-file event into the run it belongs to.
+    ///
+    /// A file of the other kind ends the run before it: a hover that a drop
+    /// interrupts is reported first, and the drop gathers from scratch.
+    fn gather_file(&mut self, path: &Path, dropped: bool) -> Vec<InputEvent> {
+        match self.files.take() {
+            Some(mut gathered) if gathered.dropped == dropped => {
+                gathered.paths.push(path.to_owned());
+                self.files = Some(gathered);
+                Vec::new()
+            }
+            gathered => {
+                let mut reported = Vec::new();
+                if let Some(gathered) = gathered {
+                    reported.push(self.file_event(gathered));
+                }
+                self.files = Some(GatheredFiles {
+                    dropped,
+                    paths: vec![path.to_owned()],
+                });
+                reported
+            }
+        }
+    }
+
+    /// Builds the input event the gathered files are.
+    ///
+    /// The platforms report no position with a file drag, so the files sit
+    /// at the last position a cursor move reported, which is where the
+    /// pointer last entered the window. A window that never saw a cursor
+    /// move reports them at the origin.
+    fn file_event(&mut self, gathered: GatheredFiles) -> InputEvent {
+        let position = self.position.unwrap_or_default();
+        self.hovering = !gathered.dropped;
+        if gathered.dropped {
+            InputEvent::FileDropped {
+                paths: gathered.paths,
+                position,
+            }
+        } else {
+            InputEvent::FileHovered {
+                paths: gathered.paths,
+                position,
+            }
         }
     }
 

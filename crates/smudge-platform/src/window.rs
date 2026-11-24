@@ -31,6 +31,17 @@ use winit::raw_window_handle::{
 use winit::window::WindowAttributes;
 use winit::window::{CursorGrabMode, CursorIcon, ResizeDirection, Window, WindowId};
 
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "redox",
+        target_family = "wasm",
+        target_os = "android",
+        target_os = "ios",
+        target_os = "macos"
+    ))
+))]
+use crate::dnd::WaylandDnd;
 use crate::error::PlatformError;
 use crate::events::EventTranslator;
 use crate::present::{CpuFrames, PresentStats, PresentStatsHandle};
@@ -732,6 +743,19 @@ struct WindowState {
     app: App,
     /// The translator that turns window events into input events.
     translator: EventTranslator,
+    /// The client that hears the file drags the windowing library cannot,
+    /// when the display is a Wayland compositor.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "redox",
+            target_family = "wasm",
+            target_os = "android",
+            target_os = "ios",
+            target_os = "macos"
+        ))
+    ))]
+    dnd: Option<WaylandDnd>,
     /// The renderer and presentation path the frames go through.
     presenter: Presenter,
     /// What the last present did.
@@ -1035,10 +1059,32 @@ where
         };
 
         let frame_period = frame_period(&window);
+        #[cfg(all(
+            unix,
+            not(any(
+                target_os = "redox",
+                target_family = "wasm",
+                target_os = "android",
+                target_os = "ios",
+                target_os = "macos"
+            ))
+        ))]
+        let dnd = crate::dnd::open_for_window(window.as_ref());
         Ok(WindowState {
             window,
             app,
             translator: EventTranslator::new(),
+            #[cfg(all(
+                unix,
+                not(any(
+                    target_os = "redox",
+                    target_family = "wasm",
+                    target_os = "android",
+                    target_os = "ios",
+                    target_os = "macos"
+                ))
+            ))]
+            dnd,
             presenter,
             stats: PresentStats::default(),
             stats_handle: self.options.stats.clone(),
@@ -1601,8 +1647,7 @@ where
             }
             other => {
                 if let Some(state) = self.state.as_mut() {
-                    let input = state.translator.translate(&other, state.scale);
-                    if let Some(input) = input {
+                    for input in state.translator.window_event(&other, state.scale) {
                         state.dispatch(input);
                         if state.needs_frame() {
                             state.window.request_redraw();
@@ -1662,6 +1707,32 @@ where
         // window that queues one applies it without waiting for an input
         // event.
         if let Some(state) = self.state.as_mut() {
+            // The end of an event batch is when a run of per-file events with
+            // nothing between them is complete and reports.
+            if let Some(input) = state.translator.flush_files() {
+                state.dispatch(input);
+                if state.needs_frame() {
+                    state.window.request_redraw();
+                }
+            }
+            #[cfg(all(
+                unix,
+                not(any(
+                    target_os = "redox",
+                    target_family = "wasm",
+                    target_os = "android",
+                    target_os = "ios",
+                    target_os = "macos"
+                ))
+            ))]
+            if let Some(dnd) = state.dnd.as_mut() {
+                for input in dnd.poll() {
+                    state.dispatch(input);
+                    if state.needs_frame() {
+                        state.window.request_redraw();
+                    }
+                }
+            }
             state.apply_window_commands(event_loop);
             state.update_cursor();
         }

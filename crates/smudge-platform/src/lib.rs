@@ -6,20 +6,43 @@
 //!
 //! Its only unsafe code is the hot reload receiver, compiled with the
 //! `hot-reload` feature on Linux, which loads the patch libraries a patch
-//! builder sends, and the one system call that reads the reduced-motion
-//! setting on Windows. Every other build forbids unsafe code.
+//! builder sends, the one system call that reads the reduced-motion
+//! setting on Windows, and the one foreign-display call of the Wayland
+//! drag-and-drop client, which adopts the display the windowing library
+//! owns because a file drop reaches no other connection. Every other build
+//! forbids unsafe code.
 
 #![cfg_attr(
     not(any(
         all(feature = "hot-reload", target_os = "linux"),
-        target_os = "windows"
+        target_os = "windows",
+        all(
+            unix,
+            not(any(
+                target_os = "redox",
+                target_family = "wasm",
+                target_os = "android",
+                target_os = "ios",
+                target_os = "macos"
+            ))
+        )
     )),
     forbid(unsafe_code)
 )]
 #![cfg_attr(
     any(
         all(feature = "hot-reload", target_os = "linux"),
-        target_os = "windows"
+        target_os = "windows",
+        all(
+            unix,
+            not(any(
+                target_os = "redox",
+                target_family = "wasm",
+                target_os = "android",
+                target_os = "ios",
+                target_os = "macos"
+            ))
+        )
     ),
     deny(unsafe_code)
 )]
@@ -40,6 +63,20 @@ mod color_scheme;
 mod cover;
 #[cfg(feature = "_devtools")]
 mod devtools;
+// Adopting the display the windowing library owns is the one way a file
+// drop can reach the window, and it is one unsafe call.
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "redox",
+        target_family = "wasm",
+        target_os = "android",
+        target_os = "ios",
+        target_os = "macos"
+    ))
+))]
+#[allow(unsafe_code)]
+mod dnd;
 mod error;
 mod events;
 #[cfg(feature = "gpu")]
