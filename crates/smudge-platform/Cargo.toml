@@ -21,10 +21,14 @@ winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11
 workspace = true
 
 [dev-dependencies]
-proptest = "1.12.0"
-smudge-test = { path = "../smudge-test" }
 smudge-text = { path = "../smudge-text" }
 smudge-widgets = { path = "../smudge-widgets" }
+
+# proptest pulls rusty-fork, whose wait-timeout does not compile on wasm, so
+# the dev-dependencies no example needs stay off the web builds.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+proptest = "1.12.0"
+smudge-test = { path = "../smudge-test" }
 
 [features]
 default = ["a11y"]
