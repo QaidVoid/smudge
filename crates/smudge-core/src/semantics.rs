@@ -145,6 +145,18 @@ pub enum Checked {
     Mixed,
 }
 
+/// The way a column header sorts its column. A header that sorts in no
+/// direction reports none, which the projection carries as `None`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SortDirection {
+    /// Smallest first.
+    Ascending,
+    /// Largest first.
+    Descending,
+    /// Sorted, but in no direction a screen reader names.
+    Other,
+}
+
 impl From<bool> for Checked {
     fn from(checked: bool) -> Checked {
         if checked {
@@ -202,6 +214,10 @@ pub struct Semantics {
     /// The level of a heading, from 1 for the top level down, or `None` for
     /// a node that is no heading.
     pub level: Option<usize>,
+    /// The way the column the node names sorts its column, or `None` for
+    /// a header that sorts in no direction, or for a node that names no
+    /// column.
+    pub sort_direction: Option<SortDirection>,
     /// The widget's text, a run per stretch of a line, in reading order, so
     /// a screen reader can read it by character, word and line. Each run's
     /// bounds are relative to the widget's content box, where its text is
@@ -304,6 +320,7 @@ impl Semantics {
             position: None,
             set_size: None,
             level: None,
+            sort_direction: None,
             text_runs: Vec::new(),
             text_selection: None,
             links: Vec::new(),
@@ -345,6 +362,10 @@ pub struct SemanticsNode {
     pub set_size: Option<usize>,
     /// The level of a heading, from 1 for the top level down.
     pub level: Option<usize>,
+    /// The way the column the node names sorts its column, or `None` for
+    /// a header that sorts in no direction, or for a node that names no
+    /// column.
+    pub sort_direction: Option<SortDirection>,
     /// The node's text, a run per stretch of a line, with each run's bounds
     /// absolute, in logical pixels.
     pub text_runs: Vec<TextRun>,

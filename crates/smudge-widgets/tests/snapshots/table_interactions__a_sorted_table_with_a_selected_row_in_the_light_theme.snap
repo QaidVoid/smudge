@@ -1,0 +1,6 @@
+---
+source: crates/smudge-widgets/tests/table_interactions.rs
+expression: harness.png()
+extension: png
+snapshot_kind: binary
+---

@@ -25,9 +25,9 @@ pub use smudge_text::{
     provide_text_style, rich_text, selection_scope, text_area, text_input,
 };
 pub use smudge_widgets::{
-    ButtonExt, Column, Painter, ScrollView, Split, SplitExt, Toasts, button, canvas, collapsible,
-    color_picker, column, grid, hyperlink, image, modal, row, scroll, separator, spacer, split,
-    stack, table, toast_host, tree_view, virtual_list,
+    ButtonExt, Column, Painter, ScrollView, Split, SplitExt, TableView, Toasts, button, canvas,
+    collapsible, color_picker, column, grid, hyperlink, image, modal, row, scroll, separator,
+    spacer, split, stack, table, toast_host, tree_view, virtual_list,
 };
 
 #[cfg(feature = "window")]

@@ -21,7 +21,9 @@ use crate::damage::DamageAccumulator;
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RwSignal};
-use crate::semantics::{A11yChanges, Checked, Role, Semantics, SemanticsNode, ValueRange};
+use crate::semantics::{
+    A11yChanges, Checked, Role, Semantics, SemanticsNode, SortDirection, ValueRange,
+};
 use crate::style::{LayoutProps, PaintProps, Style};
 use crate::theme::Theme;
 use crate::variants::{Variants, resolve};
@@ -293,6 +295,8 @@ struct A11yExtra {
     row_count: Option<usize>,
     /// How many columns the table the node holds has.
     column_count: Option<usize>,
+    /// The way the column the node names sorts its column.
+    sort_direction: Option<SortDirection>,
 }
 
 /// A node fading out of a parent that removed it.
@@ -1809,6 +1813,24 @@ impl WidgetTree {
         self.push_a11y(id);
     }
 
+    /// Sets the way the column of `id` sorts its column and records the
+    /// change.
+    ///
+    /// Called when the node mounts and again by the binding of an
+    /// [`accessible_sort_direction`](crate::element::Element::accessible_sort_direction)
+    /// builder value. A stale id does nothing.
+    pub(crate) fn set_a11y_sort_direction(&mut self, id: WidgetId, sort: Option<SortDirection>) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let extra = node.a11y_extra.get_or_insert_default();
+        if extra.sort_direction == sort {
+            return;
+        }
+        extra.sort_direction = sort;
+        self.push_a11y(id);
+    }
+
     /// Projects every visible node in paint order, for an accessibility
     /// backend.
     ///
@@ -1987,6 +2009,7 @@ impl WidgetTree {
             position,
             set_size,
             level,
+            sort_direction,
             mut text_runs,
             text_selection,
             links,
@@ -2027,6 +2050,9 @@ impl WidgetTree {
             column_index: extra.and_then(|extra| extra.column_index),
             row_count: extra.and_then(|extra| extra.row_count),
             column_count: extra.and_then(|extra| extra.column_count),
+            sort_direction: extra
+                .and_then(|extra| extra.sort_direction)
+                .or(sort_direction),
             text_runs,
             text_selection,
             links,

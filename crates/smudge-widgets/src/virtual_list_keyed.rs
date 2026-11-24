@@ -189,7 +189,7 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
     estimate: f32,
     row: impl Fn(&T) -> E + 'static,
 ) -> Element<ScrollView> {
-    keyed(items, key, estimate, row, true)
+    keyed(items, key, estimate, row, true, None)
 }
 
 /// A scroll view that mounts only the rows near its viewport, as
@@ -228,7 +228,7 @@ pub fn virtual_column_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoE
     estimate: f32,
     row: impl Fn(&T) -> E + 'static,
 ) -> Element<ScrollView> {
-    keyed(items, key, estimate, row, false)
+    keyed(items, key, estimate, row, false, None)
 }
 
 /// Builds a keyed virtual column, reported as a list with its items when
@@ -240,6 +240,11 @@ pub(crate) fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     estimate: f32,
     row: impl Fn(&T) -> E + 'static,
     list: bool,
+    // The offset the view scrolls with and the signal it reports its
+    // viewport height to, when the caller hands signals in. A widget that
+    // wraps the list, such as the table, drives and reads them; the list
+    // makes its own when the caller leaves them out.
+    shared: Option<(RwSignal<f32>, RwSignal<Option<f32>>)>,
 ) -> Element<ScrollView> {
     let estimate = if estimate.is_finite() && estimate > 0.0 {
         estimate
@@ -266,8 +271,11 @@ pub(crate) fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     })));
     let state: Rc<RefCell<KeyedList<T, K>>> = carried.read(Rc::clone);
     Owner::on_cleanup(move || drop(carried));
-    let offset = crate::signal(0.0);
-    let visible: RwSignal<Option<f32>> = crate::signal(None);
+    let (offset, visible) = if let Some((shared_offset, shared_visible)) = shared {
+        (shared_offset, shared_visible)
+    } else {
+        (crate::signal(0.0), crate::signal(None))
+    };
     // A remount after a hot patch can hand this the measurement of the old
     // build's layout, which says nothing of the new one. Dropped before the
     // list's first run, it neither clamps a carried offset nor mounts rows

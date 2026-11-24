@@ -365,6 +365,7 @@ where
         estimate,
         rows,
         false,
+        None,
     )
     .grow(1.0);
 

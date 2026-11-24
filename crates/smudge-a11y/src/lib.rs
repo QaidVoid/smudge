@@ -440,6 +440,7 @@ fn digest(node: &SemanticsNode, scale: f32) -> u64 {
     node.value.hash(&mut hasher);
     node.checked.hash(&mut hasher);
     (node.position, node.set_size, node.level).hash(&mut hasher);
+    node.sort_direction.hash(&mut hasher);
     (node.row_index, node.column_index).hash(&mut hasher);
     (node.row_count, node.column_count).hash(&mut hasher);
     node.text_selection.hash(&mut hasher);
@@ -554,6 +555,15 @@ fn build_node(node: &SemanticsNode, scale: f32) -> Node {
     }
     if let Some(count) = node.column_count {
         out.set_column_count(count);
+    }
+    if let Some(sort) = node.sort_direction {
+        out.set_sort_direction(match sort {
+            smudge_core::semantics::SortDirection::Ascending => accesskit::SortDirection::Ascending,
+            smudge_core::semantics::SortDirection::Descending => {
+                accesskit::SortDirection::Descending
+            }
+            smudge_core::semantics::SortDirection::Other => accesskit::SortDirection::Other,
+        });
     }
     if matches!(
         node.role,

@@ -51,7 +51,7 @@ use crate::reactive::{
     Owner, RenderEffect, RwSignal,
     prelude::{Get, Set},
 };
-use crate::semantics::{Announcer, Checked, Role, ValueRange};
+use crate::semantics::{Announcer, Checked, Role, SortDirection, ValueRange};
 use crate::style::{
     Align, Direction, Display, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position,
     Style, Track,
@@ -644,6 +644,24 @@ impl Binding {
         }
     }
 
+    /// A binding that writes the way the node's column sorts its column,
+    /// which a `None` clears.
+    fn a11y_sort_direction(get: Rc<dyn Fn() -> Option<SortDirection>>) -> Binding {
+        Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    let value = get();
+                    let queue = queue.clone();
+                    queue.push(Box::new(move |tree| {
+                        tree.set_a11y_sort_direction(id, value);
+                    }));
+                })
+            }),
+        }
+    }
+
     /// A binding that writes the size of the set the node holds.
     fn a11y_set_size(get: Rc<dyn Fn() -> usize>) -> Binding {
         Binding {
@@ -867,6 +885,8 @@ pub struct Element<W: Widget> {
     a11y_row_count: Option<Value<usize>>,
     /// The column count an element set, when it set one.
     a11y_column_count: Option<Value<usize>>,
+    /// The sort direction an element set, when it set one.
+    a11y_sort_direction: Option<Value<Option<SortDirection>>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// Applied to the style of every child as it is added.
@@ -923,6 +943,7 @@ impl<W: Widget> Element<W> {
             a11y_position: None,
             a11y_set_size: None,
             a11y_level: None,
+            a11y_sort_direction: None,
             a11y_row_index: None,
             a11y_column_index: None,
             a11y_row_count: None,
@@ -2279,6 +2300,20 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Sets the way the column the node names sorts its column, which a
+    /// screen reader announces as the sort of the column header. A header
+    /// that sorts in no direction reports none, which `None` sets.
+    ///
+    /// This can be bound to a signal, like the style builders. It overrides
+    /// the state the widget itself reports. A sortable table header sets it.
+    pub fn accessible_sort_direction(
+        mut self,
+        sort: impl Into<Value<Option<SortDirection>>>,
+    ) -> Self {
+        self.a11y_sort_direction = Some(sort.into());
+        self
+    }
+
     /// Sets the row's place from zero in the table it belongs to, which a
     /// screen reader announces with the row's role and the table's row
     /// count.
@@ -3234,6 +3269,8 @@ pub struct AnyElement {
     a11y_row_count: Option<Value<usize>>,
     /// The column count an element set, when it set one.
     a11y_column_count: Option<Value<usize>>,
+    /// The sort direction an element set, when it set one.
+    a11y_sort_direction: Option<Value<Option<SortDirection>>>,
     /// The scroll offset written to the node when it mounts.
     scroll_offset: Point,
     /// The children, in paint order.
@@ -3276,6 +3313,7 @@ impl AnyElement {
             a11y_position: element.a11y_position,
             a11y_set_size: element.a11y_set_size,
             a11y_level: element.a11y_level,
+            a11y_sort_direction: element.a11y_sort_direction,
             a11y_row_index: element.a11y_row_index,
             a11y_column_index: element.a11y_column_index,
             a11y_row_count: element.a11y_row_count,
@@ -3403,6 +3441,7 @@ fn mount_named(
         a11y_position,
         a11y_set_size,
         a11y_level,
+        a11y_sort_direction,
         a11y_row_index,
         a11y_column_index,
         a11y_row_count,
@@ -3511,6 +3550,11 @@ fn mount_named(
     match a11y_level {
         Some(Value::Static(level)) => tree.set_a11y_level(id, Some(level)),
         Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_level(get)),
+        None => {}
+    }
+    match a11y_sort_direction {
+        Some(Value::Static(sort)) => tree.set_a11y_sort_direction(id, sort),
+        Some(Value::Dynamic(get)) => bindings.push(Binding::a11y_sort_direction(get)),
         None => {}
     }
     match a11y_row_index {

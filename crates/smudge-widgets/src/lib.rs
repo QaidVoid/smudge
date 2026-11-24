@@ -67,7 +67,7 @@ pub use modal::{Modal, modal};
 pub use scroll::{ScrollAxis, ScrollExt, ScrollView, scroll};
 pub use separator::separator;
 pub use split::{Split, SplitExt, split};
-pub use table::{Column, ROW_HEIGHT, table};
+pub use table::{Column, ROW_HEIGHT, TableView, table};
 pub use tabs::{Tabs, tabs};
 pub use toasts::{MAX_TOASTS, TOAST_DURATION, Toasts, toast_host};
 pub use tree_view::{TreeView, tree_view};
