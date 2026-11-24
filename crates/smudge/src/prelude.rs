@@ -26,7 +26,7 @@ pub use smudge_text::{
 };
 pub use smudge_widgets::{
     ButtonExt, Painter, ScrollView, Split, SplitExt, Toasts, button, canvas, color_picker, column,
-    hyperlink, image, modal, row, scroll, separator, spacer, split, stack, toast_host,
+    grid, hyperlink, image, modal, row, scroll, separator, spacer, split, stack, toast_host,
     virtual_list,
 };
 

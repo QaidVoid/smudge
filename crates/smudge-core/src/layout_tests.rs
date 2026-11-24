@@ -7,7 +7,7 @@ use crate::damage::DamageAccumulator;
 use crate::geometry::{Color, Corners, PixelRect, Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{RwSignal, Set};
-use crate::style::{Align, Direction, Edges, Length, Overflow, Position, Style};
+use crate::style::{Align, Direction, Display, Edges, Length, Overflow, Position, Style, Track};
 use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::widget::{AvailableSpace, MeasureInput, PaintCx, Panel, Widget};
 
@@ -216,6 +216,359 @@ fn a_child_of_a_clipping_parent_is_clipped_to_the_parent() {
         Some(parent_rect.intersect(parent_clip)),
         "the child is clipped to the parent rectangle inside the parent clip"
     );
+}
+
+/// A grid whose columns are named in pixels puts each child where its
+/// column starts.
+#[cfg(feature = "grid")]
+#[test]
+fn a_grid_places_its_children_where_their_columns_start() {
+    let mut tree = WidgetTree::new();
+    let mut grid_style = fixed(150.0, 20.0);
+    grid_style.layout.display = Display::Grid;
+    grid_style.layout.grid_columns = vec![Track::Px(100.0), Track::Px(50.0)];
+    let root = tree.insert(None, Box::new(Empty), grid_style);
+    let first = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 20.0));
+    let second = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 20.0));
+
+    tree.layout(Size {
+        width: 150.0,
+        height: 20.0,
+    });
+
+    assert_eq!(
+        tree.rect(first),
+        Some(Rect::new(0.0, 0.0, 40.0, 20.0)),
+        "the first child sits in the first column"
+    );
+    assert_eq!(
+        tree.rect(second),
+        Some(Rect::new(100.0, 0.0, 140.0, 20.0)),
+        "the second child sits where the second column starts"
+    );
+    tree.debug_assert_consistent();
+}
+
+/// Fractional columns share the space the fixed columns leave, and stretch
+/// the children inside them.
+#[cfg(feature = "grid")]
+#[test]
+fn fractional_columns_share_the_leftover_space() {
+    let mut tree = WidgetTree::new();
+    let mut grid_style = fixed(200.0, 20.0);
+    grid_style.layout.display = Display::Grid;
+    grid_style.layout.grid_columns = vec![Track::Fr(1.0), Track::Fr(3.0)];
+    let root = tree.insert(None, Box::new(Empty), grid_style);
+    let first = tree.insert(Some(root), Box::new(Empty), Style::default());
+    let second = tree.insert(Some(root), Box::new(Empty), Style::default());
+
+    tree.layout(Size {
+        width: 200.0,
+        height: 20.0,
+    });
+
+    assert_eq!(
+        tree.rect(first),
+        Some(Rect::new(0.0, 0.0, 50.0, 20.0)),
+        "one share of the leftover space is 50 pixels, and the child
+         stretches to it"
+    );
+    assert_eq!(
+        tree.rect(second),
+        Some(Rect::new(50.0, 0.0, 200.0, 20.0)),
+        "three shares are 150 pixels wide"
+    );
+    tree.debug_assert_consistent();
+}
+
+/// A column that is not named in pixels is at least as wide as what it
+/// holds and takes the space the named columns leave.
+#[cfg(feature = "grid")]
+#[test]
+fn auto_columns_size_to_their_children() {
+    let mut tree = WidgetTree::new();
+    let mut grid_style = fixed(90.0, 10.0);
+    grid_style.layout.display = Display::Grid;
+    grid_style.layout.grid_columns = vec![Track::Auto, Track::Px(40.0)];
+    let root = tree.insert(None, Box::new(Empty), grid_style);
+    let first = tree.insert(Some(root), Box::new(Fixed(30.0, 10.0)), Style::default());
+    let second = tree.insert(Some(root), Box::new(Fixed(60.0, 10.0)), Style::default());
+
+    tree.layout(Size {
+        width: 90.0,
+        height: 10.0,
+    });
+
+    assert_eq!(
+        tree.rect(first),
+        Some(Rect::new(0.0, 0.0, 50.0, 10.0)),
+        "the automatic column takes the 50 pixels the fixed column leaves,
+         though the child measures 30"
+    );
+    assert_eq!(
+        tree.rect(second),
+        Some(Rect::new(50.0, 0.0, 90.0, 10.0)),
+        "the fixed column starts after the automatic one, and the child
+         stretches to it, not to what it measures"
+    );
+    tree.debug_assert_consistent();
+}
+
+/// The node's gap separates the tracks in both axes.
+#[cfg(feature = "grid")]
+#[test]
+fn the_gap_applies_between_tracks() {
+    let mut tree = WidgetTree::new();
+    let mut grid_style = fixed(220.0, 20.0);
+    grid_style.layout.display = Display::Grid;
+    grid_style.layout.grid_columns = vec![Track::Px(100.0), Track::Px(100.0)];
+    grid_style.layout.gap = Size {
+        width: 20.0,
+        height: 8.0,
+    };
+    let root = tree.insert(None, Box::new(Empty), grid_style);
+    let first = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 20.0));
+    let second = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 20.0));
+
+    tree.layout(Size {
+        width: 220.0,
+        height: 20.0,
+    });
+
+    assert_eq!(
+        tree.rect(first),
+        Some(Rect::new(0.0, 0.0, 40.0, 20.0)),
+        "the gap changes no first child"
+    );
+    assert_eq!(
+        tree.rect(second),
+        Some(Rect::new(120.0, 0.0, 160.0, 20.0)),
+        "the second column starts a gap after the first ends"
+    );
+    tree.debug_assert_consistent();
+}
+
+/// A child that spans columns takes one cell per column and wraps onto a
+/// row of its own.
+#[cfg(feature = "grid")]
+#[test]
+fn a_child_spanning_columns_wraps_onto_its_own_row() {
+    let mut tree = WidgetTree::new();
+    let mut grid_style = fixed(100.0, 30.0);
+    grid_style.layout.display = Display::Grid;
+    grid_style.layout.grid_columns = vec![Track::Px(50.0), Track::Px(50.0)];
+    let root = tree.insert(None, Box::new(Empty), grid_style);
+    let first = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 10.0));
+    let second = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 10.0));
+    let mut wide_style = fixed(40.0, 10.0);
+    wide_style.layout.column_span = 2;
+    let wide = tree.insert(Some(root), Box::new(Empty), wide_style);
+
+    tree.layout(Size {
+        width: 100.0,
+        height: 30.0,
+    });
+
+    assert_eq!(
+        tree.rect(first),
+        Some(Rect::new(0.0, 0.0, 40.0, 10.0)),
+        "the first child takes the first cell"
+    );
+    assert_eq!(
+        tree.rect(second),
+        Some(Rect::new(50.0, 0.0, 90.0, 10.0)),
+        "the second child takes the second cell"
+    );
+    assert_eq!(
+        tree.rect(wide),
+        Some(Rect::new(0.0, 15.0, 40.0, 25.0)),
+        "the spanning child starts on the next row, whose automatic track
+         stretches with the rest to fill the grid"
+    );
+    tree.debug_assert_consistent();
+}
+
+/// A child that spans rows leaves the children after it to fill the cells
+/// beside it.
+#[cfg(feature = "grid")]
+#[test]
+fn a_child_spanning_rows_leaves_the_cells_beside_it_free() {
+    let mut tree = WidgetTree::new();
+    let mut grid_style = fixed(80.0, 20.0);
+    grid_style.layout.display = Display::Grid;
+    grid_style.layout.grid_columns = vec![Track::Px(40.0), Track::Px(40.0)];
+    let root = tree.insert(None, Box::new(Empty), grid_style);
+    let mut tall_style = fixed(40.0, 10.0);
+    tall_style.layout.row_span = 2;
+    let tall = tree.insert(Some(root), Box::new(Empty), tall_style);
+    let second = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 10.0));
+    let third = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 10.0));
+
+    tree.layout(Size {
+        width: 80.0,
+        height: 20.0,
+    });
+
+    assert_eq!(
+        tree.rect(tall),
+        Some(Rect::new(0.0, 0.0, 40.0, 10.0)),
+        "the spanning child starts in the first cell"
+    );
+    assert_eq!(
+        tree.rect(second),
+        Some(Rect::new(40.0, 0.0, 80.0, 10.0)),
+        "the second child takes the cell beside it"
+    );
+    assert_eq!(
+        tree.rect(third),
+        Some(Rect::new(40.0, 10.0, 80.0, 20.0)),
+        "the third child takes the cell under the second"
+    );
+    tree.debug_assert_consistent();
+}
+
+/// A change to a template lays the grid and its children out again.
+#[cfg(feature = "grid")]
+#[test]
+fn a_changed_template_lays_the_grid_out_again() {
+    let mut tree = WidgetTree::new();
+    let mut grid_style = fixed(200.0, 20.0);
+    grid_style.layout.display = Display::Grid;
+    grid_style.layout.grid_columns = vec![Track::Px(100.0), Track::Px(100.0)];
+    let root = tree.insert(None, Box::new(Empty), grid_style);
+    let first = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 20.0));
+    let second = tree.insert(Some(root), Box::new(Empty), fixed(40.0, 20.0));
+
+    tree.layout(Size {
+        width: 200.0,
+        height: 20.0,
+    });
+    tree.clear_dirty();
+
+    tree.apply_layout(root, |layout| {
+        layout.grid_columns = vec![Track::Px(50.0), Track::Px(150.0)]
+    });
+    assert!(
+        tree.layout(Size {
+            width: 200.0,
+            height: 20.0,
+        }),
+        "a template change runs the layout engine"
+    );
+
+    assert_eq!(
+        tree.rect(first),
+        Some(Rect::new(0.0, 0.0, 40.0, 20.0)),
+        "the first column stays where it was"
+    );
+    assert_eq!(
+        tree.rect(second),
+        Some(Rect::new(50.0, 0.0, 90.0, 20.0)),
+        "the second column moved with the template"
+    );
+    assert_eq!(
+        tree.dirty(second),
+        Some(Dirty::Paint),
+        "the moved child must repaint"
+    );
+    tree.debug_assert_consistent();
+}
+
+/// A form of label and field pairs lines every field up in its column.
+#[cfg(feature = "grid")]
+#[test]
+fn a_two_column_form_lines_its_fields_up() {
+    let mut tree = WidgetTree::new();
+    let mut form_style = fixed(200.0, 60.0);
+    form_style.layout.display = Display::Grid;
+    form_style.layout.grid_columns = vec![Track::Px(70.0), Track::Px(110.0)];
+    form_style.layout.gap = Size {
+        width: 0.0,
+        height: 8.0,
+    };
+    form_style.layout.padding = Edges::all(Length::px(10.0));
+    let root = tree.insert(None, Box::new(Empty), form_style);
+    let name_label = tree.insert(Some(root), Box::new(Fixed(60.0, 16.0)), Style::default());
+    let name_field = tree.insert(Some(root), Box::new(Fixed(100.0, 16.0)), Style::default());
+    let mail_label = tree.insert(Some(root), Box::new(Fixed(60.0, 16.0)), Style::default());
+    let mail_field = tree.insert(Some(root), Box::new(Fixed(100.0, 16.0)), Style::default());
+
+    tree.layout(Size {
+        width: 200.0,
+        height: 60.0,
+    });
+
+    assert_eq!(
+        tree.rect(name_label),
+        Some(Rect::new(10.0, 10.0, 80.0, 26.0)),
+        "the label stretches to the width of its column"
+    );
+    assert_eq!(
+        tree.rect(name_field),
+        Some(Rect::new(80.0, 10.0, 190.0, 26.0))
+    );
+    assert_eq!(
+        tree.rect(mail_label),
+        Some(Rect::new(10.0, 34.0, 80.0, 50.0))
+    );
+    assert_eq!(
+        tree.rect(mail_field),
+        Some(Rect::new(80.0, 34.0, 190.0, 50.0)),
+        "every field starts where its column starts"
+    );
+
+    let mut out = String::new();
+    dump(&tree, root, 0, &mut out);
+    insta::assert_snapshot!("two_column_form", out);
+}
+
+#[cfg(feature = "grid")]
+/// One grid column track: a pixel size or a share of the leftover space.
+fn track() -> impl proptest::strategy::Strategy<Value = Track> {
+    prop_oneof![
+        (0.0..90.0f32).prop_map(Track::Px),
+        (1u8..=2).prop_map(|share| Track::Fr(f32::from(share))),
+    ]
+}
+
+#[cfg(feature = "grid")]
+proptest! {
+    /// Whatever the tracks and the space offered, every child of a grid
+    /// lands inside the grid's content box.
+    #[test]
+    fn every_child_of_a_grid_lands_inside_its_content_box(
+        columns in proptest::collection::vec(track(), 1..=4),
+        children in 1..=6_usize,
+    ) {
+        let mut tree = WidgetTree::new();
+        let mut grid_style = fixed(400.0, 200.0);
+        grid_style.layout.display = Display::Grid;
+        grid_style.layout.grid_columns = columns;
+        grid_style.layout.padding = Edges::all(Length::px(10.0));
+        let root = tree.insert(None, Box::new(Empty), grid_style);
+        let ids: Vec<_> = (0..children)
+            .map(|_| tree.insert(Some(root), Box::new(Empty), Style::default()))
+            .collect();
+
+        tree.layout(Size {
+            width: 400.0,
+            height: 200.0,
+        });
+
+        let content = Rect::new(10.0, 10.0, 390.0, 190.0);
+        for id in ids {
+            let rect = tree.rect(id).expect("the node is live");
+            prop_assert!(
+                rect.x0 >= content.x0
+                    && rect.y0 >= content.y0
+                    && rect.x0 + rect.width() <= content.x0 + content.width()
+                    && rect.y0 + rect.height() <= content.y0 + content.height(),
+                "the child at {:?} leaves the content box {:?}",
+                rect,
+                content
+            );
+        }
+    }
 }
 
 #[test]

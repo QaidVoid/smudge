@@ -5,7 +5,7 @@
 //! flow, and for the stack, how its children are placed.
 
 use smudge_core::element::Element;
-use smudge_core::style::{Edges, Length, Position, Style};
+use smudge_core::style::{Display, Edges, Length, Position, Style, Track};
 use smudge_core::widget::{Panel, panel};
 
 /// Creates a container that lays its children out left to right.
@@ -37,6 +37,34 @@ pub fn row() -> Element<Panel> {
 #[track_caller]
 pub fn column() -> Element<Panel> {
     panel().column()
+}
+
+/// Creates a container that lays its children out in the cells of a grid.
+///
+/// The arguments name the column tracks. Children flow into the cells in
+/// order, left to right and top to bottom, and wrap onto a row of their own
+/// when the columns run out. A row that no [`Element::grid_rows`] template
+/// names is as tall as its tallest child, and a child takes one cell unless
+/// [`Element::column_span`] or [`Element::row_span`] widens it. The gap
+/// between tracks starts at zero; [`Element::gap`] sets it.
+///
+/// ```
+/// use smudge_core::style::Track;
+/// use smudge_widgets::{button, grid};
+///
+/// let form = grid([Track::Px(90.0), Track::Px(160.0)])
+///     .gap(smudge_core::geometry::Size {
+///         width: 12.0,
+///         height: 8.0,
+///     })
+///     .child(button("Cancel"))
+///     .child(button("Save"));
+/// ```
+#[track_caller]
+pub fn grid(columns: impl IntoIterator<Item = Track>) -> Element<Panel> {
+    panel()
+        .display(Display::Grid)
+        .grid_columns(columns.into_iter().collect::<Vec<Track>>())
 }
 
 /// Creates a container whose children overlap.

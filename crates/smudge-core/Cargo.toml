@@ -29,6 +29,12 @@ harness = false
 subsecond = { version = "=0.7.10", default-features = false, optional = true }
 
 [features]
+default = ["grid"]
+# CSS grid layout, through taffy's grid feature. With it off, Display::Grid
+# lays a node out as a flex row and the grid templates and spans have no
+# effect. It costs about 230 KB of binary size, measured on the form example
+# and the web example's wasm, which is why it is a feature at all.
+grid = ["taffy/grid"]
 # Hot reload for the closures the tree stores and for the app's own threads.
 # Turned on by the same feature of the platform crate, which installs the
 # jump table the lookups here read. Linux only, like the receiver.

@@ -1,5 +1,5 @@
 use crate::geometry::Size;
-use crate::style::{Align, Direction, Display, Edges, LayoutProps, Length};
+use crate::style::{Align, Direction, Display, Edges, LayoutProps, Length, Track, TrackSize};
 
 #[test]
 fn to_taffy_converts_px_percent_and_auto() {
@@ -180,4 +180,103 @@ fn hiding_keeps_the_display_so_showing_restores_it() {
         ..hidden_block
     };
     assert_eq!(shown.to_taffy().display, taffy::Display::Block);
+}
+
+/// Reads the one sizing function of a template component, which the tests
+/// here always write.
+fn single(component: &taffy::GridTemplateComponent<String>) -> taffy::TrackSizingFunction {
+    match component {
+        taffy::GridTemplateComponent::Single(sizing) => *sizing,
+        taffy::GridTemplateComponent::Repeat(_) => {
+            panic!("the templates the tests write hold no repeat")
+        }
+    }
+}
+
+#[cfg(feature = "grid")]
+#[test]
+fn to_taffy_converts_a_grid_templates_tracks_and_spans() {
+    let props = LayoutProps {
+        display: Display::Grid,
+        grid_columns: vec![
+            Track::Px(90.0),
+            Track::Fr(1.0),
+            Track::MinMax(TrackSize::Px(40.0), TrackSize::Fr(2.0)),
+            Track::MinContent,
+            Track::Px(f32::NAN),
+        ],
+        grid_rows: vec![Track::MaxContent],
+        column_span: 3,
+        row_span: 2,
+        ..LayoutProps::default()
+    };
+
+    let style = props.to_taffy();
+
+    assert_eq!(style.display, taffy::Display::Grid);
+    let columns: Vec<_> = style.grid_template_columns.iter().map(single).collect();
+    assert_eq!(
+        columns[0].min.expand(),
+        taffy::ExpandedMinTrackSizingFunction::Length(90.0)
+    );
+    assert_eq!(
+        columns[0].max.expand(),
+        taffy::ExpandedMaxTrackSizingFunction::Length(90.0)
+    );
+    assert_eq!(
+        columns[1].min.expand(),
+        taffy::ExpandedMinTrackSizingFunction::Auto,
+        "a share of the leftover space accepts what the content needs"
+    );
+    assert_eq!(
+        columns[1].max.expand(),
+        taffy::ExpandedMaxTrackSizingFunction::Fr(1.0)
+    );
+    assert_eq!(
+        columns[2].min.expand(),
+        taffy::ExpandedMinTrackSizingFunction::Length(40.0)
+    );
+    assert_eq!(
+        columns[2].max.expand(),
+        taffy::ExpandedMaxTrackSizingFunction::Fr(2.0)
+    );
+    assert_eq!(
+        columns[3].min.expand(),
+        taffy::ExpandedMinTrackSizingFunction::MinContent
+    );
+    assert_eq!(
+        columns[3].max.expand(),
+        taffy::ExpandedMaxTrackSizingFunction::MinContent
+    );
+    assert_eq!(
+        columns[4].min.expand(),
+        taffy::ExpandedMinTrackSizingFunction::Length(0.0),
+        "a track size that is not a number is zero"
+    );
+    assert_eq!(
+        single(&style.grid_template_rows[0]).max.expand(),
+        taffy::ExpandedMaxTrackSizingFunction::MaxContent
+    );
+    assert_eq!(
+        style.grid_column.start,
+        taffy::GridPlacement::Span(3),
+        "the child reaches across three columns"
+    );
+    assert_eq!(style.grid_column.end, taffy::GridPlacement::Auto);
+    assert_eq!(style.grid_row.start, taffy::GridPlacement::Span(2));
+}
+
+#[cfg(feature = "grid")]
+#[test]
+fn a_child_that_spans_one_track_keeps_the_engine_s_default() {
+    let props = LayoutProps {
+        display: Display::Grid,
+        ..LayoutProps::default()
+    };
+
+    let style = props.to_taffy();
+
+    assert_eq!(style.grid_column.start, taffy::GridPlacement::Auto);
+    assert_eq!(style.grid_row.start, taffy::GridPlacement::Auto);
+    assert!(style.grid_template_columns.is_empty());
 }

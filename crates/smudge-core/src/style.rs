@@ -158,11 +158,63 @@ pub enum Position {
 
 /// Which layout algorithm arranges a node's children.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Display {
     /// Children are laid out as a flex row or column.
     Flex,
     /// Children are laid out one after another down the block axis.
     Block,
+    /// Children are laid out in the rows and columns the node's
+    /// [`LayoutProps::grid_columns`] and [`LayoutProps::grid_rows`] name.
+    /// With the core's `grid` cargo feature off, a grid lays out as a flex
+    /// row and the grid properties have no effect.
+    Grid,
+}
+
+/// One track of a grid template, as [`LayoutProps::grid_columns`] or
+/// [`LayoutProps::grid_rows`] lists them.
+///
+/// A track is one sizing function, or a [`Track::MinMax`] pair where the
+/// first is the smallest size the track accepts and the second the largest
+/// it asks for. A [`TrackSize::Fr`] share is only ever a maximum, so one
+/// written as a minimum is laid out as [`TrackSize::Auto`].
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Track {
+    /// The track is this many logical pixels wide or tall, exactly.
+    Px(f32),
+    /// The track takes this share of the space left after every other track
+    /// has taken what it needs, and shrinks with the space offered.
+    Fr(f32),
+    /// The track fits the content it holds, within the space offered.
+    Auto,
+    /// The track is never smaller than its content's smallest size without
+    /// wrapping, and grows no further than it must.
+    MinContent,
+    /// The track is never smaller than its content's size with no wrapping,
+    /// and grows no further than that.
+    MaxContent,
+    /// The track starts at what `min` accepts and may grow to what `max`
+    /// asks for.
+    MinMax(TrackSize, TrackSize),
+}
+
+/// One sizing function of a grid track: the smallest size a track accepts or
+/// the largest it asks for, as [`Track::MinMax`] pairs them.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum TrackSize {
+    /// The track is this many logical pixels wide or tall, exactly.
+    Px(f32),
+    /// The track takes this share of the space left after every other track
+    /// has taken what it needs, and shrinks with the space offered.
+    Fr(f32),
+    /// The track fits the content it holds, within the space offered.
+    Auto,
+    /// The track is never smaller than its content's smallest size without
+    /// wrapping, and grows no further than it must.
+    MinContent,
+    /// The track is never smaller than its content's size with no wrapping,
+    /// and grows no further than that.
+    MaxContent,
 }
 
 /// What happens to children that do not fit inside their parent.
@@ -257,6 +309,20 @@ pub struct LayoutProps {
     /// Whether content that does not fit is clipped. This also affects the
     /// automatic minimum size of a flex item, so it is a layout property.
     pub overflow: Overflow,
+    /// The column tracks of a grid. They have an effect only when
+    /// [`LayoutProps::display`] is [`Display::Grid`]. Rows the template does
+    /// not name are sized to their content.
+    pub grid_columns: Vec<Track>,
+    /// The row tracks of a grid. They have an effect only when
+    /// [`LayoutProps::display`] is [`Display::Grid`]. Rows the template does
+    /// not name are sized to their content.
+    pub grid_rows: Vec<Track>,
+    /// How many columns a child of a grid reaches across, from one. More
+    /// than one moves it out of the in-order flow of cells.
+    pub column_span: u16,
+    /// How many rows a child of a grid reaches across, from one. More than
+    /// one moves it out of the in-order flow of cells.
+    pub row_span: u16,
 }
 
 impl Default for LayoutProps {
@@ -289,6 +355,10 @@ impl Default for LayoutProps {
             inset: Edges::all(Length::auto()),
             border_width: Edges::all(0.0),
             overflow: Overflow::Visible,
+            grid_columns: Vec::new(),
+            grid_rows: Vec::new(),
+            column_span: 1,
+            row_span: 1,
         }
     }
 }
@@ -312,6 +382,12 @@ impl LayoutProps {
             (true, _) => taffy::Display::None,
             (false, Display::Flex) => taffy::Display::Flex,
             (false, Display::Block) => taffy::Display::Block,
+            // Without taffy's grid algorithm a grid falls back to the
+            // algorithm a flex row gives, and the grid properties stay unset.
+            #[cfg(feature = "grid")]
+            (false, Display::Grid) => taffy::Display::Grid,
+            #[cfg(not(feature = "grid"))]
+            (false, Display::Grid) => taffy::Display::Flex,
         };
         style.flex_direction = match self.direction {
             Direction::Row => taffy::FlexDirection::Row,
@@ -375,6 +451,31 @@ impl LayoutProps {
             x: overflow,
             y: overflow,
         };
+        #[cfg(feature = "grid")]
+        {
+            style.grid_template_columns = self
+                .grid_columns
+                .iter()
+                .map(|track| taffy::GridTemplateComponent::Single(to_taffy_track(track)))
+                .collect();
+            style.grid_template_rows = self
+                .grid_rows
+                .iter()
+                .map(|track| taffy::GridTemplateComponent::Single(to_taffy_track(track)))
+                .collect();
+            if self.column_span > 1 {
+                style.grid_column = taffy::Line {
+                    start: taffy::GridPlacement::Span(self.column_span),
+                    end: taffy::GridPlacement::Auto,
+                };
+            }
+            if self.row_span > 1 {
+                style.grid_row = taffy::Line {
+                    start: taffy::GridPlacement::Span(self.row_span),
+                    end: taffy::GridPlacement::Auto,
+                };
+            }
+        }
         style
     }
 }
@@ -529,6 +630,66 @@ fn to_taffy_edges<T: Copy, U>(edges: Edges<T>, convert: impl Fn(T) -> U) -> taff
         right: convert(edges.right),
         top: convert(edges.top),
         bottom: convert(edges.bottom),
+    }
+}
+
+/// Converts one track to the sizing function the engine's template holds,
+/// which pairs the smallest size the track accepts with the largest it asks
+/// for, holding every number within a billion either way.
+#[cfg(feature = "grid")]
+fn to_taffy_track(track: &Track) -> taffy::TrackSizingFunction {
+    match track {
+        Track::MinMax(min, max) => taffy::MinMax {
+            min: to_taffy_min(min),
+            max: to_taffy_max(max),
+        },
+        Track::Px(value) => taffy::MinMax {
+            min: taffy::MinTrackSizingFunction::length(bounded_or(*value, 0.0)),
+            max: taffy::MaxTrackSizingFunction::length(bounded_or(*value, 0.0)),
+        },
+        // A share of the leftover space is only a maximum, so an `fr` on its
+        // own accepts the space the content needs at least.
+        Track::Fr(value) => taffy::MinMax {
+            min: taffy::MinTrackSizingFunction::auto(),
+            max: taffy::MaxTrackSizingFunction::fr(bounded_or(*value, 0.0)),
+        },
+        Track::Auto => taffy::MinMax {
+            min: taffy::MinTrackSizingFunction::auto(),
+            max: taffy::MaxTrackSizingFunction::auto(),
+        },
+        Track::MinContent => taffy::MinMax {
+            min: taffy::MinTrackSizingFunction::min_content(),
+            max: taffy::MaxTrackSizingFunction::min_content(),
+        },
+        Track::MaxContent => taffy::MinMax {
+            min: taffy::MinTrackSizingFunction::max_content(),
+            max: taffy::MaxTrackSizingFunction::max_content(),
+        },
+    }
+}
+
+/// Converts one sizing function to the smallest size a track accepts. A
+/// fraction is only ever a maximum, so one here accepts whatever the
+/// content needs.
+#[cfg(feature = "grid")]
+fn to_taffy_min(track: &TrackSize) -> taffy::MinTrackSizingFunction {
+    match track {
+        TrackSize::Px(value) => taffy::MinTrackSizingFunction::length(bounded_or(*value, 0.0)),
+        TrackSize::Fr(_) | TrackSize::Auto => taffy::MinTrackSizingFunction::auto(),
+        TrackSize::MinContent => taffy::MinTrackSizingFunction::min_content(),
+        TrackSize::MaxContent => taffy::MinTrackSizingFunction::max_content(),
+    }
+}
+
+/// Converts one sizing function to the largest size a track asks for.
+#[cfg(feature = "grid")]
+fn to_taffy_max(track: &TrackSize) -> taffy::MaxTrackSizingFunction {
+    match track {
+        TrackSize::Px(value) => taffy::MaxTrackSizingFunction::length(bounded_or(*value, 0.0)),
+        TrackSize::Fr(value) => taffy::MaxTrackSizingFunction::fr(bounded_or(*value, 0.0)),
+        TrackSize::Auto => taffy::MaxTrackSizingFunction::auto(),
+        TrackSize::MinContent => taffy::MaxTrackSizingFunction::min_content(),
+        TrackSize::MaxContent => taffy::MaxTrackSizingFunction::max_content(),
     }
 }
 

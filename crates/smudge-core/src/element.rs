@@ -53,7 +53,8 @@ use crate::reactive::{
 };
 use crate::semantics::{Announcer, Checked, Role, ValueRange};
 use crate::style::{
-    Align, Direction, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position, Style,
+    Align, Direction, Display, Edges, Justify, LayoutProps, Length, Overflow, PaintProps, Position,
+    Style, Track,
 };
 use crate::theme::{ColorToken, ColorValue, CornerRadii, RadiusToken, RadiusValue};
 use crate::tree::interaction::Handlers;
@@ -146,12 +147,15 @@ static_values!(
     Checked,
     ValueRange,
     usize,
+    u16,
     f32,
     bool,
     Direction,
+    Display,
     Align,
     Justify,
     Overflow,
+    Vec<Track>,
     Point,
     Placement,
 );
@@ -292,6 +296,7 @@ enum Prop {
     Margin,
     Gap,
     Direction,
+    Display,
     Wrap,
     Grow,
     Shrink,
@@ -299,6 +304,10 @@ enum Prop {
     AlignItems,
     AlignSelf,
     JustifyContent,
+    GridColumns,
+    GridRows,
+    ColumnSpan,
+    RowSpan,
     Inset,
     BorderWidth,
     Overflow,
@@ -1083,6 +1092,56 @@ impl<W: Widget> Element<W> {
         self.layout_value(Prop::JustifyContent, justify, |layout, justify| {
             layout.justify_content = Some(justify);
         })
+    }
+
+    /// Chooses which layout algorithm arranges the children: the flex row or
+    /// column [`Element::row`] and [`Element::column`] set, the block flow of
+    /// [`Display::Block`], or the grid of [`Display::Grid`]. This takes part
+    /// in layout.
+    pub fn display(self, display: impl Into<Value<Display>>) -> Self {
+        self.layout_value(Prop::Display, display, |layout, display| {
+            layout.display = display
+        })
+    }
+
+    /// Names the column tracks of a grid. This takes part in layout and has
+    /// an effect only when [`Element::display`] is [`Display::Grid`].
+    ///
+    /// Children flow into the cells in order, left to right and top to
+    /// bottom, and wrap onto a row of their own when the columns run out. A
+    /// row the [`Element::grid_rows`] template does not name is as tall as
+    /// its tallest child. The gap between tracks is the node's own
+    /// [`Element::gap`].
+    pub fn grid_columns(self, tracks: impl Into<Value<Vec<Track>>>) -> Self {
+        self.layout_value(Prop::GridColumns, tracks, |layout, tracks| {
+            layout.grid_columns = tracks
+        })
+    }
+
+    /// Names the row tracks of a grid. This takes part in layout and has an
+    /// effect only when [`Element::display`] is [`Display::Grid`]. Rows the
+    /// template does not name are as tall as their tallest child, and the
+    /// gap between tracks is the node's own [`Element::gap`].
+    pub fn grid_rows(self, tracks: impl Into<Value<Vec<Track>>>) -> Self {
+        self.layout_value(Prop::GridRows, tracks, |layout, tracks| {
+            layout.grid_rows = tracks
+        })
+    }
+
+    /// Places this child of a grid across `span` columns, from one, so it
+    /// takes one cell per column. This takes part in layout. A span that is
+    /// not at least one is one.
+    pub fn column_span(self, span: impl Into<Value<u16>>) -> Self {
+        self.layout_value(Prop::ColumnSpan, span, |layout, span| {
+            layout.column_span = span
+        })
+    }
+
+    /// Places this child of a grid across `span` rows, from one, so it takes
+    /// one cell per row. This takes part in layout. A span that is not at
+    /// least one is one.
+    pub fn row_span(self, span: impl Into<Value<u16>>) -> Self {
+        self.layout_value(Prop::RowSpan, span, |layout, span| layout.row_span = span)
     }
 
     /// Takes the node out of normal flow, so its insets place it against its
