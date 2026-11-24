@@ -378,6 +378,13 @@ where
                         .height(px(ROW_HEIGHT))
                         .shrink(0.0)
                         .clip(true)
+                        // Every cell insets its content, so an end-aligned
+                        // column never butts its text against the one that
+                        // follows it.
+                        .padding_xy(Size {
+                            width: 8.0,
+                            height: 0.0,
+                        })
                         .justify_content(justify(column.alignment))
                         .align_items(Align::Center)
                         .child(content)
@@ -620,6 +627,10 @@ fn header_cell(
         .width(move || px(cell_widths.with(|all| all[index])))
         .height(px(ROW_HEIGHT))
         .shrink(0.0)
+        .padding_xy(Size {
+            width: 8.0,
+            height: 0.0,
+        })
         .justify_content(justify(column.alignment))
         .align_items(Align::Center)
         .on_press(move || {
