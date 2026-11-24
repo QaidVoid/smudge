@@ -1060,8 +1060,12 @@ impl App {
     /// node keeps the focus and hears no `on_focus`. Handlers run at once,
     /// inside their node's owner, and a handler that writes a signal makes
     /// the change visible with the next call to [`App::frame`]. The app
-    /// also records the pointer position from pointer events and the keyboard
-    /// modifiers from key and modifiers events.
+    /// also records the pointer position from the pointer and file events
+    /// that carry one, and the keyboard
+    /// modifiers from key and modifiers events. A file hover or drop goes to
+    /// the deepest enabled node under its position that sets
+    /// [`on_file_hover`](crate::element::Element::on_file_hover) or
+    /// [`on_file_drop`](crate::element::Element::on_file_drop).
     pub fn handle_event(&mut self, event: InputEvent) {
         match event {
             InputEvent::PointerMoved { position } => {
@@ -1090,6 +1094,15 @@ impl App {
             InputEvent::ImeCommit { text } => self.tree.ime_commit(&text),
             InputEvent::ImePreedit { text, cursor } => self.tree.ime_preedit(&text, cursor),
             InputEvent::PointerMotion { delta } => self.tree.pointer_motion(delta),
+            InputEvent::FileHovered { paths, position } => {
+                self.pointer = position;
+                self.tree.file_hover(&paths, position);
+            }
+            InputEvent::FileDropped { paths, position } => {
+                self.pointer = position;
+                self.tree.file_drop(&paths, position);
+            }
+            InputEvent::FileHoverCancelled => self.tree.file_hover_cancel(),
             InputEvent::WindowFocus(focused) => {
                 // A window that loses the input focus drops its input method
                 // context, so a composition must not outlive the focus. The
@@ -1107,10 +1120,10 @@ impl App {
         }
     }
 
-    /// Returns the pointer position the last pointer event reported, in
-    /// logical pixels.
+    /// Returns the pointer position the last pointer or file event reported,
+    /// in logical pixels.
     ///
-    /// The position starts at the origin and moves only when a pointer event
+    /// The position starts at the origin and moves only when such an event
     /// carries a position, so it lags the real pointer until the first event
     /// arrives.
     pub fn pointer_position(&self) -> Point {

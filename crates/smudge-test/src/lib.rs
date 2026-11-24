@@ -379,6 +379,28 @@ impl Harness {
         });
     }
 
+    /// Injects a hover of `paths` over the window at `position`, in logical
+    /// pixels.
+    ///
+    /// The zone under the position hears the paths through
+    /// [`Element::on_file_hover`](smudge_core::element::Element::on_file_hover),
+    /// and the zone that heard them before hears `None`. Pair with
+    /// [`Harness::drop_files`](Self::drop_files) or a
+    /// [`InputEvent::FileHoverCancelled`] to end
+    /// the gesture.
+    pub fn hover_files(&mut self, paths: Vec<PathBuf>, position: Point) {
+        self.event(InputEvent::FileHovered { paths, position });
+    }
+
+    /// Injects a drop of `paths` at `position`, in logical pixels.
+    ///
+    /// The zone under the position hears the paths through
+    /// [`Element::on_file_drop`](smudge_core::element::Element::on_file_drop),
+    /// and the hover of the zone that heard it ends with a `None`.
+    pub fn drop_files(&mut self, paths: Vec<PathBuf>, position: Point) {
+        self.event(InputEvent::FileDropped { paths, position });
+    }
+
     /// Moves the app's clock forward by `by` and runs one frame, which is
     /// when timers due in that time run.
     ///

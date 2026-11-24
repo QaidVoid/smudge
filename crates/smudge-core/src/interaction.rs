@@ -9,6 +9,8 @@
 //! [`on_hover`](crate::element::Element::on_hover). Keyboard focus and key
 //! routing live beside it in [`super::focus`].
 
+use std::path::PathBuf;
+
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::input::{ButtonEvent, Drag, Handled, Key, KeyEvent, PointerButton};
@@ -84,6 +86,14 @@ pub(crate) type PreeditHandler = Box<dyn FnMut(&str, Option<(usize, usize)>)>;
 /// with it the moves and the release of the button.
 pub(crate) type ButtonDownHandler = Box<dyn FnMut(ButtonEvent) -> Handled>;
 
+/// A file hover handler: it hears the paths of the files over the node, or
+/// `None` when they left it.
+pub(crate) type FileHoverHandler = Box<dyn FnMut(Option<&[PathBuf]>)>;
+
+/// A file drop handler: it hears the paths of the files dropped on the node
+/// and where they landed.
+pub(crate) type FileDropHandler = Box<dyn FnMut(&[PathBuf], Point)>;
+
 /// The input handlers one node owns.
 ///
 /// The builder methods on [`Element`](crate::element::Element) set them, and
@@ -131,6 +141,9 @@ pub(crate) struct Handlers {
     /// Runs, while a primary press is held, when the node is the deepest one
     /// under the pointer that sets it. It takes no part in hit testing.
     pub(crate) on_drag_over: Option<Box<dyn FnMut(Point)>>,
+    /// The file drop handlers of a node, boxed together since few nodes set
+    /// either of them.
+    pub(crate) file: Option<Box<FileHandlers>>,
     /// Runs while a primary press that began inside the node's rectangle is
     /// held, and when it ends. Returning [`Handled::Yes`] for a move keeps it
     /// from the observers around the node. It takes no part in hit testing.
@@ -177,6 +190,19 @@ pub(crate) struct Handlers {
     /// presses beside the app's own handlers, boxed since few nodes have
     /// any.
     pub(crate) watchers: Option<Box<Watchers>>,
+}
+
+/// The file handlers a drop zone sets. Neither takes part in hit testing.
+#[derive(Default)]
+pub(crate) struct FileHandlers {
+    /// Runs when files from outside the window hover over the node: with
+    /// their paths when they enter it and on every report while they stay
+    /// over it, and with `None` when they leave it or the hover is
+    /// cancelled.
+    pub(crate) hover: Option<FileHoverHandler>,
+    /// Runs when files from outside the window are dropped on the node, with
+    /// their paths and the position relative to the node's rectangle.
+    pub(crate) drop: Option<FileDropHandler>,
 }
 
 /// The keys a node set up with
@@ -1267,6 +1293,104 @@ impl WidgetTree {
             let node = self.nodes.get(id)?;
             if node.handlers.on_drag_over.is_some() && !node.interaction.has(Interaction::DISABLED)
             {
+                return Some(id);
+            }
+            next = self.pointer_parent(id);
+        }
+        None
+    }
+
+    /// Routes a hover of `paths` over the window at `position` to the drop
+    /// zones under it.
+    ///
+    /// The zone that hears it is the deepest enabled node under `position`
+    /// that sets `on_file_hover`, and it hears every report, so a list of
+    /// files that grows reaches it. A hover moving from one zone to another
+    /// tells the first `None` before it tells the second the paths, and a
+    /// hover that leaves every zone tells the zone it last hovered `None`.
+    pub(crate) fn file_hover(&mut self, paths: &[PathBuf], position: Point) {
+        match self.file_target(position, |h| {
+            h.file.as_ref().is_some_and(|f| f.hover.is_some())
+        }) {
+            Some(id) => {
+                if self.file_hover != Some(id) {
+                    self.clear_file_hover();
+                    self.file_hover = Some(id);
+                }
+                self.run_file_hover(id, Some(paths));
+            }
+            None => self.clear_file_hover(),
+        }
+    }
+
+    /// Routes a drop of `paths` at `position` to the drop zone under it.
+    ///
+    /// The zone that receives it is the deepest enabled node under
+    /// `position` that sets `on_file_drop`, so a zone inside a zone takes
+    /// the drop and the one around it hears nothing. The hover of the zone
+    /// that heard it ends, and the zone hears `None` before the drop.
+    pub(crate) fn file_drop(&mut self, paths: &[PathBuf], position: Point) {
+        let Some(id) = self.file_target(position, |h| {
+            h.file.as_ref().is_some_and(|f| f.drop.is_some())
+        }) else {
+            return;
+        };
+        let local = self.local_position(id, position);
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        self.clear_file_hover();
+        owner.with(|| {
+            if let Some(on_file_drop) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.file.as_mut())
+                .and_then(|file| file.drop.as_mut())
+            {
+                on_file_drop(paths, local);
+            }
+        });
+    }
+
+    /// Ends a file hover, as when the drag that carries the files left the
+    /// window or the source cancelled it. The zone that heard the hover is
+    /// told with `None`.
+    pub(crate) fn file_hover_cancel(&mut self) {
+        self.clear_file_hover();
+    }
+
+    /// Tells the zone that hears a file hover with `None` and forgets it.
+    fn clear_file_hover(&mut self) {
+        let Some(id) = self.file_hover.take() else {
+            return;
+        };
+        self.run_file_hover(id, None);
+    }
+
+    /// Runs `on_file_hover` of `id` inside the node's owner with `paths`.
+    fn run_file_hover(&mut self, id: WidgetId, paths: Option<&[PathBuf]>) {
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        owner.with(|| {
+            if let Some(on_file_hover) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.file.as_mut())
+                .and_then(|file| file.hover.as_mut())
+            {
+                on_file_hover(paths);
+            }
+        });
+    }
+
+    /// Returns the deepest enabled node under `position` that sets the
+    /// handler `sets` names.
+    fn file_target(&self, position: Point, sets: fn(&Handlers) -> bool) -> Option<WidgetId> {
+        let mut next = self.hit_any(position, false);
+        while let Some(id) = next {
+            let node = self.nodes.get(id)?;
+            if sets(&node.handlers) && !node.interaction.has(Interaction::DISABLED) {
                 return Some(id);
             }
             next = self.pointer_parent(id);

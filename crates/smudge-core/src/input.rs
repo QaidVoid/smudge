@@ -8,6 +8,8 @@
 
 use crate::geometry::Point;
 
+use std::path::PathBuf;
+
 /// One input event, translated from the windowing system or injected by a
 /// test.
 ///
@@ -90,6 +92,36 @@ pub enum InputEvent {
         /// The modifiers held now.
         Modifiers,
     ),
+    /// Files hover over the window while a drag from outside holds them.
+    ///
+    /// The platform reports it while the files' ghost is over the window,
+    /// with their paths and the pointer's position in logical pixels. The
+    /// hover ends with a drop, which carries
+    /// [`InputEvent::FileDropped`], or with
+    /// [`InputEvent::FileHoverCancelled`] when the drag
+    /// leaves the window or the source cancels it.
+    FileHovered {
+        /// The paths of the files under the pointer.
+        paths: Vec<PathBuf>,
+        /// Where the pointer is, in logical pixels.
+        position: Point,
+    },
+    /// Files were dropped onto the window, ending the drag that carried
+    /// them.
+    ///
+    /// A window that shows one drop zone still hears
+    /// [`InputEvent::FileHovered`] for every
+    /// gesture, so a zone that highlights itself while the files hover
+    /// clears the highlight when it receives this event.
+    FileDropped {
+        /// The paths of the dropped files.
+        paths: Vec<PathBuf>,
+        /// Where the pointer was, in logical pixels.
+        position: Point,
+    },
+    /// A file hover over the window was cancelled, as when the drag left
+    /// the window or the source cancelled it.
+    FileHoverCancelled,
 }
 
 /// One of the pointer buttons an event can refer to.

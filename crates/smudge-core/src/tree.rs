@@ -399,6 +399,9 @@ pub(crate) struct WidgetTree {
     pointer_locks: Vec<(WidgetId, RwSignal<bool>)>,
     /// The drag the held press makes, while it is held.
     drag: Option<interaction::DragState>,
+    /// The node that hears the hover of files from outside the window, until
+    /// the files leave it or the hover is cancelled.
+    file_hover: Option<WidgetId>,
     /// Whether a press was released without its release, so a primary
     /// release that arrives with no press held belongs to that press and
     /// reaches no handler. The next primary press clears it.
@@ -516,6 +519,7 @@ impl WidgetTree {
             modifiers: crate::input::Modifiers::default(),
             pointer_locks: Vec::new(),
             drag: None,
+            file_hover: None,
             released_early: false,
             focused: None,
             stale_focus: None,

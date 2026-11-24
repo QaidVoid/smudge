@@ -41,6 +41,7 @@ use std::any::TypeId;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::animation::Spring;
@@ -1855,6 +1856,46 @@ impl<W: Widget> Element<W> {
     /// character a drag that another node owns is over.
     pub fn on_drag_over(mut self, handler: impl FnMut(Point) + 'static) -> Self {
         self.handlers.on_drag_over = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
+    /// Runs `handler` while files from outside the window hover over the
+    /// node.
+    ///
+    /// It hears the files' paths when they enter the node and on every
+    /// report the platform makes while they stay over it, so a list of
+    /// files that grows reaches it too, and `None` when they leave it or
+    /// the drag that carries them is cancelled. The node that hears a hover
+    /// is the deepest one under the pointer that sets the handler, and a
+    /// hover moving from one node to another tells the first `None` before
+    /// it tells the second the paths. Like
+    /// [`on_drag_over`](Self::on_drag_over), it takes no
+    /// part in hit testing: setting it does not make the node respond to
+    /// the pointer.
+    ///
+    /// A drop ends the hover: the node hears `None` when a
+    /// [`InputEvent::FileDropped`](crate::input::InputEvent::FileDropped)
+    /// arrives, before its [`on_file_drop`](Self::on_file_drop)
+    /// hears the drop.
+    pub fn on_file_hover(mut self, handler: impl FnMut(Option<&[PathBuf]>) + 'static) -> Self {
+        let file = self.handlers.file.get_or_insert_with(Default::default);
+        file.hover = Some(Box::new(crate::hot::wrap1_opt_ref_mut(handler)));
+        self
+    }
+
+    /// Runs `handler` when files from outside the window are dropped on the
+    /// node.
+    ///
+    /// It hears the files' paths and the position relative to the top left
+    /// of the node's rectangle. The node that receives a drop is the deepest
+    /// one under the position that sets the handler, so a zone inside a zone
+    /// takes the drop and the one around it hears nothing. Like
+    /// [`on_drag_over`](Self::on_drag_over), it takes no
+    /// part in hit testing: setting it does not make the node respond to
+    /// the pointer.
+    pub fn on_file_drop(mut self, handler: impl FnMut(&[PathBuf], Point) + 'static) -> Self {
+        let file = self.handlers.file.get_or_insert_with(Default::default);
+        file.drop = Some(Box::new(crate::hot::wrap2_ref_mut(handler)));
         self
     }
 

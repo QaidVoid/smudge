@@ -242,6 +242,28 @@ pub fn wrap2_ref_mut<A: ?Sized, B, R, F: for<'a> FnMut(&'a A, B) -> R + 'static>
     }
 }
 
+/// Wraps a closure whose one argument carries a reference inside an
+/// `Option`, which the tree stores behind `Box<dyn FnMut(Option<&A>)>`, so
+/// a hot patch replaces its body.
+///
+/// This is the form of the file hover handler. With the `hot-reload`
+/// feature off, the closure comes back unchanged.
+#[inline(always)]
+pub fn wrap1_opt_ref_mut<A: ?Sized, R, F: for<'a> FnMut(Option<&'a A>) -> R + 'static>(
+    f: F,
+) -> impl for<'a> FnMut(Option<&'a A>) -> R + 'static {
+    #[cfg(all(feature = "hot-reload", target_os = "linux"))]
+    {
+        let mut f = f;
+        move |arg: Option<&A>| imp::call1_mut(imp::published(), &mut f, arg)
+    }
+
+    #[cfg(not(all(feature = "hot-reload", target_os = "linux")))]
+    {
+        f
+    }
+}
+
 /// Runs one step of a loop on a thread the application spawned itself,
 /// through the newest version a patch installed.
 ///
