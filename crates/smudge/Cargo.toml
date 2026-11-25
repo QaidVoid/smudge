@@ -58,5 +58,8 @@ devtools = ["window", "dep:smudge-devtools", "smudge-platform/_devtools"]
 # devtools show each patch as it lands.
 dev = ["devtools", "hot-reload"]
 
+[dev-dependencies]
+rfd = "0.17.2"
+
 [package.metadata.docs.rs]
 all-features = true
