@@ -57,6 +57,7 @@ export default defineConfig({
             { text: 'Widgets', link: '/guide/widgets' },
             { text: 'Data views', link: '/guide/data-views' },
             { text: 'Text and input', link: '/guide/text-and-input' },
+            { text: 'Drag and drop', link: '/guide/drag-and-drop' },
             { text: 'Markdown', link: '/guide/markdown' },
             { text: 'Dynamic content', link: '/guide/dynamic-content' },
           ],

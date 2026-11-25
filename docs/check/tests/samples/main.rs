@@ -10,6 +10,8 @@ mod data_views;
 #[rustfmt::skip]
 mod devtools;
 #[rustfmt::skip]
+mod drag_and_drop;
+#[rustfmt::skip]
 mod dynamic_content;
 #[rustfmt::skip]
 mod hot_reload;
