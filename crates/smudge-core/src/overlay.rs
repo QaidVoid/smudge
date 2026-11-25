@@ -378,25 +378,51 @@ impl WidgetTree {
     pub(crate) fn overlay_order(&mut self, host: WidgetId, layer: Layer) -> (u64, u8, u64) {
         self.overlay_count += 1;
         let opened = self.overlay_count;
-        let dialog = || {
-            let mut next = Some(host);
-            while let Some(id) = next {
-                if let Some(overlay) = self
-                    .overlays
-                    .iter()
-                    .find(|overlay| overlay.root == id && overlay.layer == Layer::Dialog)
-                {
-                    return overlay.order.0;
-                }
-                next = self.nodes.get(id).and_then(|node| node.parent);
-            }
-            0
-        };
         match layer {
             Layer::Dialog => (opened, 0, opened),
-            Layer::Tooltip => (dialog(), 2, opened),
+            Layer::Tooltip => (self.dialog_stack(host), 2, opened),
             Layer::Toast => (u64::MAX, 0, opened),
-            _ => (dialog(), 1, opened),
+            _ => (self.dialog_stack(host), 1, opened),
+        }
+    }
+
+    fn dialog_stack(&self, host: WidgetId) -> u64 {
+        let mut next = Some(host);
+        while let Some(id) = next {
+            if let Some(overlay) = self
+                .overlays
+                .iter()
+                .find(|overlay| overlay.root == id && overlay.layer == Layer::Dialog)
+            {
+                return overlay.order.0;
+            }
+            next = self.nodes.get(id).and_then(|node| node.parent);
+        }
+        0
+    }
+
+    pub(super) fn reparent_overlays(&mut self, subtree: WidgetId) {
+        let mut restacked = false;
+        for at in 0..self.overlays.len() {
+            let overlay = &self.overlays[at];
+            if !matches!(overlay.layer, Layer::Popup | Layer::Tooltip) {
+                continue;
+            }
+            let root = overlay.root;
+            let Some(host) = self.nodes.get(root).and_then(|node| node.parent) else {
+                continue;
+            };
+            if self.is_within(host, subtree) {
+                let dialog = self.dialog_stack(host);
+                if self.overlays[at].order.0 != dialog {
+                    self.queue_subtree_damage(root);
+                    self.overlays[at].order.0 = dialog;
+                    restacked = true;
+                }
+            }
+        }
+        if restacked {
+            self.overlays.sort_unstable_by_key(|overlay| overlay.order);
         }
     }
 

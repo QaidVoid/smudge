@@ -395,7 +395,11 @@ impl WidgetTree {
         new: Option<WidgetId>,
         removed: &[WidgetId],
     ) {
-        let before = self.lineage(old);
+        let before = self
+            .retained
+            .focus_before
+            .take()
+            .unwrap_or_else(|| self.lineage(old));
         let after = self.lineage(new);
         let left = before
             .iter()

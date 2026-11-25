@@ -304,8 +304,11 @@ pub(crate) struct DragState {
     /// The deepest node the press began over, whose nearest scrolling
     /// ancestor gives the area a drag-over falls back to.
     origin: Option<WidgetId>,
-    /// The visible area of that node when the press began, the fallback for
-    /// an origin that went away.
+    /// The deepest surviving pointer ancestor of the original hit, used to
+    /// keep drag observers within its ancestry when content moves.
+    pub(super) observer_origin: Option<WidgetId>,
+    /// The visible area of the original hit when the press began, the
+    /// fallback for an origin that went away.
     origin_clip: Rect,
     /// The nodes that hear the drag, deepest first: those that set `on_drag`
     /// and whose rectangle held the point the press began at.
@@ -1089,7 +1092,7 @@ impl WidgetTree {
     ///
     /// A stale id, which a removed node can leave behind, ends the chain
     /// there.
-    fn chain(&self, target: Option<WidgetId>) -> Vec<WidgetId> {
+    pub(super) fn chain(&self, target: Option<WidgetId>) -> Vec<WidgetId> {
         let mut chain = Vec::new();
         let mut next = target;
         while let Some(id) = next {
@@ -1121,10 +1124,14 @@ impl WidgetTree {
     /// with `false` before the nodes that join it are set and hear `on_hover`
     /// with `true`.
     pub(super) fn set_hover_target(&mut self, target: Option<WidgetId>) {
-        if target == self.hovered {
+        if target == self.hovered && self.retained.hover_before.is_none() {
             return;
         }
-        let old = self.chain(self.hovered);
+        let old = self
+            .retained
+            .hover_before
+            .take()
+            .unwrap_or_else(|| self.chain(self.hovered));
         let mut new = self.chain(target);
         new.retain(|&id| {
             self.nodes
@@ -1328,6 +1335,7 @@ impl WidgetTree {
             .collect();
         self.drag = Some(DragState {
             origin,
+            observer_origin: origin,
             origin_clip,
             observers,
             last_over: None,
@@ -1343,6 +1351,37 @@ impl WidgetTree {
         for id in drag.observers {
             self.run_drag(id, Drag::Ended);
         }
+    }
+
+    pub(super) fn retain_drag_observer_origin(&mut self, removed: &[WidgetId]) {
+        let Some(origin) = self.drag.as_ref().and_then(|drag| drag.observer_origin) else {
+            return;
+        };
+        if removed.contains(&origin) {
+            let surviving = self
+                .chain(Some(origin))
+                .into_iter()
+                .find(|id| !removed.contains(id));
+            if let Some(drag) = &mut self.drag {
+                drag.observer_origin = surviving;
+            }
+        }
+    }
+
+    pub(super) fn finish_drag_move(&mut self) {
+        let Some(mut drag) = self.drag.take() else {
+            return;
+        };
+        let chain = self.chain(drag.observer_origin);
+        drag.observers.retain(|&id| {
+            if chain.contains(&id) {
+                true
+            } else {
+                self.run_drag(id, Drag::Ended);
+                false
+            }
+        });
+        self.drag = Some(drag);
     }
 
     /// Runs `on_drag` of the observers of the held drag with the move to

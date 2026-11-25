@@ -513,6 +513,7 @@ impl App {
                 .with(|| mount(build().into_any(), &mut self.tree, &self.queue, None));
             self.queue.apply(&mut self.tree);
         }
+        self.tree.finish_kept_moves();
         let focus_restored = focus.is_some_and(|path| self.tree.restore_focus(&path));
         // Input that arrives before the next frame hits the new tree, so it
         // is laid out now, and that frame lays it out again after its flush.
@@ -1309,6 +1310,7 @@ impl App {
         // the accessibility update its repaint asked for. Exits that ended
         // at the last paint are removed first.
         self.tree.finish_exits();
+        self.tree.finish_kept_moves();
         self.tree.queue_animations();
 
         let layout_start = Instant::now();

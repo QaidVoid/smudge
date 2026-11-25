@@ -101,6 +101,7 @@ impl WidgetTree {
         let focus_before = self.focused;
         let ran = match self.layout_pass(viewport) {
             Some(rects_changed) => {
+                let rects_changed = std::mem::take(&mut self.retained.moved) || rects_changed;
                 // A trap that showed records the focus before an autofocus
                 // inside it moves the focus in, and a trap that hid gives the
                 // focus back.
@@ -116,7 +117,14 @@ impl WidgetTree {
                 // move. The chain is rebuilt from the last pointer position,
                 // unless a held press or a drag in the air keeps the hover
                 // where it is.
-                if rects_changed && self.pointer_inside && !self.holds_pointer() {
+                if self.retained.hover_before.is_some() && !self.holds_pointer() {
+                    if self.pointer_inside {
+                        self.refresh_hover();
+                        self.set_hover_target(self.hovered);
+                    } else {
+                        self.set_hover_target(None);
+                    }
+                } else if rects_changed && self.pointer_inside && !self.holds_pointer() {
                     self.refresh_hover();
                 }
                 // A pinned child goes back to its place with the sizes this
@@ -765,6 +773,9 @@ impl WidgetTree {
     /// ancestor outside the subtree that the rule keeps hovered keeps the
     /// hover alone.
     pub(super) fn refresh_hover(&mut self) {
+        if self.retained.applying_updates && self.retained.hover_before.is_some() {
+            return;
+        }
         let target = self.hover_target(self.pointer);
         if target == self.hovered {
             return;

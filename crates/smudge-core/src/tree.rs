@@ -41,6 +41,8 @@ mod layout;
 pub(crate) mod overlay;
 #[path = "paint_pass.rs"]
 mod paint_pass;
+#[path = "retained.rs"]
+mod retained;
 #[cfg(feature = "devtools")]
 #[path = "tree_inspect.rs"]
 mod tree_inspect;
@@ -356,6 +358,8 @@ pub(crate) struct WidgetTree {
     taffy: taffy::TaffyTree<WidgetId>,
     /// The root node, when the tree has one.
     root: Option<WidgetId>,
+    /// Keyed panels whose mount outlives a placement.
+    retained: retained::Retained,
     /// The overlays, in the order they draw, bottom first, as
     /// [`overlay::Layer`] orders them.
     overlays: Vec<overlay::Overlay>,
@@ -506,6 +510,7 @@ impl WidgetTree {
             nodes: SlotMap::with_key(),
             taffy: taffy::TaffyTree::new(),
             root: None,
+            retained: retained::Retained::default(),
             overlays: Vec::new(),
             overlay_count: 0,
             paint_queue: Vec::new(),
@@ -743,6 +748,10 @@ impl WidgetTree {
     /// layout. A removed node loses the focus and the press capture. A stale
     /// id does nothing.
     pub(crate) fn remove(&mut self, id: WidgetId) {
+        self.remove_subtree(id, true);
+    }
+
+    fn remove_subtree(&mut self, id: WidgetId, park_kept: bool) {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
@@ -764,6 +773,10 @@ impl WidgetTree {
         let mut stack = vec![id];
         loop {
             while let Some(current) = stack.pop() {
+                if park_kept && current != id && self.kept_root(current) {
+                    self.park_kept_child(current);
+                    continue;
+                }
                 order.push(current);
                 if let Some(node) = self.nodes.get(current) {
                     stack.extend(node.children.iter().copied());
@@ -806,6 +819,7 @@ impl WidgetTree {
             .filter(|restore| !order.contains(restore));
         self.overlays
             .retain(|overlay| !order.contains(&overlay.root));
+        self.retain_drag_observer_origin(&order);
         self.end_holds_of(&order);
         if let Some(focused) = self.focused.filter(|focused| order.contains(focused)) {
             self.focused = None;
@@ -848,6 +862,7 @@ impl WidgetTree {
             if let Some(exit) = exit {
                 exit.owner.cleanup();
             }
+            self.forget_kept_node(current);
             if let Some(painted) = painted {
                 self.pending_damage.push(painted);
             }
@@ -889,8 +904,9 @@ impl WidgetTree {
     pub(crate) fn unmount_root(&mut self) {
         self.release_press();
         if let Some(root) = self.root {
-            self.remove(root);
+            self.remove_subtree(root, false);
         }
+        self.finish_kept_moves();
         self.hovered = None;
         self.a11y_dirty.clear();
         self.a11y_reset = true;
@@ -979,6 +995,90 @@ impl WidgetTree {
         }
         self.nodes.get_mut(id).expect("the node is live").taffy = taffy;
         self.mark(id, Dirty::Layout);
+    }
+
+    /// Moves a normal subtree to `index` in `new_parent`'s final child list.
+    /// The widget IDs and owners are retained. A stale ID, a cycle, an
+    /// overlay root or an index outside the final list does nothing.
+    pub(crate) fn move_subtree(&mut self, id: WidgetId, new_parent: WidgetId, index: usize) {
+        let Some(parent) = self.nodes.get(new_parent) else {
+            return;
+        };
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        let same_parent = node.parent == Some(new_parent);
+        if Some(id) == self.root
+            || self.is_overlay_root(id)
+            || self.is_within(new_parent, id)
+            || index >= parent.children.len() + usize::from(!same_parent)
+            || (same_parent && parent.children.get(index) == Some(&id))
+        {
+            return;
+        }
+
+        self.remember_move(id);
+        self.detach_moved_child(id);
+        let parent = &mut self.nodes[new_parent];
+        parent.children.insert(index, id);
+        let parent_taffy = parent.taffy;
+        let node = &mut self.nodes[id];
+        node.parent = Some(new_parent);
+        let taffy = node.taffy;
+        self.taffy
+            .insert_child_at_index(parent_taffy, index, taffy)
+            .expect("the parent and child are live and the index fits");
+        self.taffy
+            .mark_dirty(taffy)
+            .expect("the moved layout node is live");
+        self.mark(new_parent, Dirty::Layout);
+        self.push_a11y(new_parent);
+        self.push_a11y_visible_subtree(id);
+        self.reparent_overlays(id);
+        self.retry_pending_kept_placements(id);
+    }
+
+    /// Detaches a normal child for reattachment and records its painted area
+    /// and the layout entries that the old ancestors can no longer hoist.
+    fn detach_moved_child(&mut self, id: WidgetId) {
+        let Some(parent) = self.nodes[id].parent else {
+            return;
+        };
+        let child_taffy = self.nodes[id].taffy;
+        let parent_node = &mut self.nodes[parent];
+        parent_node.children.retain(|&child| child != id);
+        self.taffy
+            .remove_child(parent_node.taffy, child_taffy)
+            .expect("the live layout child belongs to the old parent");
+        self.nodes[id].parent = None;
+
+        self.queue_subtree_damage(id);
+        self.drop_moved_hoist(parent, child_taffy);
+        self.mark(parent, Dirty::Layout);
+        self.push_a11y(parent);
+    }
+
+    /// Clears a moved layout node from its old containing block. Every
+    /// ancestor is itself a containing block, so only the old parent's
+    /// hoisted list can name the child. A recreated parent can leave the
+    /// same stale link in the block above it.
+    fn drop_moved_hoist(&mut self, parent: WidgetId, child: taffy::NodeId) {
+        let mut ancestor = Some(parent);
+        let mut departed = child;
+        while let Some(id) = ancestor {
+            let node = &self.nodes[id];
+            if !self
+                .taffy
+                .hoisted_children(node.taffy)
+                .expect("every widget node has a live layout node")
+                .contains(&departed)
+            {
+                break;
+            }
+            ancestor = node.parent;
+            departed = node.taffy;
+            self.recreate_layout_node(id);
+        }
     }
 
     /// Reorders the children of `id` to `children` and marks the node for
@@ -1147,6 +1247,7 @@ impl WidgetTree {
         if self
             .pressed
             .is_some_and(|pressed| self.is_within(pressed, id))
+            && !self.defer_kept_press_release()
         {
             self.release_press();
         }
@@ -1162,8 +1263,8 @@ impl WidgetTree {
         if let Some(parent) = parent {
             self.push_a11y(parent);
         }
-        self.drop_invalid_focus();
-        if self.pointer_inside && !self.holds_pointer() {
+        self.drop_focus_after_kept_moves();
+        if self.pointer_inside && !self.holds_pointer() && !self.defer_kept_hover(id) {
             self.refresh_hover();
         }
         Ok(())
@@ -1184,6 +1285,7 @@ impl WidgetTree {
         // the fade and its layout pass resolves the focus traps.
         self.mark(id, Dirty::Layout);
         self.push_a11y_visible_subtree(id);
+        self.resume_kept_placements(id);
         if let Some(parent) = parent {
             self.push_a11y(parent);
         }
@@ -1371,7 +1473,7 @@ impl WidgetTree {
             self.mark(id, Dirty::Paint);
         }
         if became_hidden {
-            self.drop_invalid_focus();
+            self.drop_focus_after_kept_moves();
         }
         if (became_hidden || became_visible)
             && let Some(parent) = self.nodes.get(id).and_then(|node| node.parent)

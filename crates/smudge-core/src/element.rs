@@ -65,6 +65,11 @@ use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::variants::{PatchBuilder, StylePatch, Variants};
 use crate::widget::{PaintCx, Widget};
 
+mod keep_alive;
+
+pub use keep_alive::KeepAlive;
+pub(crate) use keep_alive::{KeptContent, KeptPlacement};
+
 /// One change to the widget tree, applied by the frame's apply step.
 pub(crate) type Update = Box<dyn FnOnce(&mut WidgetTree)>;
 
@@ -91,10 +96,12 @@ impl UpdateQueue {
     /// bindings run. Those run after the updates that were already waiting, in
     /// the same call, so one call settles everything the queue holds.
     pub(crate) fn apply(&self, tree: &mut WidgetTree) -> bool {
+        tree.set_applying_updates(true);
         let mut applied = false;
         loop {
             let next = self.0.borrow_mut().pop_front();
             let Some(update) = next else {
+                tree.set_applying_updates(false);
                 return applied;
             };
             applied = true;

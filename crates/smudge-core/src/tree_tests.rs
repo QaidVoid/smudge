@@ -74,6 +74,97 @@ fn removing_an_absolute_child_keeps_its_parent_in_the_layout_tree() {
 }
 
 #[test]
+fn an_absolute_child_moves_into_its_new_containing_block() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), Style::default());
+    let mut holder = Style::default();
+    holder.layout.width = Length::px(20.0);
+    let first = tree.insert(Some(root), Box::new(Empty), holder.clone());
+    let second = tree.insert(Some(root), Box::new(Empty), holder);
+    let mut absolute = Style::default();
+    absolute.layout.position = Position::Absolute;
+    absolute.layout.inset.left = Length::px(3.0);
+    absolute.layout.width = Length::px(4.0);
+    let child = tree.insert(Some(first), Box::new(Empty), absolute);
+
+    let viewport = Size {
+        width: 100.0,
+        height: 80.0,
+    };
+    assert!(tree.layout(viewport));
+    assert_eq!(tree.rect(child).map(|rect| rect.x0), Some(3.0));
+
+    tree.move_subtree(child, second, 0);
+    assert!(tree.layout(viewport));
+    assert_eq!(tree.rect(child).map(|rect| rect.x0), Some(23.0));
+    tree.remove(child);
+    assert!(tree.layout(viewport));
+    assert_eq!(tree.rect(second).map(|rect| rect.x0), Some(20.0));
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn moving_within_a_parent_uses_the_final_child_index() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), Style::default());
+    let mut style = Style::default();
+    style.layout.width = Length::px(10.0);
+    let first = tree.insert(Some(root), Box::new(Empty), style.clone());
+    let second = tree.insert(Some(root), Box::new(Empty), style.clone());
+    let third = tree.insert(Some(root), Box::new(Empty), style);
+    let viewport = Size {
+        width: 100.0,
+        height: 80.0,
+    };
+    tree.layout(viewport);
+
+    tree.move_subtree(first, root, 2);
+    tree.layout(viewport);
+    assert_eq!(tree.rect(second).map(|rect| rect.x0), Some(0.0));
+    assert_eq!(tree.rect(third).map(|rect| rect.x0), Some(10.0));
+    assert_eq!(tree.rect(first).map(|rect| rect.x0), Some(20.0));
+
+    tree.move_subtree(first, root, 0);
+    tree.layout(viewport);
+    assert_eq!(tree.rect(first).map(|rect| rect.x0), Some(0.0));
+    assert_eq!(tree.rect(second).map(|rect| rect.x0), Some(10.0));
+    assert_eq!(tree.rect(third).map(|rect| rect.x0), Some(20.0));
+    tree.debug_assert_consistent();
+}
+
+#[test]
+fn invalid_moves_leave_the_layout_unchanged() {
+    let mut tree = WidgetTree::new();
+    let root = tree.insert(None, Box::new(Empty), Style::default());
+    let mut style = Style::default();
+    style.layout.width = Length::px(10.0);
+    let first = tree.insert(Some(root), Box::new(Empty), style.clone());
+    let second = tree.insert(Some(root), Box::new(Empty), style.clone());
+    let stale = tree.insert(Some(root), Box::new(Empty), style);
+    tree.remove(stale);
+    let viewport = Size {
+        width: 100.0,
+        height: 80.0,
+    };
+    tree.layout(viewport);
+    let before = [root, first, second].map(|id| tree.rect(id));
+
+    for (child, parent, index) in [
+        (root, first, 0),
+        (first, first, 0),
+        (first, root, 2),
+        (first, stale, 0),
+        (stale, root, 0),
+        (first, root, 0),
+    ] {
+        tree.move_subtree(child, parent, index);
+        tree.layout(viewport);
+        assert_eq!([root, first, second].map(|id| tree.rect(id)), before);
+        tree.debug_assert_consistent();
+    }
+}
+
+#[test]
 fn removing_a_subtree_removes_every_descendant() {
     let mut tree = WidgetTree::new();
     let root = tree.insert(None, Box::new(Empty), Style::default());
