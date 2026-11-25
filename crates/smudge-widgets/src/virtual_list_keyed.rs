@@ -15,17 +15,19 @@
 //! anchor, the list recomputes its scroll offset from the anchor, so the
 //! content in view does not jump.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
 use smudge_core::element::{Element, IntoElement, for_each};
+use smudge_core::input::{Handled, Key, KeyEvent};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{Memo, Owner, RenderEffect, RwSignal, prelude::*};
-use smudge_core::semantics::Role;
-use smudge_core::style::{Length, px};
-use smudge_core::widget::{PaintCx, Widget, panel};
+use smudge_core::semantics::{Announcer, Politeness, Role};
+use smudge_core::style::{Edges, Length, px};
+use smudge_core::theme::ColorToken;
+use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 
 use crate::height_index::HeightIndex;
 use crate::scroll::{ScrollExt, ScrollView, scroll_with_visible_height};
@@ -33,6 +35,9 @@ use crate::scroll::{ScrollExt, ScrollView, scroll_with_visible_height};
 /// The rows mounted above and below the viewport, so a small scroll shows
 /// content in the frame before the mount follows it.
 const OVERSCAN: usize = 4;
+
+/// The thickness of the drop indicator line, in logical pixels.
+const DROP_INDICATOR: f32 = 2.0;
 
 /// The fewest rows the window cap allows, before the overscan.
 ///
@@ -189,7 +194,7 @@ pub fn virtual_list_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoEle
     estimate: f32,
     row: impl Fn(&T) -> E + 'static,
 ) -> Element<ScrollView> {
-    keyed(items, key, estimate, row, true, None)
+    keyed(items, key, estimate, row, true, None, None)
 }
 
 /// A scroll view that mounts only the rows near its viewport, as
@@ -228,7 +233,7 @@ pub fn virtual_column_keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoE
     estimate: f32,
     row: impl Fn(&T) -> E + 'static,
 ) -> Element<ScrollView> {
-    keyed(items, key, estimate, row, false, None)
+    keyed(items, key, estimate, row, false, None, None)
 }
 
 /// Builds a keyed virtual column, reported as a list with its items when
@@ -245,6 +250,12 @@ pub(crate) fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
     // wraps the list, such as the table, drives and reads them; the list
     // makes its own when the caller leaves them out.
     shared: Option<(RwSignal<f32>, RwSignal<Option<f32>>)>,
+    // The key a caller asks the view to bring into the viewport, such as
+    // the row a keyboard move just moved far away. The view aims the offset
+    // at it before the window is computed, so the row mounts and keeps
+    // whatever state, the focus included, it had, and the signal clears
+    // once the request is spent.
+    reveal: Option<RwSignal<Option<K>>>,
 ) -> Element<ScrollView> {
     let estimate = if estimate.is_finite() && estimate > 0.0 {
         estimate
@@ -450,6 +461,25 @@ pub(crate) fn keyed<T: 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
                     {
                         let flowed_end = state.index.offset_of(at + 1);
                         wanted = (flowed_end - viewport).max(0.0) - from_end;
+                    }
+                }
+                if let Some(reveal) = &reveal {
+                    let reveal_key = reveal.get();
+                    if let Some(reveal_key) = reveal_key.filter(|_| !state.index.is_empty()) {
+                        reveal.set(None);
+                        if let (Some(at), Some(viewport)) =
+                            (state.index.position(&reveal_key), viewport)
+                        {
+                            let top = state.index.offset_of(at);
+                            let bottom = state.index.offset_of(at + 1);
+                            wanted = if top < wanted {
+                                top
+                            } else if bottom > wanted + viewport {
+                                bottom - viewport
+                            } else {
+                                wanted
+                            };
+                        }
                     }
                 }
             }
@@ -723,6 +753,325 @@ fn window_range<K: Eq + Hash + Clone>(
         .min(index.len() - 1)
         .min(start.saturating_add(window_cap(viewport) - 1));
     (start, end)
+}
+
+/// A keyed virtual list whose rows the user reorders by dragging one onto
+/// another, or by pressing Alt with an arrow key while a row holds the
+/// focus.
+///
+/// It wraps [`virtual_list_keyed`] and keeps that list's every behaviour:
+/// rows mount near the viewport, keep their measured heights across edits,
+/// and survive a move unmounted-by-nothing, because the move writes the new
+/// order to `items` once and the rows are keyed, so the moved row changes
+/// place while every other row keeps its widget and its state.
+///
+/// While a row drags, a line in the [`ColorToken::ACCENT`] token marks
+/// where it would land, between the row the pointer is over and its
+/// neighbour. Releasing the press moves the dragged item there; releasing
+/// anywhere else, or pressing Escape, cancels the move. With the focus on a
+/// row, Alt+Up and Alt+Down move it one place, and Alt+Home and Alt+End
+/// move it to the start and the end, the view following so the moved row
+/// stays mounted and keeps the focus. Every move announces where the row
+/// went, as "Moved to position 3 of 12", through an announcer this list
+/// attaches to itself.
+///
+/// Each row is a drag source whose payload is the row's key tagged with an
+/// identity of this list, and a drop target that accepts only payloads of
+/// its own list, so the rows of two reorderable lists never move items
+/// into each other, even when both hold the same keys.
+///
+/// The items live in a `RwSignal<Vec<T>>`, so a move can write the new
+/// order back: every edit hands the list a fresh `Vec`, the way a plain
+/// `RwSignal<Vec<T>>` read does anyway.
+///
+/// ```
+/// use std::rc::Rc;
+///
+/// use smudge_core::reactive::{RwSignal, prelude::*};
+/// use smudge_core::style::px;
+/// use smudge_text::label;
+/// use smudge_widgets::reorderable_list;
+///
+/// let playlist: RwSignal<Vec<u32>> = RwSignal::new(vec![1, 2, 3]);
+/// let list = reorderable_list(
+///     playlist,
+///     |track| *track,
+///     48.0,
+///     |track| label(format!("Track {track}")),
+/// )
+/// .height(px(480.0));
+/// ```
+#[track_caller]
+pub fn reorderable_list<T: Clone + 'static, K: Eq + Hash + Clone + 'static, E: IntoElement>(
+    items: RwSignal<Vec<T>>,
+    key: impl Fn(&T) -> K + 'static,
+    estimate: f32,
+    row: impl Fn(&T) -> E + 'static,
+) -> Element<ScrollView> {
+    let key = Rc::new(smudge_core::hot::wrap1_ref(key));
+    let row = Rc::new(smudge_core::hot::wrap1_ref(row));
+    // Two lists whose key spaces overlap must still refuse each other's
+    // drags, so every payload of this list carries an identity only this
+    // list's rows build.
+    let identity = Rc::new(());
+    // Where a drag of this list would land: the key of the row the pointer
+    // hovers and whether it would land after that row. `None` while no drag
+    // hovers the list, which hides both line halves of every row.
+    let slot: RwSignal<Option<(K, bool)>> = crate::signal(None);
+    // The hover the row under the pointer reported last. A plain press
+    // writes it too, before its drag grows a payload, so the row keeps it
+    // out of the reactive `slot` until a target's `accepts` hears the
+    // payload, which only a drag that left its source reaches.
+    let hover: Rc<RefCell<Option<(K, bool)>>> = Rc::new(RefCell::new(None));
+    // The row a keyboard move just sent out of the viewport, which the
+    // list asks the view to bring back so the row stays mounted and keeps
+    // the focus.
+    let reveal: RwSignal<Option<K>> = crate::signal(None);
+    // An edit to the items can remove the row a drag flies from, whose
+    // drag end then runs nowhere and would leave the last line lit. The
+    // watch clears whatever a drag left behind whenever the items change.
+    let watch_items = items.clone();
+    let watch_slot = slot.clone();
+    let watch_hover = Rc::clone(&hover);
+    RenderEffect::new(move || {
+        watch_items.with(|_| ());
+        if watch_slot.read(|current| current.is_some()) {
+            watch_slot.set(None);
+        }
+        *watch_hover.borrow_mut() = None;
+    });
+    let announcer = Announcer::new();
+
+    let list = {
+        let view_items = items.clone();
+        let view_key = Rc::clone(&key);
+        let row_items = items.clone();
+        let row_key = Rc::clone(&key);
+        let row_row = Rc::clone(&row);
+        let row_slot = slot.clone();
+        let row_hover = Rc::clone(&hover);
+        let row_reveal = reveal.clone();
+        let row_announcer = announcer.clone();
+        let row_identity = Rc::clone(&identity);
+        keyed(
+            move || Rc::from(view_items.get().as_slice()),
+            move |item| view_key(item),
+            estimate,
+            move |item| {
+                let items = row_items.clone();
+                let slot = row_slot.clone();
+                let hover = Rc::clone(&row_hover);
+                let reveal = row_reveal.clone();
+                let announcer = row_announcer.clone();
+                let key = Rc::clone(&row_key);
+                let row = Rc::clone(&row_row);
+                let identity = Rc::clone(&row_identity);
+                let my_key = key(item);
+                let height = Rc::new(Cell::new(f32::INFINITY));
+                let report_height = Rc::clone(&height);
+                Element::new(MeasureRow {
+                    report: Rc::new(move |measured| report_height.set(measured.max(0.0))),
+                })
+                .column()
+                .shrink(0.0)
+                .role(Role::Group)
+                .child(row(item))
+                .child(drop_line(&slot, &my_key, false))
+                .child(drop_line(&slot, &my_key, true))
+                .drag_source({
+                    let identity = Rc::clone(&identity);
+                    let my_key = my_key.clone();
+                    move || (Rc::clone(&identity), my_key.clone())
+                })
+                .drop_target(
+                    {
+                        let items = items.clone();
+                        let key = Rc::clone(&key);
+                        let slot = slot.clone();
+                        let hover = Rc::clone(&hover);
+                        let identity = Rc::clone(&identity);
+                        move |payload: &(Rc<()>, K)| {
+                            // A drag from another list never lands here,
+                            // whatever its keys say.
+                            if !Rc::ptr_eq(&payload.0, &identity) {
+                                return false;
+                            }
+                            let member =
+                                items.read(|list| list.iter().any(|item| key(item) == payload.1));
+                            if !member {
+                                return false;
+                            }
+                            // The landing needs a hovered row that still
+                            // exists, and hovering the dragged row itself
+                            // marks a landing on itself, which moves
+                            // nothing and would light a line for a move
+                            // that never happens.
+                            let landed = hover.borrow().clone();
+                            let live = landed.as_ref().is_some_and(|(edge, _)| {
+                                *edge != payload.1
+                                    && items.read(|list| list.iter().any(|item| key(item) == *edge))
+                            });
+                            if live && slot.read(|current| *current != landed) {
+                                slot.set(landed);
+                            }
+                            live
+                        }
+                    },
+                    {
+                        let items = items.clone();
+                        let key = Rc::clone(&key);
+                        let announcer = announcer.clone();
+                        let my_key = my_key.clone();
+                        let height = Rc::clone(&height);
+                        move |payload: (Rc<()>, K), at| {
+                            // The edge comes from the release position the
+                            // core hands over, not from the last hover,
+                            // which can trail a fast pointer.
+                            let after = at.y * 2.0 > height.get();
+                            let target = items.read(|list| {
+                                let from = list.iter().position(|item| key(item) == payload.1)?;
+                                let mut to = list.iter().position(|item| key(item) == my_key)?;
+                                if after {
+                                    to += 1;
+                                }
+                                // Removing the dragged item first shifts every
+                                // position after it one place up.
+                                if to > from {
+                                    to -= 1;
+                                }
+                                Some((from, to))
+                            });
+                            let Some((from, to)) = target else {
+                                return;
+                            };
+                            if from == to {
+                                return;
+                            }
+                            items.update(|list| {
+                                let item = list.remove(from);
+                                list.insert(to, item);
+                            });
+                            let count = items.read(|list| list.len());
+                            announcer.announce(
+                                format!("Moved to position {} of {}", to + 1, count),
+                                Politeness::Polite,
+                            );
+                        }
+                    },
+                )
+                .on_drag_over({
+                    let hover = Rc::clone(&hover);
+                    let my_key = my_key.clone();
+                    move |at| {
+                        let after = at.y * 2.0 > height.get();
+                        *hover.borrow_mut() = Some((my_key.clone(), after));
+                    }
+                })
+                .on_drag_end({
+                    let slot = slot.clone();
+                    let hover = Rc::clone(&hover);
+                    move |_delivered| {
+                        slot.set(None);
+                        *hover.borrow_mut() = None;
+                    }
+                })
+                .on_key({
+                    let items = items.clone();
+                    let key = Rc::clone(&key);
+                    let my_key = my_key.clone();
+                    let reveal = reveal.clone();
+                    let announcer = announcer.clone();
+                    move |event: &KeyEvent| {
+                        if !event.pressed || !event.modifiers.alt {
+                            return Handled::No;
+                        }
+                        let here = items.read(|list| {
+                            list.iter()
+                                .position(|item| key(item) == my_key)
+                                .map(|from| (from, list.len()))
+                        });
+                        let Some((from, count)) = here else {
+                            return Handled::No;
+                        };
+                        let last = count - 1;
+                        let move_to = match event.key {
+                            Key::ArrowUp if from > 0 => Some(from - 1),
+                            Key::ArrowDown if from < last => Some(from + 1),
+                            Key::Home if from > 0 => Some(0),
+                            Key::End if from < last => Some(last),
+                            // The row sits at the edge the key asks to cross.
+                            // The list takes the key, so the scroll view does
+                            // not also read it as a scroll.
+                            Key::ArrowUp | Key::ArrowDown | Key::Home | Key::End => None,
+                            _ => return Handled::No,
+                        };
+                        let Some(to) = move_to else {
+                            return Handled::Yes;
+                        };
+                        items.update(|list| {
+                            let item = list.remove(from);
+                            list.insert(to, item);
+                        });
+                        // The moved row can land far outside the viewport,
+                        // where the view would unmount it and drop the
+                        // focus. The view aims itself at the row again.
+                        reveal.set(Some(my_key.clone()));
+                        announcer.announce(
+                            format!("Moved to position {} of {}", to + 1, count),
+                            Politeness::Polite,
+                        );
+                        Handled::Yes
+                    }
+                })
+            },
+            true,
+            None,
+            Some(reveal.clone()),
+        )
+    };
+    list.on_drag_over({
+        let slot = slot.clone();
+        let hover = Rc::clone(&hover);
+        move |_at| {
+            // The rows' own handlers sit deeper in the hit chain, so this
+            // runs only while no row is under the pointer, where no
+            // landing is.
+            *hover.borrow_mut() = None;
+            if slot.read(|current| current.is_some()) {
+                slot.set(None);
+            }
+        }
+    })
+    .announcer(&announcer)
+}
+
+/// Builds the line one row draws at its top or bottom edge while a drag of
+/// the list would land there.
+///
+/// The line hangs out of flow over the row's edge, so showing it never moves
+/// the rows, and it hides again as soon as the drag would land elsewhere.
+fn drop_line<K: Eq + Clone + 'static>(
+    slot: &RwSignal<Option<(K, bool)>>,
+    key: &K,
+    after: bool,
+) -> Element<Panel> {
+    let slot = slot.clone();
+    let key = key.clone();
+    panel()
+        .height(px(DROP_INDICATOR))
+        .background(ColorToken::ACCENT)
+        .absolute()
+        .inset(Edges {
+            top: if after { Length::Auto } else { Length::px(0.0) },
+            bottom: if after { Length::px(0.0) } else { Length::Auto },
+            left: Length::px(0.0),
+            right: Length::px(0.0),
+        })
+        .hidden(move || {
+            !slot
+                .get()
+                .is_some_and(|(hovered, landed_after)| landed_after == after && hovered == key)
+        })
 }
 
 /// A row wrapper that reports its laid-out height when it paints, the way the

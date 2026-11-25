@@ -377,6 +377,7 @@ where
         rows,
         false,
         None,
+        None,
     )
     .grow(1.0);
 

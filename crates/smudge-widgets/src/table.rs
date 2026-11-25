@@ -394,6 +394,7 @@ where
         },
         false,
         Some((offset.clone(), visible.clone())),
+        None,
     )
     // The body's list fills the view it sits in: the view stretches its
     // content box to its own height, so the list keeps the vertical scroll

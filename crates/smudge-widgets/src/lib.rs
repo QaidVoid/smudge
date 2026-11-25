@@ -72,7 +72,7 @@ pub use tabs::{Tabs, tabs};
 pub use toasts::{MAX_TOASTS, TOAST_DURATION, Toasts, toast_host};
 pub use tree_view::{TreeView, tree_view};
 pub use virtual_list::virtual_list;
-pub use virtual_list_keyed::{virtual_column_keyed, virtual_list_keyed};
+pub use virtual_list_keyed::{reorderable_list, virtual_column_keyed, virtual_list_keyed};
 
 /// Creates a signal the library keeps for itself, such as a widget's own
 /// state.
