@@ -6,6 +6,12 @@
 //! `wl_data_device` beside whatever the windowing library holds: both hear
 //! the drags, and the windowing library's, which has none, ignores them.
 //!
+//! A reading thread follows the shared socket and wakes the loop for every
+//! read. The windowing library reads the socket whenever it turns
+//! readable, but it skips its dispatch iteration, whose about-to-wait
+//! polls this client, when its own queue heard nothing of the bytes: a
+//! drag's events would sit until the pointer returned.
+//!
 //! The compositor names the dragged files only at the drop, so a hover
 //! reports no paths and the drop carries them. One window runs per client
 //! here, so a drag over any surface of the client is a drag over the
@@ -19,14 +25,16 @@ use std::ffi::c_void;
 use std::io::{ErrorKind, PipeReader, Read};
 use std::os::fd::AsFd;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
 use smudge_core::geometry::Point;
 use smudge_core::input::InputEvent;
-use wayland_client::backend::Backend;
+use wayland_client::backend::{Backend, WaylandError};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{
     wl_data_device, wl_data_device_manager, wl_data_offer, wl_registry, wl_seat,
@@ -42,6 +50,10 @@ const URI_LIST_MIME: &str = "text/uri-list";
 /// Reading blocks the UI thread, so a source that never answers costs at
 /// most this long.
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How long the reading thread waits on the socket before it checks whether
+/// its client still lives.
+const READ_POLL: Duration = Duration::from_millis(200);
 
 /// The size of each read from the pipe a drop receives its list through.
 const READ_CHUNK: usize = 16 * 1024;
@@ -61,13 +73,15 @@ const MANAGER_VERSION: u32 = 3;
 const SEAT_VERSION: u32 = 5;
 
 /// Opens the drag-and-drop client of a Wayland window, or `None` when the
-/// display is not Wayland or the compositor offers no data device manager
-/// of the version this client needs.
-pub(crate) fn open_for_window(window: &impl HasDisplayHandle) -> Option<WaylandDnd> {
+/// client cannot start, as [`WaylandDnd::open`] documents.
+pub(crate) fn open_for_window(
+    window: &impl HasDisplayHandle,
+    wake: impl Fn() + Send + Sync + 'static,
+) -> Option<WaylandDnd> {
     let RawDisplayHandle::Wayland(handle) = window.display_handle().ok()?.as_raw() else {
         return None;
     };
-    WaylandDnd::open(handle.display.as_ptr())
+    WaylandDnd::open(handle.display.as_ptr(), wake)
 }
 
 /// The drag-and-drop client of one window.
@@ -78,16 +92,28 @@ pub(crate) struct WaylandDnd {
     /// The queue the data device events land in, beside the windowing
     /// library's own.
     queue: EventQueue<DndState>,
+    /// The state the data device events reach, on the main thread only.
     state: DndState,
+    /// Set when the client drops, so the reading thread stops.
+    stop: Arc<AtomicBool>,
+    /// The reading thread, joined on drop. Open fails when the thread
+    /// cannot spawn, so this is always some.
+    reader: Option<JoinHandle<()>>,
 }
 
 impl WaylandDnd {
     /// Adopts the display the window points at and binds the data device.
     ///
-    /// Returns `None` when the compositor offers no data device manager of
-    /// at least [`MANAGER_VERSION`], or no seat at all, which leaves the
-    /// window without file drops.
-    pub(crate) fn open(display: *mut c_void) -> Option<WaylandDnd> {
+    /// Spawns the reading thread that follows the socket, whose `wake` runs
+    /// every time it brought bytes in, so the loop dispatches the drags
+    /// while they fly instead of when they end. Returns `None` when the
+    /// compositor offers no data device manager of at least
+    /// [`MANAGER_VERSION`], no seat at all, or the reading thread cannot
+    /// spawn, which leaves the window without file drops.
+    pub(crate) fn open(
+        display: *mut c_void,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Option<WaylandDnd> {
         // SAFETY: the display is the one behind the window's raw display
         // handle, which the windowing library keeps for the whole run of
         // the window, as long as this client lives. The connection shares
@@ -118,19 +144,42 @@ impl WaylandDnd {
         if !make_device(&mut state, &handle) {
             return None;
         }
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let connection = connection.clone();
+            let stop = Arc::clone(&stop);
+            // A client without its reader strands every drag, so a spawn
+            // that fails leaves the window without drops instead.
+            match std::thread::Builder::new()
+                .name(String::from("smudge-dnd"))
+                .spawn(move || read_socket(connection, wake, stop))
+            {
+                Ok(reader) => reader,
+                Err(_) => {
+                    // The device the client bound must be released like
+                    // Drop releases it, or the compositor keeps a bound
+                    // data device for a client that holds none.
+                    if let Some(device) = state.device.take() {
+                        device.release();
+                    }
+                    return None;
+                }
+            }
+        };
         Some(WaylandDnd {
             connection,
             queue,
             state,
+            stop,
+            reader: Some(reader),
         })
     }
 
     /// Dispatches the drags the compositor queued and returns the input
     /// events they make.
     ///
-    /// The windowing library reads the socket on its own loop, which fills
-    /// this queue as a side of the same connection; dispatching what is
-    /// queued never waits.
+    /// The reading thread fills this queue from the socket the windowing
+    /// library owns; dispatching what is queued never waits.
     pub(crate) fn poll(&mut self) -> Vec<InputEvent> {
         if self.queue.dispatch_pending(&mut self.state).is_err() {
             // A dispatch that failed means the connection broke, which ends
@@ -145,11 +194,68 @@ impl WaylandDnd {
 
 impl Drop for WaylandDnd {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
         if let Some(drag) = self.state.offer.take() {
             drag.offer.destroy();
         }
         if let Some(device) = self.state.device.take() {
             device.release();
+        }
+    }
+}
+
+/// Follows the socket the windowing library owns and wakes the loop for
+/// every read, so the drags dispatch while they fly.
+///
+/// The windowing library reads the socket whenever it turns readable, but
+/// it skips the iteration that would dispatch this client's queue when its
+/// own queue heard nothing, so this thread reads and wakes in its place.
+/// The read itself is libwayland's: it demuxes the bytes to every queue of
+/// the display, and the loop's own dispatch moves the client's to its
+/// handlers.
+fn read_socket(
+    connection: Connection,
+    wake: impl Fn() + Send + Sync + 'static,
+    stop: Arc<AtomicBool>,
+) {
+    while !stop.load(Ordering::Relaxed) {
+        let Some(guard) = connection.prepare_read() else {
+            // Events already sit in the client's queue, and whichever
+            // thread read them may have been the windowing library's,
+            // which dispatches its own queue alone: wake the loop, whose
+            // about-to-wait polls this client, before waiting again.
+            wake();
+            std::thread::sleep(READ_POLL);
+            continue;
+        };
+        let fd = guard.connection_fd();
+        let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+        let timeout = Timespec::try_from(READ_POLL).expect("READ_POLL fits a Timespec");
+        match poll(&mut fds, Some(&timeout)) {
+            Ok(0) => continue,
+            Err(Errno::INTR) => continue,
+            Err(error) => {
+                eprintln!("smudge: the file drag reader stopped: {error}");
+                break;
+            }
+            Ok(_) => {}
+        }
+        match guard.read() {
+            // A read that another thread won still brought the bytes to the
+            // client's queue, so the loop hears the drag either way.
+            Ok(_) => wake(),
+            Err(WaylandError::Io(error))
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
+            {
+                wake()
+            }
+            Err(error) => {
+                eprintln!("smudge: the file drag reader stopped: {error}");
+                break;
+            }
         }
     }
 }
@@ -181,8 +287,11 @@ struct DragOffer {
 /// The state the data device events reach.
 #[derive(Default)]
 struct DndState {
+    /// The manager the data device comes from.
     manager: Option<wl_data_device_manager::WlDataDeviceManager>,
+    /// The seat the data device hears the drags of.
     seat: Option<wl_seat::WlSeat>,
+    /// The data device the compositor routes the drags to.
     device: Option<wl_data_device::WlDataDevice>,
     /// The offer of the drag over the window, when there is one.
     offer: Option<DragOffer>,
@@ -237,7 +346,7 @@ impl Dispatch<wl_seat::WlSeat, ()> for DndState {
 impl Dispatch<wl_data_device::WlDataDevice, ()> for DndState {
     fn event(
         state: &mut Self,
-        device: &wl_data_device::WlDataDevice,
+        _device: &wl_data_device::WlDataDevice,
         event: wl_data_device::Event,
         _: &(),
         conn: &Connection,
@@ -254,6 +363,11 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for DndState {
                 // A compositor that starts a new drag without a leave ends
                 // the old one, and its offer must be destroyed with it.
                 if let Some(old) = state.offer.take() {
+                    // The app's hover of the drag that ended hears a
+                    // cancellation, as if a leave had come first.
+                    if old.files {
+                        state.events.push(InputEvent::FileHoverCancelled);
+                    }
                     old.offer.destroy();
                 }
                 // The compositor announces the mime types of an offer
@@ -313,6 +427,8 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for DndState {
                         if paths.is_empty() {
                             state.events.push(InputEvent::FileHoverCancelled);
                         } else {
+                            // The offer inherits the device's manager version,
+                            // so finish's own version-3 requirement holds.
                             offer.offer.finish();
                             state.events.push(InputEvent::FileDropped {
                                 paths,
@@ -322,7 +438,6 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for DndState {
                     }
                     offer.offer.destroy();
                 }
-                let _ = device;
             }
             // The clipboard's selection offer is the clipboard client's
             // to read, and this client only has to destroy what it
@@ -399,8 +514,7 @@ fn receive_files(offer: wl_data_offer::WlDataOffer, conn: &Connection) -> Vec<Pa
     let Some(bytes) = read_to_end(reader, READ_TIMEOUT) else {
         return Vec::new();
     };
-    let list = String::from_utf8_lossy(&bytes);
-    paths_from_uri_list(&list)
+    paths_from_uri_list(&String::from_utf8_lossy(&bytes))
 }
 
 /// Reads `reader` until the writer closes it.

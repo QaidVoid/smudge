@@ -59,6 +59,20 @@ pub(crate) enum PlatformEvent {
     /// A message waits for the app: ask for a frame when the app has work
     /// only a frame can finish.
     Wake,
+    /// File drags queued on the connection the windowing library reads,
+    /// whose own queue heard nothing of them: the wake exists so the loop
+    /// runs its batch, whose about-to-wait polls the drag client.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "redox",
+            target_family = "wasm",
+            target_os = "android",
+            target_os = "ios",
+            target_os = "macos"
+        ))
+    ))]
+    Dnd,
     /// A patch arrived: apply it, remount the root through the patched view
     /// and redraw, then answer the builder.
     #[cfg(all(feature = "hot-reload", target_os = "linux"))]
@@ -1069,7 +1083,12 @@ where
                 target_os = "macos"
             ))
         ))]
-        let dnd = crate::dnd::open_for_window(window.as_ref());
+        let dnd = {
+            let proxy = self.proxy.clone();
+            crate::dnd::open_for_window(window.as_ref(), move || {
+                let _ = proxy.send_event(PlatformEvent::Dnd);
+            })
+        };
         Ok(WindowState {
             window,
             app,
@@ -1524,6 +1543,21 @@ where
                 {
                     state.window.request_redraw();
                 }
+            }
+            #[cfg(all(
+                unix,
+                not(any(
+                    target_os = "redox",
+                    target_family = "wasm",
+                    target_os = "android",
+                    target_os = "ios",
+                    target_os = "macos"
+                ))
+            ))]
+            PlatformEvent::Dnd => {
+                // The wake ran the loop for its about-to-wait alone, which
+                // polls the drag client there; the app hears the drags as
+                // input events.
             }
             #[cfg(all(feature = "a11y", not(target_arch = "wasm32")))]
             PlatformEvent::A11y(event) => self.handle_a11y_event(event),
