@@ -30,6 +30,7 @@ mod collapsible;
 mod color_picker;
 mod containers;
 mod controls;
+pub mod dock;
 mod dropdown;
 mod height_index;
 mod hyperlink;
