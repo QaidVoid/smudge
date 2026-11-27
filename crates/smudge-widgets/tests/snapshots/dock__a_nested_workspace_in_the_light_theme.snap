@@ -1,0 +1,6 @@
+---
+source: crates/smudge-widgets/tests/dock.rs
+expression: "themed(Theme::light()).png()"
+extension: png
+snapshot_kind: binary
+---

@@ -57,6 +57,7 @@ pub use controls::{
     NumberField, Progress, RadioGroup, RangeSlider, SliderArea, Spinner, checkbox, number_field,
     progress, radio_group, range_slider, slider, spinner, switch,
 };
+pub use dock::{Dock, DockExt, DockPanel, dock};
 pub use dropdown::{TooltipExt, dropdown};
 pub use hyperlink::hyperlink;
 pub use image::{ImageView, image};
