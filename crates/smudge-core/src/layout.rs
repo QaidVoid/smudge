@@ -136,9 +136,11 @@ impl WidgetTree {
                 // that grows the content never shows the end out of view. The
                 // painted heights the bindings read are one frame old.
                 self.resolve_follow();
-                // A held drag hears the content that moved under the pointer,
-                // once the pins and the follow pin put it where it shows.
-                if rects_changed {
+                // A held drag hears the content that moved under the
+                // pointer, once the pins and the follow pin put it where it
+                // shows. A pointer outside the window hears nothing, so a
+                // drag that waits out there stays dormant until it returns.
+                if rects_changed && self.pointer_inside {
                     self.deliver_drag_over();
                     self.redeliver_dnd();
                 }
@@ -255,12 +257,16 @@ impl WidgetTree {
             // hovered chain is rebuilt from the last pointer position, as the
             // layout pass does. A hover style can mark a node for layout,
             // which the frame's layout pass applies after this. A held press
-            // or a drag in the air keeps the hover where it is.
+            // or a drag in the air keeps the hover where it is, and a
+            // pointer outside the window hears nothing, as in the layout
+            // pass.
             if self.pointer_inside && !self.holds_pointer() {
                 self.refresh_hover();
             }
-            self.deliver_drag_over();
-            self.redeliver_dnd();
+            if self.pointer_inside {
+                self.deliver_drag_over();
+                self.redeliver_dnd();
+            }
         }
     }
 

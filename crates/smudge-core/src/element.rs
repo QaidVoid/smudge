@@ -1868,24 +1868,55 @@ impl<W: Widget> Element<W> {
     /// Runs `handler` with the pointer's position relative to the top left of
     /// the node's content box, inside its border and padding, while a primary
     /// press that a node took is held, and the node is the deepest one under
-    /// the pointer that sets this handler.
+    /// the pointer that sets this handler or
+    /// [`on_drag_leave`](Self::on_drag_leave). A node that sets only the
+    /// leave still takes the hover, so it hears no positions and keeps an
+    /// outer node with this handler from hearing them while the pointer is
+    /// over it.
     ///
     /// It runs when the press begins, before the pressed node's
     /// [`on_pointer_down`](Self::on_pointer_down), on every move while the
     /// press is held, before the pressed node's
     /// [`on_pointer_move`](Self::on_pointer_move), and again when a frame
-    /// moves content under a pointer that stays still, as a scroll does.
+    /// moves content under a pointer that stays still inside the window,
+    /// as a scroll does.
     /// When nothing that sets it lies under the pointer, as when a drag left
     /// the scroll view it began in, the pointer is moved into the visible area
     /// the press began over first, so the content at that area's edge hears
     /// it. That area is the visible part of the nearest scroll container
     /// around where the press began, inside its border, as it is when the
     /// handler runs. A delivery that would repeat the last one, to the same
-    /// node at the same position, is skipped. Setting it does not make the
+    /// node at the same position, is skipped, unless the fallback area
+    /// delivers it after the pointer left every node that listens, which
+    /// runs the leave the pointer owes first. Setting it does not make the
     /// node take presses or hover: a paragraph uses it to tell which
     /// character a drag that another node owns is over.
     pub fn on_drag_over(mut self, handler: impl FnMut(Point) + 'static) -> Self {
-        self.handlers.on_drag_over = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        let drag_over = self.handlers.drag_over.get_or_insert_with(Default::default);
+        drag_over.over = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
+    /// Runs `handler` when a held press's drag-over leaves this node, which
+    /// is the deepest node under the pointer that sets
+    /// [`on_drag_over`](Self::on_drag_over) or this handler. A node that sets
+    /// only this handler takes the hover the same way, so it hears the leave
+    /// but never the positions, and an outer node with `on_drag_over` stops
+    /// hearing them while the pointer is over this node.
+    ///
+    /// The leave runs when the drag's hover moves onto another node that
+    /// sets it, when the pointer is over none, even while the fallback
+    /// area keeps delivering overs at its edge, and when the pointer
+    /// leaves the window while the drag waits outside it. Every over the
+    /// drag-over delivers is closed by one leave, so no hover outlives the
+    /// drag: one that ends, by a release, an Escape or a press taken away,
+    /// runs the leave of its last over before the drop or the end the
+    /// handlers of the drag hear. Like
+    /// [`on_drag_over`](Self::on_drag_over), it takes no part in hit
+    /// testing: setting it does not make the node respond to the pointer.
+    pub fn on_drag_leave(mut self, handler: impl FnMut() + 'static) -> Self {
+        let drag_over = self.handlers.drag_over.get_or_insert_with(Default::default);
+        drag_over.leave = Some(Box::new(crate::hot::wrap_mut(handler)));
         self
     }
 

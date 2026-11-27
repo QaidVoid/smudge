@@ -134,6 +134,20 @@ impl DockLayout {
         self.root.as_ref()
     }
 
+    /// Returns whether `panel` appears in the layout.
+    ///
+    /// ```
+    /// # use smudge_widgets::dock::{DockError, DockLayout};
+    /// # let mut layout = DockLayout::default();
+    /// # layout.add("editor", &[])?;
+    /// assert!(layout.contains("editor"));
+    /// assert!(!layout.contains("outline"));
+    /// # Ok::<(), DockError>(())
+    /// ```
+    pub fn contains(&self, panel: &str) -> bool {
+        self.root.as_ref().is_some_and(|root| root.contains(panel))
+    }
+
     /// Moves `panel` to `group`. A center move appends and activates the tab.
     /// An edge move creates an equally sized group on that side. A center
     /// move within the same group and an edge move of that group's sole tab
@@ -370,6 +384,13 @@ impl DockNode {
             Self::Split { first, second, .. } => first
                 .panel_group_mut(panel)
                 .or_else(|| second.panel_group_mut(panel)),
+        }
+    }
+
+    fn contains(&self, panel: &str) -> bool {
+        match self {
+            Self::Group { panels, .. } => panels.iter().any(|key| key == panel),
+            Self::Split { first, second, .. } => first.contains(panel) || second.contains(panel),
         }
     }
 

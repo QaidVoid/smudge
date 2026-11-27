@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use smudge_core::element::{AnyElement, Element, IntoElement, KeepAlive, Value, for_each};
+use smudge_core::geometry::Point;
 use smudge_core::hot;
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{Memo, Owner, RenderEffect, RwSignal, prelude::*};
@@ -11,11 +12,15 @@ use smudge_core::style::{Direction, Length, pct, px};
 use smudge_core::tree::Dirty;
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 
-use super::{Branch, DockLayout, DockNode, GroupPath};
+use super::{Branch, DockLayout, DockNode, GroupPath, Zone, zone};
 use crate::{SplitExt, signal, split};
 
 type CloseHandler = Box<dyn FnMut(&str) -> bool>;
 type EmptyBuilder = Box<dyn Fn() -> AnyElement>;
+
+/// What one dock's tabs drag around: the dock that started the drag, which
+/// only its own groups accept, and the panel key the drag carries.
+pub(super) type Payload = (Rc<State>, String);
 
 /// A panel's title, close policy and content builder for a [`dock`].
 ///
@@ -68,6 +73,8 @@ struct PanelInfo {
 
 pub(super) struct State {
     pub(super) layout: RwSignal<DockLayout>,
+    zone: RwSignal<Option<(Rc<zone::Frame>, Zone)>>,
+    hover: RefCell<Option<Point>>,
     factory: Rc<dyn Fn(&str) -> DockPanel>,
     info: RwSignal<HashMap<String, PanelInfo>>,
     options: Rc<Options>,
@@ -90,6 +97,43 @@ impl State {
         self.layout.with(|layout| {
             matches!(node_at(layout, path), Some(DockNode::Group { active, .. }) if active == key)
         })
+    }
+
+    pub(super) fn in_group(&self, path: &[Branch], key: &str) -> bool {
+        self.layout.read(|layout| {
+            matches!(
+                node_at(layout, path),
+                Some(DockNode::Group { panels, .. }) if panels.iter().any(|panel| panel == key)
+            )
+        })
+    }
+
+    pub(super) fn clear_zone(&self) {
+        *self.hover.borrow_mut() = None;
+        if self.zone.read(Option::is_some) {
+            self.zone.set(None);
+        }
+    }
+
+    /// Hides the zone rectangle `frame` shows, leaving the hover position
+    /// the group still tracks, so the next delivery can show one again.
+    pub(super) fn hide_zone(&self, frame: &Rc<zone::Frame>) {
+        let shown = self
+            .zone
+            .read(|current| matches!(current, Some((shown, _)) if Rc::ptr_eq(shown, frame)));
+        if shown {
+            self.zone.set(None);
+        }
+    }
+
+    pub(super) fn show_zone(&self, frame: &Rc<zone::Frame>, zone: Zone) {
+        let unchanged = self.zone.read(|current| {
+            matches!(current, Some((shown, shown_zone))
+                if Rc::ptr_eq(shown, frame) && *shown_zone == zone)
+        });
+        if !unchanged {
+            self.zone.set(Some((Rc::clone(frame), zone)));
+        }
     }
 
     pub(super) fn activate(&self, key: &str) {
@@ -184,7 +228,12 @@ impl Widget for Dock {
 /// buttons accept pointer and accessibility activation without adding arrow
 /// destinations. The strips scroll sideways and reveal newly active tabs
 /// after their geometry has been measured, without moving keyboard focus.
-/// Divider drags and keys write the layout's split ratios. Layout edits made
+/// Divider drags and keys write the layout's split ratios. Each tab drags:
+/// a drag along its own strip reorders the tabs, and a release over a group
+/// moves the panel there, joining the group or splitting it toward the edge
+/// the release lands on, with a translucent rectangle showing where the
+/// panel would go. Escape, a release over nothing, and a release on the
+/// panel's own group's center leave the layout as it was. Layout edits made
 /// directly by the application do not call [`DockExt::on_close`]. An empty
 /// layout draws no content unless [`DockExt::empty`] supplies it.
 ///
@@ -221,9 +270,16 @@ pub fn dock(
         move |()| {
             let state = Rc::new(State {
                 layout: layout.clone(),
+                zone: signal(None),
+                hover: RefCell::new(None),
                 factory: Rc::clone(&factory),
                 info: signal(HashMap::new()),
                 options: Rc::clone(&mounted_options),
+            });
+            let watch = Rc::clone(&state);
+            RenderEffect::new(move || {
+                watch.layout.with(|_| ());
+                watch.clear_zone();
             });
             let build = Rc::clone(&state);
             let store = KeepAlive::new(move |key| build.build_panel(key));
@@ -334,29 +390,82 @@ fn group(path: GroupPath, state: Rc<State>, store: KeepAlive) -> AnyElement {
     let title_state = Rc::clone(&state);
     let title_path = path.clone();
     let strip = super::strip::strip(path.clone(), Rc::clone(&state), keys.clone());
+    let content_state = Rc::clone(&state);
+    let content_path = path.clone();
     let content = for_each(
         move || keys.get(),
         Clone::clone,
         move |key| {
-            let state = Rc::clone(&state);
-            let path = path.clone();
+            let state = Rc::clone(&content_state);
+            let path = content_path.clone();
             fill(store.slot(key.clone())).hidden(move || !state.selected(&path, &key))
         },
     );
-    fill(panel())
-        .role(Role::Group)
-        .accessible_label(move || {
-            let active = title_state
-                .layout
-                .with(|layout| match node_at(layout, &title_path) {
-                    Some(DockNode::Group { active, .. }) => active.clone(),
-                    _ => String::new(),
-                });
-            title_state.title(&active)
-        })
-        .child(strip)
-        .child(fill(content))
-        .into_any()
+    let frame = Rc::new(zone::Frame::new());
+    let over_state = Rc::clone(&state);
+    let accepts_state = Rc::clone(&state);
+    let accepts_frame = Rc::clone(&frame);
+    let accepts_path = path.clone();
+    let leave_state = Rc::clone(&state);
+    let drop_state = Rc::clone(&state);
+    let drop_frame = Rc::clone(&frame);
+    let drop_path = path;
+    fill(Element::new(zone::GroupFrame {
+        frame: Rc::clone(&frame),
+    }))
+    .role(Role::Group)
+    .accessible_label(move || {
+        let active = title_state
+            .layout
+            .with(|layout| match node_at(layout, &title_path) {
+                Some(DockNode::Group { active, .. }) => active.clone(),
+                _ => String::new(),
+            });
+        title_state.title(&active)
+    })
+    .on_drag_over(move |at| {
+        *over_state.hover.borrow_mut() = Some(at);
+    })
+    .on_drag_leave(move || leave_state.clear_zone())
+    .drop_target::<Payload>(
+        move |payload: &Payload| {
+            if !Rc::ptr_eq(&payload.0, &accepts_state) {
+                return false;
+            }
+            let (present, sole) = accepts_state.layout.read(|layout| {
+                (
+                    layout.contains(&payload.1),
+                    matches!(
+                        node_at(layout, &accepts_path),
+                        Some(DockNode::Group { panels, .. })
+                            if panels.len() == 1 && panels[0] == payload.1
+                    ),
+                )
+            });
+            if !present {
+                return false;
+            }
+            if let Some(at) = *accepts_state.hover.borrow() {
+                let zone = zone::zone_of(&accepts_frame, at);
+                if zone == Zone::Center || !sole {
+                    accepts_state.show_zone(&accepts_frame, zone);
+                } else {
+                    accepts_state.hide_zone(&accepts_frame);
+                }
+            }
+            true
+        },
+        move |(_dock, key): Payload, at| {
+            let zone = zone::zone_of(&drop_frame, at);
+            drop_state.layout.update(|layout| {
+                let _ = layout.move_panel(&key, &drop_path, zone);
+            });
+        },
+    )
+    .child(strip)
+    .child(fill(content))
+    .child(zone::highlight(state.zone.clone(), frame))
+    .into_any()
 }
 
 fn split_group(
@@ -419,7 +528,7 @@ fn child_path(path: &[Branch], branch: Branch) -> GroupPath {
     path
 }
 
-fn node_at<'a>(layout: &'a DockLayout, path: &[Branch]) -> Option<&'a DockNode> {
+pub(super) fn node_at<'a>(layout: &'a DockLayout, path: &[Branch]) -> Option<&'a DockNode> {
     let mut node = layout.root()?;
     for branch in path {
         let DockNode::Split { first, second, .. } = node else {

@@ -12,9 +12,12 @@ use smudge_core::tree::Dirty;
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 use smudge_text::label;
 
-use super::GroupPath;
-use super::widget::State;
+use super::widget::{Payload, State, node_at};
+use super::{Branch, DockLayout, DockNode, GroupPath};
 use crate::{ScrollAxis, ScrollExt, scroll, signal};
+
+/// The height of a tab strip, in logical pixels.
+pub(super) const STRIP: f32 = 36.0;
 
 struct Geometry {
     viewport: Cell<Rect>,
@@ -72,10 +75,12 @@ impl Widget for TabStrip {
 struct Tab {
     geometry: Rc<Geometry>,
     selected: bool,
+    width: Rc<Cell<f32>>,
 }
 
 impl Widget for Tab {
     fn paint(&self, cx: &PaintCx<'_>, out: &mut Vec<PaintOp>) {
+        self.width.set(cx.content.width());
         if self.selected {
             if self.geometry.active.replace(Some(cx.rect)) != Some(cx.rect) {
                 self.geometry.changed();
@@ -113,6 +118,7 @@ pub(super) fn strip(path: GroupPath, state: Rc<State>, keys: Memo<Vec<String>>) 
         reveal.measured.get();
         reveal.reveal();
     });
+    let clear_state = Rc::clone(&state);
     let tab_geometry = Rc::clone(&geometry);
     let tabs = for_each(
         move || keys.get(),
@@ -126,10 +132,11 @@ pub(super) fn strip(path: GroupPath, state: Rc<State>, keys: Memo<Vec<String>>) 
     let offset = geometry.offset.clone();
     Element::new(TabStrip { geometry })
         .column()
-        .height(px(36.0))
+        .height(px(STRIP))
         .min_width(px(0.0))
         .shrink(0.0)
         .background(ColorToken::SURFACE)
+        .on_drag_over(move |_at| clear_state.clear_zone())
         .border_edges(Edges {
             top: 0.0,
             right: 0.0,
@@ -147,16 +154,11 @@ pub(super) fn strip(path: GroupPath, state: Rc<State>, keys: Memo<Vec<String>>) 
         .into_any()
 }
 
-fn tab(
-    key: String,
-    path: &[super::Branch],
-    state: Rc<State>,
-    geometry: Rc<Geometry>,
-) -> AnyElement {
+fn tab(key: String, path: &[Branch], state: Rc<State>, geometry: Rc<Geometry>) -> AnyElement {
     let selected_state = Rc::clone(&state);
     let selected_key = key.clone();
-    let path = path.to_vec();
-    let selected = Memo::new(move || selected_state.selected(&path, &selected_key));
+    let selected_path = path.to_vec();
+    let selected = Memo::new(move || selected_state.selected(&selected_path, &selected_key));
     let selected_binding = selected.clone();
     let mark = selected.clone();
     let accessible = selected.clone();
@@ -171,6 +173,17 @@ fn tab(
     let text_key = key.clone();
     let closable = Rc::clone(&state);
     let closable_key = key.clone();
+    let source = Rc::clone(&state);
+    let source_key = key.clone();
+    let preview = Rc::clone(&state);
+    let preview_key = key.clone();
+    let accept = Rc::clone(&state);
+    let accept_path = path.to_vec();
+    let drop = Rc::clone(&state);
+    let drop_path = path.to_vec();
+    let drop_key = key.clone();
+    let end = Rc::clone(&state);
+    let over = Rc::clone(&state);
     let close_state = Rc::clone(&state);
     let close = show(
         move || closable.closable(&closable_key),
@@ -192,9 +205,11 @@ fn tab(
                 .child(label("×").text_color(ColorToken::TEXT_MUTED))
         },
     );
+    let width = Rc::new(Cell::new(0.0));
     Element::new(Tab {
         geometry,
         selected: false,
+        width: Rc::clone(&width),
     })
     .row()
     .height(pct(100.0))
@@ -234,6 +249,46 @@ fn tab(
             focus.activate(&focus_key);
         }
     })
+    .drag_source(move || (Rc::clone(&source), source_key.clone()))
+    .drag_preview({
+        let name = Rc::clone(&preview);
+        let name_key = preview_key;
+        move || {
+            let name = Rc::clone(&name);
+            let name_key = name_key.clone();
+            panel()
+                .row()
+                .padding_xy(Size {
+                    width: 12.0,
+                    height: 6.0,
+                })
+                .background(ColorToken::SURFACE)
+                .border_edges(Edges {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 1.0,
+                    left: 0.0,
+                })
+                .border_color(ColorToken::BORDER)
+                .child(label(move || name.title(&name_key)).text_color(ColorToken::TEXT))
+        }
+    })
+    .drop_target::<Payload>(
+        move |payload: &Payload| {
+            Rc::ptr_eq(&payload.0, &accept) && accept.in_group(&accept_path, &payload.1)
+        },
+        {
+            let drop_width = Rc::clone(&width);
+            move |(_dock, dragged): Payload, at| {
+                let after = at.x * 2.0 > drop_width.get();
+                drop.layout.update(|layout| {
+                    reorder(layout, &drop_path, &dragged, &drop_key, after);
+                });
+            }
+        },
+    )
+    .on_drag_end(move |_taken| end.clear_zone())
+    .on_drag_over(move |_at| over.clear_zone())
     .bind(SelectedKey, move || selected_binding.get(), select)
     .child(label(move || text.title(&text_key)).text_color(move || {
         ColorValue::Token(if color.get() {
@@ -244,4 +299,27 @@ fn tab(
     }))
     .child(close)
     .into_any()
+}
+
+/// Moves `dragged` before or after `hovered` in the group at `path`, as the
+/// drop's half of the hovered tab picks.
+fn reorder(layout: &mut DockLayout, path: &[Branch], dragged: &str, hovered: &str, after: bool) {
+    let Some(DockNode::Group { panels, .. }) = node_at(layout, path) else {
+        return;
+    };
+    let Some(from) = panels.iter().position(|key| key == dragged) else {
+        return;
+    };
+    let Some(mut to) = panels.iter().position(|key| key == hovered) else {
+        return;
+    };
+    if after {
+        to += 1;
+    }
+    if to > from {
+        to -= 1;
+    }
+    if from != to {
+        let _ = layout.move_tab(dragged, to);
+    }
 }

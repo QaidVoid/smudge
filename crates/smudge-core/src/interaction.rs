@@ -144,9 +144,9 @@ pub(crate) struct Handlers {
     /// Runs when the keyboard focus enters the node or its subtree from
     /// outside, or leaves both.
     pub(crate) on_focus_within: Option<Box<dyn FnMut(bool)>>,
-    /// Runs, while a primary press is held, when the node is the deepest one
-    /// under the pointer that sets it. It takes no part in hit testing.
-    pub(crate) on_drag_over: Option<Box<dyn FnMut(Point)>>,
+    /// The drag-over handlers a node sets, boxed together since few nodes set
+    /// either of them.
+    pub(crate) drag_over: Option<Box<DragOverHandlers>>,
     /// The file drop handlers of a node, boxed together since few nodes set
     /// either of them.
     pub(crate) file: Option<Box<FileHandlers>>,
@@ -199,6 +199,18 @@ pub(crate) struct Handlers {
     /// presses beside the app's own handlers, boxed since few nodes have
     /// any.
     pub(crate) watchers: Option<Box<Watchers>>,
+}
+
+/// The drag-over handlers a node sets, boxed together since few nodes set
+/// either of them.
+#[derive(Default)]
+pub(crate) struct DragOverHandlers {
+    /// Runs, while a primary press is held, when the node is the deepest one
+    /// under the pointer that sets it. It takes no part in hit testing.
+    pub(crate) over: Option<Box<dyn FnMut(Point)>>,
+    /// Runs when a held press's drag-over leaves the node it last reached.
+    /// It takes no part in hit testing.
+    pub(crate) leave: Option<Box<dyn FnMut()>>,
 }
 
 /// The file handlers a drop zone sets. Neither takes part in hit testing.
@@ -316,11 +328,27 @@ pub(crate) struct DragState {
     /// The node and local position the last drag-over reached, so a delivery
     /// that would repeat it is skipped.
     last_over: Option<(WidgetId, Point)>,
+    /// Whether the last drag-over delivery reached its node through the
+    /// real pointer, so a fallback delivery that lands on the same node at
+    /// the same position still runs the leave the pointer owes it.
+    last_real: bool,
+    /// Whether the pointer left every node the drag-over reaches, so the
+    /// leave of the last one runs once until the pointer finds one again.
+    left_listeners: bool,
 }
 
 /// How far the pointer must move from its press before the press becomes a
 /// drag of the source it began on, in logical pixels.
 const DRAG_SLOP: f32 = 4.0;
+
+/// What a drag-over delivery runs.
+enum DragDelivery {
+    /// The delivery repeats the last one, so it runs nothing.
+    Repeated,
+    /// The delivery runs the over, and the leave of the node it displaced,
+    /// when there is one.
+    Fresh(Option<WidgetId>),
+}
 
 /// The in-app drag a held press on a drag source makes.
 ///
@@ -525,6 +553,7 @@ impl WidgetTree {
             self.stale_focus = None;
             self.reveal_focus = false;
         }
+        self.drag_left();
         self.end_drag();
         // A primary press ends a drag that is still in the air: the
         // button it waited for is gone. One that never left its source dies
@@ -590,6 +619,7 @@ impl WidgetTree {
         }
         self.pointer = position;
         self.pointer_inside = true;
+        self.drag_left();
         // The drag outlives the capture: the node that took the press may be
         // gone, and the observers still hear the release.
         self.end_drag();
@@ -729,6 +759,7 @@ impl WidgetTree {
     /// because the window system may refuse the gesture it was released
     /// for.
     pub(crate) fn release_press(&mut self) {
+        self.drag_left();
         self.end_drag();
         // A drag in the air ends with the press that held it, and its
         // source hears that nothing took the payload.
@@ -773,11 +804,13 @@ impl WidgetTree {
     /// window.
     ///
     /// A press that is still held keeps its capture, so a drag that leaves
-    /// the window stays with the node it started on, and the target it was
-    /// over keeps nothing lit while the drag waits outside.
+    /// the window stays with the node it started on, and the drag-over
+    /// target hears its leave, so nothing stays lit while the drag waits
+    /// outside.
     pub(crate) fn pointer_left(&mut self) {
         self.pointer_inside = false;
         self.set_hover_target(None);
+        self.drag_left();
         if let Some(mut drag) = self.dnd.take() {
             if let Some(target) = drag.target.take() {
                 self.set_bit(target, Interaction::DROP, false);
@@ -1339,6 +1372,8 @@ impl WidgetTree {
             origin_clip,
             observers,
             last_over: None,
+            last_real: false,
+            left_listeners: false,
         });
     }
 
@@ -1463,30 +1498,34 @@ impl WidgetTree {
     /// scroll view the drag began in, the pointer is moved into the visible
     /// area the press began over, so the drag reaches the content at that
     /// area's edge. This runs on every move of the press, and again when
-    /// content moves under a still pointer.
+    /// content moves under a still pointer inside the window; one that left
+    /// the window hears nothing until it returns. The node a delivery moves the
+    /// drag off, and one the pointer leaves for none that listens, hears
+    /// its `on_drag_leave` first.
     pub(super) fn deliver_drag_over(&mut self) {
         let Some(area) = self.drag.as_ref().map(|drag| self.drag_fallback_area(drag)) else {
             return;
         };
         let pointer = self.pointer;
-        let found = self
-            .drag_over_target(pointer)
-            .map(|id| (id, pointer))
-            .or_else(|| {
-                let clamped = clamp_into(pointer, area);
-                (clamped != pointer)
-                    .then(|| self.drag_over_target(clamped).map(|id| (id, clamped)))
-                    .flatten()
-            });
+        let real = self.drag_over_target(pointer);
+        let found = real.map(|id| (id, pointer)).or_else(|| {
+            let clamped = clamp_into(pointer, area);
+            (clamped != pointer)
+                .then(|| self.drag_over_target(clamped).map(|id| (id, clamped)))
+                .flatten()
+        });
         let Some((id, position)) = found else {
+            self.drag_left();
             return;
         };
         let local = self.content_position(id, position);
-        if let Some(drag) = self.drag.as_mut() {
-            if drag.last_over == Some((id, local)) {
-                return;
+        match self.track_drag_over(id, local, real.is_some()) {
+            DragDelivery::Repeated => return,
+            DragDelivery::Fresh(leave) => {
+                if let Some(prev) = leave {
+                    self.notify_drag_leave(prev);
+                }
             }
-            drag.last_over = Some((id, local));
         }
         let Some(owner) = self.owner(id).cloned() else {
             return;
@@ -1495,21 +1534,92 @@ impl WidgetTree {
             if let Some(on_drag_over) = self
                 .nodes
                 .get_mut(id)
-                .and_then(|node| node.handlers.on_drag_over.as_mut())
+                .and_then(|node| node.handlers.drag_over.as_mut())
+                .and_then(|drag_over| drag_over.over.as_mut())
             {
                 on_drag_over(local);
             }
         });
     }
 
-    /// Returns the deepest enabled node under `position` that sets
-    /// `on_drag_over`.
+    /// Records that a drag-over reached `id` at `local`, and returns what the
+    /// delivery runs: nothing when it repeats the last one, or the over with
+    /// the node whose `on_drag_leave` it displaces, which is the one the drag
+    /// moved off, or the last one when the pointer is over no node that
+    /// listens. A fallback delivery that repeats a real one still runs, so
+    /// the pointer leaving every listener is heard even when the fallback
+    /// lands where the pointer was.
+    fn track_drag_over(&mut self, id: WidgetId, local: Point, real: bool) -> DragDelivery {
+        let Some(drag) = self.drag.as_mut() else {
+            return DragDelivery::Fresh(None);
+        };
+        if real {
+            drag.left_listeners = false;
+        }
+        if drag.last_over == Some((id, local)) && (real || !drag.last_real) {
+            drag.last_real = real;
+            return DragDelivery::Repeated;
+        }
+        let displaced = match drag.last_over {
+            Some((prev, _)) if prev != id => Some(prev),
+            _ => None,
+        };
+        let leave = if !real && !drag.left_listeners {
+            drag.left_listeners = true;
+            displaced.or(drag.last_over.map(|(prev, _)| prev))
+        } else {
+            displaced
+        };
+        drag.last_over = Some((id, local));
+        drag.last_real = real;
+        DragDelivery::Fresh(leave)
+    }
+
+    /// Runs the `on_drag_leave` of the node the drag-over last reached,
+    /// whether the pointer left every node that listens or the drag ended,
+    /// and forgets the delivery so a return to the same place delivers
+    /// again.
+    fn drag_left(&mut self) {
+        let leave = if let Some(drag) = self.drag.as_mut() {
+            drag.left_listeners = true;
+            drag.last_over.take().map(|(prev, _)| prev)
+        } else {
+            return;
+        };
+        if let Some(prev) = leave {
+            self.notify_drag_leave(prev);
+        }
+    }
+
+    /// Runs `on_drag_leave` of the node `id` inside its owner.
+    fn notify_drag_leave(&mut self, id: WidgetId) {
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        owner.with(|| {
+            if let Some(on_drag_leave) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.drag_over.as_mut())
+                .and_then(|drag_over| drag_over.leave.as_mut())
+            {
+                on_drag_leave();
+            }
+        });
+    }
+
+    /// Returns the deepest enabled node under `position` that sets a
+    /// drag-over handler.
     fn drag_over_target(&self, position: Point) -> Option<WidgetId> {
         let mut next = self.hit_any(position, false);
         while let Some(id) = next {
             let node = self.nodes.get(id)?;
-            if node.handlers.on_drag_over.is_some() && !node.interaction.has(Interaction::DISABLED)
-            {
+            let listens = node
+                .handlers
+                .drag_over
+                .as_ref()
+                .is_some_and(|handlers| handlers.over.is_some() || handlers.leave.is_some());
+            if listens && !node.interaction.has(Interaction::DISABLED) {
                 return Some(id);
             }
             next = self.pointer_parent(id);
@@ -1716,6 +1826,7 @@ impl WidgetTree {
             self.set_bit(old, Interaction::DROP, false);
         }
         self.close_preview(drag.source);
+        self.drag_left();
         self.run_drag_end(drag.source, false);
         if let Some(captured) = self.pressed.take() {
             self.released_early = true;

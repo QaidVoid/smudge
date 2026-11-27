@@ -955,6 +955,403 @@ fn drag_over_log(log: &DragLog, name: &'static str) -> impl FnMut(Point) + 'stat
     move |at| log.borrow_mut().push((name, at))
 }
 
+/// A log of the nodes whose drag-over left, by the node's name.
+type LeaveLog = Rc<RefCell<Vec<&'static str>>>;
+
+/// A handler that logs the leave of the node named `name`.
+fn drag_leave_log(log: &LeaveLog, name: &'static str) -> impl FnMut() + 'static {
+    let log = Rc::clone(log);
+    move || log.borrow_mut().push(name)
+}
+
+#[test]
+fn drag_over_leaves_run_when_the_hover_moves_off_and_when_the_press_ends() {
+    let over: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let leaves: LeaveLog = Rc::new(RefCell::new(Vec::new()));
+    let (presses, on_press) = press_counter();
+    let first_over = drag_over_log(&over, "first");
+    let second_over = drag_over_log(&over, "second");
+    let first_leave = drag_leave_log(&leaves, "first");
+    let second_leave = drag_leave_log(&leaves, "second");
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_press(on_press)
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(first_over)
+                        .on_drag_leave(first_leave),
+                )
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(second_over)
+                        .on_drag_leave(second_leave),
+                )
+                .child(panel().width(px(80.0)).height(px(20.0))),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 5.0 });
+    harness.move_to(Point { x: 12.0, y: 25.0 });
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["first"],
+        "the node the hover moves off hears the leave"
+    );
+    harness.move_to(Point { x: 14.0, y: 45.0 });
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["first", "second"],
+        "the pointer leaving every node that listens leaves the last one"
+    );
+    harness.move_to(Point { x: 15.0, y: 46.0 });
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["first", "second"],
+        "the leave runs once while the pointer stays off every node that listens"
+    );
+    harness.button_up(Point { x: 15.0, y: 46.0 });
+    assert_eq!(presses.get(), 1, "the parent still took the press");
+    harness.button_down(Point { x: 10.0, y: 5.0 });
+    harness.button_up(Point { x: 11.0, y: 5.0 });
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["first", "second", "first"],
+        "the release of the press that carried the hover runs its leave"
+    );
+    assert_eq!(
+        over.borrow().as_slice(),
+        [
+            ("first", Point { x: 10.0, y: 5.0 }),
+            ("second", Point { x: 12.0, y: 5.0 }),
+            ("first", Point { x: 10.0, y: 5.0 }),
+        ],
+        "the press and the move reach the node under the pointer, and the press over again"
+    );
+    assert_eq!(presses.get(), 2);
+}
+
+#[test]
+fn a_press_taken_away_or_a_pointer_left_runs_the_leave_of_the_drag_it_ends() {
+    let over: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let leaves: LeaveLog = Rc::new(RefCell::new(Vec::new()));
+    let (presses, on_press) = press_counter();
+    let first_over = drag_over_log(&over, "first");
+    let first_leave = drag_leave_log(&leaves, "first");
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_press(on_press)
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(first_over)
+                        .on_drag_leave(first_leave),
+                )
+                .child(panel().width(px(80.0)).height(px(20.0))),
+        )
+    });
+    harness.frame();
+    let spot = Point { x: 10.0, y: 5.0 };
+
+    harness.button_down(spot);
+    assert_eq!(
+        over.borrow().as_slice(),
+        [("first", spot)],
+        "the press reaches the node under the pointer"
+    );
+    harness.button_down(spot);
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["first"],
+        "the press that replaces the drag runs the leave of the hover it held"
+    );
+    harness.button_up(spot);
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["first", "first"],
+        "the release of the replacing press runs the leave of its own hover"
+    );
+    harness.button_down(spot);
+    harness.app().release_press();
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["first", "first", "first"],
+        "a press the window takes away runs the leave of the hover it held"
+    );
+    harness.button_down(spot);
+    harness.event(InputEvent::PointerLeft);
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["first", "first", "first", "first"],
+        "the pointer leaving the window runs the leave while the drag waits outside"
+    );
+    harness.button_up(spot);
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["first", "first", "first", "first"],
+        "the release after the pointer came back adds no leave, because the leave already ran"
+    );
+    assert_eq!(
+        presses.get(),
+        2,
+        "the two releases over the node count, and the taken press's release reaches no handler"
+    );
+    assert_eq!(
+        over.borrow().as_slice(),
+        [("first", spot); 4],
+        "each press delivers the over once, and none of the ends deliver it again"
+    );
+}
+
+#[test]
+fn a_fallback_drag_over_still_runs_its_leave_when_the_press_ends() {
+    let over: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let leaves: LeaveLog = Rc::new(RefCell::new(Vec::new()));
+    let (presses, on_press) = press_counter();
+    let edge_over = drag_over_log(&over, "edge");
+    let edge_leave = drag_leave_log(&leaves, "edge");
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        scene(
+            panel()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_press(on_press)
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(edge_over)
+                        .on_drag_leave(edge_leave),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 40.0, y: 40.0 });
+    harness.move_to(Point { x: 40.0, y: -20.0 });
+    assert_eq!(
+        over.borrow().as_slice(),
+        [("edge", Point { x: 40.0, y: 0.0 })],
+        "the fallback area clamps the pointer off the window onto the edge node"
+    );
+    assert!(leaves.borrow().is_empty());
+    harness.button_up(Point { x: 40.0, y: -20.0 });
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["edge"],
+        "the release runs the leave of the over the fallback area delivered"
+    );
+    assert_eq!(
+        presses.get(),
+        0,
+        "the release outside the node runs no press"
+    );
+}
+
+#[test]
+fn a_fallback_over_that_slides_to_another_node_leaves_the_node_it_moved_off() {
+    let over: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let leaves: LeaveLog = Rc::new(RefCell::new(Vec::new()));
+    let (presses, on_press) = press_counter();
+    let top_over = drag_over_log(&over, "top");
+    let bottom_over = drag_over_log(&over, "bottom");
+    let top_leave = drag_leave_log(&leaves, "top");
+    let bottom_leave = drag_leave_log(&leaves, "bottom");
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_press(on_press)
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(top_over)
+                        .on_drag_leave(top_leave),
+                )
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(bottom_over)
+                        .on_drag_leave(bottom_leave),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 40.0, y: 50.0 });
+    harness.move_to(Point { x: -20.0, y: 10.0 });
+    assert_eq!(
+        over.borrow().as_slice(),
+        [("top", Point { x: 0.0, y: 10.0 })],
+        "the fallback area clamps the pointer outside the window onto the top node"
+    );
+    harness.move_to(Point { x: -20.0, y: 30.0 });
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["top"],
+        "the fallback over that slides down the edge leaves the node it moved off"
+    );
+    assert_eq!(
+        over.borrow().as_slice(),
+        [
+            ("top", Point { x: 0.0, y: 10.0 }),
+            ("bottom", Point { x: 0.0, y: 10.0 }),
+        ],
+        "the clamped position slides down the edge onto the bottom node"
+    );
+    harness.button_up(Point { x: -20.0, y: 30.0 });
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["top", "bottom"],
+        "the release runs the leave of the last node the fallback reached"
+    );
+    assert_eq!(
+        presses.get(),
+        0,
+        "the release outside the node runs no press"
+    );
+}
+
+#[test]
+fn a_fallback_delivery_that_repeats_a_real_one_still_runs_the_leave() {
+    let over: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let leaves: LeaveLog = Rc::new(RefCell::new(Vec::new()));
+    let (presses, on_press) = press_counter();
+    let top_over = drag_over_log(&over, "top");
+    let top_leave = drag_leave_log(&leaves, "top");
+    let mut harness = Harness::new(100.0, 80.0, 1.0, move || {
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(60.0))
+                .on_press(on_press)
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(top_over)
+                        .on_drag_leave(top_leave),
+                )
+                .child(panel().width(px(80.0)).height(px(20.0))),
+        )
+    });
+    harness.frame();
+    let spot = Point { x: 0.0, y: 10.0 };
+
+    harness.button_down(Point { x: 40.0, y: 50.0 });
+    harness.move_to(spot);
+    assert_eq!(
+        over.borrow().as_slice(),
+        [("top", spot)],
+        "the pointer on the window's edge reaches the top node for real"
+    );
+    harness.move_to(Point { x: -20.0, y: 10.0 });
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["top"],
+        "the pointer leaving every node that listens runs the leave even though the fallback clamps onto the same spot"
+    );
+    assert_eq!(
+        over.borrow().as_slice(),
+        [("top", spot); 2],
+        "the fallback delivery runs the over again after the leave"
+    );
+    harness.move_to(spot);
+    assert_eq!(
+        over.borrow().as_slice(),
+        [("top", spot); 2],
+        "the pointer really returning to the same spot adds no over"
+    );
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["top"],
+        "the pointer really returning to the same spot runs no leave"
+    );
+    harness.button_up(spot);
+    assert_eq!(
+        leaves.borrow().as_slice(),
+        ["top", "top"],
+        "the release runs the leave of the over the fallback delivered"
+    );
+    assert_eq!(
+        presses.get(),
+        1,
+        "the release over the panel that took the press presses it"
+    );
+}
+
+#[test]
+fn content_moving_under_a_pointer_outside_the_window_delivers_no_drag_over() {
+    let log: DragLog = Rc::new(RefCell::new(Vec::new()));
+    let first = drag_over_log(&log, "first");
+    let second = drag_over_log(&log, "second");
+    let gap = reactive::RwSignal::new(0.0f32);
+    let bound = gap.clone();
+    let mut harness = Harness::new(100.0, 100.0, 1.0, move || {
+        let bound = bound.clone();
+        scene(
+            panel()
+                .column()
+                .width(px(80.0))
+                .height(px(100.0))
+                .on_press(|| {})
+                .child(panel().width(px(80.0)).height(move || px(bound.get())))
+                .child(panel().width(px(80.0)).height(px(20.0)).on_drag_over(first))
+                .child(
+                    panel()
+                        .width(px(80.0))
+                        .height(px(20.0))
+                        .on_drag_over(second),
+                ),
+        )
+    });
+    harness.frame();
+
+    harness.button_down(Point { x: 10.0, y: 25.0 });
+    assert_eq!(
+        log.borrow().as_slice(),
+        [("second", Point { x: 10.0, y: 5.0 })],
+        "the press reaches the row under the pointer"
+    );
+    harness.event(InputEvent::PointerLeft);
+    gap.set(20.0);
+    harness.frame();
+
+    assert_eq!(
+        log.borrow().as_slice(),
+        [("second", Point { x: 10.0, y: 5.0 })],
+        "content moving under a pointer outside the window delivers nothing"
+    );
+    harness.move_to(Point { x: 10.0, y: 25.0 });
+    assert_eq!(
+        log.borrow().as_slice(),
+        [
+            ("second", Point { x: 10.0, y: 5.0 }),
+            ("first", Point { x: 10.0, y: 5.0 }),
+        ],
+        "the pointer returning to the moved content delivers again"
+    );
+    harness.button_up(Point { x: 10.0, y: 25.0 });
+}
+
 #[test]
 fn drag_over_reaches_the_node_under_the_pointer_while_another_holds_the_press() {
     let log: DragLog = Rc::new(RefCell::new(Vec::new()));
