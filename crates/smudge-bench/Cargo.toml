@@ -9,13 +9,13 @@ version.workspace = true
 publish = false
 
 [dependencies]
-smudge-core = { version = "0.4.0", path = "../smudge-core" }
-smudge-cpu = { version = "0.4.0", path = "../smudge-cpu" }
-smudge-gpu = { version = "0.4.0", path = "../smudge-gpu", optional = true }
-smudge-markdown = { version = "0.4.0", path = "../smudge-markdown" }
-smudge-platform = { version = "0.4.0", path = "../smudge-platform" }
-smudge-text = { version = "0.4.0", path = "../smudge-text" }
-smudge-widgets = { version = "0.4.0", path = "../smudge-widgets" }
+smudge-core = { version = "0.5.0", path = "../smudge-core" }
+smudge-cpu = { version = "0.5.0", path = "../smudge-cpu" }
+smudge-gpu = { version = "0.5.0", path = "../smudge-gpu", optional = true }
+smudge-markdown = { version = "0.5.0", path = "../smudge-markdown" }
+smudge-platform = { version = "0.5.0", path = "../smudge-platform" }
+smudge-text = { version = "0.5.0", path = "../smudge-text" }
+smudge-widgets = { version = "0.5.0", path = "../smudge-widgets" }
 
 [lints]
 workspace = true

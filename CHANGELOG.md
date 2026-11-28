@@ -1,4 +1,62 @@
 
+## [0.5.0](https://github.com/QaidVoid/smudge/compare/v0.4.0...v0.5.0) - 2026-11-28
+
+### ⛰️  Features
+
+- *(core)* Preserve mounted content across slot moves - ([1a0279b](https://github.com/QaidVoid/smudge/commit/1a0279b47ddbcb20967552e364b4b258eef09485))
+- *(core)* Drag and drop between elements of one app - ([8147d0b](https://github.com/QaidVoid/smudge/commit/8147d0b6193a9ff8351241c236d05ab60c5010ec))
+- *(core)* Draw overlays in layers for dialogs and toasts - ([3fbc4e8](https://github.com/QaidVoid/smudge/commit/3fbc4e89a36b20ee5434030386ee2e66eb5ab18b))
+- *(core,test)* Add file drop events - ([905f754](https://github.com/QaidVoid/smudge/commit/905f75469eb7eb69bed5eb47a886e9234b536fbe))
+- *(core,widgets)* [**breaking**] Sort and select in tables - ([9dd0d80](https://github.com/QaidVoid/smudge/commit/9dd0d80ed2fc08b4f414472f36e677641fb1f6ce))
+- *(core,widgets)* [**breaking**] Add tables - ([d38c9ba](https://github.com/QaidVoid/smudge/commit/d38c9bad1e299b32764122f8c72c0feac9e8184a))
+- *(core,widgets)* [**breaking**] Add grid layout - ([573ef42](https://github.com/QaidVoid/smudge/commit/573ef424d227ea1513970103cd3b3dc2ffed8bae))
+- *(core,widgets)* Paint the chosen tree and table rows - ([319ed17](https://github.com/QaidVoid/smudge/commit/319ed1771d34b7930e7e247ad706dfcd9e987139))
+- *(core,widgets)* Pace progress motion from animation state - ([d2dedb6](https://github.com/QaidVoid/smudge/commit/d2dedb6e8f2df2183ce9cac0d1c3b551ed37ce88))
+- *(examples)* Add data views examples - ([e01085f](https://github.com/QaidVoid/smudge/commit/e01085f6376be8974f9859fdf6555b5fb7f1c267))
+- *(examples)* Show a separator and hyperlink in the form - ([7542848](https://github.com/QaidVoid/smudge/commit/75428488ae64ac735f160b14f9a1054fc94a952c))
+- *(markdown)* Scroll long lines of code sideways - ([eb62cdb](https://github.com/QaidVoid/smudge/commit/eb62cdb6e5d9d7c50fc2891ee80ec414564fbf2f))
+- *(platform)* Receive file drops from the window system - ([36c22ab](https://github.com/QaidVoid/smudge/commit/36c22ab8f593f36c1dfd30f20b7d45478a285912))
+- *(smudge)* File picker and drop zone example with rfd - ([fab02b9](https://github.com/QaidVoid/smudge/commit/fab02b9b22fd00c4247c855cdef1a5f92c11897d))
+- *(text)* [**breaking**] Add password fields - ([f3807a2](https://github.com/QaidVoid/smudge/commit/f3807a2fb22c06dc6beb772452d32f90182d9c13))
+- *(text)* Hold a press back for another widget - ([d4d6405](https://github.com/QaidVoid/smudge/commit/d4d6405032811c910a03d9e0de16e4d4ec9b920b))
+- *(widgets)* Save and restore dock layouts - ([1f208c9](https://github.com/QaidVoid/smudge/commit/1f208c9cb87c5aa24c50a4079389a6af7ca4e46d))
+- *(widgets)* Add tree views - ([0ecf61d](https://github.com/QaidVoid/smudge/commit/0ecf61d72b15dc18af6b073becf49db78828c066))
+- *(widgets)* Add collapsible sections - ([c2ed053](https://github.com/QaidVoid/smudge/commit/c2ed0530892597e8cb59784751fd16fb846bc6d0))
+- *(widgets)* Add a color picker - ([c25dd2d](https://github.com/QaidVoid/smudge/commit/c25dd2d7438c8192b02bc1f528479405f07adc44))
+- *(widgets)* Add separator and hyperlink controls - ([33916f0](https://github.com/QaidVoid/smudge/commit/33916f0b8945c258e4b169045634eb8df12e8149))
+- *(widgets)* Add radio groups - ([79ac8a2](https://github.com/QaidVoid/smudge/commit/79ac8a2cbcbf550e5288aca99157e426bb992eab))
+- *(widgets)* Add toasts - ([748c389](https://github.com/QaidVoid/smudge/commit/748c3893410aac383a8d4bc2a6f4bba690b905f3))
+- *(widgets)* Add modal dialogs - ([94bf1e0](https://github.com/QaidVoid/smudge/commit/94bf1e084ecad88ca1bf90a92f74ef405bf46f05))
+- *(widgets)* Add floating dock panels - ([9b478c2](https://github.com/QaidVoid/smudge/commit/9b478c265448586d50650882d445f18271f80945))
+- *(widgets)* Add keyboard controls for docking - ([a58fdd1](https://github.com/QaidVoid/smudge/commit/a58fdd1915dff9ea0cb9b1794f2b1c7a4c0c3bef))
+- *(widgets)* Dock panels by dragging tabs - ([a914fae](https://github.com/QaidVoid/smudge/commit/a914fae12634abc99ded8475d8e06e50d38633a6))
+- *(widgets)* [**breaking**] Drag a number field's number - ([0304671](https://github.com/QaidVoid/smudge/commit/0304671eff720ae3df1aad5cd51db339285a2894))
+- *(widgets)* [**breaking**] Scroll content wider than the view - ([2b4023c](https://github.com/QaidVoid/smudge/commit/2b4023c6afdb982f38398a51f6fcb24106ac61fb))
+- *(widgets)* Add range sliders - ([721aff0](https://github.com/QaidVoid/smudge/commit/721aff030846d238777ca6956d52dceb91411435))
+- *(widgets)* Add a retained docking workspace - ([725dd54](https://github.com/QaidVoid/smudge/commit/725dd54e1e54cb28791929e5bfc10ada635ea339))
+- *(widgets)* Add a docking layout model - ([01d015e](https://github.com/QaidVoid/smudge/commit/01d015e8c59d948785fb2468a79fddf47c70d18a))
+- *(widgets)* Reorderable keyed lists by drag and by Alt+arrow - ([306ba6c](https://github.com/QaidVoid/smudge/commit/306ba6c9f0345374dc95db8acd483c5ccf68b910))
+- *(widgets)* Add a horizontal scrollbar - ([676b564](https://github.com/QaidVoid/smudge/commit/676b56427a500353e119d89ea74970faafdb855c))
+- [**breaking**] Mark a field invalid and tell a screen reader why - ([4b38583](https://github.com/QaidVoid/smudge/commit/4b38583cb5b1fc2df9000d46e6df6ad661b0ce0d))
+- Reveal the focus and auto-scroll a drag on both axes - ([c1a962d](https://github.com/QaidVoid/smudge/commit/c1a962d32484f130ce102a3a531a3782209e1f08))
+- Scroll sideways with Shift and pass on what a view cannot use - ([8ef1e05](https://github.com/QaidVoid/smudge/commit/8ef1e05733d0de91f5193dc37c5ce99172505e4d))
+
+### 🐛 Bug Fixes
+
+- *(a11y)* Send a node again when its description or states change - ([e2b881c](https://github.com/QaidVoid/smudge/commit/e2b881c133d67dd1893261446981349abb0cc54e))
+- *(core)* Treat an empty accessible description as none - ([a952485](https://github.com/QaidVoid/smudge/commit/a952485d6776090d5dafdb988a365f7c09870ff7))
+- *(core)* Never fire a timer past what the clock can count - ([15e60da](https://github.com/QaidVoid/smudge/commit/15e60da0867fcc821715999101d4c5b8842dfa29))
+- *(platform)* Wake the loop for drags on the shared wayland socket - ([510b806](https://github.com/QaidVoid/smudge/commit/510b8067287d78757e4268731d65462da59a14f4))
+- *(platform)* Keep wasm builds clear of proptest - ([f9f8cc1](https://github.com/QaidVoid/smudge/commit/f9f8cc1e0851766b2032e1a2d252d5ceae314d21))
+- *(text)* Keep a padded text input's line inside its padding - ([c2f8ed8](https://github.com/QaidVoid/smudge/commit/c2f8ed877a7452f3e8742d0463458027725d7531))
+- *(widgets)* Pad table cell content off the cell edges - ([5f3c6b7](https://github.com/QaidVoid/smudge/commit/5f3c6b76874a43c4c847de2ad0690122a84f8dcd))
+
+### 📚 Documentation
+
+- *(smudge)* Document docking with an editor example - ([5d44911](https://github.com/QaidVoid/smudge/commit/5d44911316ebe22ba667c4b67f258948b18e9629))
+- Add an example of scrolling on both axes - ([20ee288](https://github.com/QaidVoid/smudge/commit/20ee2887e9f2f892d5e329ec8604f732c2630bab))
+- Bring the README and the limits up to date - ([9b23f6a](https://github.com/QaidVoid/smudge/commit/9b23f6ada3507ea00628d4f9e0231d6d66beca9d))
+
 ## [0.4.0](https://github.com/QaidVoid/smudge/compare/v0.3.0...v0.4.0) - 2026-11-20
 
 ### ⛰️  Features
