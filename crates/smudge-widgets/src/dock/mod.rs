@@ -1,5 +1,6 @@
 //! Docking workspaces, layout values and the operations that edit them.
 
+mod keyboard;
 mod layout;
 mod strip;
 mod widget;

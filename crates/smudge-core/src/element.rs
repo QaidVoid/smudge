@@ -65,7 +65,10 @@ use crate::tree::{Dirty, WidgetId, WidgetTree};
 use crate::variants::{PatchBuilder, StylePatch, Variants};
 use crate::widget::{PaintCx, Widget};
 
+mod focus_target;
 mod keep_alive;
+
+pub use focus_target::FocusTarget;
 
 pub use keep_alive::KeepAlive;
 pub(crate) use keep_alive::{KeptContent, KeptPlacement};
@@ -84,6 +87,9 @@ type ChildStyling = Rc<dyn Fn(&mut Style)>;
 pub(crate) struct UpdateQueue(Rc<RefCell<VecDeque<Update>>>);
 
 impl UpdateQueue {
+    pub(crate) fn has_pending(&self) -> bool {
+        !self.0.borrow().is_empty()
+    }
     /// Queues `update` to run in the next apply step.
     pub(crate) fn push(&self, update: Update) {
         self.0.borrow_mut().push_back(update);
@@ -2758,6 +2764,26 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Attaches a destination for later requests from [`FocusTarget::request_focus`].
+    /// The destination remembers which node last held focus inside its subtree.
+    /// Attaching it does not add a Tab stop or change focus by itself.
+    pub fn focus_target(mut self, target: &FocusTarget) -> Self {
+        let target = target.clone();
+        self.bindings.push(Binding {
+            key: None,
+            install: Box::new(move |id, queue| {
+                if let Some(owner) = Owner::current() {
+                    target.mount(id, queue, &owner);
+                }
+                let queue = queue.clone();
+                RenderEffect::new_unwrapped(move || {
+                    queue.push(Box::new(move |tree| tree.register_focus_target(id)));
+                })
+            }),
+        });
+        self
+    }
+
     /// Keeps Tab and Shift+Tab cycling among the focusable nodes inside the
     /// node's subtree, for as long as the node is mounted and not hidden.
     ///
@@ -3290,6 +3316,19 @@ impl<W: Widget> Element<W> {
     pub fn on_key(mut self, handler: impl FnMut(&KeyEvent) -> Handled + 'static) -> Self {
         self.handlers.on_key = Some(Box::new(crate::hot::wrap1_ref_mut(handler)));
         self.focusable = true;
+        self
+    }
+
+    /// Runs `handler` for a pressed key left unhandled by ordinary key
+    /// handlers while this node or a descendant holds focus. The nearest
+    /// fallback runs first. Fallbacks do not cross from an overlay into its
+    /// host, and unlike [`on_key`](Self::on_key), this adds no Tab stop.
+    /// Taking the key turns on keyboard navigation mode.
+    pub fn on_unhandled_key(mut self, handler: impl FnMut(&KeyEvent) -> Handled + 'static) -> Self {
+        self.handlers
+            .watchers
+            .get_or_insert_default()
+            .on_unhandled_key = Some(Box::new(crate::hot::wrap1_ref_mut(handler)));
         self
     }
 

@@ -1035,7 +1035,9 @@ impl App {
         if self.carrying.is_some() {
             return true;
         }
-        self.tree.has_pending_work() || crate::channel::has_pending(&self.channels)
+        self.tree.has_pending_work()
+            || self.queue.has_pending()
+            || crate::channel::has_pending(&self.channels)
     }
 
     /// Handles one input event between frames.

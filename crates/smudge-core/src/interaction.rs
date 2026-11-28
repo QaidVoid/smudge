@@ -299,10 +299,11 @@ pub(crate) enum ArrowNav {
     Linear,
 }
 
-/// Closures that watch a node's hover and presses beside its handlers, so
-/// what the library builds on a node leaves the app's handlers its own.
+/// Input observers and fallback handlers that leave ordinary handlers in place.
 #[derive(Default)]
 pub(crate) struct Watchers {
+    /// Runs for keys that no ordinary handler took in this focus chain.
+    pub(crate) on_unhandled_key: Option<KeyHandler>,
     /// Run with the node's handler when it enters or leaves the hovered
     /// chain.
     pub(crate) hover: Vec<Box<dyn FnMut(bool)>>,

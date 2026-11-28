@@ -6,6 +6,9 @@
 //! focus ring can draw for keyboard users alone. A pointer press turns the
 //! mode off again.
 
+use std::rc::Rc;
+
+use crate::element::FocusTarget;
 use crate::geometry::{Point, Rect};
 use crate::input::{Handled, Key, KeyEvent};
 use crate::reactive::prelude::{Get, Set};
@@ -133,6 +136,8 @@ impl WidgetTree {
         // the keys no handler above it took.
         let mut arrows_seen = false;
         let mut deferred = None;
+        let mut fallback = None;
+        let live_press = event.pressed && start.is_some() && start == self.focused;
         while let Some(id) = next {
             next = self.nodes.get(id).and_then(|node| node.parent);
             let arrows_here = !left_overlay;
@@ -173,6 +178,17 @@ impl WidgetTree {
             });
             if handled == Handled::Yes {
                 return Handled::Yes;
+            }
+            if live_press
+                && arrows_here
+                && fallback.is_none()
+                && self.nodes[id]
+                    .handlers
+                    .watchers
+                    .as_ref()
+                    .is_some_and(|watchers| watchers.on_unhandled_key.is_some())
+            {
+                fallback = Some(id);
             }
             if arrows_here
                 && !arrows_seen
@@ -215,8 +231,12 @@ impl WidgetTree {
                 .iter()
                 .any(|overlay| overlay.root == id && overlay.layer == Layer::Dialog)
             {
-                return Handled::No;
+                break;
             }
+        }
+        if self.route_unhandled_key(fallback, event) {
+            self.set_keyboard_nav(true);
+            return Handled::Yes;
         }
         if let Some((container, nav)) = deferred
             && self.navigate_in(container, nav, event)
@@ -224,6 +244,37 @@ impl WidgetTree {
             return Handled::Yes;
         }
         Handled::No
+    }
+
+    fn route_unhandled_key(&mut self, mut next: Option<WidgetId>, event: &KeyEvent) -> bool {
+        while let Some(id) = next {
+            let Some(node) = self.nodes.get(id) else {
+                break;
+            };
+            next = if self.is_overlay_root(id) {
+                None
+            } else {
+                node.parent
+            };
+            if node.withdrawn() || node.interaction.has(Interaction::DISABLED) {
+                continue;
+            }
+            let Some(owner) = self.owner(id).cloned() else {
+                continue;
+            };
+            let handled = owner.with(|| {
+                self.nodes[id]
+                    .handlers
+                    .watchers
+                    .as_mut()
+                    .and_then(|watchers| watchers.on_unhandled_key.as_mut())
+                    .is_some_and(|handler| handler(event) == Handled::Yes)
+            });
+            if handled {
+                return true;
+            }
+        }
+        false
     }
 
     /// Returns whether `id` lies inside an overlay, its top node included.
@@ -401,6 +452,16 @@ impl WidgetTree {
             .take()
             .unwrap_or_else(|| self.lineage(old));
         let after = self.lineage(new);
+        if !self.focus_targets.is_empty() {
+            for &id in &after {
+                if let Some(last) = self.focus_targets.get_mut(&id) {
+                    *last = new;
+                }
+                if self.is_overlay_root(id) {
+                    break;
+                }
+            }
+        }
         let left = before
             .iter()
             .filter(|id| !after.contains(id) && !removed.contains(id))
@@ -442,6 +503,46 @@ impl WidgetTree {
         self.set_focus(Some(id));
         self.scroll_focus_into_view();
         true
+    }
+
+    pub(crate) fn register_focus_target(&mut self, id: WidgetId) {
+        if self.contains(id) {
+            self.focus_targets.insert(id, None);
+        }
+    }
+
+    pub(super) fn resolve_focus_target(&mut self) {
+        let Some((primary, fallback)) = self.pending_focus_target.take() else {
+            return;
+        };
+        let target = self.focus_destination(&primary).or_else(|| {
+            fallback
+                .as_ref()
+                .and_then(|target| self.focus_destination(target))
+        });
+        if let Some(id) = target {
+            self.request_focus(id);
+        }
+    }
+
+    fn focus_destination(&self, target: &FocusTarget) -> Option<WidgetId> {
+        let (scope, app) = target.mounted()?;
+        if !Rc::ptr_eq(&app, &self.owner(scope)?.data().scope) {
+            return None;
+        }
+        let eligible = |id| self.focusable(id) && self.can_hold_focus(id) && !self.behind_trap(id);
+        if let Some(last) = self.focus_targets.get(&scope).copied().flatten()
+            && self.is_within(last, scope)
+            && eligible(last)
+        {
+            return Some(last);
+        }
+        if eligible(scope) {
+            return Some(scope);
+        }
+        let mut order = Vec::new();
+        self.collect_tab_stops(scope, false, &mut order);
+        order.into_iter().find(|&id| eligible(id))
     }
 
     /// Turns the keyboard navigation mode on or off.

@@ -6,9 +6,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use smudge_core::geometry::{Color, Point, Rect, Size};
-use smudge_core::input::{InputEvent, Key};
+use smudge_core::input::{Handled, InputEvent, Key, Modifiers};
 use smudge_core::reactive::{Owner, RwSignal, prelude::*};
-use smudge_core::semantics::{Role, SemanticsNode};
+use smudge_core::semantics::{Politeness, Role, SemanticsNode};
 use smudge_core::style::{Direction, pct, px};
 use smudge_core::theme::{ColorToken, Theme};
 use smudge_core::widget::panel;
@@ -1540,4 +1540,440 @@ fn a_drag_over_a_strips_empty_tail_shows_no_rectangle() {
     assert_eq!(model.get(), initial);
     builds.assert_once(&["One", "Two"]);
     harness.assert_matches_full_repaint();
+}
+
+fn f6(harness: &mut Harness, backwards: bool) {
+    harness.press_key_with(
+        Key::Function(6),
+        Modifiers {
+            shift: backwards,
+            ..Modifiers::default()
+        },
+    );
+    harness.settle();
+}
+
+fn assert_announced(harness: &mut Harness, expected: &[&str]) {
+    let changes = harness.app().take_a11y_changes();
+    assert_eq!(
+        changes
+            .announcements
+            .iter()
+            .map(|a| a.message.as_str())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(
+        changes
+            .announcements
+            .iter()
+            .all(|a| a.politeness == Politeness::Polite)
+    );
+}
+
+#[test]
+fn f6_cycles_groups_in_tree_order_and_restores_the_last_available_control() {
+    TextSystem::bundled_only().install();
+    let layout = RwSignal::new(nested_layout());
+    let disabled = RwSignal::new(false);
+    let disable = disabled.clone();
+    let mut harness =
+        Harness::new(480.0, 240.0, 1.0, move || {
+            dock(layout, move |key| {
+                let disable = disable.clone();
+                let files = key == "Files";
+                let editor = key == "Editor";
+                DockPanel::new(key, move || {
+                    let mut content = panel().column();
+                    if files || editor {
+                        content =
+                            content.child(panel().role(Role::Button).focusable().accessible_label(
+                                if files { "First file" } else { "Editor field" },
+                            ));
+                    }
+                    if files {
+                        content = content.child(
+                            panel()
+                                .role(Role::Button)
+                                .focusable()
+                                .accessible_label("Second file")
+                                .disabled(move || disable.get()),
+                        );
+                    }
+                    content
+                })
+            })
+            .width(pct(100.0))
+            .height(pct(100.0))
+        });
+    harness.settle();
+    press_tab(&mut harness, "Files");
+    f6(&mut harness, false);
+    assert!(named(&mut harness, Role::Button, "Editor field").focused);
+    f6(&mut harness, false);
+    assert!(named(&mut harness, Role::Tab, "Log").focused);
+    f6(&mut harness, false);
+    assert!(named(&mut harness, Role::Button, "First file").focused);
+    let second = named(&mut harness, Role::Button, "Second file");
+    assert!(harness.app().request_focus(second.id));
+    f6(&mut harness, true);
+    assert!(named(&mut harness, Role::Tab, "Log").focused);
+    f6(&mut harness, true);
+    assert!(named(&mut harness, Role::Button, "Editor field").focused);
+    f6(&mut harness, true);
+    assert!(named(&mut harness, Role::Button, "Second file").focused);
+    f6(&mut harness, false);
+    disabled.set(true);
+    harness.settle();
+    f6(&mut harness, true);
+    assert!(named(&mut harness, Role::Button, "First file").focused);
+    assert_announced(&mut harness, &[]);
+}
+
+#[test]
+fn panel_and_app_key_handlers_take_priority_over_dock_shortcuts() {
+    TextSystem::bundled_only().install();
+    let model = RwSignal::new(split_layout());
+    let layout = model.clone();
+    let panel_keys = Rc::new(Cell::new(0));
+    let app_keys = Rc::new(Cell::new(0));
+    let (panel_log, app_log) = (Rc::clone(&panel_keys), Rc::clone(&app_keys));
+    let mut harness = Harness::new(480.0, 240.0, 1.0, move || {
+        panel()
+            .on_key(move |event| {
+                if event.pressed
+                    && event.modifiers.control
+                    && matches!(&event.key, Key::Character(key) if key == "w")
+                {
+                    app_log.set(app_log.get() + 1);
+                    Handled::Yes
+                } else {
+                    Handled::No
+                }
+            })
+            .child(
+                dock(layout, move |key| {
+                    let log = Rc::clone(&panel_log);
+                    DockPanel::new(key, move || {
+                        panel()
+                            .role(Role::Button)
+                            .accessible_label("Field")
+                            .on_key(move |event| {
+                                if event.pressed && event.key == Key::Function(6) {
+                                    log.set(log.get() + 1);
+                                    Handled::Yes
+                                } else {
+                                    Handled::No
+                                }
+                            })
+                    })
+                })
+                .width(pct(100.0))
+                .height(pct(100.0)),
+            )
+    });
+    harness.settle();
+    let field = named(&mut harness, Role::Button, "Field");
+    assert!(harness.app().request_focus(field.id));
+    f6(&mut harness, false);
+    assert_eq!(panel_keys.get(), 1);
+    assert_eq!(harness.app().focused(), Some(field.id));
+    ctrl_w(&mut harness);
+    assert_eq!(app_keys.get(), 1);
+    assert_eq!(model.get(), split_layout());
+    assert_announced(&mut harness, &[]);
+}
+
+fn ctrl_w(harness: &mut Harness) {
+    harness.press_key_with(
+        Key::Character("w".to_owned()),
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        },
+    );
+    harness.settle();
+}
+
+fn menu_key(harness: &mut Harness, function_key: bool) {
+    if function_key {
+        harness.press_key_with(
+            Key::Function(10),
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+    } else {
+        harness.press_key(Key::ContextMenu);
+    }
+    harness.settle();
+}
+
+fn choose_menu_item(harness: &mut Harness, name: &str) {
+    let action = named(harness, Role::MenuItem, name);
+    assert!(harness.app().request_focus(action.id));
+    harness.press_key(Key::Enter);
+    harness.settle();
+}
+
+#[test]
+fn tab_menu_splits_on_each_side_and_restores_focus_to_the_moved_tab() {
+    let initial = layout(&["One", "Two"], "One");
+    let model = RwSignal::new(initial.clone());
+    let builds = Builds::default();
+    let mut harness = window(model.clone(), builds.clone());
+    let retained_panel = named(&mut harness, Role::TabPanel, "One").id;
+    for (name, zone, message) in [
+        ("Move left", Zone::Left, "One moved to the left of Two"),
+        ("Move right", Zone::Right, "One moved to the right of Two"),
+        ("Move above", Zone::Top, "One moved above Two"),
+        ("Move below", Zone::Bottom, "One moved below Two"),
+    ] {
+        press_tab(&mut harness, "One");
+        let original_tab = named(&mut harness, Role::Tab, "One").id;
+        menu_key(&mut harness, false);
+        choose_menu_item(&mut harness, name);
+        let mut expected = initial.clone();
+        expected
+            .move_panel("One", &[], zone)
+            .expect("the group has another panel");
+        assert_eq!(model.get(), expected);
+        let tab = named(&mut harness, Role::Tab, "One");
+        assert_ne!(tab.id, original_tab);
+        assert!(tab.focused);
+        assert_eq!(
+            named(&mut harness, Role::TabPanel, "One").id,
+            retained_panel
+        );
+        assert_announced(&mut harness, &[message]);
+        assert!(!shows(&mut harness, Role::MenuItem, name));
+        harness.assert_matches_full_repaint();
+        model.set(initial.clone());
+        harness.settle();
+    }
+    builds.assert_once(&["One", "Two"]);
+}
+
+#[test]
+fn shift_f10_menu_uses_group_titles_and_focuses_the_tab_after_a_group_collapses() {
+    TextSystem::bundled_only().install();
+    let model = RwSignal::new(split_layout());
+    let edits = model.clone();
+    let mut harness = Harness::new(480.0, 240.0, 1.0, move || {
+        dock(edits, |key| {
+            DockPanel::new(if key == "One" { "Files" } else { "Editor" }, panel)
+        })
+        .width(pct(100.0))
+        .height(pct(100.0))
+    });
+    harness.settle();
+    press_tab(&mut harness, "Files");
+    menu_key(&mut harness, true);
+    let item = "Move into group with Editor";
+    assert!(shows(&mut harness, Role::MenuItem, item));
+    assert!(!shows(&mut harness, Role::MenuItem, "Move left"));
+    f6(&mut harness, false);
+    ctrl_w(&mut harness);
+    assert!(shows(&mut harness, Role::MenuItem, item));
+    assert_eq!(model.get(), split_layout());
+    assert_announced(&mut harness, &[]);
+    harness.press_key(Key::Escape);
+    harness.settle();
+    assert!(named(&mut harness, Role::Tab, "Files").focused);
+    menu_key(&mut harness, true);
+    choose_menu_item(&mut harness, item);
+    assert_eq!(model.get(), layout(&["Two", "One"], "One"));
+    assert!(named(&mut harness, Role::Tab, "Files").focused);
+    let group = named(&mut harness, Role::Group, "Files");
+    let content = named(&mut harness, Role::TabPanel, "Files");
+    let tab = named(&mut harness, Role::Tab, "Files");
+    let nodes = harness.app().semantics_nodes();
+    let strip = nodes
+        .iter()
+        .find(|node| node.role == Role::TabList)
+        .expect("the dock projects a tab list");
+    assert!(
+        std::iter::successors(strip.parent, |parent| {
+            nodes.iter().find(|node| node.id == *parent)?.parent
+        })
+        .any(|parent| parent == group.id)
+    );
+    assert_eq!(tab.parent, Some(strip.id));
+    assert_eq!(content.parent, Some(group.id));
+    assert_announced(&mut harness, &["Files moved into the group with Editor"]);
+}
+
+#[test]
+fn alt_arrows_reorder_a_focused_tab_once_without_wrapping_at_the_ends() {
+    let model = RwSignal::new(layout(&["One", "Two", "Three"], "One"));
+    let mut harness = window(model.clone(), Builds::default());
+    press_tab(&mut harness, "One");
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    for (key, expected, messages) in [
+        (Key::ArrowLeft, ["One", "Two", "Three"], &[][..]),
+        (
+            Key::ArrowRight,
+            ["Two", "One", "Three"],
+            &["One moved to position 2 of 3"][..],
+        ),
+        (
+            Key::ArrowLeft,
+            ["One", "Two", "Three"],
+            &["One moved to position 1 of 3"][..],
+        ),
+    ] {
+        harness.press_key_with(key, alt);
+        harness.settle();
+        assert_eq!(model.get(), layout(&expected, "One"));
+        assert!(named(&mut harness, Role::Tab, "One").focused);
+        assert_announced(&mut harness, messages);
+    }
+}
+
+#[test]
+fn keyboard_close_uses_the_veto_and_announces_only_committed_changes() {
+    TextSystem::bundled_only().install();
+    let model = RwSignal::new(layout(&["One", "Two", "Locked"], "One"));
+    let edits = model.clone();
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let log = Rc::clone(&requests);
+    let allowed = Rc::new(Cell::new(false));
+    let allow = Rc::clone(&allowed);
+    let mut harness = Harness::new(480.0, 240.0, 1.0, move || {
+        dock(edits, move |key| {
+            Builds::default().panel(key).closable(key != "Locked")
+        })
+        .width(pct(100.0))
+        .height(pct(100.0))
+        .on_close(move |key| {
+            log.borrow_mut().push(key.to_owned());
+            allow.get()
+        })
+    });
+    harness.settle();
+    let content = named(&mut harness, Role::Button, "Content One");
+    assert!(harness.app().request_focus(content.id));
+    ctrl_w(&mut harness);
+    assert!(named(&mut harness, Role::Button, "Content One").focused);
+    assert_eq!(*requests.borrow(), ["One"]);
+    assert_announced(&mut harness, &[]);
+    allowed.set(true);
+    ctrl_w(&mut harness);
+    assert_eq!(model.get(), layout(&["Two", "Locked"], "Two"));
+    assert!(named(&mut harness, Role::Tab, "Two").focused);
+    assert_announced(&mut harness, &["One closed"]);
+    menu_key(&mut harness, false);
+    choose_menu_item(&mut harness, "Close");
+    assert_eq!(model.get(), layout(&["Locked"], "Locked"));
+    assert!(named(&mut harness, Role::Tab, "Locked").focused);
+    assert_announced(&mut harness, &["Two closed"]);
+    ctrl_w(&mut harness);
+    assert!(model.get().contains("Locked"));
+    assert_eq!(*requests.borrow(), ["One", "One", "Two"]);
+    assert_announced(&mut harness, &[]);
+}
+
+#[test]
+fn pointer_moves_and_closing_the_last_panel_announce_without_duplicate_messages() {
+    let model = RwSignal::new(split_layout());
+    let mut harness = window(model.clone(), Builds::default());
+    let from = tab_center(&mut harness, "One");
+    let to = middle(&named(&mut harness, Role::TabPanel, "Two"));
+    drag(&mut harness, from, to);
+    assert!(named(&mut harness, Role::Tab, "One").focused);
+    assert_announced(&mut harness, &["One moved into the group with Two"]);
+    ctrl_w(&mut harness);
+    assert_announced(&mut harness, &["One closed"]);
+    let close = named(&mut harness, Role::Button, "Close Two");
+    harness.click(middle(&close));
+    harness.settle();
+    assert!(model.get().root().is_none());
+    assert_announced(&mut harness, &["Two closed"]);
+    assert_announced(&mut harness, &[]);
+}
+
+#[test]
+fn a_menu_move_finds_its_destination_after_another_group_collapses() {
+    let model = RwSignal::new(nested_layout());
+    let mut harness = window(model.clone(), Builds::default());
+    press_tab(&mut harness, "Files");
+    menu_key(&mut harness, false);
+    assert!(shows(
+        &mut harness,
+        Role::MenuItem,
+        "Move into group with Log"
+    ));
+    model.update(|layout| {
+        layout.close("Editor").expect("Editor is open");
+        layout.close("Search").expect("Search is open");
+    });
+    harness.settle();
+    let mut expected = model.get();
+    expected
+        .move_panel("Files", &[Branch::Second], Zone::Center)
+        .expect("Log's group still exists");
+    choose_menu_item(&mut harness, "Move into group with Log");
+    assert_eq!(model.get(), expected);
+    assert!(named(&mut harness, Role::Tab, "Files").focused);
+    assert_announced(&mut harness, &["Files moved into the group with Log"]);
+}
+
+#[test]
+fn ctrl_w_on_a_focused_nonclosable_tab_leaves_the_active_panel_open_and_bubbles() {
+    TextSystem::bundled_only().install();
+    let model = RwSignal::new(layout(&["Locked", "Editor"], "Locked"));
+    let edits = model.clone();
+    let fallback_count = Rc::new(Cell::new(0));
+    let fallback = Rc::clone(&fallback_count);
+    let mut harness = Harness::new(480.0, 240.0, 1.0, move || {
+        panel()
+            .on_unhandled_key(move |event| {
+                if event.modifiers.control
+                    && matches!(&event.key, Key::Character(key) if key == "w")
+                {
+                    fallback.set(fallback.get() + 1);
+                    Handled::Yes
+                } else {
+                    Handled::No
+                }
+            })
+            .child(
+                dock(edits, |key| {
+                    DockPanel::new(key, panel).closable(key != "Locked")
+                })
+                .width(pct(100.0))
+                .height(pct(100.0)),
+            )
+    });
+    harness.settle();
+    press_tab(&mut harness, "Locked");
+    model.update(|layout| layout.activate("Editor").expect("Editor is open"));
+    harness.settle();
+    assert!(named(&mut harness, Role::Tab, "Locked").focused);
+    ctrl_w(&mut harness);
+    assert_eq!(model.get(), layout(&["Locked", "Editor"], "Editor"));
+    assert_eq!(fallback_count.get(), 1);
+    assert_announced(&mut harness, &[]);
+}
+
+#[test]
+fn f6_from_a_split_divider_enters_the_first_or_last_group() {
+    let model = RwSignal::new(nested_layout());
+    let mut harness = window(model, Builds::default());
+    let divider = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .find(|node| node.role == Role::Splitter && node.bounds.height() > node.bounds.width())
+        .expect("the outer split has a vertical divider");
+    assert!(harness.app().request_focus(divider.id));
+    f6(&mut harness, false);
+    assert!(named(&mut harness, Role::Button, "Content Files").focused);
+    assert!(harness.app().request_focus(divider.id));
+    f6(&mut harness, true);
+    assert!(named(&mut harness, Role::Button, "Content Log").focused);
 }

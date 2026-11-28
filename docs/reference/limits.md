@@ -10,7 +10,7 @@
 - **A screen reader cannot move the caret.** A reader follows the caret and the selection of a text field, but a request from it to set them is ignored, so the caret moves by the keyboard and the pointer alone.
 - **Toasts carry text alone.** A toast shows a message and closes on a press or after its time. It holds no button, such as an undo, and the keyboard cannot reach it.
 - **Undo lives in each input.** Every text input keeps its own undo history, cleared when the application replaces the text. There is no application-wide undo.
-- **Dock close controls do not add keyboard stops.** Tab strips have one roving keyboard stop for selecting panels. Their close buttons accept pointer and accessibility activation, but are not independently keyboard-focusable. Scrolling a newly active tab into view can take a following frame while its geometry is measured.
+- **Dock close controls do not add keyboard stops.** Tab strips have one roving keyboard stop for selecting panels. Their close buttons accept pointer and accessibility activation, but are not independently keyboard-focusable. Use Ctrl+W or the tab menu to close a panel by keyboard. Scrolling a newly active tab into view can take a following frame while its geometry is measured.
 
 ## Drawing
 

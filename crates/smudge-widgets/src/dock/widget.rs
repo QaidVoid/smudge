@@ -2,17 +2,19 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use smudge_core::element::{AnyElement, Element, IntoElement, KeepAlive, Value, for_each};
+use smudge_core::element::{
+    AnyElement, Element, FocusTarget, IntoElement, KeepAlive, Slot, Value, for_each,
+};
 use smudge_core::geometry::Point;
 use smudge_core::hot;
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{Memo, Owner, RenderEffect, RwSignal, prelude::*};
-use smudge_core::semantics::Role;
+use smudge_core::semantics::{Announcer, Politeness, Role};
 use smudge_core::style::{Direction, Length, pct, px};
 use smudge_core::tree::Dirty;
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 
-use super::{Branch, DockLayout, DockNode, GroupPath, Zone, zone};
+use super::{Branch, DockLayout, DockNode, GroupPath, Zone, keyboard, zone};
 use crate::{SplitExt, signal, split};
 
 type CloseHandler = Box<dyn FnMut(&str) -> bool>;
@@ -71,6 +73,12 @@ struct PanelInfo {
     closable: bool,
 }
 
+#[derive(Clone, Default)]
+pub(super) struct PanelFocus {
+    pub(super) tab: FocusTarget,
+    pub(super) content: FocusTarget,
+}
+
 pub(super) struct State {
     pub(super) layout: RwSignal<DockLayout>,
     zone: RwSignal<Option<(Rc<zone::Frame>, Zone)>>,
@@ -78,6 +86,8 @@ pub(super) struct State {
     factory: Rc<dyn Fn(&str) -> DockPanel>,
     info: RwSignal<HashMap<String, PanelInfo>>,
     options: Rc<Options>,
+    focus: Rc<RefCell<HashMap<String, PanelFocus>>>,
+    announcer: Announcer,
 }
 
 impl State {
@@ -137,20 +147,90 @@ impl State {
     }
 
     pub(super) fn activate(&self, key: &str) {
-        let selected = self.layout.read(|layout| is_active(layout.root(), key));
-        if !selected {
+        let wanted = self
+            .layout
+            .read(|layout| layout.contains(key) && !is_active(layout.root(), key));
+        if wanted {
             self.layout.update(|layout| {
                 let _ = layout.activate(key);
             });
         }
     }
 
-    pub(super) fn close(&self, key: &str) {
-        if !self
-            .info
-            .read(|info| info.get(key).is_some_and(|panel| panel.closable))
+    pub(super) fn focus_for(&self, key: &str) -> PanelFocus {
+        let mut focus = self.focus.borrow_mut();
+        if let Some(targets) = focus.get(key) {
+            return targets.clone();
+        }
+        let targets = PanelFocus::default();
+        focus.insert(key.to_owned(), targets.clone());
+        targets
+    }
+
+    pub(super) fn move_panel(&self, key: &str, path: &[Branch], zone: Zone) {
+        let destination = self.layout.read(|layout| {
+            let Some(DockNode::Group { panels, active }) = node_at(layout, path) else {
+                return None;
+            };
+            if !layout.contains(key) {
+                return None;
+            }
+            if panels.iter().any(|panel| panel == key)
+                && (panels.len() == 1 || zone == Zone::Center)
+            {
+                return None;
+            }
+            let neighbor = if zone != Zone::Center && active == key {
+                after_removal(panels, key)?
+            } else {
+                active
+            };
+            Some(self.title(neighbor))
+        });
+        let Some(destination) = destination else {
+            return;
+        };
+        if self
+            .layout
+            .update(|layout| layout.move_panel(key, path, zone))
+            .is_err()
         {
             return;
+        }
+        let relation = match zone {
+            Zone::Center => "into the group with",
+            Zone::Left => "to the left of",
+            Zone::Right => "to the right of",
+            Zone::Top => "above",
+            Zone::Bottom => "below",
+        };
+        self.announce(format!(
+            "{} moved {relation} {destination}",
+            self.title(key)
+        ));
+        self.focus_for(key).tab.request_focus(None);
+    }
+
+    pub(super) fn reorder(&self, key: &str, from: usize, to: usize, count: usize) {
+        if from == to
+            || self
+                .layout
+                .update(|layout| layout.move_tab(key, to))
+                .is_err()
+        {
+            return;
+        }
+        self.announce(format!(
+            "{} moved to position {} of {count}",
+            self.title(key),
+            to + 1
+        ));
+        self.focus_for(key).tab.request_focus(None);
+    }
+
+    pub(super) fn close(&self, key: &str, refocus: bool) -> bool {
+        if !self.closable(key) || !self.layout.read(|layout| layout.contains(key)) {
+            return false;
         }
         let allowed = self
             .options
@@ -158,14 +238,29 @@ impl State {
             .borrow_mut()
             .as_mut()
             .is_none_or(|close| close(key));
-        if allowed {
-            self.layout.update(|layout| {
-                let _ = layout.close(key);
-            });
+        if !allowed {
+            return true;
         }
+        let next = refocus
+            .then(|| {
+                self.layout
+                    .read(|layout| keyboard::after_close(layout, key))
+            })
+            .flatten();
+        if self.layout.update(|layout| layout.close(key)).is_ok() {
+            self.announce(format!("{} closed", self.title(key)));
+            if let Some(next) = next {
+                self.focus_for(&next).tab.request_focus(None);
+            }
+        }
+        true
     }
 
-    fn build_panel(&self, key: &str) -> AnyElement {
+    fn announce(&self, message: String) {
+        self.announcer.announce(message, Politeness::Polite);
+    }
+
+    fn build_panel(self: &Rc<Self>, key: &str) -> AnyElement {
         let definition = (self.factory)(key);
         let title = definition.title.clone();
         self.info.update(|info| {
@@ -178,8 +273,13 @@ impl State {
             );
         });
         let info = self.info.clone();
+        let targets = self.focus_for(key);
+        let focus = Rc::clone(&self.focus);
+        let close_state = Rc::clone(self);
+        let close_key = key.to_owned();
         let key = key.to_owned();
         Owner::on_cleanup(move || {
+            focus.borrow_mut().remove(&key);
             info.update(|info| {
                 info.remove(&key);
             });
@@ -189,6 +289,8 @@ impl State {
             .grow(1.0)
             .min_height(px(0.0))
             .min_width(px(0.0))
+            .focus_target(&targets.content)
+            .on_unhandled_key(move |event| keyboard::close_key(&close_state, &close_key, event))
             .role(Role::TabPanel)
             .accessible_label(title)
             .style_children(|style| {
@@ -226,8 +328,14 @@ impl Widget for Dock {
 /// A tab press activates it. Left and Right, Home and End navigate the strip
 /// as in [`tabs`](crate::tabs), and each strip takes one Tab stop. Close
 /// buttons accept pointer and accessibility activation without adding arrow
-/// destinations. The strips scroll sideways and reveal newly active tabs
-/// after their geometry has been measured, without moving keyboard focus.
+/// destinations. Within the workspace, F6 and Shift+F6 cycle through the
+/// groups, restoring focus inside the active panel or falling back to its tab.
+/// From a split divider they enter the first or last group, respectively.
+/// Alt+Left and Alt+Right reorder a focused tab. The menu key and Shift+F10
+/// open the tab's menu for moving or closing the panel. Ctrl+W closes the
+/// focused panel if it can close and no key handler took the shortcut. User
+/// moves and closes are announced. The strips scroll sideways and reveal newly
+/// active tabs after their geometry has been measured, without moving focus.
 /// Divider drags and keys write the layout's split ratios. Each tab drags:
 /// a drag along its own strip reorders the tabs, and a release over a group
 /// moves the panel there, joining the group or splitting it toward the edge
@@ -275,6 +383,8 @@ pub fn dock(
                 factory: Rc::clone(&factory),
                 info: signal(HashMap::new()),
                 options: Rc::clone(&mounted_options),
+                focus: Rc::new(RefCell::new(HashMap::new())),
+                announcer: Announcer::new(),
             });
             let watch = Rc::clone(&state);
             RenderEffect::new(move || {
@@ -283,7 +393,10 @@ pub fn dock(
             });
             let build = Rc::clone(&state);
             let store = KeepAlive::new(move |key| build.build_panel(key));
-            position(Vec::new(), state, store)
+            let keyboard_state = Rc::clone(&state);
+            position(Vec::new(), Rc::clone(&state), store)
+                .announcer(&state.announcer)
+                .on_unhandled_key(move |event| keyboard::group_key(&keyboard_state, None, event))
         },
     );
     Element::new(Dock { options })
@@ -295,9 +408,9 @@ pub fn dock(
 
 /// Configures panel closing and empty content for a [`dock`].
 pub trait DockExt: Sized {
-    /// Checks a close-button request before removing the panel. Returning
+    /// Checks a user close request before removing the panel. Returning
     /// `false` leaves it open, for example while unsaved work is confirmed.
-    /// Without a handler, a close button removes the panel immediately.
+    /// Without a handler, a user close request removes the panel immediately.
     fn on_close(self, handler: impl FnMut(&str) -> bool + 'static) -> Self;
 
     /// Builds content while the layout is empty. It is unmounted when a
@@ -335,7 +448,7 @@ enum Kind {
     Column,
 }
 
-fn position(path: GroupPath, state: Rc<State>, store: KeepAlive) -> AnyElement {
+fn position(path: GroupPath, state: Rc<State>, store: KeepAlive) -> Element<Slot> {
     let shape_state = Rc::clone(&state);
     let shape_path = path.clone();
     let kind = Memo::new(move || {
@@ -373,7 +486,6 @@ fn position(path: GroupPath, state: Rc<State>, store: KeepAlive) -> AnyElement {
             ),
         },
     ))
-    .into_any()
 }
 
 fn group(path: GroupPath, state: Rc<State>, store: KeepAlive) -> AnyElement {
@@ -409,7 +521,8 @@ fn group(path: GroupPath, state: Rc<State>, store: KeepAlive) -> AnyElement {
     let leave_state = Rc::clone(&state);
     let drop_state = Rc::clone(&state);
     let drop_frame = Rc::clone(&frame);
-    let drop_path = path;
+    let drop_path = path.clone();
+    let keyboard_state = Rc::clone(&state);
     fill(Element::new(zone::GroupFrame {
         frame: Rc::clone(&frame),
     }))
@@ -423,6 +536,7 @@ fn group(path: GroupPath, state: Rc<State>, store: KeepAlive) -> AnyElement {
             });
         title_state.title(&active)
     })
+    .on_unhandled_key(move |event| keyboard::group_key(&keyboard_state, Some(&path), event))
     .on_drag_over(move |at| {
         *over_state.hover.borrow_mut() = Some(at);
     })
@@ -457,9 +571,7 @@ fn group(path: GroupPath, state: Rc<State>, store: KeepAlive) -> AnyElement {
         },
         move |(_dock, key): Payload, at| {
             let zone = zone::zone_of(&drop_frame, at);
-            drop_state.layout.update(|layout| {
-                let _ = layout.move_panel(&key, &drop_path, zone);
-            });
+            drop_state.move_panel(&key, &drop_path, zone);
         },
     )
     .child(strip)
@@ -540,6 +652,14 @@ pub(super) fn node_at<'a>(layout: &'a DockLayout, path: &[Branch]) -> Option<&'a
         };
     }
     Some(node)
+}
+
+pub(super) fn after_removal<'a>(panels: &'a [String], key: &str) -> Option<&'a str> {
+    let at = panels.iter().position(|panel| panel == key)?;
+    panels
+        .get(at + 1)
+        .or_else(|| at.checked_sub(1).and_then(|at| panels.get(at)))
+        .map(String::as_str)
 }
 
 fn is_active(node: Option<&DockNode>, key: &str) -> bool {

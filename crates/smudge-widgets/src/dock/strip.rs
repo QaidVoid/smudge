@@ -13,8 +13,8 @@ use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 use smudge_text::label;
 
 use super::widget::{Payload, State, node_at};
-use super::{Branch, DockLayout, DockNode, GroupPath};
-use crate::{ScrollAxis, ScrollExt, scroll, signal};
+use super::{Branch, DockLayout, DockNode, GroupPath, keyboard};
+use crate::{ContextMenuExt, ScrollAxis, ScrollExt, scroll, signal};
 
 /// The height of a tab strip, in logical pixels.
 pub(super) const STRIP: f32 = 36.0;
@@ -185,13 +185,14 @@ fn tab(key: String, path: &[Branch], state: Rc<State>, geometry: Rc<Geometry>) -
     let end = Rc::clone(&state);
     let over = Rc::clone(&state);
     let close_state = Rc::clone(&state);
+    let close_panel = key.clone();
     let close = show(
         move || closable.closable(&closable_key),
         move || {
             let close = Rc::clone(&close_state);
-            let close_key = key.clone();
+            let close_key = close_panel.clone();
             let title = Rc::clone(&close_state);
-            let title_key = key.clone();
+            let title_key = close_panel.clone();
             panel()
                 .width(px(20.0))
                 .height(px(20.0))
@@ -201,7 +202,9 @@ fn tab(key: String, path: &[Branch], state: Rc<State>, geometry: Rc<Geometry>) -
                 .role(Role::Button)
                 .accessible_label(move || format!("Close {}", title.title(&title_key)))
                 .keeps_focus()
-                .on_press(move || close.close(&close_key))
+                .on_press(move || {
+                    close.close(&close_key, false);
+                })
                 .child(label("×").text_color(ColorToken::TEXT_MUTED))
         },
     );
@@ -242,6 +245,14 @@ fn tab(key: String, path: &[Branch], state: Rc<State>, geometry: Rc<Geometry>) -
     .accessible_label(move || name.title(&name_key))
     .accessible_selected(move || accessible.get())
     .focusable()
+    .focus_target(&state.focus_for(&key).tab)
+    .on_unhandled_key({
+        let state = Rc::clone(&state);
+        let key = key.clone();
+        let path = path.to_vec();
+        move |event| keyboard::tab_key(&state, &path, &key, event)
+    })
+    .context_menu(move || keyboard::tab_menu(&state, &key))
     .activate_on_keys()
     .on_press(move || press.activate(&press_key))
     .on_focus(move |inside| {
@@ -281,9 +292,12 @@ fn tab(key: String, path: &[Branch], state: Rc<State>, geometry: Rc<Geometry>) -
             let drop_width = Rc::clone(&width);
             move |(_dock, dragged): Payload, at| {
                 let after = at.x * 2.0 > drop_width.get();
-                drop.layout.update(|layout| {
-                    reorder(layout, &drop_path, &dragged, &drop_key, after);
-                });
+                let positions = drop
+                    .layout
+                    .read(|layout| reorder(layout, &drop_path, &dragged, &drop_key, after));
+                if let Some((from, to, count)) = positions {
+                    drop.reorder(&dragged, from, to, count);
+                }
             }
         },
     )
@@ -301,25 +315,23 @@ fn tab(key: String, path: &[Branch], state: Rc<State>, geometry: Rc<Geometry>) -
     .into_any()
 }
 
-/// Moves `dragged` before or after `hovered` in the group at `path`, as the
-/// drop's half of the hovered tab picks.
-fn reorder(layout: &mut DockLayout, path: &[Branch], dragged: &str, hovered: &str, after: bool) {
+fn reorder(
+    layout: &DockLayout,
+    path: &[Branch],
+    dragged: &str,
+    hovered: &str,
+    after: bool,
+) -> Option<(usize, usize, usize)> {
     let Some(DockNode::Group { panels, .. }) = node_at(layout, path) else {
-        return;
+        return None;
     };
-    let Some(from) = panels.iter().position(|key| key == dragged) else {
-        return;
-    };
-    let Some(mut to) = panels.iter().position(|key| key == hovered) else {
-        return;
-    };
+    let from = panels.iter().position(|key| key == dragged)?;
+    let mut to = panels.iter().position(|key| key == hovered)?;
     if after {
         to += 1;
     }
     if to > from {
         to -= 1;
     }
-    if from != to {
-        let _ = layout.move_tab(dragged, to);
-    }
+    Some((from, to, panels.len()))
 }

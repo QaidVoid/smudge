@@ -18,6 +18,7 @@ use web_time::Instant;
 
 use crate::animation::{Presence, Spring, Transition};
 use crate::damage::DamageAccumulator;
+use crate::element::FocusTarget;
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::PaintOp;
 use crate::reactive::{Owner, RwSignal};
@@ -434,6 +435,10 @@ pub(crate) struct WidgetTree {
     /// Every live node that asked to give the focus to the first focusable
     /// node inside it, so an overlay that shows again asks again.
     focus_first: Vec<WidgetId>,
+    /// The last focused descendant of each mounted focus destination.
+    focus_targets: HashMap<WidgetId, Option<WidgetId>>,
+    /// The latest programmatic focus request waiting for layout.
+    pub(crate) pending_focus_target: Option<(FocusTarget, Option<FocusTarget>)>,
     /// Every live node that asked for the focus when it mounted, so an
     /// overlay that shows again asks again.
     autofocused: Vec<WidgetId>,
@@ -536,6 +541,8 @@ impl WidgetTree {
             pending_autofocus: Vec::new(),
             pending_focus_first: Vec::new(),
             focus_first: Vec::new(),
+            focus_targets: HashMap::new(),
+            pending_focus_target: None,
             autofocused: Vec::new(),
             reveal_focus: false,
             reveal_request: None,
@@ -863,6 +870,7 @@ impl WidgetTree {
                 exit.owner.cleanup();
             }
             self.forget_kept_node(current);
+            self.focus_targets.remove(&current);
             if let Some(painted) = painted {
                 self.pending_damage.push(painted);
             }

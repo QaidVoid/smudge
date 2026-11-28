@@ -6,7 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use smudge_core::element::{Element, IntoElement, show};
+use smudge_core::element::{Element, FocusTarget, IntoElement, show};
 use smudge_core::geometry::{Point, Rect};
 use smudge_core::input::{Handled, InputEvent, Key, KeyEvent, Modifiers};
 use smudge_core::paint::PaintOp;
@@ -1788,4 +1788,108 @@ fn a_value_step_behind_a_trap_reaches_nothing() {
     harness.frame();
     assert!(harness.app().step_value(level, true));
     assert_eq!(heard.get(), 1, "the press, not the release, counts");
+}
+
+#[test]
+fn an_unmounted_focus_target_can_request_its_mounted_fallback() {
+    let missing = FocusTarget::default();
+    let fallback = FocusTarget::default();
+    let (focus, on_focus) = focus_log("fallback");
+    let mounted = fallback.clone();
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        scene(
+            panel()
+                .focusable()
+                .focus_target(&mounted)
+                .on_focus(on_focus),
+        )
+    });
+    harness.settle();
+
+    missing.request_focus(Some(&fallback));
+    assert!(harness.woken());
+    assert!(harness.app().needs_frame());
+    assert!(focus.borrow().is_empty());
+    harness.settle();
+    assert_eq!(*focus.borrow(), [("fallback", true)]);
+}
+
+#[test]
+fn only_the_latest_focus_target_request_before_a_frame_moves_focus() {
+    let first = FocusTarget::default();
+    let second = FocusTarget::default();
+    let (mounted_first, mounted_second) = (first.clone(), second.clone());
+    let (first_focus, first_changed) = focus_log("first");
+    let (second_focus, second_changed) = focus_log("second");
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        panel()
+            .child(
+                panel()
+                    .focusable()
+                    .focus_target(&mounted_first)
+                    .on_focus(first_changed),
+            )
+            .child(
+                panel()
+                    .focusable()
+                    .focus_target(&mounted_second)
+                    .on_focus(second_changed),
+            )
+    });
+    harness.settle();
+
+    first.request_focus(None);
+    second.request_focus(None);
+    harness.settle();
+    assert!(first_focus.borrow().is_empty());
+    assert_eq!(*second_focus.borrow(), [("second", true)]);
+}
+
+#[test]
+fn a_focus_target_request_follows_its_new_mount_before_the_old_mount_is_removed() {
+    let target = FocusTarget::default();
+    let (old_target, new_target) = (target.clone(), target.clone());
+    let old_shown = RwSignal::new(true);
+    let new_shown = RwSignal::new(false);
+    let (show_old, show_new) = (old_shown.clone(), new_shown.clone());
+    let old_focused = Rc::new(Cell::new(false));
+    let new_focused = Rc::new(Cell::new(false));
+    let (old_focus, new_focus) = (Rc::clone(&old_focused), Rc::clone(&new_focused));
+    let mut harness = Harness::new(100.0, 60.0, 1.0, move || {
+        panel()
+            .child(show(
+                move || show_old.get(),
+                move || {
+                    let focused = Rc::clone(&old_focus);
+                    panel()
+                        .focusable()
+                        .focus_target(&old_target)
+                        .on_focus(move |on| focused.set(on))
+                },
+            ))
+            .child(show(
+                move || show_new.get(),
+                move || {
+                    let focused = Rc::clone(&new_focus);
+                    panel()
+                        .focusable()
+                        .focus_target(&new_target)
+                        .on_focus(move |on| focused.set(on))
+                },
+            ))
+    });
+    harness.settle();
+
+    target.request_focus(None);
+    new_shown.set(true);
+    harness.settle();
+    assert!(!old_focused.get() && new_focused.get());
+
+    harness.press_key(Key::Tab);
+    assert!(old_focused.get() && !new_focused.get());
+    old_shown.set(false);
+    harness.settle();
+    target.request_focus(None);
+    harness.settle();
+    assert!(new_focused.get());
 }

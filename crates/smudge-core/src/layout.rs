@@ -152,6 +152,7 @@ impl WidgetTree {
         // pin, so a view that follows its end still shows a focus that moved
         // inside it, and before the frame paints, so no frame shows the
         // focus out of view.
+        self.resolve_focus_target();
         self.resolve_reveal();
         // The focus autofocus set, the hover the refresh above set, and the
         // offsets a follow pin or a reveal wrote, whose moved content can
