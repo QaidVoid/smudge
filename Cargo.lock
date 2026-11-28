@@ -3060,6 +3060,8 @@ name = "smudge"
 version = "0.4.0"
 dependencies = [
  "rfd",
+ "serde",
+ "serde_json",
  "smudge-core",
  "smudge-devtools",
  "smudge-gpu",

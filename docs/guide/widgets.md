@@ -2,6 +2,8 @@
 
 <p class="lead">Smudge ships a small set of widgets, each built from the same panel and label every application can use. They are styled with theme tokens, so a theme switch repaints them with no extra code.</p>
 
+For a workspace users can rearrange, see [Docking](/guide/docking).
+
 ## Containers
 
 | Widget | What it does |

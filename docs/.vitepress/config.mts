@@ -58,6 +58,7 @@ export default defineConfig({
             { text: 'Data views', link: '/guide/data-views' },
             { text: 'Text and input', link: '/guide/text-and-input' },
             { text: 'Drag and drop', link: '/guide/drag-and-drop' },
+            { text: 'Docking', link: '/guide/docking' },
             { text: 'Markdown', link: '/guide/markdown' },
             { text: 'Dynamic content', link: '/guide/dynamic-content' },
           ],

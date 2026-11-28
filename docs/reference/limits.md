@@ -11,6 +11,7 @@
 - **Toasts carry text alone.** A toast shows a message and closes on a press or after its time. It holds no button, such as an undo, and the keyboard cannot reach it.
 - **Undo lives in each input.** Every text input keeps its own undo history, cleared when the application replaces the text. There is no application-wide undo.
 - **Dock close controls do not add keyboard stops.** Tab strips have one roving keyboard stop for selecting panels. Their close buttons accept pointer and accessibility activation, but are not independently keyboard-focusable. Use Ctrl+W or the tab menu to close a panel by keyboard. Scrolling a newly active tab into view can take a following frame while its geometry is measured.
+- **Dock panels stay in their original window.** A floating panel is drawn inside that window. Panels cannot move into another window or become desktop windows of their own. See [Docking](/guide/docking).
 
 ## Drawing
 
