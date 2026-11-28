@@ -2168,6 +2168,16 @@ impl<W: Widget> Element<W> {
         self
     }
 
+    /// Runs `handler` with the window position when a drag from this node
+    /// is released inside the window without a target accepting it.
+    /// Cancelling the drag or releasing outside the window does not run it.
+    /// The regular [`Self::on_drag_end`] handler still runs afterwards.
+    pub fn on_drag_miss(mut self, handler: impl FnMut(Point) + 'static) -> Self {
+        let dnd = self.handlers.dnd.get_or_insert_with(Default::default);
+        dnd.drag_miss = Some(Box::new(crate::hot::wrap1_mut(handler)));
+        self
+    }
+
     /// Limits where the node responds to the pointer to the points `region`
     /// answers `true` for.
     ///

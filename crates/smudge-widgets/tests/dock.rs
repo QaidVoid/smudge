@@ -1125,7 +1125,7 @@ fn a_drag_along_a_strips_tabs_reorders_without_rebuilding() {
 }
 
 #[test]
-fn escape_and_a_release_outside_the_dock_leave_the_layout_alone() {
+fn escape_and_a_release_outside_the_window_leave_the_layout_alone() {
     TextSystem::bundled_only().install();
     let model = RwSignal::new(layout(&["One", "Two"], "Two"));
     let builds = Builds::default();
@@ -1154,17 +1154,27 @@ fn escape_and_a_release_outside_the_dock_leave_the_layout_alone() {
     let base = [surface.r, surface.g, surface.b, surface.a];
     let probe = (60_u32, 200_u32);
     let from = tab_center(&mut harness, "Two");
-    drag(&mut harness, from, Point { x: 450.0, y: 120.0 });
+    drag(&mut harness, from, Point { x: 500.0, y: 120.0 });
     assert_eq!(
         model.get(),
         before,
-        "a release over nothing that accepts cancels the drag"
+        "a release outside the window cannot float a tab"
     );
     hold(&mut harness, from, Point { x: 150.0, y: 120.0 });
     assert_shade(&harness, probe, blend(surface, accent, 0.25));
     harness.move_to(Point { x: 450.0, y: 120.0 });
     harness.frame();
     assert_shade(&harness, probe, base);
+    harness.event(InputEvent::PointerLeft);
+    harness.button_up(Point { x: 450.0, y: 120.0 });
+    harness.settle();
+    assert_eq!(
+        model.get(),
+        before,
+        "the platform can deliver an outside release with its last in-window position"
+    );
+    hold(&mut harness, from, Point { x: 150.0, y: 120.0 });
+    harness.move_to(Point { x: 450.0, y: 120.0 });
     harness.press_key(Key::Escape);
     harness.frame();
     harness.settle();
@@ -1251,7 +1261,6 @@ fn a_drag_from_one_dock_never_lands_in_another() {
             )
     });
     harness.settle();
-    let before_left = left.get();
     let before_right = right.get();
     let surface = Theme::light().color(ColorToken::SURFACE);
     let base = [surface.r, surface.g, surface.b, surface.a];
@@ -1262,6 +1271,7 @@ fn a_drag_from_one_dock_never_lands_in_another() {
     harness.button_up(to);
     harness.frame();
     harness.settle();
+    let from = tab_edge(&mut harness, "Two", true);
     let over_foreign_tab = tab_edge(&mut harness, "Three", false);
     hold(&mut harness, from, over_foreign_tab);
     assert_shade(&harness, (450, 200), base);
@@ -1269,9 +1279,13 @@ fn a_drag_from_one_dock_never_lands_in_another() {
     harness.frame();
     harness.settle();
     assert_eq!(
-        left.get(),
-        before_left,
-        "the dock the drag started in keeps its layout"
+        left.read(|layout| layout
+            .floating()
+            .iter()
+            .map(|group| group.panel().to_owned())
+            .collect::<Vec<_>>()),
+        ["One", "Two"],
+        "only the source dock floats its own tabs"
     );
     assert_eq!(
         right.get(),
@@ -1976,4 +1990,219 @@ fn f6_from_a_split_divider_enters_the_first_or_last_group() {
     assert!(harness.app().request_focus(divider.id));
     f6(&mut harness, true);
     assert!(named(&mut harness, Role::Button, "Content Log").focused);
+}
+
+fn floating_rect(model: &RwSignal<DockLayout>, key: &str) -> Rect {
+    model.read(|layout| {
+        layout
+            .floating()
+            .iter()
+            .find(|group| group.panel() == key)
+            .unwrap_or_else(|| panic!("{key} is floating"))
+            .rect()
+    })
+}
+
+fn floating_at(key: &str, rect: Rect) -> DockLayout {
+    let mut layout = layout(&[key], key);
+    layout.float(key, rect).expect("the panel can float");
+    layout
+}
+
+#[test]
+fn a_tab_floats_on_an_unmatched_release_and_docks_into_the_empty_root_without_rebuilding() {
+    TextSystem::bundled_only().install();
+    let model = RwSignal::new(layout(&["One"], "One"));
+    let builds = Builds::default();
+    let (edits, factory) = (model.clone(), builds.clone());
+    let mut harness = Harness::new(720.0, 420.0, 1.0, move || {
+        panel().row().child(
+            dock(edits, move |key| factory.panel(key))
+                .width(px(350.0))
+                .height(pct(100.0)),
+        )
+    });
+    harness.settle();
+    let content = named(&mut harness, Role::Button, "Content One");
+    harness.click(middle(&content));
+    harness.settle();
+    let from = tab_edge(&mut harness, "One", true);
+    let at = Point { x: 400.0, y: 100.0 };
+    drag(&mut harness, from, at);
+    assert!(model.read(|layout| layout.root().is_none()));
+    let floater = named(&mut harness, Role::Group, "One");
+    assert_eq!(floater.bounds, floating_rect(&model, "One"));
+    assert!(floater.bounds.contains(at));
+    let floated_tab = named(&mut harness, Role::Tab, "One");
+    assert_eq!(harness.app().focused(), Some(floated_tab.id));
+    assert_eq!(
+        named(&mut harness, Role::Button, "Content One").id,
+        content.id
+    );
+    assert_announced(&mut harness, &["One floated"]);
+    let from = tab_edge(&mut harness, "One", true);
+    drag(&mut harness, from, Point { x: 160.0, y: 180.0 });
+    assert_eq!(model.get(), layout(&["One"], "One"));
+    assert_announced(&mut harness, &["One docked"]);
+    let docked = named(&mut harness, Role::Button, "Content One");
+    assert_eq!(docked.id, content.id);
+    assert_eq!(docked.value.as_deref(), Some("1"));
+    builds.assert_once(&["One"]);
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn a_floating_grip_drag_uses_window_motion_across_frames_and_damages_only_its_footprint() {
+    let base = Rect::new(40.0, 50.0, 240.0, 170.0);
+    let model = RwSignal::new(floating_at("One", base));
+    let mut harness = window(model.clone(), Builds::default());
+    let from = Point { x: 57.0, y: 72.0 };
+    harness.button_down(from);
+    for x in [110.0, 150.0, 210.0] {
+        let previous = floating_rect(&model, "One");
+        harness.move_to(Point { x, y: 82.0 });
+        let report = harness.frame();
+        let expected = base.translated(Point {
+            x: x - from.x,
+            y: 10.0,
+        });
+        assert_eq!(floating_rect(&model, "One"), expected);
+        assert_damage_within(&report, previous.union(expected));
+        harness.assert_matches_full_repaint();
+    }
+    harness.button_up(Point { x: 210.0, y: 82.0 });
+    harness.settle();
+    assert!(model.read(|layout| layout.root().is_none()));
+}
+
+#[test]
+fn a_floating_corner_resizes_both_axes_and_respects_the_minimum_size() {
+    let base = Rect::new(80.0, 60.0, 300.0, 190.0);
+    let model = RwSignal::new(floating_at("One", base));
+    let mut harness = window(model.clone(), Builds::default());
+    let corner = Point { x: 297.0, y: 187.0 };
+    let to = Point { x: 332.0, y: 207.0 };
+    harness.button_down(corner);
+    harness.move_to(to);
+    let report = harness.frame();
+    let larger = Rect::new(80.0, 60.0, 335.0, 210.0);
+    assert_eq!(floating_rect(&model, "One"), larger);
+    assert_damage_within(&report, larger);
+    harness.assert_matches_full_repaint();
+    let inside = Point { x: 85.0, y: 65.0 };
+    harness.move_to(inside);
+    harness.frame();
+    harness.button_up(inside);
+    harness.settle();
+    assert_eq!(
+        floating_rect(&model, "One"),
+        Rect::new(80.0, 60.0, 240.0, 156.0)
+    );
+    harness.assert_matches_full_repaint();
+}
+
+#[test]
+fn shrinking_the_viewport_keeps_the_floating_grip_reachable() {
+    let base = Rect::new(300.0, 100.0, 500.0, 240.0);
+    let model = RwSignal::new(floating_at("One", base));
+    let mut harness = window(model.clone(), Builds::default());
+    harness.app().set_viewport(
+        Size {
+            width: 160.0,
+            height: 90.0,
+        },
+        1.0,
+    );
+    harness.frame();
+    harness.settle();
+    let area = named(&mut harness, Role::Group, "One").bounds;
+    assert_eq!(area, Rect::new(128.0, 58.0, 328.0, 198.0));
+    let grip = Point { x: 145.0, y: 78.0 };
+    drag(&mut harness, grip, Point { x: 65.0, y: 38.0 });
+    let moved = Rect::new(48.0, 18.0, 248.0, 158.0);
+    assert_eq!(floating_rect(&model, "One"), moved);
+    assert_eq!(named(&mut harness, Role::Group, "One").bounds, moved);
+}
+
+#[test]
+fn floating_menu_arrows_move_and_resize_enter_keeps_and_escape_reverts() {
+    let original = Rect::new(50.0, 50.0, 310.0, 220.0);
+    let model = RwSignal::new(floating_at("One", original));
+    let mut harness = window(model.clone(), Builds::default());
+    press_tab(&mut harness, "One");
+    menu_key(&mut harness, true);
+    choose_menu_item(&mut harness, "Move floating panel");
+    let tab = named(&mut harness, Role::Tab, "One");
+    assert_eq!(harness.app().focused(), Some(tab.id));
+    harness.press_key(Key::ArrowRight);
+    harness.press_key(Key::ArrowUp);
+    harness.settle();
+    let moved = original.translated(Point { x: 8.0, y: -8.0 });
+    assert_eq!(floating_rect(&model, "One"), moved);
+    harness.press_key(Key::Enter);
+    harness.press_key(Key::ArrowRight);
+    harness.settle();
+    assert_eq!(floating_rect(&model, "One"), moved);
+    menu_key(&mut harness, false);
+    choose_menu_item(&mut harness, "Resize floating panel");
+    harness.press_key(Key::ArrowLeft);
+    harness.press_key(Key::ArrowDown);
+    harness.settle();
+    assert_eq!(
+        floating_rect(&model, "One"),
+        Rect::new(moved.x0, moved.y0, moved.x1 - 8.0, moved.y1 + 8.0)
+    );
+    harness.press_key(Key::Escape);
+    harness.settle();
+    assert_eq!(floating_rect(&model, "One"), moved);
+    harness.press_key(Key::Escape);
+    harness.settle();
+    assert_eq!(named(&mut harness, Role::Tab, "One").id, tab.id);
+}
+
+#[test]
+fn keyboard_can_float_redock_and_cycle_between_a_float_and_the_tree() {
+    let model = RwSignal::new(layout(&["One", "Two"], "One"));
+    let builds = Builds::default();
+    let mut harness = window(model.clone(), builds.clone());
+    press_tab(&mut harness, "One");
+    menu_key(&mut harness, true);
+    choose_menu_item(&mut harness, "Float");
+    assert_eq!(model.read(|layout| layout.floating().len()), 1);
+    let tab = named(&mut harness, Role::Tab, "One");
+    assert_eq!(harness.app().focused(), Some(tab.id));
+    f6(&mut harness, true);
+    let two = named(&mut harness, Role::Button, "Content Two");
+    assert_eq!(harness.app().focused(), Some(two.id));
+    f6(&mut harness, false);
+    let one = named(&mut harness, Role::Button, "Content One");
+    assert_eq!(harness.app().focused(), Some(one.id));
+    press_tab(&mut harness, "One");
+    menu_key(&mut harness, false);
+    choose_menu_item(&mut harness, "Move into group with Two");
+    assert_eq!(model.get(), layout(&["Two", "One"], "One"));
+    assert_eq!(named(&mut harness, Role::Button, "Content One").id, one.id);
+    builds.assert_once(&["One", "Two"]);
+}
+
+#[test]
+fn keyboard_moving_away_from_a_clamped_edge_moves_on_the_next_key() {
+    let base = Rect::new(448.0, 40.0, 648.0, 170.0);
+    let model = RwSignal::new(floating_at("One", base));
+    let mut harness = window(model, Builds::default());
+    let tab = named(&mut harness, Role::Tab, "One");
+    assert!(harness.app().request_focus(tab.id));
+    menu_key(&mut harness, true);
+    choose_menu_item(&mut harness, "Move floating panel");
+    for _ in 0..3 {
+        harness.press_key(Key::ArrowRight);
+        harness.settle();
+    }
+    assert_eq!(named(&mut harness, Role::Group, "One").bounds, base);
+    harness.press_key(Key::ArrowLeft);
+    harness.settle();
+    assert_eq!(
+        named(&mut harness, Role::Group, "One").bounds,
+        base.translated(Point { x: -8.0, y: 0.0 })
+    );
 }

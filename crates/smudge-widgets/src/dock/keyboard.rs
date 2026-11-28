@@ -1,14 +1,15 @@
 use std::rc::Rc;
 
+use smudge_core::geometry::Point;
 use smudge_core::input::{Handled, Key, KeyEvent, Modifiers};
 use smudge_core::reactive::prelude::*;
 
 use super::widget::{State, after_removal, node_at};
-use super::{Branch, DockLayout, DockNode, GroupPath, Zone};
+use super::{Branch, DockLayout, DockNode, GroupPath, Zone, floating};
 use crate::{MenuItem, menu_item};
 
 struct Group<'a> {
-    path: GroupPath,
+    path: Option<GroupPath>,
     panels: &'a [String],
     active: &'a str,
 }
@@ -17,7 +18,7 @@ fn groups(layout: &DockLayout) -> Vec<Group<'_>> {
     fn visit<'a>(node: &'a DockNode, path: &mut GroupPath, out: &mut Vec<Group<'a>>) {
         match node {
             DockNode::Group { panels, active } => out.push(Group {
-                path: path.clone(),
+                path: Some(path.clone()),
                 panels,
                 active,
             }),
@@ -35,6 +36,11 @@ fn groups(layout: &DockLayout) -> Vec<Group<'_>> {
     if let Some(root) = layout.root() {
         visit(root, &mut Vec::new(), &mut out);
     }
+    out.extend(layout.floating().iter().map(|group| Group {
+        path: None,
+        panels: &[],
+        active: group.panel(),
+    }));
     out
 }
 
@@ -42,7 +48,7 @@ pub(super) fn after_close(layout: &DockLayout, key: &str) -> Option<String> {
     let groups = groups(layout);
     let at = groups
         .iter()
-        .position(|group| group.panels.iter().any(|panel| panel == key))?;
+        .position(|group| group.active == key || group.panels.iter().any(|panel| panel == key))?;
     let group = &groups[at];
     let next = if group.active != key {
         Some(group.active)
@@ -69,7 +75,12 @@ fn is_close(event: &KeyEvent) -> bool {
         && matches!(&event.key, Key::Character(key) if key.eq_ignore_ascii_case("w"))
 }
 
-pub(super) fn group_key(state: &State, path: Option<&[Branch]>, event: &KeyEvent) -> Handled {
+pub(super) fn group_key(
+    state: &State,
+    path: Option<&[Branch]>,
+    floating: Option<&str>,
+    event: &KeyEvent,
+) -> Handled {
     if event.key == Key::Function(6)
         && !event.repeat
         && !event.modifiers.control
@@ -78,7 +89,10 @@ pub(super) fn group_key(state: &State, path: Option<&[Branch]>, event: &KeyEvent
     {
         let next = state.layout.read(|layout| {
             let groups = groups(layout);
-            let here = path.and_then(|path| groups.iter().position(|group| group.path == path));
+            let here = groups.iter().position(|group| match group.path.as_deref() {
+                Some(at) => path == Some(at),
+                None => floating == Some(group.active),
+            });
             let group = match (here, event.modifiers.shift) {
                 (Some(at), false) => groups.get(at + 1).or_else(|| groups.first()),
                 (Some(at), true) => at
@@ -107,7 +121,12 @@ pub(super) fn close_key(state: &State, key: &str, event: &KeyEvent) -> Handled {
     }
 }
 
-pub(super) fn tab_key(state: &State, path: &[Branch], key: &str, event: &KeyEvent) -> Handled {
+pub(super) fn tab_key(
+    state: &State,
+    path: Option<&[Branch]>,
+    key: &str,
+    event: &KeyEvent,
+) -> Handled {
     if is_close(event) {
         return close_key(state, key, event);
     }
@@ -125,7 +144,7 @@ pub(super) fn tab_key(state: &State, path: &[Branch], key: &str, event: &KeyEven
         _ => return Handled::No,
     };
     let position = state.layout.read(|layout| {
-        let Some(DockNode::Group { panels, .. }) = node_at(layout, path) else {
+        let Some(DockNode::Group { panels, .. }) = node_at(layout, path?) else {
             return None;
         };
         let from = panels.iter().position(|panel| panel == key)?;
@@ -142,10 +161,17 @@ pub(super) fn tab_key(state: &State, path: &[Branch], key: &str, event: &KeyEven
     Handled::Yes
 }
 
-pub(super) fn tab_menu(state: &Rc<State>, key: &str) -> Vec<MenuItem> {
+pub(super) fn tab_menu(
+    state: &Rc<State>,
+    key: &str,
+    window: Option<&Rc<floating::Window>>,
+) -> Vec<MenuItem> {
     let mut items = state.layout.read(|layout| {
         let mut items = Vec::new();
-        for group in groups(layout) {
+        for group in groups(layout)
+            .into_iter()
+            .filter(|group| group.path.is_some())
+        {
             if group.panels.iter().any(|panel| panel == key) {
                 if group.panels.len() > 1 {
                     for (name, zone) in [
@@ -170,6 +196,28 @@ pub(super) fn tab_menu(state: &Rc<State>, key: &str) -> Vec<MenuItem> {
         }
         items
     });
+    if let Some(window) = window {
+        if state.layout.read(|layout| layout.root().is_none()) {
+            let state = Rc::clone(state);
+            let key = key.to_owned();
+            items.push(menu_item("Dock", move || {
+                state.move_panel(&key, &[], Zone::Center)
+            }));
+        }
+        for (name, resize) in [
+            ("Move floating panel", false),
+            ("Resize floating panel", true),
+        ] {
+            let window = Rc::clone(window);
+            items.push(menu_item(name, move || window.begin(resize)));
+        }
+    } else {
+        let state = Rc::clone(state);
+        let key = key.to_owned();
+        items.push(menu_item("Float", move || {
+            state.float(&key, Point { x: 58.0, y: 64.0 })
+        }));
+    }
     if state.closable(key) {
         let state = Rc::clone(state);
         let key = key.to_owned();
@@ -192,7 +240,7 @@ fn move_item(state: &Rc<State>, key: &str, anchor: &str, zone: Zone, name: Strin
             groups(layout)
                 .into_iter()
                 .find(|group| group.panels.contains(&anchor))
-                .map(|group| group.path)
+                .and_then(|group| group.path)
         });
         if let Some(path) = path {
             state.move_panel(&key, &path, zone);

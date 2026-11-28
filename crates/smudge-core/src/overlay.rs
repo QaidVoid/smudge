@@ -40,19 +40,25 @@ pub enum Placement {
     /// In the window's bottom right corner, as toasts are. Give the top node
     /// a margin to keep it off the edges.
     BottomRight,
+    /// At a point in window coordinates, keeping at least 32 logical
+    /// pixels, or the overlay's full size if smaller, visible on each axis.
+    Window(Point),
 }
 
 /// Which layer an overlay draws in, and so what it draws above and below.
 ///
-/// From the bottom: the app's tree with its popups, then its tooltips,
-/// then each open dialog in the order it opened, each with its own popups
-/// and tooltips above it, and the toasts on top of everything. An overlay
+/// From the bottom: the app's tree, floating panels, popups, then tooltips,
+/// then each open dialog in the order it opened, each with its own floating
+/// panels, popups and tooltips above it, and the toasts on top of everything. An overlay
 /// opened from inside a dialog joins that dialog's popups and tooltips, so
 /// a dropdown in a dialog draws above the dialog and below a dialog opened
 /// after it. Within one layer, the overlay opened last draws on top.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Layer {
+    /// A nonmodal panel. Pressing it raises it above the other floating
+    /// panels in the same stack. Escape does not dismiss it.
+    Floating,
     /// A popup, a menu or a dropdown's list.
     #[default]
     Popup,
@@ -70,7 +76,7 @@ impl Placement {
     fn anchored_to_node(self) -> bool {
         !matches!(
             self,
-            Placement::At(_) | Placement::Cover | Placement::BottomRight
+            Placement::At(_) | Placement::Cover | Placement::BottomRight | Placement::Window(_)
         )
     }
 
@@ -109,6 +115,12 @@ impl Placement {
                     after
                 };
                 (x, anchor.y0)
+            }
+            Placement::Window(at) => {
+                return Point {
+                    x: keep_visible(at.x, width, viewport.width),
+                    y: keep_visible(at.y, height, viewport.height),
+                };
             }
             Placement::Cover => (0.0, 0.0),
             Placement::BottomRight => (viewport.width - width, viewport.height - height),
@@ -172,9 +184,9 @@ pub(crate) struct Overlay {
 }
 
 impl Overlay {
-    /// Returns whether Escape can close it. A toast leaves on its own.
+    /// Returns whether Escape can close it.
     pub(crate) fn dismissible(&self) -> bool {
-        self.layer != Layer::Toast
+        matches!(self.layer, Layer::Popup | Layer::Tooltip | Layer::Dialog)
     }
 
     /// Returns whether a press outside it or the window losing the input
@@ -316,7 +328,13 @@ impl WidgetTree {
             // Covering the window, or no longer covering it, changes the
             // size the root resolves to.
             self.re_resolve(root);
-            self.place_overlays(false);
+            if self.place_overlays(false) && self.pointer_inside {
+                if !self.holds_pointer() {
+                    self.refresh_hover();
+                }
+                self.deliver_drag_over();
+                self.redeliver_dnd();
+            }
         }
     }
 
@@ -380,10 +398,53 @@ impl WidgetTree {
         let opened = self.overlay_count;
         match layer {
             Layer::Dialog => (opened, 0, opened),
-            Layer::Tooltip => (self.dialog_stack(host), 2, opened),
+            Layer::Floating => (self.dialog_stack(host), 1, opened),
+            Layer::Popup => (self.dialog_stack(host), 2, opened),
+            Layer::Tooltip => (self.dialog_stack(host), 3, opened),
             Layer::Toast => (u64::MAX, 0, opened),
-            _ => (self.dialog_stack(host), 1, opened),
         }
+    }
+
+    /// Raises the floating overlay under a press within its own stack.
+    pub(crate) fn raise_floating(&mut self, position: Point) {
+        if !self
+            .overlays
+            .iter()
+            .any(|overlay| overlay.layer == Layer::Floating)
+        {
+            return;
+        }
+        let Some(mut hit) = self.hit_any(position, true) else {
+            return;
+        };
+        while let Some(parent) = self.pointer_parent(hit) {
+            hit = parent;
+        }
+        let Some(at) = self
+            .overlays
+            .iter()
+            .position(|overlay| overlay.layer == Layer::Floating && hit == overlay.root)
+        else {
+            return;
+        };
+        let mut end = at + 1;
+        let (stack, rank, _) = self.overlays[at].order;
+        while self
+            .overlays
+            .get(end)
+            .is_some_and(|overlay| overlay.order.0 == stack && overlay.order.1 == rank)
+        {
+            end += 1;
+        }
+        if end == at + 1 {
+            return;
+        }
+        let mut overlay = self.overlays.remove(at);
+        self.queue_subtree_damage(overlay.root);
+        self.push_a11y(overlay.root);
+        self.overlay_count += 1;
+        overlay.order.2 = self.overlay_count;
+        self.overlays.insert(end - 1, overlay);
     }
 
     fn dialog_stack(&self, host: WidgetId) -> u64 {
@@ -405,7 +466,10 @@ impl WidgetTree {
         let mut restacked = false;
         for at in 0..self.overlays.len() {
             let overlay = &self.overlays[at];
-            if !matches!(overlay.layer, Layer::Popup | Layer::Tooltip) {
+            if !matches!(
+                overlay.layer,
+                Layer::Floating | Layer::Popup | Layer::Tooltip
+            ) {
                 continue;
             }
             let root = overlay.root;
@@ -460,6 +524,10 @@ impl WidgetTree {
             }
         }
     }
+}
+
+fn keep_visible(at: f32, length: f32, viewport: f32) -> f32 {
+    at.max(0.0).min((viewport - length.min(32.0)).max(0.0))
 }
 
 /// Returns `length`, or zero when it is not finite and positive.

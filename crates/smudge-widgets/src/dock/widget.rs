@@ -5,7 +5,7 @@ use std::rc::Rc;
 use smudge_core::element::{
     AnyElement, Element, FocusTarget, IntoElement, KeepAlive, Slot, Value, for_each,
 };
-use smudge_core::geometry::Point;
+use smudge_core::geometry::{Point, Rect};
 use smudge_core::hot;
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{Memo, Owner, RenderEffect, RwSignal, prelude::*};
@@ -14,7 +14,7 @@ use smudge_core::style::{Direction, Length, pct, px};
 use smudge_core::tree::Dirty;
 use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 
-use super::{Branch, DockLayout, DockNode, GroupPath, Zone, keyboard, zone};
+use super::{Branch, DockLayout, DockNode, GroupPath, Zone, floating, keyboard, zone};
 use crate::{SplitExt, signal, split};
 
 type CloseHandler = Box<dyn FnMut(&str) -> bool>;
@@ -103,6 +103,33 @@ impl State {
             .with(|info| info.get(key).is_some_and(|panel| panel.closable))
     }
 
+    pub(super) fn floating_rect(&self, key: &str) -> Option<Rect> {
+        self.layout.with(|layout| layout.floating_rect(key))
+    }
+
+    pub(super) fn set_floating_rect(&self, key: &str, rect: Rect) -> bool {
+        self.layout
+            .read(|layout| layout.floating_rect(key).is_some_and(|old| old != rect))
+            && self
+                .layout
+                .update(|layout| layout.move_floating(key, rect))
+                .is_ok()
+    }
+
+    pub(super) fn float(&self, key: &str, at: Point) {
+        if !self
+            .layout
+            .read(|layout| layout.contains(key) && layout.floating_rect(key).is_none())
+        {
+            return;
+        }
+        let rect = Rect::new(at.x - 18.0, at.y - 24.0, at.x + 262.0, at.y + 156.0);
+        if self.layout.update(|layout| layout.float(key, rect)).is_ok() {
+            self.announce(format!("{} floated", self.title(key)));
+            self.focus_for(key).tab.request_focus(None);
+        }
+    }
+
     pub(super) fn selected(&self, path: &[Branch], key: &str) -> bool {
         self.layout.with(|layout| {
             matches!(node_at(layout, path), Some(DockNode::Group { active, .. }) if active == key)
@@ -147,9 +174,11 @@ impl State {
     }
 
     pub(super) fn activate(&self, key: &str) {
-        let wanted = self
-            .layout
-            .read(|layout| layout.contains(key) && !is_active(layout.root(), key));
+        let wanted = self.layout.read(|layout| {
+            layout.contains(key)
+                && layout.floating_rect(key).is_none()
+                && !is_active(layout.root(), key)
+        });
         if wanted {
             self.layout.update(|layout| {
                 let _ = layout.activate(key);
@@ -168,6 +197,20 @@ impl State {
     }
 
     pub(super) fn move_panel(&self, key: &str, path: &[Branch], zone: Zone) {
+        if path.is_empty() && self.layout.read(|layout| layout.root().is_none()) {
+            if self
+                .layout
+                .read(|layout| layout.floating_rect(key).is_some())
+                && self
+                    .layout
+                    .update(|layout| layout.move_panel(key, path, zone))
+                    .is_ok()
+            {
+                self.announce(format!("{} docked", self.title(key)));
+                self.focus_for(key).tab.request_focus(None);
+            }
+            return;
+        }
         let destination = self.layout.read(|layout| {
             let Some(DockNode::Group { panels, active }) = node_at(layout, path) else {
                 return None;
@@ -256,7 +299,7 @@ impl State {
         true
     }
 
-    fn announce(&self, message: String) {
+    pub(super) fn announce(&self, message: String) {
         self.announcer.announce(message, Politeness::Polite);
     }
 
@@ -340,10 +383,16 @@ impl Widget for Dock {
 /// a drag along its own strip reorders the tabs, and a release over a group
 /// moves the panel there, joining the group or splitting it toward the edge
 /// the release lands on, with a translucent rectangle showing where the
-/// panel would go. Escape, a release over nothing, and a release on the
-/// panel's own group's center leave the layout as it was. Layout edits made
-/// directly by the application do not call [`DockExt::on_close`]. An empty
-/// layout draws no content unless [`DockExt::empty`] supplies it.
+/// panel would go. A docked tab released elsewhere inside the window floats.
+/// Use the grip to move a floating panel, its edges to resize it, and its tab
+/// to dock it again. The tab menu can also float, redock, move or resize it.
+/// In move and resize modes the arrow keys change its rectangle, Enter keeps
+/// the edit, and Escape reverts it. Leaving the tab ends the mode and keeps
+/// the edit. Floating panels do not block the rest of the window.
+/// Escape cancels a tab drag, and a release on the panel's own group's center
+/// leaves the layout as it was. Direct layout edits do not call
+/// [`DockExt::on_close`]. [`DockExt::empty`] supplies the dock's content
+/// while there are no docked panels.
 ///
 /// ```
 /// use smudge_core::reactive::RwSignal;
@@ -394,9 +443,13 @@ pub fn dock(
             let build = Rc::clone(&state);
             let store = KeepAlive::new(move |key| build.build_panel(key));
             let keyboard_state = Rc::clone(&state);
-            position(Vec::new(), Rc::clone(&state), store)
+            fill(panel())
                 .announcer(&state.announcer)
-                .on_unhandled_key(move |event| keyboard::group_key(&keyboard_state, None, event))
+                .on_unhandled_key(move |event| {
+                    keyboard::group_key(&keyboard_state, None, None, event)
+                })
+                .child(position(Vec::new(), Rc::clone(&state), store.clone()))
+                .child(floating::mount(state, store))
         },
     );
     Element::new(Dock { options })
@@ -413,7 +466,7 @@ pub trait DockExt: Sized {
     /// Without a handler, a user close request removes the panel immediately.
     fn on_close(self, handler: impl FnMut(&str) -> bool + 'static) -> Self;
 
-    /// Builds content while the layout is empty. It is unmounted when a
+    /// Builds content while no panels are docked. It is unmounted when a
     /// panel opens and built anew the next time the layout becomes empty.
     fn empty<E: IntoElement>(self, build: impl Fn() -> E + 'static) -> Self;
 }
@@ -472,7 +525,7 @@ fn position(path: GroupPath, state: Rc<State>, store: KeepAlive) -> Element<Slot
         move || kind.get().into_iter().collect(),
         |kind| *kind,
         move |kind| match kind {
-            Kind::Empty => (state.options.empty.borrow())(),
+            Kind::Empty => empty_group(Rc::clone(&state)),
             Kind::Group => group(path.clone(), Rc::clone(&state), store.clone()),
             Kind::Row | Kind::Column => split_group(
                 path.clone(),
@@ -488,6 +541,23 @@ fn position(path: GroupPath, state: Rc<State>, store: KeepAlive) -> Element<Slot
     ))
 }
 
+fn empty_group(state: Rc<State>) -> AnyElement {
+    let accepts = Rc::clone(&state);
+    let content = (state.options.empty.borrow())();
+    fill(panel())
+        .drop_target::<Payload>(
+            move |payload: &Payload| {
+                Rc::ptr_eq(&payload.0, &accepts)
+                    && accepts.layout.read(|layout| {
+                        layout.root().is_none() && layout.floating_rect(&payload.1).is_some()
+                    })
+            },
+            move |(_dock, key): Payload, _| state.move_panel(&key, &[], Zone::Center),
+        )
+        .child(content)
+        .into_any()
+}
+
 fn group(path: GroupPath, state: Rc<State>, store: KeepAlive) -> AnyElement {
     let items_state = Rc::clone(&state);
     let items_path = path.clone();
@@ -501,7 +571,7 @@ fn group(path: GroupPath, state: Rc<State>, store: KeepAlive) -> AnyElement {
     });
     let title_state = Rc::clone(&state);
     let title_path = path.clone();
-    let strip = super::strip::strip(path.clone(), Rc::clone(&state), keys.clone());
+    let strip = super::strip::strip(Some(path.clone()), Rc::clone(&state), keys.clone(), None);
     let content_state = Rc::clone(&state);
     let content_path = path.clone();
     let content = for_each(
@@ -536,7 +606,7 @@ fn group(path: GroupPath, state: Rc<State>, store: KeepAlive) -> AnyElement {
             });
         title_state.title(&active)
     })
-    .on_unhandled_key(move |event| keyboard::group_key(&keyboard_state, Some(&path), event))
+    .on_unhandled_key(move |event| keyboard::group_key(&keyboard_state, Some(&path), None, event))
     .on_drag_over(move |at| {
         *over_state.hover.borrow_mut() = Some(at);
     })
@@ -672,7 +742,7 @@ fn is_active(node: Option<&DockNode>, key: &str) -> bool {
     }
 }
 
-fn fill<W: Widget>(element: Element<W>) -> Element<W> {
+pub(super) fn fill<W: Widget>(element: Element<W>) -> Element<W> {
     element
         .column()
         .grow(1.0)

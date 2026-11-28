@@ -2,7 +2,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use smudge_core::element::{AnyElement, Element, IntoElement, for_each, show};
-use smudge_core::geometry::{Color, Rect, Size};
+use smudge_core::geometry::{Color, Point, Rect, Size};
+use smudge_core::input::{Handled, Key};
 use smudge_core::paint::PaintOp;
 use smudge_core::reactive::{Memo, RenderEffect, RwSignal, prelude::*};
 use smudge_core::semantics::Role;
@@ -13,7 +14,7 @@ use smudge_core::widget::{PaintCx, Panel, Widget, panel};
 use smudge_text::label;
 
 use super::widget::{Payload, State, node_at};
-use super::{Branch, DockLayout, DockNode, GroupPath, keyboard};
+use super::{Branch, DockLayout, DockNode, GroupPath, floating, keyboard};
 use crate::{ContextMenuExt, ScrollAxis, ScrollExt, scroll, signal};
 
 /// The height of a tab strip, in logical pixels.
@@ -105,7 +106,12 @@ fn select(tab: &mut Tab, selected: bool) -> Dirty {
     Dirty::Paint
 }
 
-pub(super) fn strip(path: GroupPath, state: Rc<State>, keys: Memo<Vec<String>>) -> AnyElement {
+pub(super) fn strip(
+    path: Option<GroupPath>,
+    state: Rc<State>,
+    keys: Memo<Vec<String>>,
+    floating: Option<Rc<floating::Window>>,
+) -> AnyElement {
     let geometry = Rc::new(Geometry {
         viewport: Cell::new(Rect::default()),
         active: Cell::new(None),
@@ -120,18 +126,27 @@ pub(super) fn strip(path: GroupPath, state: Rc<State>, keys: Memo<Vec<String>>) 
     });
     let clear_state = Rc::clone(&state);
     let tab_geometry = Rc::clone(&geometry);
+    let tab_window = floating.clone();
     let tabs = for_each(
         move || keys.get(),
         Clone::clone,
-        move |key| tab(key, &path, Rc::clone(&state), Rc::clone(&tab_geometry)),
+        move |key| {
+            tab(
+                key,
+                path.as_deref(),
+                Rc::clone(&state),
+                Rc::clone(&tab_geometry),
+                tab_window.clone(),
+            )
+        },
     )
     .row()
     .role(Role::TabList)
     .navigate_with_arrows(Direction::Row)
     .height(pct(100.0));
     let offset = geometry.offset.clone();
-    Element::new(TabStrip { geometry })
-        .column()
+    let mut strip = Element::new(TabStrip { geometry })
+        .row()
         .height(px(STRIP))
         .min_width(px(0.0))
         .shrink(0.0)
@@ -143,22 +158,37 @@ pub(super) fn strip(path: GroupPath, state: Rc<State>, keys: Memo<Vec<String>>) 
             bottom: 1.0,
             left: 0.0,
         })
-        .border_color(ColorToken::BORDER)
+        .border_color(ColorToken::BORDER);
+    if let Some(floating) = floating {
+        strip = strip.child(floating.grip());
+    }
+    strip
         .child(
             scroll(tabs)
                 .axis(ScrollAxis::Horizontal)
                 .horizontal_offset(offset)
-                .width(pct(100.0))
+                .min_width(px(0.0))
+                .grow(1.0)
                 .height(pct(100.0)),
         )
         .into_any()
 }
 
-fn tab(key: String, path: &[Branch], state: Rc<State>, geometry: Rc<Geometry>) -> AnyElement {
+fn tab(
+    key: String,
+    path: Option<&[Branch]>,
+    state: Rc<State>,
+    geometry: Rc<Geometry>,
+    floating: Option<Rc<floating::Window>>,
+) -> AnyElement {
     let selected_state = Rc::clone(&state);
     let selected_key = key.clone();
-    let selected_path = path.to_vec();
-    let selected = Memo::new(move || selected_state.selected(&selected_path, &selected_key));
+    let selected_path = path.map(<[Branch]>::to_vec);
+    let selected = Memo::new(move || {
+        selected_path
+            .as_deref()
+            .is_none_or(|path| selected_state.selected(path, &selected_key))
+    });
     let selected_binding = selected.clone();
     let mark = selected.clone();
     let accessible = selected.clone();
@@ -178,11 +208,17 @@ fn tab(key: String, path: &[Branch], state: Rc<State>, geometry: Rc<Geometry>) -
     let preview = Rc::clone(&state);
     let preview_key = key.clone();
     let accept = Rc::clone(&state);
-    let accept_path = path.to_vec();
+    let accept_path = path.map(<[Branch]>::to_vec);
     let drop = Rc::clone(&state);
-    let drop_path = path.to_vec();
+    let drop_path = path.map(<[Branch]>::to_vec);
     let drop_key = key.clone();
     let end = Rc::clone(&state);
+    let miss = Rc::clone(&state);
+    let miss_key = key.clone();
+    let menu_window = floating.clone();
+    let blur = floating.clone();
+    let activation = Rc::clone(&state);
+    let activation_key = key.clone();
     let over = Rc::clone(&state);
     let close_state = Rc::clone(&state);
     let close_panel = key.clone();
@@ -249,15 +285,28 @@ fn tab(key: String, path: &[Branch], state: Rc<State>, geometry: Rc<Geometry>) -
     .on_unhandled_key({
         let state = Rc::clone(&state);
         let key = key.clone();
-        let path = path.to_vec();
-        move |event| keyboard::tab_key(&state, &path, &key, event)
+        let path = path.map(<[Branch]>::to_vec);
+        move |event| keyboard::tab_key(&state, path.as_deref(), &key, event)
     })
-    .context_menu(move || keyboard::tab_menu(&state, &key))
-    .activate_on_keys()
+    .context_menu(move || keyboard::tab_menu(&state, &key, menu_window.as_ref()))
+    .on_key(move |event| {
+        if let Some(window) = &floating
+            && window.key(event) == Handled::Yes
+        {
+            return Handled::Yes;
+        }
+        if event.pressed && !event.repeat && matches!(event.key, Key::Enter | Key::Space) {
+            activation.activate(&activation_key);
+            return Handled::Yes;
+        }
+        Handled::No
+    })
     .on_press(move || press.activate(&press_key))
     .on_focus(move |inside| {
         if inside {
             focus.activate(&focus_key);
+        } else if let Some(window) = &blur {
+            window.end();
         }
     })
     .drag_source(move || (Rc::clone(&source), source_key.clone()))
@@ -286,21 +335,25 @@ fn tab(key: String, path: &[Branch], state: Rc<State>, geometry: Rc<Geometry>) -
     })
     .drop_target::<Payload>(
         move |payload: &Payload| {
-            Rc::ptr_eq(&payload.0, &accept) && accept.in_group(&accept_path, &payload.1)
+            Rc::ptr_eq(&payload.0, &accept)
+                && accept_path
+                    .as_deref()
+                    .is_some_and(|path| accept.in_group(path, &payload.1))
         },
         {
             let drop_width = Rc::clone(&width);
             move |(_dock, dragged): Payload, at| {
                 let after = at.x * 2.0 > drop_width.get();
-                let positions = drop
-                    .layout
-                    .read(|layout| reorder(layout, &drop_path, &dragged, &drop_key, after));
+                let positions = drop.layout.read(|layout| {
+                    reorder(layout, drop_path.as_deref()?, &dragged, &drop_key, after)
+                });
                 if let Some((from, to, count)) = positions {
                     drop.reorder(&dragged, from, to, count);
                 }
             }
         },
     )
+    .on_drag_miss(move |at: Point| miss.float(&miss_key, at))
     .on_drag_end(move |_taken| end.clear_zone())
     .on_drag_over(move |_at| over.clear_zone())
     .bind(SelectedKey, move || selected_binding.get(), select)

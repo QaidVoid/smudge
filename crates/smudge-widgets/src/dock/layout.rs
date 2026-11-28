@@ -2,7 +2,11 @@ use std::collections::HashSet;
 use std::fmt;
 use std::mem;
 
+use smudge_core::geometry::Rect;
 use smudge_core::style::Direction;
+
+pub(super) const MIN_FLOAT_WIDTH: f32 = 160.0;
+pub(super) const MIN_FLOAT_HEIGHT: f32 = 96.0;
 
 /// One step through a split, starting at the layout's root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +71,8 @@ pub enum DockError {
     SplitNotFound,
     /// A panel key would appear more than once in the layout.
     DuplicatePanel,
+    /// The rectangle's coordinates or resulting dimensions are not finite.
+    InvalidFloatingRect,
 }
 
 impl fmt::Display for DockError {
@@ -76,13 +82,35 @@ impl fmt::Display for DockError {
             Self::GroupNotFound => "the path does not name a dock group",
             Self::SplitNotFound => "the path does not name a dock split",
             Self::DuplicatePanel => "panel keys must be unique in a dock layout",
+            Self::InvalidFloatingRect => "a floating panel needs a finite rectangle",
         })
     }
 }
 
 impl std::error::Error for DockError {}
 
-/// An application-owned docking tree. The default layout is empty.
+/// A floating group with a single tab, named by that panel's key.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FloatingGroup {
+    panel: String,
+    rect: Rect,
+}
+
+impl FloatingGroup {
+    /// Returns the key of the tab in this group.
+    pub fn panel(&self) -> &str {
+        &self.panel
+    }
+
+    /// Returns the requested rectangle in window logical pixels. The widget
+    /// may shift it to keep its title grip reachable in the current window.
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+/// An application-owned docking tree and its floating groups.
+/// The default layout is empty.
 ///
 /// Each panel key appears at most once. Every group has an active panel,
 /// and every split has two panes. Edits that return an error leave the
@@ -100,6 +128,7 @@ impl std::error::Error for DockError {}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DockLayout {
     root: Option<DockNode>,
+    floating: Vec<FloatingGroup>,
 }
 
 impl DockLayout {
@@ -124,14 +153,30 @@ impl DockLayout {
         if !root.unique_panels(&mut HashSet::new()) {
             return Err(DockError::DuplicatePanel);
         }
-        let mut layout = Self { root: Some(root) };
+        let mut layout = Self {
+            root: Some(root),
+            ..Self::default()
+        };
         layout.normalize();
         Ok(layout)
     }
 
-    /// Returns the root of the tree, or `None` for an empty layout.
+    /// Returns the docked tree, or `None` when there are no docked panels.
     pub fn root(&self) -> Option<&DockNode> {
         self.root.as_ref()
+    }
+
+    /// Returns the floating groups in the order they floated. A pointer
+    /// press may change their visual stacking without changing the layout.
+    pub fn floating(&self) -> &[FloatingGroup] {
+        &self.floating
+    }
+
+    pub(super) fn floating_rect(&self, panel: &str) -> Option<Rect> {
+        self.floating
+            .iter()
+            .find(|group| group.panel == panel)
+            .map(FloatingGroup::rect)
     }
 
     /// Returns whether `panel` appears in the layout.
@@ -146,12 +191,15 @@ impl DockLayout {
     /// ```
     pub fn contains(&self, panel: &str) -> bool {
         self.root.as_ref().is_some_and(|root| root.contains(panel))
+            || self.floating_rect(panel).is_some()
     }
 
     /// Moves `panel` to `group`. A center move appends and activates the tab.
     /// An edge move creates an equally sized group on that side. A center
     /// move within the same group and an edge move of that group's sole tab
-    /// leave the layout as it was.
+    /// leave the layout as it was. A floating tab moves back into the
+    /// docked tree. If that tree is empty, an empty path creates its first
+    /// group regardless of zone.
     ///
     /// # Errors
     ///
@@ -172,6 +220,11 @@ impl DockLayout {
         group: &[Branch],
         zone: Zone,
     ) -> Result<(), DockError> {
+        if self.root.is_none() && group.is_empty() {
+            let moved = self.take_panel(panel)?;
+            self.root = Some(single_panel(moved));
+            return Ok(());
+        }
         let Some(DockNode::Group { panels, .. }) = self.node_at_mut(group) else {
             return Err(DockError::GroupNotFound);
         };
@@ -179,10 +232,7 @@ impl DockLayout {
             return Ok(());
         }
 
-        let (panels, active, index) = self
-            .panel_group_mut(panel)
-            .ok_or(DockError::PanelNotFound)?;
-        let moved = remove_panel(panels, active, index);
+        let moved = self.take_panel(panel)?;
         let Some(target @ DockNode::Group { .. }) = self.node_at_mut(group) else {
             return Err(DockError::GroupNotFound);
         };
@@ -216,9 +266,65 @@ impl DockLayout {
         Ok(())
     }
 
+    /// Moves `panel` into its own floating group, or sets its rectangle if
+    /// already floating. Rectangles smaller than 160 by 96 logical pixels
+    /// expand to that minimum, keeping the top left corner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DockError::PanelNotFound`] for an absent panel or
+    /// [`DockError::InvalidFloatingRect`] for a nonfinite rectangle.
+    ///
+    /// ```
+    /// use smudge_core::geometry::Rect;
+    /// use smudge_widgets::dock::{DockError, DockLayout};
+    /// let mut layout = DockLayout::default();
+    /// layout.add("files", &[])?;
+    /// layout.float("files", Rect::new(20.0, 40.0, 280.0, 240.0))?;
+    /// # Ok::<(), DockError>(())
+    /// ```
+    pub fn float(&mut self, panel: &str, rect: Rect) -> Result<(), DockError> {
+        if self.floating_rect(panel).is_some() {
+            return self.move_floating(panel, rect);
+        }
+        let rect = floating_rect(rect)?;
+        let panel = self.take_panel(panel)?;
+        self.floating.push(FloatingGroup { panel, rect });
+        self.normalize();
+        Ok(())
+    }
+
+    /// Changes the rectangle of the floating group named by `panel`.
+    /// Rectangles follow the same rules as in [`Self::float`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DockError::GroupNotFound`] if the panel is not floating or
+    /// [`DockError::InvalidFloatingRect`] for a nonfinite rectangle.
+    ///
+    /// ```
+    /// # use smudge_core::geometry::Rect;
+    /// # use smudge_widgets::dock::{DockError, DockLayout};
+    /// # let mut layout = DockLayout::default();
+    /// # layout.add("files", &[])?;
+    /// # layout.float("files", Rect::new(20.0, 40.0, 280.0, 240.0))?;
+    /// layout.move_floating("files", Rect::new(80.0, 40.0, 340.0, 240.0))?;
+    /// # Ok::<(), DockError>(())
+    /// ```
+    pub fn move_floating(&mut self, panel: &str, rect: Rect) -> Result<(), DockError> {
+        let group = self
+            .floating
+            .iter_mut()
+            .find(|group| group.panel == panel)
+            .ok_or(DockError::GroupNotFound)?;
+        group.rect = floating_rect(rect)?;
+        Ok(())
+    }
+
     /// Moves a tab within its group, keeping the same active panel. `index`
     /// is its zero-based position after the move. An index past the end
-    /// moves the tab to the end.
+    /// moves the tab to the end. A floating panel has only one tab, so
+    /// reordering it leaves the layout unchanged.
     ///
     /// # Errors
     ///
@@ -233,6 +339,9 @@ impl DockLayout {
     /// # Ok::<(), DockError>(())
     /// ```
     pub fn move_tab(&mut self, panel: &str, index: usize) -> Result<(), DockError> {
+        if self.floating_rect(panel).is_some() {
+            return Ok(());
+        }
         let (panels, _, from) = self
             .panel_group_mut(panel)
             .ok_or(DockError::PanelNotFound)?;
@@ -245,7 +354,8 @@ impl DockLayout {
         Ok(())
     }
 
-    /// Shows `panel` in its group.
+    /// Shows `panel` in its group. A floating panel is already active in
+    /// its group, so this does not change its stacking order.
     ///
     /// # Errors
     ///
@@ -260,6 +370,9 @@ impl DockLayout {
     /// # Ok::<(), DockError>(())
     /// ```
     pub fn activate(&mut self, panel: &str) -> Result<(), DockError> {
+        if self.floating_rect(panel).is_some() {
+            return Ok(());
+        }
         let (panels, active, index) = self
             .panel_group_mut(panel)
             .ok_or(DockError::PanelNotFound)?;
@@ -285,10 +398,7 @@ impl DockLayout {
     /// # Ok::<(), DockError>(())
     /// ```
     pub fn close(&mut self, panel: &str) -> Result<(), DockError> {
-        let (panels, active, index) = self
-            .panel_group_mut(panel)
-            .ok_or(DockError::PanelNotFound)?;
-        remove_panel(panels, active, index);
+        self.take_panel(panel)?;
         self.normalize();
         Ok(())
     }
@@ -308,7 +418,7 @@ impl DockLayout {
     /// # Ok::<(), DockError>(())
     /// ```
     pub fn add(&mut self, panel: &str, group: &[Branch]) -> Result<(), DockError> {
-        if self.panel_group_mut(panel).is_some() {
+        if self.contains(panel) {
             return Err(DockError::DuplicatePanel);
         }
         if self.root.is_none() && group.is_empty() {
@@ -347,6 +457,16 @@ impl DockLayout {
         *share = ratio;
         self.normalize();
         Ok(())
+    }
+
+    fn take_panel(&mut self, panel: &str) -> Result<String, DockError> {
+        if let Some(at) = self.floating.iter().position(|group| group.panel == panel) {
+            return Ok(self.floating.remove(at).panel);
+        }
+        let (panels, active, index) = self
+            .panel_group_mut(panel)
+            .ok_or(DockError::PanelNotFound)?;
+        Ok(remove_panel(panels, active, index))
     }
 
     fn node_at_mut(&mut self, path: &[Branch]) -> Option<&mut DockNode> {
@@ -433,6 +553,29 @@ impl DockNode {
         }
         true
     }
+}
+
+fn floating_rect(rect: Rect) -> Result<Rect, DockError> {
+    Ok(Rect::new(
+        rect.x0,
+        rect.y0,
+        min_end(rect.x0, rect.x1, MIN_FLOAT_WIDTH)?,
+        min_end(rect.y0, rect.y1, MIN_FLOAT_HEIGHT)?,
+    ))
+}
+
+fn min_end(start: f32, end: f32, min: f32) -> Result<f32, DockError> {
+    if !start.is_finite() || !end.is_finite() {
+        return Err(DockError::InvalidFloatingRect);
+    }
+    let mut end = end.max(start + min);
+    if end - start < min {
+        end = end.next_up();
+    }
+    if !(end - start).is_finite() {
+        return Err(DockError::InvalidFloatingRect);
+    }
+    Ok(end)
 }
 
 fn empty_group() -> DockNode {

@@ -1148,7 +1148,7 @@ impl WidgetTree {
     /// without moving or repainting any node, so no node is marked and no
     /// rectangle changes. Repainting these bounds from the display list in the
     /// new child order draws the new stacking.
-    fn queue_subtree_damage(&mut self, id: WidgetId) {
+    pub(super) fn queue_subtree_damage(&mut self, id: WidgetId) {
         let mut stack = vec![id];
         while let Some(current) = stack.pop() {
             let Some(node) = self.nodes.get(current) else {

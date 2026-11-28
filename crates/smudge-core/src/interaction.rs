@@ -270,6 +270,8 @@ pub(crate) struct DndHandlers {
     /// Runs when a drag this node started ends, with whether a target took
     /// the payload.
     pub(crate) drag_end: Option<Box<dyn FnMut(bool)>>,
+    /// Runs for a release inside the window with no accepting target.
+    pub(crate) drag_miss: Option<Box<dyn FnMut(Point)>>,
     /// Builds the preview shown at the pointer while the drag is in the
     /// air, shared with the overlay the element mounted for the source, so
     /// a [`drag_preview`](crate::element::Element::drag_preview) set after
@@ -510,6 +512,7 @@ impl WidgetTree {
         self.pointer = position;
         self.pointer_inside = true;
         self.dismiss_outside(position);
+        self.raise_floating(position);
         let target = self.target(position);
         self.run_press_watchers(self.hit_any(position, true));
         if self.pressed.is_none() || button == PointerButton::Primary {
@@ -619,7 +622,6 @@ impl WidgetTree {
             return;
         }
         self.pointer = position;
-        self.pointer_inside = true;
         self.drag_left();
         // The drag outlives the capture: the node that took the press may be
         // gone, and the observers still hear the release.
@@ -632,6 +634,7 @@ impl WidgetTree {
             self.finish_dnd(drag, payload, position);
             return;
         }
+        self.pointer_inside = true;
         let hovered = self.hover_target(position);
         let Some(captured) = self.pressed.take() else {
             self.set_hover_target(hovered);
@@ -1786,7 +1789,16 @@ impl WidgetTree {
     /// the drop, and the source hears whether the payload was taken. The
     /// release ends the capture but runs no press: a drag is not a click.
     fn finish_dnd(&mut self, drag: ActiveDrag, payload: Rc<dyn Any>, position: Point) {
-        let target = self.drop_target_at(position, &payload);
+        self.pointer_inside &= self.viewport.is_some_and(|size| {
+            position.x >= 0.0
+                && position.y >= 0.0
+                && position.x < size.width
+                && position.y < size.height
+        });
+        let target = self
+            .pointer_inside
+            .then(|| self.drop_target_at(position, &payload))
+            .flatten();
         if let Some(old) = drag.target {
             self.set_bit(old, Interaction::DROP, false);
         }
@@ -1797,10 +1809,17 @@ impl WidgetTree {
                 self.run_drop(id, payload, local);
                 true
             }
+            None if self.pointer_inside => {
+                self.run_drag_miss(drag.source, position);
+                false
+            }
             None => false,
         };
         self.run_drag_end(drag.source, dropped);
-        let hovered = self.hover_target(position);
+        let hovered = self
+            .pointer_inside
+            .then(|| self.hover_target(position))
+            .flatten();
         if let Some(captured) = self.pressed.take() {
             self.set_bit(captured, Interaction::PRESSED, false);
             self.run_pointer_up(captured, position);
@@ -1857,6 +1876,25 @@ impl WidgetTree {
                 .and_then(|dnd| dnd.drop.as_mut())
             {
                 drop(payload, at);
+            }
+        });
+    }
+
+    fn run_drag_miss(&mut self, id: WidgetId, position: Point) {
+        if !self.hears(id) {
+            return;
+        }
+        let Some(owner) = self.owner(id).cloned() else {
+            return;
+        };
+        owner.with(|| {
+            if let Some(miss) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.handlers.dnd.as_mut())
+                .and_then(|dnd| dnd.drag_miss.as_mut())
+            {
+                miss(position);
             }
         });
     }

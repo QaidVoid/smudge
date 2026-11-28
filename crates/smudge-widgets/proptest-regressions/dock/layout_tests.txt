@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5663ecb3bcf44cc2cfb5c089c6d950485ba723d68f75a91800a5304c07bbc13c # shrinks to edits = [Add(4, 6), Float(4, Rect { x0: 132.29408, y0: 0.0, x1: 132.29408, y1: 0.0 })]

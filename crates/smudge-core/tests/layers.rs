@@ -585,3 +585,112 @@ fn a_menu_that_fades_out_under_a_new_dialog_leaves_the_focus_off_its_button() {
         "the focus never lands behind the dialog"
     );
 }
+
+#[test]
+fn press_raises_a_float_but_not_over_its_popup_or_the_app_outside() {
+    use smudge_core::input::Handled;
+
+    let popup_open = RwSignal::new(false);
+    let first_open = RwSignal::new(true);
+    let second_open = RwSignal::new(true);
+    let first_presses = Rc::new(Cell::new(0));
+    let second_presses = Rc::new(Cell::new(0));
+    let popup_presses = Rc::new(Cell::new(0));
+    let keys = Rc::new(Cell::new(0));
+    let mut harness = Harness::new(250.0, 180.0, 1.0, {
+        let (first_open, second_open, popup_open) =
+            (first_open.clone(), second_open.clone(), popup_open.clone());
+        let (first_presses, second_presses, popup_presses, keys) = (
+            Rc::clone(&first_presses),
+            Rc::clone(&second_presses),
+            Rc::clone(&popup_presses),
+            Rc::clone(&keys),
+        );
+        move || {
+            panel()
+                .child(
+                    panel()
+                        .width(px(35.0))
+                        .height(px(25.0))
+                        .on_key(move |event| {
+                            if event.pressed && event.key == Key::Function(2) {
+                                keys.set(keys.get() + 1);
+                                Handled::Yes
+                            } else {
+                                Handled::No
+                            }
+                        }),
+                )
+                .child(panel().overlay_in(
+                    Layer::Floating,
+                    first_open,
+                    Placement::Window(Point { x: 30.0, y: 60.0 }),
+                    move || {
+                        let popup_presses = Rc::clone(&popup_presses);
+                        popup(APP_POPUP, "First float", Rc::clone(&first_presses)).overlay(
+                            popup_open.clone(),
+                            Placement::At(Point { x: 55.0, y: 10.0 }),
+                            move || popup(DIALOG_POPUP, "Popup", Rc::clone(&popup_presses)),
+                        )
+                    },
+                ))
+                .child(panel().overlay_in(
+                    Layer::Floating,
+                    second_open,
+                    Placement::Window(Point { x: 70.0, y: 75.0 }),
+                    move || popup(DIALOG, "Second float", Rc::clone(&second_presses)),
+                ))
+        }
+    });
+    harness.settle();
+    let overlap = Point { x: 96.0, y: 90.0 };
+    harness.click(overlap);
+    assert_eq!(second_presses.get(), 1);
+    let _ = harness.app().take_a11y_changes();
+    let exposed = Point { x: 50.0, y: 90.0 };
+    harness.button_down(exposed);
+    let report = harness.frame();
+    assert_eq!(
+        report.damage,
+        [smudge_core::geometry::PixelRect {
+            x: 30,
+            y: 60,
+            width: 80,
+            height: 50
+        }]
+    );
+    harness.assert_matches_full_repaint();
+    assert!(harness.app().has_a11y_changes());
+    let names = harness
+        .app()
+        .semantics_nodes()
+        .into_iter()
+        .filter_map(|node| node.label)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Second float", "First float"]);
+    harness.button_up(exposed);
+    harness.click(overlap);
+    assert_eq!(first_presses.get(), 2);
+    popup_open.set(true);
+    harness.frame();
+    harness.click(overlap);
+    assert_eq!(popup_presses.get(), 1);
+    let second = Point { x: 140.0, y: 123.0 };
+    harness.click(second);
+    assert_eq!(second_presses.get(), 2);
+    assert!(!popup_open.get());
+    popup_open.set(true);
+    harness.frame();
+    harness.click(overlap);
+    assert_eq!(
+        popup_presses.get(),
+        2,
+        "a popup in the rear panel is still above the front float"
+    );
+    harness.click(Point { x: 10.0, y: 10.0 });
+    harness.press_key(Key::Function(2));
+    harness.press_key(Key::Escape);
+    harness.settle();
+    assert_eq!(keys.get(), 1);
+    assert!(first_open.get() && second_open.get());
+}

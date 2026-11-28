@@ -262,6 +262,18 @@ enum Edit {
     Activate(u8),
     Reorder(u8, usize),
     Ratio(usize, f32),
+    Float(u8, Rect),
+    MoveFloat(u8, Rect),
+}
+
+fn rect() -> impl Strategy<Value = Rect> {
+    (
+        -200.0..200.0f32,
+        -200.0..200.0f32,
+        -20.0..250.0f32,
+        -20.0..250.0f32,
+    )
+        .prop_map(|(x, y, w, h)| Rect::new(x, y, x + w, y + h))
 }
 
 fn edit() -> impl Strategy<Value = Edit> {
@@ -273,8 +285,10 @@ fn edit() -> impl Strategy<Value = Edit> {
             .prop_map(|(key, target, zone)| Edit::Move(key, target, zone)),
         2 => key.clone().prop_map(Edit::Close),
         1 => key.clone().prop_map(Edit::Activate),
-        1 => (key, position.clone()).prop_map(|(key, index)| Edit::Reorder(key, index)),
+        1 => (key.clone(), position.clone()).prop_map(|(key, index)| Edit::Reorder(key, index)),
         2 => (position, any::<f32>()).prop_map(|(target, ratio)| Edit::Ratio(target, ratio)),
+        3 => (key.clone(), rect()).prop_map(|(key, rect)| Edit::Float(key, rect)),
+        2 => (key, rect()).prop_map(|(key, rect)| Edit::MoveFloat(key, rect)),
     ]
 }
 
@@ -290,6 +304,15 @@ impl TreeView {
         let mut view = Self::default();
         if let Some(root) = layout.root() {
             view.visit(root, &mut Vec::new())?;
+        }
+        for group in layout.floating() {
+            prop_assert!(
+                view.keys.insert(group.panel().to_owned()),
+                "duplicate panel {}",
+                group.panel()
+            );
+            prop_assert!(group.rect().width() >= MIN_FLOAT_WIDTH);
+            prop_assert!(group.rect().height() >= MIN_FLOAT_HEIGHT);
         }
         Ok(view)
     }
@@ -354,7 +377,10 @@ proptest! {
                     }
                     result
                 }
-                Edit::Move(key, target, zone) => layout.move_panel(&key.to_string(), path_for(&view.groups, target), zone),
+                Edit::Move(key, target, zone) => {
+                    let path = if view.groups.is_empty() && target % 2 == 0 { &[] } else { path_for(&view.groups, target) };
+                    layout.move_panel(&key.to_string(), path, zone)
+                }
                 Edit::Close(key) => {
                     let key = key.to_string();
                     let result = layout.close(&key);
@@ -366,6 +392,8 @@ proptest! {
                 Edit::Activate(key) => layout.activate(&key.to_string()),
                 Edit::Reorder(key, index) => layout.move_tab(&key.to_string(), index),
                 Edit::Ratio(target, ratio) => layout.set_ratio(path_for(&view.splits, target), ratio),
+                Edit::Float(key, rect) => layout.float(&key.to_string(), rect),
+                Edit::MoveFloat(key, rect) => layout.move_floating(&key.to_string(), rect),
             };
 
             if result.is_err() {
@@ -374,8 +402,41 @@ proptest! {
             prop_assert_eq!(&TreeView::inspect(&layout)?.keys, &expected);
             if let Some(root) = layout.root() {
                 let normalized = DockLayout::new(root.clone());
-                prop_assert_eq!(normalized.as_ref(), Ok(&layout));
+                prop_assert_eq!(normalized.as_ref().ok().and_then(DockLayout::root), Some(root));
             }
         }
     }
+}
+
+#[test]
+fn invalid_floating_edits_do_not_remove_or_duplicate_a_panel() -> Result<(), DockError> {
+    let mut layout = DockLayout::new(group(&["one", "two"], "two"))?;
+    let before = layout.clone();
+    let rect = Rect::new(30.0, 20.0, 210.0, 160.0);
+    let invalid = Rect::new(f32::NAN, 0.0, 80.0, 42.0);
+    assert_eq!(
+        layout.float("two", invalid),
+        Err(DockError::InvalidFloatingRect)
+    );
+    assert_eq!(
+        layout.move_floating("one", rect),
+        Err(DockError::GroupNotFound)
+    );
+    assert_eq!(layout, before);
+    layout.float("two", rect)?;
+    let floated = layout.clone();
+    assert_eq!(layout.add("two", &[]), Err(DockError::DuplicatePanel));
+    assert_eq!(
+        layout.move_floating("two", invalid),
+        Err(DockError::InvalidFloatingRect)
+    );
+    assert_eq!(
+        layout.move_panel("two", &[Branch::First], Zone::Center),
+        Err(DockError::GroupNotFound)
+    );
+    assert_eq!(layout, floated);
+    layout.close("two")?;
+    assert!(!layout.contains("two"));
+    assert!(layout.floating().is_empty());
+    Ok(())
 }
