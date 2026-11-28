@@ -928,6 +928,8 @@ dependencies = [
 name = "docs-check"
 version = "0.4.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "smudge",
  "smudge-cpu",
 ]
@@ -3225,6 +3227,8 @@ version = "0.4.0"
 dependencies = [
  "insta",
  "proptest",
+ "serde",
+ "serde_json",
  "smudge-core",
  "smudge-test",
  "smudge-text",

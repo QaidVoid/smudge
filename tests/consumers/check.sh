@@ -58,8 +58,16 @@ echo 'consumer: the machine'"'"'s fonts alone draw text'
 echo 'consumer: the app'"'"'s own fonts alone draw text'
 ( cd app-fonts-only && cargo test -q && cargo check -q --target wasm32-unknown-unknown )
 
-echo 'consumer: a headless build needs no window'
+echo 'consumer: a headless build needs no window or dock serialization dependency'
 ( cd headless && cargo check -q )
+headless_deps="$(cd headless && cargo tree --edges normal --prefix none)"
+if printf '%s\n' "$headless_deps" | grep -Eq '^serde(_core|_derive)? v'; then
+    echo 'the headless consumer depends on serde without opting in' >&2
+    exit 1
+fi
+
+echo 'consumer: dock serialization is opt-in on native and wasm'
+( cd headless && cargo test -q --features serde && cargo check -q --tests --features serde --target wasm32-unknown-unknown )
 
 echo 'consumer: a library that forwards the font choice builds on its own'
 ( cd library && cargo check -q && cargo check -q --target wasm32-unknown-unknown )

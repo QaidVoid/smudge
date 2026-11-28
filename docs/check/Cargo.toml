@@ -12,5 +12,9 @@ publish = false
 workspace = true
 
 [dependencies]
-smudge = { version = "0.4.0", path = "../../crates/smudge", features = ["devtools", "gpu", "markdown"] }
+smudge = { version = "0.4.0", path = "../../crates/smudge", features = ["devtools", "gpu", "markdown", "serde"] }
 smudge-cpu = { path = "../../crates/smudge-cpu" }
+
+[dev-dependencies]
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = "1"

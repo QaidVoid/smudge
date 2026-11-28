@@ -13,7 +13,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 [dependencies]
 libfuzzer-sys = "0.4"
 pulldown-cmark = { version = "0.13.6", default-features = false }
+serde_json = "1"
 smudge-core = { path = "../crates/smudge-core" }
+smudge-widgets = { version = "0.4.0", path = "../crates/smudge-widgets", features = ["serde"] }
 
 [dependencies.smudge-text]
 path = "../crates/smudge-text"
@@ -28,6 +30,13 @@ bench = false
 [[bin]]
 name = "markdown_stream"
 path = "fuzz_targets/markdown_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dock_layout"
+path = "fuzz_targets/dock_layout.rs"
 test = false
 doc = false
 bench = false

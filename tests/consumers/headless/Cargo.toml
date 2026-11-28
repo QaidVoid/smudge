@@ -13,3 +13,9 @@ smudge = { path = "../../../crates/smudge", default-features = false, features =
 # Standalone, so this build's feature unification is the one an ordinary
 # consumer sees.
 [workspace]
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+serde = ["smudge/serde"]

@@ -13,6 +13,7 @@
 | `gpu` | no | The GPU renderer and its window path, with the Vulkan, Metal and DX12 backends. Implies `window`. Windows still start on the CPU renderer unless `WindowOptions::renderer` or `SMUDGE_RENDERER` asks for `Auto` or `Gpu`. New in 0.3: before, `Auto` was the default with this feature. |
 | `complex-scripts` | no | Word and line break dictionaries for Chinese, Japanese, Thai, Lao, Khmer and Burmese. About 3 MB per binary and about 5 percent slower layout of other text. |
 | `system-fonts` | no | Also finds the fonts installed on the machine, on Linux, FreeBSD, Windows, Android and Apple platforms. The same feature of `smudge-text`, forwarded, so applications can turn it on without adding `smudge-text` themselves. |
+| `serde` | no | Serialization of dock layouts, forwarded to `smudge-widgets`. The app chooses the format and storage. See [Saving a dock layout](/guide/rendering#saving-a-dock-layout). |
 | `markdown` | no | Markdown rendered from a source that grows while it shows, through `smudge::markdown`. See [Markdown](/guide/markdown). |
 | `devtools` | no | Devtools drawn over the running application. A key, Ctrl+Shift+D or Cmd+Shift+D on macOS, shows a panel over the window, in an application of its own, so the application keeps working underneath and its own frames, numbers and pixels stay its own. Implies `window`, and re-exports `smudge-devtools` as `smudge::devtools`. It brings no font of its own. Meant for development builds. |
 | `dev` | no | The development setup: `devtools` and `hot-reload` together, so the devtools panel shows each hot patch as it lands, with its timing, what the remount kept, and the compiler's message when a patch could not be built. Meant for development builds. |
@@ -29,6 +30,7 @@ smudge = { version = "0.2", features = ["gpu"] }
 |---|---|---|
 | `bundled-fonts` | yes | Embeds the fonts, as the same feature of `smudge-text` does, so widgets that lay out text find a font even when no other dependency provides one. |
 | `app-fonts` | no | Counts the fonts the application registers as its font source, as the same feature of `smudge-text` does. |
+| `serde` | no | Implements `Serialize` and `Deserialize` for `DockLayout` and its saved parts. |
 | `hot-reload` | no | Turns on hot reload in the core crate, which carries the values of the signals a build created across a hot patch, a keyed list's measured heights among them. The `smudge` feature of the same name turns this on. See [Hot reload](/guide/hot-reload). |
 
 ## `smudge-text`

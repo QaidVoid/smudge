@@ -8,6 +8,7 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+serde = { version = "1", default-features = false, features = ["std", "derive"], optional = true }
 smudge-core = { version = "0.4.0", path = "../smudge-core" }
 smudge-text = { version = "0.4.0", path = "../smudge-text", default-features = false }
 web-time = "1.1.0"
@@ -28,8 +29,11 @@ app-fonts = ["smudge-text/app-fonts"]
 # Hot reload, as the feature of the same name in the core crate describes.
 # Turned on by the facade's feature of the same name.
 hot-reload = ["smudge-core/hot-reload"]
+# Lets the app serialize dock layouts without prescribing a format or storage.
+serde = ["dep:serde"]
 
 [dev-dependencies]
 insta = "1.49.0"
 proptest = "1.12.0"
+serde_json = "1"
 smudge-test = { path = "../smudge-test" }

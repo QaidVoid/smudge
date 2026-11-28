@@ -50,6 +50,8 @@ hot-reload = ["window", "smudge-platform/hot-reload", "smudge-widgets/hot-reload
 # Markdown rendered from a source that grows while it shows, through the
 # `markdown` module.
 markdown = ["dep:smudge-markdown"]
+# Dock layout serialization through the widgets crate, with storage left to the app.
+serde = ["smudge-widgets/serde"]
 # Devtools drawn over the running app: a key shows the panel over the
 # window, and the `devtools` module re-exports the crate. Implies `window`.
 # Never on by default, and meant for development builds only.

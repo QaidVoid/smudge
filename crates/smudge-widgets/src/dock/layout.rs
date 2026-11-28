@@ -5,6 +5,10 @@ use std::mem;
 use smudge_core::geometry::Rect;
 use smudge_core::style::Direction;
 
+#[cfg(feature = "serde")]
+#[path = "persistence.rs"]
+mod persistence;
+
 pub(super) const MIN_FLOAT_WIDTH: f32 = 160.0;
 pub(super) const MIN_FLOAT_HEIGHT: f32 = 96.0;
 
@@ -38,10 +42,12 @@ pub enum Zone {
 
 /// A split or tab group in a docking layout.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DockNode {
     /// Two panes with a divider between them.
     Split {
         /// A row lays out the panes left to right, and a column top to bottom.
+        #[cfg_attr(feature = "serde", serde(with = "persistence::SavedDirection"))]
         direction: Direction,
         /// The first pane's share of the split, from zero to one.
         ratio: f32,
@@ -91,8 +97,10 @@ impl std::error::Error for DockError {}
 
 /// A floating group with a single tab, named by that panel's key.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FloatingGroup {
     panel: String,
+    #[cfg_attr(feature = "serde", serde(with = "persistence::SavedRect"))]
     rect: Rect,
 }
 
@@ -116,6 +124,11 @@ impl FloatingGroup {
 /// and every split has two panes. Edits that return an error leave the
 /// layout as it was.
 ///
+/// The `serde` feature lets the app save and restore layouts. Deserialization
+/// normalizes the docked tree and floating sizes, and rejects duplicate keys
+/// and nonfinite floating geometry. Use [`Self::reconcile`] before mounting
+/// a saved layout to account for changes to the app's panel keys.
+///
 /// ```
 /// use smudge_widgets::dock::{DockError, DockLayout, Zone};
 ///
@@ -126,6 +139,8 @@ impl FloatingGroup {
 /// # Ok::<(), DockError>(())
 /// ```
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "persistence::SavedLayout"))]
 pub struct DockLayout {
     root: Option<DockNode>,
     floating: Vec<FloatingGroup>,
@@ -459,6 +474,57 @@ impl DockLayout {
         Ok(())
     }
 
+    /// Reconciles a saved layout with the panel keys the app wants open.
+    /// Removes keys absent from `known`, including floating panels. Appends
+    /// missing keys in the order given, ignoring repeated keys and keeping
+    /// any surviving active tab. To keep a panel closed, omit it from `known`.
+    ///
+    /// `fallback` names a group in the tree before this edit. If it does not
+    /// name a group, missing panels go to the first surviving group in tree
+    /// order or form a new root group if none survives. Groups left empty
+    /// disappear. Floating rectangles stay in window logical pixels. When
+    /// the dock mounts, it keeps the floating grip reachable in the current
+    /// window without changing the saved rectangle.
+    ///
+    /// ```
+    /// use smudge_widgets::dock::{DockError, DockLayout};
+    ///
+    /// let mut layout = DockLayout::default();
+    /// layout.add("old-panel", &[])?;
+    /// layout.reconcile(&["editor", "outline"], &[]);
+    /// assert!(!layout.contains("old-panel"));
+    /// assert!(layout.contains("outline"));
+    /// # Ok::<(), DockError>(())
+    /// ```
+    pub fn reconcile(&mut self, known: &[&str], fallback: &[Branch]) {
+        let mut missing: HashSet<&str> = known.iter().copied().collect();
+        if let Some(root) = self.root.as_mut() {
+            root.retain_panels(&mut missing);
+        }
+        self.floating
+            .retain(|group| missing.remove(group.panel.as_str()));
+
+        if !missing.is_empty() {
+            let panels = match self.node_at_mut(fallback) {
+                Some(DockNode::Group { panels, .. }) => panels,
+                _ => {
+                    self.normalize();
+                    self.root
+                        .get_or_insert_with(empty_group)
+                        .first_group_panels()
+                }
+            };
+            panels.extend(
+                known
+                    .iter()
+                    .copied()
+                    .filter(|key| missing.remove(key))
+                    .map(str::to_owned),
+            );
+        }
+        self.normalize();
+    }
+
     fn take_panel(&mut self, panel: &str) -> Result<String, DockError> {
         if let Some(at) = self.floating.iter().position(|group| group.panel == panel) {
             return Ok(self.floating.remove(at).panel);
@@ -495,6 +561,23 @@ impl DockLayout {
 }
 
 impl DockNode {
+    fn retain_panels(&mut self, missing: &mut HashSet<&str>) {
+        match self {
+            Self::Group { panels, .. } => panels.retain(|key| missing.remove(key.as_str())),
+            Self::Split { first, second, .. } => {
+                first.retain_panels(missing);
+                second.retain_panels(missing);
+            }
+        }
+    }
+
+    fn first_group_panels(&mut self) -> &mut Vec<String> {
+        match self {
+            Self::Group { panels, .. } => panels,
+            Self::Split { first, .. } => first.first_group_panels(),
+        }
+    }
+
     fn panel_group_mut(&mut self, panel: &str) -> Option<(&mut Vec<String>, &mut String, usize)> {
         match self {
             Self::Group { panels, active } => {

@@ -2206,3 +2206,19 @@ fn keyboard_moving_away_from_a_clamped_edge_moves_on_the_next_key() {
         base.translated(Point { x: -8.0, y: 0.0 })
     );
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn a_restored_float_is_reachable_in_a_smaller_window_on_first_paint()
+-> Result<(), serde_json::Error> {
+    let saved_rect = Rect::new(800.0, 500.0, 1000.0, 640.0);
+    let saved = serde_json::to_string(&floating_at("One", saved_rect))?;
+    let mut restored: DockLayout = serde_json::from_str(&saved)?;
+    restored.reconcile(&["One"], &[]);
+    let model = RwSignal::new(restored);
+    let mut harness = window(model.clone(), Builds::default());
+    let area = named(&mut harness, Role::Group, "One").bounds;
+    assert_eq!(area, Rect::new(448.0, 208.0, 648.0, 348.0));
+    assert_eq!(floating_rect(&model, "One"), saved_rect);
+    Ok(())
+}

@@ -186,3 +186,42 @@ println!("copied {} bytes, damage only: {}", latest.bytes_copied, latest.with_da
 ```
 
 `PresentStats` reports the buffer age, whether the present carried only the damage, how many bytes it copied, the surface size, and how long the raster and the buffer wait took.
+
+## Saving a dock layout
+
+The app owns its layout and chooses where and when to save it. Enable the `serde` feature on `smudge` (or on `smudge-widgets` if you use it directly). Add `serde` with `derive` and `serde_json` to your app's dependencies for this JSON recipe.
+
+Save a copy of the layout signal's value while the view is still mounted. On desktop, for example, write the returned JSON to a file in the app's configuration directory. Before opening the next window, read the file and pass its contents to `restore_layout`. Then use the returned value to initialize your `RwSignal<DockLayout>` in the view.
+
+The app's version number lets it reject an incompatible save or migrate it before restoring. A missing or unreadable save falls back to the app's default. Pass the panel keys you want open now: reconciliation removes obsolete keys and appends any missing keys to the fallback group. Omit keys you want to leave closed. The fallback path addresses the loaded tree before reconciliation. An empty path selects the root if it is a group. Otherwise missing tabs go into the first surviving group, or form a new root group if none survives. The dock adjusts where floating panels draw to keep their grips reachable in the actual window.
+
+```rust
+use serde::{Deserialize, Serialize};
+use smudge::widgets::dock::{Branch, DockLayout};
+
+const STATE_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct AppState {
+    version: u32,
+    dock: DockLayout,
+}
+
+fn save_layout(dock: DockLayout) -> serde_json::Result<String> {
+    serde_json::to_string(&AppState { version: STATE_VERSION, dock })
+}
+
+fn restore_layout(
+    saved: Option<&str>,
+    default: DockLayout,
+    open_keys: &[&str],
+    fallback: &[Branch],
+) -> DockLayout {
+    let mut dock = saved
+        .and_then(|text| serde_json::from_str::<AppState>(text).ok())
+        .filter(|state| state.version == STATE_VERSION)
+        .map_or(default, |state| state.dock);
+    dock.reconcile(open_keys, fallback);
+    dock
+}
+```

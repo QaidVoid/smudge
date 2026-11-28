@@ -440,3 +440,164 @@ fn invalid_floating_edits_do_not_remove_or_duplicate_a_panel() -> Result<(), Doc
     assert!(layout.floating().is_empty());
     Ok(())
 }
+
+#[test]
+fn reconcile_appends_to_the_original_fallback_after_pruning() -> Result<(), DockError> {
+    let mut layout = DockLayout::new(split(
+        Direction::Row,
+        0.35,
+        group(&["removed-dock"], "removed-dock"),
+        split(
+            Direction::Column,
+            0.6,
+            group(&["editor", "source"], "source"),
+            group(&["search", "outline", "removed-float"], "outline"),
+        ),
+    ))?;
+    let rect = Rect::new(300.0, 100.0, 500.0, 240.0);
+    layout.float("source", rect)?;
+    layout.float("removed-float", rect)?;
+    layout.reconcile(
+        &[
+            "editor", "search", "outline", "source", "files", "files", "logs",
+        ],
+        &[Branch::Second, Branch::Second],
+    );
+    assert_eq!(
+        layout.root(),
+        Some(&split(
+            Direction::Column,
+            0.6,
+            group(&["editor"], "editor"),
+            group(&["search", "outline", "files", "logs"], "outline"),
+        ))
+    );
+    assert_eq!(layout.floating().len(), 1);
+    assert_eq!(layout.floating()[0].panel(), "source");
+    assert_eq!(layout.floating()[0].rect(), rect);
+    Ok(())
+}
+
+#[test]
+fn reconcile_can_reuse_a_fallback_whose_old_tabs_were_all_removed() -> Result<(), DockError> {
+    let mut layout = DockLayout::new(split(
+        Direction::Row,
+        0.35,
+        group(&["editor"], "editor"),
+        group(&["removed"], "removed"),
+    ))?;
+    layout.reconcile(&["editor", "files"], &[Branch::Second]);
+    assert_eq!(
+        layout.root(),
+        Some(&split(
+            Direction::Row,
+            0.35,
+            group(&["editor"], "editor"),
+            group(&["files"], "files"),
+        ))
+    );
+    Ok(())
+}
+
+#[test]
+fn reconcile_with_no_fallback_appends_to_the_first_surviving_group() -> Result<(), DockError> {
+    let mut layout = DockLayout::new(split(
+        Direction::Row,
+        0.35,
+        group(&["removed", "files"], "removed"),
+        group(&["editor"], "editor"),
+    ))?;
+    layout.reconcile(&["files", "editor", "outline"], &[]);
+    assert_eq!(
+        layout.root(),
+        Some(&split(
+            Direction::Row,
+            0.35,
+            group(&["files", "outline"], "files"),
+            group(&["editor"], "editor"),
+        ))
+    );
+    Ok(())
+}
+
+#[test]
+fn reconcile_an_empty_catalog_removes_everything_and_a_new_catalog_rebuilds_the_root()
+-> Result<(), DockError> {
+    let mut layout = DockLayout::new(group(&["editor", "outline"], "editor"))?;
+    layout.float("outline", Rect::new(20.0, 30.0, 220.0, 180.0))?;
+    layout.reconcile(&[], &[Branch::Second]);
+    assert_eq!(layout, DockLayout::default());
+
+    layout.reconcile(&["files", "files", "search"], &[Branch::Second]);
+    assert_eq!(layout.root(), Some(&group(&["files", "search"], "files")));
+    Ok(())
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn saving_and_loading_keeps_split_ratios_tab_order_and_floating_rects()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut layout = DockLayout::new(split(
+        Direction::Column,
+        0.35,
+        group(&["editor", "search"], "search"),
+        group(&["files", "outline"], "files"),
+    ))?;
+    layout.float("outline", Rect::new(30.25, 20.5, 280.0, 140.0))?;
+    let loaded: DockLayout = serde_json::from_str(&serde_json::to_string(&layout)?)?;
+    assert_eq!(loaded, layout);
+    Ok(())
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn loading_repairs_ratios_empty_groups_active_tabs_and_undersized_floats()
+-> Result<(), serde_json::Error> {
+    let source = r#"{
+        "root": {"Split": {
+            "direction": "Column", "ratio": 1.75,
+            "first": {"Group": {"panels": ["editor", "search"], "active": "stale"}},
+            "second": {"Split": {
+                "direction": "Row", "ratio": 0.5,
+                "first": {"Group": {"panels": [], "active": "removed"}},
+                "second": {"Group": {"panels": ["files"], "active": "files"}}
+            }}
+        }},
+        "floating": [{"panel": "outline", "rect": {"x0": 64, "y0": 32, "x1": 2, "y1": 5}}]
+    }"#;
+    let layout: DockLayout = serde_json::from_str(source)?;
+    assert_eq!(
+        layout.root(),
+        Some(&split(
+            Direction::Column,
+            1.0,
+            group(&["editor", "search"], "editor"),
+            group(&["files"], "files"),
+        ))
+    );
+    assert_eq!(
+        layout.floating()[0].rect(),
+        Rect::new(64.0, 32.0, 224.0, 128.0)
+    );
+    Ok(())
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn loading_rejects_keys_shared_by_docked_and_floating_tabs() {
+    let source = r#"{
+        "root": {"Group": {"panels": ["editor"], "active": "editor"}},
+        "floating": [{"panel": "editor", "rect": {"x0": 0, "y0": 0, "x1": 200, "y1": 100}}]
+    }"#;
+    assert!(serde_json::from_str::<DockLayout>(source).is_err());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn loading_rejects_floating_dimensions_that_overflow() {
+    let source = r#"{
+        "root": null,
+        "floating": [{"panel": "editor", "rect": {"x0": -3e38, "y0": 0, "x1": 3e38, "y1": 100}}]
+    }"#;
+    assert!(serde_json::from_str::<DockLayout>(source).is_err());
+}
